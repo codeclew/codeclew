@@ -931,6 +931,14 @@ while original data, limitations, results and technical links remain available.
 The original bound flow or comparison record is downloadable as raw JSON in
 both formats. A language gap does not change an analysis finding.
 
+Declared model-contract descriptions have their own
+`declaredContractTranslationGaps` and `declaredContractTranslationComplete`.
+Contract titles keep their declared language; missing declarations remain
+unknown. Native contract details and portable contract pages keep the original
+schema, pointer, requiredness and nullability alongside the language notice.
+`contracts/ID.original.json` provides the exact bound contract record; the
+portable export retains it as a raw original download.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with

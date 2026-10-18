@@ -675,5 +675,10 @@
   "Not declared": "Не объявлено",
   "No value allowed (false schema)": "Не допускается ни одно значение (схема false)",
   "Any value (true schema)": "Допускается любое значение (схема true)",
-  "Reference": "Ссылка"
+  "Reference": "Ссылка",
+  "Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality.": "Совпадение выбранной ветви контракта; наличие обязательных родительских свойств и элемента массива. Конечные свойства элемента массива раскрываются один раз независимо от числа элементов.",
+  "Declared contract · runtime conformance is not established.": "Заявленный контракт · соответствие во время выполнения не установлено.",
+  "Exact pointer": "Точный указатель",
+  "Properties": "Свойства",
+  "Requiredness follows the selected branch and required parents. Required and nullable are separate.": "Обязательность зависит от выбранной ветви и обязательных родительских свойств. Обязательность и допустимость null рассматриваются отдельно."
 }

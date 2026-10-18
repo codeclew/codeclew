@@ -52,6 +52,11 @@ pub(super) fn description_label(gap: &Value, language: &str) -> &'static str {
         Some("PROCESS_DATA_FLOW_TRANSLATION") => {
             text(language, "Data flow description", "Описание потока данных")
         }
+        Some("DECLARED_CONTRACT_TRANSLATION") => text(
+            language,
+            "Declared contract description",
+            "Описание заявленного контракта",
+        ),
         Some("HTTP_COMPARISON_TRANSLATION") => text(
             language,
             "HTTP comparison description",

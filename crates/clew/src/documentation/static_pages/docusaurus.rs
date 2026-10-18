@@ -1234,6 +1234,53 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
     Ok(out)
 }
 
+fn declared_contract_page(
+    contract: &Value,
+    gap: Option<&Value>,
+    language: &str,
+) -> Result<String, ClewError> {
+    use crate::documentation::language::label;
+    let id = text(&contract["id"]);
+    let mut body = header(text(&contract["title"]), &format!("/contracts/{id}"));
+    body.push_str(IMPORTS);
+    if let Some(gap) = gap {
+        body.push_str(&prose_gap(gap, language)?);
+    }
+    body.push_str(&format!(
+        "# {}\n\n{}\n\n{}:\n\n{}",
+        md(text(&contract["title"])),
+        md(label(
+            language,
+            "Declared contract · runtime conformance is not established."
+        )),
+        md(label(language, "Exact pointer")),
+        fence(text(&contract["branchPointer"]), "text")
+    ));
+    body.push_str(&source_link_in_language(
+        &contract["source"],
+        "../",
+        language,
+    )?);
+    body.push_str(&format!("\n\n## {} {{#properties}}\n\n{}\n\n",
+        md(label(language, "Properties")),
+        md(label(language, "Requiredness follows the selected branch and required parents. Required and nullable are separate."))));
+    for leaf in rows(&contract["leaves"]) {
+        body.push_str(&format!(
+            "### {}\n\n{}: {} · {}: {}\n\n{}",
+            md(text(&leaf["field"])),
+            md(label(language, "Required when branch matches")),
+            leaf["requiredWhenBranchMatches"],
+            md(label(language, "Accepts null")),
+            leaf["nullable"],
+            fence(
+                &serde_json::to_string_pretty(&leaf["schema"]).map_err(io_error)?,
+                "json"
+            )
+        ));
+    }
+    Ok(body)
+}
+
 fn model_page(
     model: &Value,
     catalog: &Value,
@@ -1262,7 +1309,7 @@ fn model_page(
     ));
     out.push_str(&evidence_language(&model["purpose"], language)?);
     out.push_str(&format!(
-        "## {clew_label_0}\n\n{}\n\n",
+        "## {clew_label_0} {{#identity-and-relationships}}\n\n{}\n\n",
         reading::inline(text(&model["identity"]["text"])),
         clew_label_0 = contracts::literal(crate::documentation::language::label(
             language,
@@ -1301,7 +1348,7 @@ fn model_page(
                 .replace('{', "&#123;")
                 .replace('}', "&#125;")
         };
-        out.push_str(&format!("## {clew_label_0}\n\n<table className=\"dm-records\"><caption>{clew_label_1}</caption><thead><tr>", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Reference records")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Source-backed literal records · authored interpretation"))));
+        out.push_str(&format!("## {clew_label_0} {{#reference-records}}\n\n<table className=\"dm-records\"><caption>{clew_label_1}</caption><thead><tr>", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Reference records")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Source-backed literal records · authored interpretation"))));
         for field in rows(&model["fields"]) {
             out.push_str(&format!(
                 "<th scope=\"col\">{}</th>",
@@ -1352,7 +1399,7 @@ fn model_page(
         }
     }
     out.push_str(&format!(
-        "## {clew_label_0}\n\n",
+        "## {clew_label_0} {{#fields-and-representations}}\n\n",
         clew_label_0 = contracts::literal(crate::documentation::language::label(
             language,
             "Fields and representations"
@@ -1411,9 +1458,9 @@ fn model_page(
         }
     }
     if super::data_model::reference_only(model) {
-        out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## {clew_label_0}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
+        out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## {clew_label_0} {{#processes}}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
     } else {
-        out.push_str(&format!("## {clew_label_0} {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## {clew_label_1}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Field usage and focused flow")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
+        out.push_str(&format!("## {clew_label_0} {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## {clew_label_1} {{#processes}}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Field usage and focused flow")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
     }
     for link in rows(&model["processLinks"]) {
         if let Some(process) = text(&link["subject"]).strip_prefix("scenario:") {
@@ -1674,23 +1721,11 @@ pub(super) fn project(
     let mut contract_items = Vec::new();
     for contract in rows(&catalog["contracts"]) {
         let id = text(&contract["id"]);
-        let mut body = header(text(&contract["title"]), &format!("/contracts/{id}"));
-        body.push_str(IMPORTS);
-        body.push_str(&format!("# {}\n\nDeclared contract · runtime conformance is not established.\n\nExact pointer:\n\n{}",md(text(&contract["title"])),fence(text(&contract["branchPointer"]),"text")));
-        body.push_str(&source_link(&contract["source"])?);
-        body.push_str("\n\n## Properties\n\nRequiredness follows the selected branch and required parents. Required and nullable are separate.\n\n");
-        for leaf in rows(&contract["leaves"]) {
-            body.push_str(&format!(
-                "### {}\n\nRequired when branch matches: {} · Accepts null: {}\n\n{}",
-                md(text(&leaf["field"])),
-                leaf["requiredWhenBranchMatches"],
-                leaf["nullable"],
-                fence(
-                    &serde_json::to_string_pretty(&leaf["schema"]).map_err(io_error)?,
-                    "json"
-                )
-            ));
-        }
+        let body = declared_contract_page(
+            contract,
+            manifest["declaredContractTranslationGaps"].get(id),
+            language,
+        )?;
         put(&mut files, format!("docs/contracts/{id}.mdx"), body);
         contract_items.push(json!(format!("contracts/{id}")));
     }
@@ -2025,6 +2060,49 @@ mod tests {
     }
 
     #[test]
+    fn portable_declared_contract_keeps_schema_title_pointer_and_source_identity_in_both_languages()
+    {
+        for target in ["en", "ru"] {
+            for available in [Some("en"), Some("ru"), None] {
+                let contract = json!({"id":"event","title":"Properties","documentationLanguage":available,
+                    "branchPointer":"/components/schemas/Event","leaves":[{"field":"id","requiredWhenBranchMatches":true,"nullable":false,"schema":{"type":"string","enum":["Properties"],"default":"Exact pointer"}}],
+                    "source":{"text":"Original contract bytes","textDigest":"unchanged","revision":"r1","file":"event.json","startLine":1,"endLine":1}});
+                let original = contract.clone();
+                let gap = super::super::prose_language::gap(
+                    &contract["documentationLanguage"],
+                    Some(target),
+                    "DECLARED_CONTRACT_TRANSLATION",
+                    "contracts/event.original.json",
+                )
+                .unwrap();
+                let body = declared_contract_page(&contract, gap.as_ref(), target).unwrap();
+                assert!(body.contains("# Properties"));
+                assert!(body.contains("{#properties}"));
+                assert!(body.contains("/components/schemas/Event"));
+                assert!(body.contains(&format!(
+                    "sources/{}.mdx",
+                    &digest(&contract["source"]).unwrap()[7..]
+                )));
+                assert!(body.contains(&fence(
+                    &serde_json::to_string_pretty(&contract["leaves"][0]["schema"]).unwrap(),
+                    "json"
+                )));
+                assert_eq!(
+                    body.contains("/clew-original/contracts/event.original.json"),
+                    available != Some(target)
+                );
+                if target == "ru" {
+                    assert!(body.contains("## Свойства"));
+                    assert!(body.contains("Обязательно при совпадении ветви: true"));
+                    assert!(body.contains("Допускает null: false"));
+                    assert!(!body.contains("runtime conformance is not established"));
+                }
+                assert_eq!(contract, original);
+            }
+        }
+    }
+
+    #[test]
     fn portable_model_language_notice_keeps_original_prose_fields_and_technical_navigation() {
         let model = json!({"id":"record","title":"Overview","documentationLanguage":"en",
             "purpose":{"text":"View evidence","evidence":[]},"identity":{"text":"Original identity","evidence":[]},
@@ -2058,6 +2136,13 @@ mod tests {
         assert!(body.contains("#field-usage"));
         assert!(body.contains("../scenarios/example.mdx#question-apply"));
         assert!(body.contains("<ClewDataModel"));
+        for anchor in [
+            "identity-and-relationships",
+            "fields-and-representations",
+            "processes",
+        ] {
+            assert!(body.contains(&format!("{{#{anchor}}}")));
+        }
         let matching = model_page(&model, &json!({"contracts":[]}), None, "en").unwrap();
         assert!(!matching.contains("Translation pending"));
         assert!(matching.contains("View evidence"));

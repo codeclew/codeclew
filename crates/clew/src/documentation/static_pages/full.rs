@@ -242,11 +242,13 @@ pub(super) fn render(
             serde_json::to_vec_pretty(guide).map_err(io_error)?,
         );
     }
-    let model_gaps = if let Some(model) = &model {
+    let availability = if let Some(model) = &model {
         super::data_model::write_language(model, &mut files, requested_language)?
     } else {
-        BTreeMap::new()
+        super::data_model::LanguageAvailability::default()
     };
+    let model_gaps = availability.models;
+    let contract_gaps = availability.contracts;
     files.insert(
         "index.html".into(),
         files
@@ -336,7 +338,7 @@ pub(super) fn render(
             }
         }
     }
-    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty() && model_gaps.is_empty() && authored_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"authoredTranslationGaps":authored_gaps,"authoredTranslationComplete":requested_language.map(|_|authored_gaps.is_empty()),"modelTranslationGaps":model_gaps,"modelTranslationComplete":requested_language.map(|_|model_gaps.is_empty()),"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
+    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty() && model_gaps.is_empty() && contract_gaps.is_empty() && authored_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"authoredTranslationGaps":authored_gaps,"authoredTranslationComplete":requested_language.map(|_|authored_gaps.is_empty()),"declaredContractTranslationGaps":contract_gaps,"declaredContractTranslationComplete":requested_language.map(|_|contract_gaps.is_empty()),"modelTranslationGaps":model_gaps,"modelTranslationComplete":requested_language.map(|_|model_gaps.is_empty()),"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});

@@ -10,6 +10,14 @@ use std::{
     path::Path,
 };
 
+const CONTRACT_REQUIRED_CONDITION: &str = "Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality.";
+
+#[derive(Default)]
+pub(super) struct LanguageAvailability {
+    pub models: BTreeMap<String, Value>,
+    pub contracts: BTreeMap<String, Value>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Plan {
@@ -346,7 +354,7 @@ pub(super) fn load(
             .ok_or_else(|| invalid("data-model contract branch is unavailable"))?;
         let mut rows = Vec::new();
         leaves(branch, "", &c.branch_pointer, true, &mut rows);
-        contracts.push(json!({"id":c.id,"title":c.title,"documentationLanguage":c.documentation_language.as_ref().or(plan.documentation_language.as_ref()),"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":"Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality."}));
+        contracts.push(json!({"id":c.id,"title":c.title,"documentationLanguage":c.documentation_language.as_ref().or(plan.documentation_language.as_ref()),"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":CONTRACT_REQUIRED_CONDITION}));
     }
     ids.clear();
     for model in &mut plan.models {
@@ -960,7 +968,7 @@ pub(super) fn write_language(
     model: &Value,
     files: &mut BTreeMap<String, Vec<u8>>,
     requested: Option<&str>,
-) -> Result<BTreeMap<String, Value>, ClewError> {
+) -> Result<LanguageAvailability, ClewError> {
     let language = requested.unwrap_or("en");
     let mut gaps = BTreeMap::new();
     let mut index = format!(
@@ -989,16 +997,17 @@ pub(super) fn write_language(
             "MODEL_TRANSLATION",
             &original_path,
         )?;
+        let card_notice = gap
+            .as_ref()
+            .map(|gap| super::prose_language::html(gap, &original_path))
+            .unwrap_or_default();
         index.push_str(&format!(
-            "<article><p>{}</p><h2><a href=\"data-model/{}.html\">{}</a></h2><p>{}</p></article>",
+            "<article><p>{}</p><h2><a href=\"data-model/{}.html\">{}</a></h2><p>{}</p>{card_notice}</article>",
             escape(kind_label(strv(&m["kind"]), language)),
             escape(id),
             escape(title),
             escape(strv(&m["purpose"]["text"]))
         ));
-        if let Some(gap) = &gap {
-            index.push_str(&super::prose_language::html(gap, &original_path));
-        }
         let mut body = format!(
             "<div class=\"dm-page\"><p><a href=\"../data-model.html\">{clew_label_0}</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · {clew_label_1} · {clew_label_2}</p>{}<h2>{clew_label_3}</h2>{}",
             escape(title),
@@ -1144,8 +1153,33 @@ pub(super) fn write_language(
         );
     }
     index.push_str(&format!("</div><h2>{clew_label_0}</h2><p>{clew_label_1}</p>", clew_label_0 = escape(label(language, "Exact contract branches")), clew_label_1 = escape(label(language, "Requiredness is conditional on the selected branch and required parents. Arrays expand element leaves once; counts do not imply runtime frequency."))));
+    let mut contract_gaps = BTreeMap::new();
     for c in model["contracts"].as_array().unwrap() {
-        index.push_str(&format!("<details><summary>{} · {}</summary><p>{}</p><table><tr><th>{clew_label_0}</th><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr>",escape(strv(&c["title"])),escape(strv(&c["branchPointer"])),escape(strv(&c["requiredCondition"])), clew_label_0 = escape(label(language, "Field")), clew_label_1 = escape(label(language, "Required")), clew_label_2 = escape(label(language, "Nullable")), clew_label_3 = escape(label(language, "Schema and exact pointer"))));
+        let id = strv(&c["id"]);
+        if !store::valid_id(id) {
+            return Err(invalid(
+                "contract original description identifier is unsafe",
+            ));
+        }
+        let original_path = format!("contracts/{id}.original.json");
+        files.insert(
+            original_path.clone(),
+            serde_json::to_vec_pretty(c).map_err(io_error)?,
+        );
+        let gap = super::prose_language::gap(
+            &c["documentationLanguage"],
+            requested,
+            "DECLARED_CONTRACT_TRANSLATION",
+            &original_path,
+        )?;
+        if let Some(gap) = &gap {
+            contract_gaps.insert(id.to_owned(), gap.clone());
+        }
+        let notice = gap
+            .as_ref()
+            .map(|gap| super::prose_language::html(gap, &original_path))
+            .unwrap_or_default();
+        index.push_str(&format!("<details><summary>{} · {}</summary>{notice}<p>{}</p><table><tr><th>{clew_label_0}</th><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr>",escape(strv(&c["title"])),escape(strv(&c["branchPointer"])),escape(label(language, CONTRACT_REQUIRED_CONDITION)), clew_label_0 = escape(label(language, "Field")), clew_label_1 = escape(label(language, "Required")), clew_label_2 = escape(label(language, "Nullable")), clew_label_3 = escape(label(language, "Schema and exact pointer"))));
         for f in c["leaves"].as_array().unwrap() {
             index.push_str(&format!("<tr><th>{}</th><td>{}</td><td>{}</td><td><code>{}</code><br><code>{}</code></td></tr>",escape(strv(&f["field"])),f["requiredWhenBranchMatches"],f["nullable"],escape(&f["schema"].to_string()),escape(strv(&f["pointer"]))));
         }
@@ -1180,7 +1214,10 @@ pub(super) fn write_language(
         )
         .into_bytes();
     }
-    Ok(gaps)
+    Ok(LanguageAvailability {
+        models: gaps,
+        contracts: contract_gaps,
+    })
 }
 fn page_language(title: &str, body: &str, prefix: &str, language: &str) -> String {
     let html = reader::page_language(title, body, language).replace(
@@ -1384,7 +1421,9 @@ mod tests {
                 }
                 let model = read(&plan, &files, &guides, &check).unwrap();
                 let original = model.clone();
-                let gaps = write_language(&model, &mut files, Some(target)).unwrap();
+                let gaps = write_language(&model, &mut files, Some(target))
+                    .unwrap()
+                    .models;
                 assert_eq!(model, original);
                 let html = String::from_utf8(files["data-model/record.html"].clone()).unwrap();
                 let index = String::from_utf8(files["data-model.html"].clone()).unwrap();
@@ -1412,6 +1451,12 @@ mod tests {
                 assert!(html.contains("id=\"field-value\""));
                 assert!(html.contains("id=\"field-usage\""));
                 assert!(html.contains("../scenarios/example.html#question-apply"));
+                let card = index.split("</article>").next().unwrap();
+                assert_eq!(
+                    card.contains("translation-gap gap-card"),
+                    available != Some(target),
+                    "availability notice belongs to its model card"
+                );
                 let retained: Value =
                     serde_json::from_slice(&files["data-model/record.original.json"]).unwrap();
                 assert_eq!(retained, model["models"][0]);
@@ -1421,6 +1466,46 @@ mod tests {
                     assert_eq!(gap["kind"], "MODEL_TRANSLATION");
                     assert!(html.contains("href=\"record.original.json\""));
                     assert!(index.contains("href=\"data-model/record.original.json\""));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn declared_contract_availability_preserves_exact_schema_and_original_record() {
+        for target in ["en", "ru"] {
+            for available in [Some("en"), Some("ru"), None] {
+                let contract = json!({"id":"event","title":"Properties","documentationLanguage":available,
+                    "branchPointer":"/components/schemas/Event","requiredCondition":CONTRACT_REQUIRED_CONDITION,
+                    "leaves":[{"field":"id","requiredWhenBranchMatches":true,"nullable":false,"schema":{"type":"string","enum":["Properties"],"default":"Exact pointer"},"pointer":"/components/schemas/Event/properties/id"}],
+                    "source":{"text":"Original contract bytes","textDigest":"unchanged","revision":"r1","file":"event.json","startLine":1,"endLine":1}});
+                let model = json!({"models":[],"contracts":[contract]});
+                let before = model.clone();
+                let mut files = BTreeMap::new();
+                let availability = write_language(&model, &mut files, Some(target)).unwrap();
+                assert!(availability.models.is_empty());
+                assert_eq!(availability.contracts.is_empty(), available == Some(target));
+                let html = String::from_utf8(files["data-model.html"].clone()).unwrap();
+                assert!(html.contains("<summary>Properties · /components/schemas/Event</summary>"));
+                assert!(html.contains("/components/schemas/Event/properties/id"));
+                assert!(html.contains("Properties") && html.contains("Exact pointer"));
+                assert_eq!(
+                    html.contains("translation-gap gap-card"),
+                    available != Some(target)
+                );
+                if available != Some(target) {
+                    assert!(html.contains("href=\"contracts/event.original.json\""));
+                    assert!(
+                        html.find("translation-gap gap-card").unwrap()
+                            < html.find("<table>").unwrap()
+                    );
+                }
+                let original: Value =
+                    serde_json::from_slice(&files["contracts/event.original.json"]).unwrap();
+                assert_eq!(original, contract);
+                assert_eq!(model, before);
+                if target == "ru" {
+                    assert!(html.contains("Совпадение выбранной ветви контракта"));
                 }
             }
         }
