@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {flushSync} from 'react-dom';
 import useBaseUrl from '@docusaurus/useBaseUrl';
+import useBrokenLinks from '@docusaurus/useBrokenLinks';
 import {useLocation} from '@docusaurus/router';
 import routes from './clew-routes.json';
 
@@ -46,6 +47,10 @@ async function documentAt(path, base) {
 
 export function ClewDownload({path, children}) {
   return <a href={useBaseUrl(path)} download>{children}</a>;
+}
+export function ClewAnchor({id}) {
+  useBrokenLinks().collectAnchor(id);
+  return <span id={id} />;
 }
 const contextKeys = ['fromProcess', 'fromQuestion', 'fromField', 'fromStage', 'fromContract', 'fromCellStage'];
 export function ClewContextLink({path, fromProcess = '', fromQuestion = '', query = {}, children}) {

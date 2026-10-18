@@ -240,7 +240,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewStatus, ClewRetainedPage, ClewCatalog} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -354,7 +354,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         ));
     }
     out.push_str(&format!(
-        "<span id=\"process-overview\"></span>\n\n{}\n\n",
+        "<ClewAnchor id=\"process-overview\" />\n\n{}\n\n",
         reading::inline(text(&guide["purpose"]))
     ));
     let mut reading_context = String::from(
@@ -1720,7 +1720,7 @@ mod tests {
         let page = json!({"questionReader":{"title":"Save","purpose":"Saved purpose.","sections":[]},"processDataFlow":{"request":{"anchor":"question-save"}}});
         let mdx = process_page(&page, "save").unwrap();
         let start = mdx.find("<ClewProcess ").unwrap();
-        let overview = mdx.find("<span id=\"process-overview\"></span>").unwrap();
+        let overview = mdx.find("<ClewAnchor id=\"process-overview\" />").unwrap();
         let end = mdx.find("</ClewProcess>").unwrap();
         assert!(start < overview && overview < end);
         assert!(mdx[start..end].contains("Saved purpose."));
