@@ -719,13 +719,14 @@ fn declaration_only_page(
     snapshot: &str,
     ext: &str,
     graph: Option<&SourceCallGraph>,
+    notice: &str,
 ) -> String {
     let graph = p.selection.expand_source_calls.then_some(graph).flatten();
     let data_context_links = retained_data_context_links(p, graph, ext);
     let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
     let has_control_flow = p.projection_kind == Some(ProjectionKind::CompilerControlFlow);
     let mut out = format!(
-        "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
+        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"Documentation pages\">{}",
         escape(&p.title),
         escape(title),
         link(&format!("index.{ext}"), "All selected declarations")
@@ -1345,14 +1346,15 @@ fn page(
     snapshot: &str,
     ext: &str,
     graph: Option<&SourceCallGraph>,
+    notice: &str,
 ) -> String {
     if p.projection_kind
         .is_some_and(ProjectionKind::is_declaration_view)
     {
-        return declaration_only_page(p, view, title, snapshot, ext, graph);
+        return declaration_only_page(p, view, title, snapshot, ext, graph, notice);
     }
     let mut out = format!(
-        "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
+        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"Documentation pages\">{}",
         escape(&process_label(p)),
         escape(title),
         link(&format!("index.{ext}"), "All processes")
@@ -1689,9 +1691,9 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
     out += "</main>\n";
     out
 }
-fn html(title: &str, body: &str) -> String {
+fn html(title: &str, body: &str, language: &str) -> String {
     format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><link rel=\"stylesheet\" href=\"style.css\"></head><body>\n{body}</body></html>\n",
+        "<!doctype html>\n<html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><link rel=\"stylesheet\" href=\"style.css\"></head><body>\n{body}</body></html>\n",
         escape(title)
     )
 }
@@ -1860,11 +1862,22 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn write(
     output: &Path,
     snapshot: &str,
     p: &BundleProjection,
 ) -> Result<Value, ClewError> {
+    write_language(output, snapshot, p, None)
+}
+
+pub(super) fn write_language(
+    output: &Path,
+    snapshot: &str,
+    p: &BundleProjection,
+    language: Option<&str>,
+) -> Result<Value, ClewError> {
+    crate::documentation::language::validate(language)?;
     // Portable preflight before constructing or creating any output files.
     validate_projection_kind(p)?;
     if let Some(graph) = &p.source_call_graph {
@@ -1878,6 +1891,7 @@ pub(super) fn write(
             ));
         }
     }
+    let presentation = super::selected_language::Presentation::new(p, language)?;
     let catalogue = catalogue::rows(p)?;
     let has_declaration_only = p.pages.iter().any(|page| {
         page.projection_kind
@@ -1923,6 +1937,7 @@ pub(super) fn write(
                             snapshot,
                             ext,
                             p.source_call_graph.as_ref(),
+                            presentation.notice(&page_content.id, slug),
                         ),
                     ),
                 );
@@ -1969,7 +1984,10 @@ pub(super) fn write(
         for (slug, (title, body)) in bodies {
             // Scalar and source newlines are already escaped. These remaining
             // newlines only format native JSX and must not start MDX paragraphs.
-            let body = body.replace('\n', "");
+            let mut body = body.replace('\n', "");
+            if let Some(language) = language {
+                body = body.replacen("<main>", &format!("<main lang=\"{language}\">"), 1);
+            }
             if ext == "html" {
                 let mut row = json!({"id":slug,"contentDigest":digest(&(p, &slug))?,"html":format!("{slug}.html"),"mdx":format!("{slug}.mdx")});
                 for process in &p.pages {
@@ -1987,7 +2005,7 @@ pub(super) fn write(
                 page_rows.push(row);
             }
             let bytes = if ext == "html" {
-                let mut document = html(&title, &body);
+                let mut document = html(&title, &body, language.unwrap_or("en"));
                 if slug == "index" {
                     document = document.replace(
                         "</head>",
@@ -2011,11 +2029,28 @@ pub(super) fn write(
         "projection.json".into(),
         serde_json::to_vec_pretty(p).map_err(io_error)?,
     );
+    files.extend(presentation.files);
     let mut manifest = json!({"schema":"codeclew-native-pages-static-manifest/1.0", "snapshot":snapshot,
         "inputDigest":p.input_digest, "contextDigest":p.context_digest, "selectionDigest":p.selection_digest,
         "projectionDigest":digest(p)?, "mdxProfile":"MDX 3; inert native JSX; no imports, executable expressions, scripts or network dependencies",
         "pages":page_rows,
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    if let Some(language) = language {
+        manifest["documentationLanguage"] = json!(language);
+        manifest["requestedDocumentationLanguage"] = json!(language);
+        manifest["status"] = json!(if presentation.gaps.is_empty() {
+            "RENDERED"
+        } else {
+            "PARTIAL"
+        });
+        manifest["translationComplete"] = json!(presentation.gaps.is_empty());
+        manifest["translationGaps"] = json!(presentation.gaps);
+        manifest["translationCoverage"] = json!([
+            "SELECTION_QUESTION",
+            "AUTHORED_PARAGRAPHS",
+            "HUMAN_INSTRUCTIONS"
+        ]);
+    }
     if let Some(policy_digest) = &p.endpoint_publication_policy_digest {
         manifest["endpointPublicationPolicyDigest"] = json!(policy_digest);
         manifest["requestedSelectionDigest"] = json!(p.requested_selection_digest);
@@ -2194,6 +2229,7 @@ mod tests {
             title: id.into(),
             projection_kind: None,
             selection: Selection {
+                documentation_language: None,
                 id: id.into(),
                 service: "service".into(),
                 endpoint_declaration: "endpoint".into(),

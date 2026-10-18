@@ -896,6 +896,24 @@ projection and exact retained source. It does not relabel the original prose or
 infer a review. Owned phase names and explanatory text use the reader language;
 source identifiers, expressions, revisions and digests retain their exact values.
 
+Selection-based native Pages accept `--language en|ru` with standalone HTML
+and inert MDX fragments. They continue to reject Docusaurus format: this route
+does not create a portable site. Each selection may declare
+`documentationLanguage` for its `question` only. A missing declaration is unknown,
+not an implicit English value. Question metadata never labels imported paragraphs
+or human instructions. Imported paragraphs inherit only the language recorded in
+their immutable operation; their text, review status and source context remain
+unchanged.
+
+With an explicit requested language, `translationCoverage` names the selected
+prose categories checked by `translationGaps` and `translationComplete`. Original
+question, paragraph and instruction JSON packets remain downloadable, including
+metadata and retained bindings. A missing or mismatched declaration keeps the
+original text readable and returns `PARTIAL`; missing metadata alone does not
+assert that translation is needed or scheduled. Source facts and their input and
+context digests are independent of the reader language. Selection digests include
+explicit question metadata.
+
 Authored Pages inputs also record their prose language explicitly. A data-model
 plan accepts `documentationLanguage`; each `models`, `contracts` or
 `processViews` record can override it for that record. This permits a translated

@@ -114,6 +114,7 @@ fn checked() -> Check {
 
 fn selection(id: &str, service: &str, endpoint: &str) -> model::Selection {
     model::Selection {
+        documentation_language: None,
         id: id.into(),
         service: service.into(),
         endpoint_declaration: endpoint.into(),
@@ -784,6 +785,7 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
         &absent,
         &snapshot,
         &projection,
+        None,
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::WwConflict);
@@ -804,7 +806,8 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
             &current.digest().unwrap(),
             &nonempty,
             &snapshot,
-            &empty_projection
+            &empty_projection,
+            None,
         )
         .is_err()
     );
@@ -823,9 +826,149 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
             &current.digest().unwrap(),
             &link,
             &snapshot,
-            &empty_projection
+            &empty_projection,
+            None,
         )
         .is_err()
     );
     assert!(fs::read_dir(&target).unwrap().next().is_none());
+}
+
+#[test]
+fn selected_language_preserves_question_sources_and_format_boundaries() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    for available in [None, Some("en"), Some("ru")] {
+        let mut selected = selection("question", "sample", "endpoint-a");
+        selected.question = Some("Source appendix <Probe>{kept} café\r\n".into());
+        selected.documentation_language = available.map(str::to_owned);
+        let input = temporary.path().join("language-selection.json");
+        fs::write(&input, serde_json::to_vec(&vec![&selected]).unwrap()).unwrap();
+        let checked = Check::load_snapshot(&repo, &snapshot).unwrap();
+        let input_digest = checked.input_digest.clone();
+        let before = crate::documentation::digest(&checked).unwrap();
+        let output = temporary
+            .path()
+            .join(format!("selected-{}", available.unwrap_or("unknown")));
+        let command = |format, language, output| Command::Render {
+            root: repo.root.clone(),
+            snapshot: snapshot.clone(),
+            input: Some(input.clone()),
+            publication: None,
+            reading_plan: None,
+            contract_comparison: None,
+            data_model: None,
+            format,
+            language,
+            output,
+        };
+        let result = run(command(
+            PageFormat::Standalone,
+            Some("ru".into()),
+            output.clone(),
+        ))
+        .unwrap();
+        let matches = available == Some("ru");
+        assert_eq!(result["translationComplete"], matches);
+        assert_eq!(
+            result["status"],
+            if matches { "RENDERED" } else { "PARTIAL" }
+        );
+        assert_eq!(result["inputDigest"], input_digest);
+        let original: Value =
+            store::read(&output.join("question.question.original.json"), 1024 * 1024).unwrap();
+        assert_eq!(
+            original["selection"],
+            serde_json::to_value(&selected).unwrap()
+        );
+        let projection: Value = store::read(&output.join("projection.json"), 1024 * 1024).unwrap();
+        assert_eq!(
+            projection["pages"][0]["selection"]["question"],
+            selected.question.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            before,
+            crate::documentation::digest(&Check::load_snapshot(&repo, &snapshot).unwrap()).unwrap()
+        );
+        for name in ["question-diagnostic.html", "question-diagnostic.mdx"] {
+            let rendered = fs::read_to_string(output.join(name)).unwrap();
+            assert!(rendered.contains("lang=\"ru\""));
+            assert!(
+                rendered.contains("Source appendix &lt;Probe&gt;&#123;kept&#125; café&#13;&#10;")
+            );
+            assert!(!rendered.contains("<Probe>"));
+            assert_eq!(
+                rendered.contains("question.question.original.json"),
+                !matches
+            );
+            if available.is_none() {
+                assert!(rendered.contains("Доступность на выбранном языке не установлена"));
+                assert!(!rendered.contains("Требуется перевод"));
+            }
+        }
+        let refused = temporary
+            .path()
+            .join(format!("unsupported-{}", available.unwrap_or("unknown")));
+        assert!(
+            run(command(
+                PageFormat::Docusaurus,
+                Some("ru".into()),
+                refused.clone()
+            ))
+            .is_err()
+        );
+        assert!(!refused.exists());
+        assert!(
+            run(command(
+                PageFormat::Standalone,
+                Some("de".into()),
+                refused.clone()
+            ))
+            .is_err()
+        );
+        assert!(!refused.exists());
+    }
+    let mut invalid = selection("question", "sample", "endpoint-a");
+    invalid.documentation_language = Some("de".into());
+    assert!(project::project(&checked(), &[invalid]).is_err());
+}
+
+#[test]
+fn selection_question_language_does_not_relabel_imported_paragraphs() {
+    let mut selected = selection("independent", "sample", "endpoint-a");
+    selected.question = Some("Reviewed question".into());
+    selected.documentation_language = Some("ru".into());
+    let mut projection = project::project(&checked(), &[selected]).unwrap();
+    // Synthetic immutable publisher input; this does not assert author acceptance.
+    let paragraph: model::AuthoredParagraph = serde_json::from_value(json!({
+        "selection":{"bundle":"frozen","operation":"op","fragment":"description"},
+        "publicationDigest":"publication","bindingsDigest":"bindings","operationDigest":"operation",
+        "paragraphDigest":"paragraph","documentationLanguage":"en","contextFreshness":"UNVERIFIED",
+        "sourceRecords":{},"paragraph":{"id":"description","text":"Original paragraph <Data>{kept}",
+        "eventIds":[],"dependencyIds":[],"sourceIds":[],"authorship":{"authority":"USER_DOCUMENTATION",
+        "author":"Original author","meaningReview":"UNASSESSED","contextRole":"RETAINED_UNVERIFIED_CONTEXT",
+        "editDigest":"edit","sourceSnapshot":"original-snapshot","sourceRefs":{},"dependencyRefs":{}}}
+    })).unwrap();
+    projection.pages[0]
+        .authored_paragraphs
+        .push(paragraph.clone());
+    let before = serde_json::to_value(&projection).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let manifest =
+        publish::write_language(temporary.path(), "snapshot", &projection, Some("ru")).unwrap();
+    let gaps = manifest["translationGaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0]["kind"], "SELECTED_PARAGRAPH_TRANSLATION");
+    assert_eq!(gaps[0]["availableLanguage"], "en");
+    let raw: Value = store::read(
+        &temporary
+            .path()
+            .join("independent.paragraph-0.original.json"),
+        1024 * 1024,
+    )
+    .unwrap();
+    assert_eq!(raw, serde_json::to_value(paragraph).unwrap());
+    assert_eq!(serde_json::to_value(&projection).unwrap(), before);
+    let overview = fs::read_to_string(temporary.path().join("independent-overview.mdx")).unwrap();
+    assert!(overview.contains("Original paragraph &lt;Data&gt;&#123;kept&#125;"));
+    assert!(overview.contains("UNASSESSED"));
 }

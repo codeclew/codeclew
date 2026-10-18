@@ -1710,9 +1710,9 @@ fn prose_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
         .replace('}', "&#125;");
     Ok(format!(
         "## {}: {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n\n",
-        label(language, "Translation pending", "Требуется перевод"),
+        super::prose_language::availability_heading(gap, language),
         super::prose_language::description_label(gap, language),
-        super::prose_language::explanation(language),
+        super::prose_language::availability_explanation(gap, language),
         label(
             language,
             "Original prose language",

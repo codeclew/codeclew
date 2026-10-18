@@ -762,6 +762,7 @@ fn kotlin_argument_bindings_evidence() -> ServiceEvidence {
 
 fn kotlin_selection(endpoint: &str, worker: &str) -> Selection {
     Selection {
+        documentation_language: None,
         id: "kotlin-page".into(),
         service: "sample".into(),
         endpoint_declaration: endpoint.into(),
@@ -946,6 +947,7 @@ fn scenario(
     (
         checked,
         Selection {
+            documentation_language: None,
             id: "journey".into(),
             service: "sample".into(),
             endpoint_declaration: "endpoint".into(),
@@ -4331,6 +4333,7 @@ fn negation_else_early_returns_and_unsupported_expressions_remain_ordered() {
     let p = page(
         &checked,
         Selection {
+            documentation_language: None,
             id: "guards".into(),
             service: "sample".into(),
             endpoint_declaration: "endpoint".into(),
@@ -4441,6 +4444,7 @@ fn one_same_line_relation_cannot_be_borrowed_by_a_different_call() {
     let p = page(
         &checked,
         Selection {
+            documentation_language: None,
             id: "calls".into(),
             service: "sample".into(),
             endpoint_declaration: "endpoint".into(),
@@ -4556,6 +4560,7 @@ fn nested_early_return_guards_restrict_the_following_call() {
     let p = page(
         &checked,
         Selection {
+            documentation_language: None,
             id: "nested".into(),
             service: "sample".into(),
             endpoint_declaration: "endpoint".into(),
@@ -4616,6 +4621,7 @@ fn switch_expression_arms_are_retained_without_unconditional_calls() {
     let p = page(
         &checked,
         Selection {
+            documentation_language: None,
             id: "switch".into(),
             service: "sample".into(),
             endpoint_declaration: "endpoint".into(),
@@ -4900,6 +4906,7 @@ fn linked_fixture(guard: &str, transform: &str, b_target: &str) -> (Check, Vec<S
     ]
     .into_iter()
     .map(|(id, endpoint, worker)| Selection {
+        documentation_language: None,
         id: id.into(),
         service: "sample".into(),
         endpoint_declaration: endpoint.into(),

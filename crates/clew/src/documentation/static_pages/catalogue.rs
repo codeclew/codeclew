@@ -267,6 +267,7 @@ mod tests {
             title: id.into(),
             projection_kind: None,
             selection: Selection {
+                documentation_language: None,
                 id: id.into(),
                 service: "service".into(),
                 endpoint_declaration: callable.declaration_id.clone(),

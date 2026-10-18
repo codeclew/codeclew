@@ -181,6 +181,9 @@ pub struct Selection {
     pub wiring_declaration: Option<String>,
     #[serde(default)]
     pub question: Option<String>,
+    /// Language of the input question; it does not label source facts or imported prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     /// Explicit protected note IDs resolved only from the selected Check inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
@@ -217,6 +220,8 @@ pub struct AuthoredParagraph {
     pub bindings_digest: String,
     pub operation_digest: String,
     pub paragraph_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     pub paragraph: Explanation,
     pub context_freshness: String,
     pub source_records: BTreeMap<String, Source>,

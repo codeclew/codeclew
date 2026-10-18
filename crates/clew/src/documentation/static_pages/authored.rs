@@ -158,6 +158,7 @@ pub(super) fn attach(
                 bindings_digest: publication.files.get("bindings.json").unwrap().clone(),
                 operation_digest: digest(operation)?,
                 paragraph_digest: digest(paragraph)?,
+                documentation_language: operation.documentation_language.clone(),
                 paragraph: paragraph.clone(),
                 context_freshness: if explanation_authorship::validate(paragraph, checked).is_ok()
                     && context_unchanged(service, current_service, &page.endpoint)?

@@ -28,9 +28,9 @@ pub(super) fn html(gap: &Value, href: &str) -> String {
     let language = gap["requestedLanguage"].as_str().unwrap_or("en");
     format!(
         "<aside class=\"translation-gap gap-card\"><h2>{}: {}</h2><p>{}</p><p>{}: {}</p><p><a href=\"{}\">{}</a></p></aside>",
-        text(language, "Translation pending", "Требуется перевод"),
+        availability_heading(gap, language),
         description_label(gap, language),
-        explanation(language),
+        availability_explanation(gap, language),
         text(
             language,
             "Original prose language",
@@ -46,8 +46,45 @@ pub(super) fn html(gap: &Value, href: &str) -> String {
     )
 }
 
+pub(super) fn availability_heading(gap: &Value, language: &str) -> &'static str {
+    if gap["availableLanguage"].is_null() {
+        text(
+            language,
+            "Availability in the selected language is not established",
+            "Доступность на выбранном языке не установлена",
+        )
+    } else {
+        text(language, "Translation pending", "Требуется перевод")
+    }
+}
+
+pub(super) fn availability_explanation(gap: &Value, language: &str) -> &'static str {
+    if gap["availableLanguage"].is_null() {
+        text(
+            language,
+            "The original description has no declared language. Its readable original and evidence are retained; no translation or review is inferred.",
+            "Язык исходного описания не указан. Исходный текст и основания сохранены; перевод и новая проверка не подразумеваются.",
+        )
+    } else {
+        explanation(language)
+    }
+}
+
 pub(super) fn description_label(gap: &Value, language: &str) -> &'static str {
     match gap["kind"].as_str() {
+        Some("SELECTED_QUESTION_TRANSLATION") => {
+            text(language, "Selected question", "Выбранный вопрос")
+        }
+        Some("SELECTED_PARAGRAPH_TRANSLATION") => text(
+            language,
+            "Maintained user documentation",
+            "Поддерживаемая пользовательская документация",
+        ),
+        Some("SELECTED_NOTE_TRANSLATION") => text(
+            language,
+            "Human or imported instruction",
+            "Пользовательская или импортированная инструкция",
+        ),
         Some("MODEL_TRANSLATION") => text(language, "Model description", "Описание модели"),
         Some("PROCESS_DATA_FLOW_TRANSLATION") => {
             text(language, "Data flow description", "Описание потока данных")

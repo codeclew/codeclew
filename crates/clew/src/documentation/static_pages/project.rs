@@ -112,6 +112,7 @@ fn project_declarations(
     let mut ids = BTreeSet::new();
     let mut pages = Vec::new();
     for requested in selections {
+        crate::documentation::language::validate(requested.documentation_language.as_deref())?;
         let mut canonical = requested.clone();
         if let Some(evidence) = checked.services.get(&requested.service) {
             canonical.endpoint_declaration =

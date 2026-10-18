@@ -11,6 +11,7 @@ mod project;
 mod prose_language;
 mod publish;
 mod question_reading;
+mod selected_language;
 mod source;
 
 use super::{
@@ -76,6 +77,7 @@ fn write_if_policy_current(
     output: &Path,
     snapshot: &str,
     projection: &model::BundleProjection,
+    language: Option<&str>,
 ) -> Result<Value, ClewError> {
     let _lock = repo.lock()?;
     if super::endpoint_publication::load(repo)?.digest()? != policy_digest {
@@ -84,7 +86,7 @@ fn write_if_policy_current(
             "endpoint publication policy changed during native render; retry with a new output directory",
         ));
     }
-    publish::write(output, snapshot, projection)
+    publish::write_language(output, snapshot, projection, language)
 }
 
 /// Callable-only projection used by opt-in immutable model Work. Unlike pages,
@@ -177,8 +179,8 @@ pub enum Command {
         /// Standalone HTML by default; a portable native MDX site for full publications.
         #[arg(long, value_enum, default_value_t = PageFormat::Standalone)]
         format: PageFormat,
-        /// Reader and prose language for a full saved publication; no automatic translation.
-        #[arg(long, requires = "publication", value_parser = ["en", "ru"])]
+        /// Reader language; authored inputs retain their own language and are not translated.
+        #[arg(long, value_parser = ["en", "ru"])]
         language: Option<String>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
@@ -200,6 +202,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             language,
             output,
         } => {
+            super::language::validate(language.as_deref())?;
             let repo = Repository::open(&root)?;
             let checked = Check::load_snapshot(&repo, &snapshot)?;
             if let Some(publication) = publication {
@@ -235,10 +238,18 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let policy_digest = policy.digest()?;
             let mut projection = project::project_with_policy(&checked, &selections, &policy)?;
             authored::attach(&repo, &checked, &mut projection)?;
-            let manifest =
-                write_if_policy_current(&repo, &policy_digest, &output, &snapshot, &projection)?;
+            let manifest = write_if_policy_current(
+                &repo,
+                &policy_digest,
+                &output,
+                &snapshot,
+                &projection,
+                language.as_deref(),
+            )?;
             Ok(
-                json!({"schema":"codeclew-native-pages-render/1.0", "status":"RENDERED",
+                json!({"schema":"codeclew-native-pages-render/1.0", "status":manifest["status"].as_str().unwrap_or("RENDERED"),
+                "documentationLanguage":manifest["documentationLanguage"],"requestedDocumentationLanguage":manifest["requestedDocumentationLanguage"],
+                "translationGaps":manifest["translationGaps"],"translationComplete":manifest["translationComplete"],
                 "snapshot":snapshot, "inputDigest":projection.input_digest,
                 "contextDigest":projection.context_digest, "selectionDigest":projection.selection_digest,
                 "endpointPublicationPolicyDigest":policy_digest,
