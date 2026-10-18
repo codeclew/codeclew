@@ -530,7 +530,7 @@
   "Unmapped contract fields · ": "Поля контракта без соответствия · ",
   "Checks field": "Проверяет поле",
   "Uses field as identity / selector": "Использует поле для идентификации или выбора",
-  "Uses field in a decision / derivation": "Использует поле для решения или вычисления",
+  "Uses field in a decision / derivation": "Использует поле при принятии решения или получении производного значения",
   "Displays field": "Отображает поле",
   "Stores field": "Сохраняет поле",
   "Passes field": "Передаёт поле",
@@ -569,11 +569,11 @@
   "Named usage keeps its stated category. Forwarding / whole-object use does not prove a named business read. “No direct use found in this scope” requires an explicit bounded finding. Missing evidence, outside scope, dynamic unresolved and stale remain unknown, never unused.": "Использование поля сохраняет указанную категорию. Передача или обработка объекта целиком не доказывает отдельное чтение поля бизнес-логикой. Вывод «Прямое использование не найдено в этой области» требует явного ограниченного исследования. Отсутствующие или устаревшие данные, выход за область исследования и неразобранная динамика означают неизвестность, а не отсутствие использования.",
   "Scroll within the table to compare stages. Select a cell for details; the overview filters stay unchanged.": "Прокрутите таблицу, чтобы сравнить этапы. Выберите ячейку для подробностей; фильтры обзора сохранятся.",
   "Where each field is used": "Где используется каждое поле",
-  "Static source interpretation, not a runtime trace or proof of delivery.": "Статическая интерпретация исходного кода; трассировка выполнения и подтверждение доставки отсутствуют.",
+  "Static source interpretation, not a runtime trace or proof of delivery.": "Статическая интерпретация исходного кода. Это не трасса выполнения и не подтверждение доставки.",
   "Field operation": "Операция с полем",
   ": a named check, read or write.": ": явно описанная проверка, чтение или запись.",
   ": no separate field read is established.": ": отдельное чтение поля не установлено.",
-  ": no conclusion here. A no-direct-use finding applies only to its stated scope. No field is proven safe to remove by this view.": ": вывод отсутствует. Отсутствие прямого использования установлено только для указанной области. Это представление не доказывает, что какое-либо поле можно безопасно удалить.",
+  ": no conclusion here. A no-direct-use finding applies only to its stated scope. No field is proven safe to remove by this view.": ": здесь нет вывода. Вывод об отсутствии прямого использования применим только к указанной в нём области. Это представление не доказывает, что какое-либо поле можно безопасно удалить.",
   "Scope, counts and evidence key": "Область, количества и обозначения оснований",
   "Reading note:": "Пояснение к чтению:",
   "Fields:": "Поля:",
@@ -616,7 +616,7 @@
   "Unknown / not investigated:": "Неизвестно или не исследовано:",
   "Stale evidence:": "Устаревших исходных данных:",
   ". Categories overlap; array element leaves counted once.": ". Категории пересекаются; конечные поля элемента массива учитываются один раз.",
-  "Scoped negative findings:": "Ограниченные выводы об отсутствии использования:",
+  "Scoped negative findings:": "Выводы об отсутствии прямого использования в ограниченных областях:",
   ". Uninvestigated leaves:": ". Неисследованные конечные поля:",
   "Agent proposal · Not reviewed ·": "Предложение агента · Не проверено ·",
   "Select an exact contract branch for required-leaf counts. Counts describe this documented scope, not utilization or runtime frequency.": "Выберите точную ветвь контракта для подсчёта обязательных конечных полей. Количества относятся к описанной области, а не к интенсивности использования или частоте выполнения.",
@@ -628,5 +628,5 @@
   "Original reading guide": "Исходный план чтения",
   "English": "Английский",
   "Russian": "Русский",
-  "Unknown language": "Язык не указан"
+  "Unknown language": "Язык неизвестен"
 }
