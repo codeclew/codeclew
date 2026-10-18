@@ -366,6 +366,12 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    if page["questionReaderTranslationGap"].is_object() {
+        out.push_str(&reading_guide_gap(
+            &page["questionReaderTranslationGap"],
+            page["language"].as_str().unwrap_or("en"),
+        )?);
+    }
     out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
     out.push_str(&reading::status(page));
@@ -414,6 +420,21 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             if exception { "###" } else { "##" },
             md(text(&section["title"]))
         ));
+        if page["questionReaderTranslationGap"].is_object() {
+            let language = page["language"].as_str().unwrap_or("en");
+            out.push_str(&format!(
+                "<p className=\"question-original-language\">{} · {}</p>\n\n",
+                crate::documentation::reader::text(
+                    language,
+                    "Original reading guide",
+                    "Исходный план чтения"
+                ),
+                super::question_reading::available_language_label(
+                    &page["questionReaderTranslationGap"],
+                    language
+                )
+            ));
+        }
         if !text(&section["route"]).is_empty() {
             out.push_str(&format!(
                 "<p className=\"clew-route\"><code>{{{}}}</code></p>\n\n",
@@ -1322,6 +1343,40 @@ fn put(files: &mut BTreeMap<String, Vec<u8>>, name: impl Into<String>, body: imp
     files.insert(name.into(), body.into());
 }
 
+fn reading_guide_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
+    use crate::documentation::{reader::text as label, render::escape, store};
+    let original = text(&gap["originalPath"]);
+    store::relative(original)?;
+    let path = escape(&format!("/clew-original/{original}"))
+        .replace('{', "&#123;")
+        .replace('}', "&#125;");
+    let available = match gap["availableLanguage"].as_str() {
+        Some("en") => label(language, "English", "Английский"),
+        Some("ru") => label(language, "Russian", "Русский"),
+        _ => label(language, "unknown", "неизвестен"),
+    };
+    Ok(format!(
+        "## {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n",
+        label(language, "Translation pending", "Требуется перевод"),
+        label(
+            language,
+            "This reading guide is not available in the selected language. Its readable original remains below, with the same anchors and evidence. This is not a translation or a new review.",
+            "План чтения недоступен на выбранном языке. Ниже доступен исходный план с прежними ссылками, якорями и основаниями. Это не перевод и не новая проверка."
+        ),
+        label(
+            language,
+            "Original prose language",
+            "Язык исходного описания"
+        ),
+        available,
+        label(
+            language,
+            "Original reading guide (JSON)",
+            "Исходный план чтения (JSON)"
+        )
+    ))
+}
+
 pub(super) fn project(
     native: &BTreeMap<String, Vec<u8>>,
     manifest: &Value,
@@ -1334,6 +1389,14 @@ pub(super) fn project(
     let context = crate::documentation::reader::navigation_context(native)?;
     let mut sidebars = vec![json!("overview")];
     for (name, bytes) in native.iter().filter(|(name, _)| name.ends_with(".json")) {
+        if name.ends_with(".original.json") {
+            put(
+                &mut files,
+                format!("static/clew-original/{name}"),
+                bytes.clone(),
+            );
+            continue;
+        }
         let value = crate::canonical::parse_json_strict(bytes).map_err(io_error)?;
         documents.insert(format!("native/{name}"), value);
     }
@@ -1509,7 +1572,15 @@ pub(super) fn project(
         sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
     }
     if let Some(guide) = documents.get("native/system-reading-guide.json") {
-        let mut story = format!("{}\n\n", reading::inline(text(&guide["purpose"])));
+        let mut story = if manifest["readingGuideTranslationGaps"]["system:overview"].is_object() {
+            reading_guide_gap(
+                &manifest["readingGuideTranslationGaps"]["system:overview"],
+                language,
+            )?
+        } else {
+            String::new()
+        };
+        story.push_str(&format!("{}\n\n", reading::inline(text(&guide["purpose"]))));
         for section in rows(&guide["sections"]) {
             story.push_str(&format!("## {}\n\n", md(text(&section["title"]))));
             for b in rows(&section["blocks"]) {
@@ -1731,6 +1802,40 @@ pub(super) fn project(
 mod tests {
     use super::*;
     #[test]
+    fn guide_language_gap_keeps_original_steps_context_links_and_provenance_readable() {
+        let block = json!({"title":"Original block","text":"Original retained explanation.","evidence":[],"links":[{"subject":"service:sample","operation":"section-entities","label":"Original service context"}]});
+        let guide = json!({"title":"Original process","purpose":"Original purpose.","language":"en","sections":[
+            {"id":"request","title":"Forward request","number":1,"blocks":[block]},
+            {"id":"save","title":"Save place","number":2,"blocks":[block]},
+            {"id":"apply","title":"Apply response","number":3,"blocks":[block]},
+            {"id":"confidence","title":"Original source and scope","blocks":[block]}],"conclusion":{"title":"Unknown completion","text":"Completion remains unknown.","evidence":[],"links":[]}});
+        let mut page = json!({"subject":"scenario:save","language":"ru","questionReader":guide,"operations":[],"operationSources":{},"sources":{}});
+        page["questionReaderTranslationGap"] = super::super::question_reading::translation_gap(
+            &page["questionReader"],
+            Some("ru"),
+            "scenarios/save.reading-guide.original.json",
+        )
+        .unwrap()
+        .unwrap();
+        let original = page.clone();
+        let rendered = process_page_with_context(&page, "save", &Value::Null).unwrap();
+        for id in ["request", "save", "apply", "confidence"] {
+            assert!(rendered.contains(&format!("{{#question-{id}}}")), "{id}");
+        }
+        assert!(
+            rendered.contains("Требуется перевод") && rendered.contains("Исходный план чтения")
+        );
+        assert!(rendered.contains("Original retained explanation."));
+        assert!(rendered.contains("section-entities") && rendered.contains("fromQuestion"));
+        assert!(
+            rendered.contains("<ClewStatus"),
+            "review and source scope retained"
+        );
+        assert!(rendered.contains("/clew-original/scenarios/save.reading-guide.original.json"));
+        assert_eq!(page, original);
+    }
+
+    #[test]
     fn retained_http_cases_have_named_cells_and_preserve_every_assessment() {
         let rendered = comparison_rows(
             &json!({"coverage":"Selected cases only","cases":[{"id":"extra-property","response":{"status":200,"contentType":"application/json"},"statusDeclared":true,"mediaAssessment":"declared","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]}),
@@ -1834,6 +1939,7 @@ mod tests {
             serde_json::to_vec(&guide).unwrap(),
         )]);
         let inputs = super::super::full::ReadingInputs {
+            language: None,
             reading_plan: None,
             contract_comparison: None,
             data_model: None,

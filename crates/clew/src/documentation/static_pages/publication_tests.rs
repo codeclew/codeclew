@@ -360,6 +360,142 @@ fn edit(repo: &Repository, snapshot: &str, exclude: bool) {
 }
 
 #[test]
+fn pages_cli_validates_an_explicit_full_publication_language() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+    let args = [
+        "pages",
+        "render",
+        "--root",
+        "root",
+        "--snapshot",
+        "snapshot",
+        "--publication",
+        "publication",
+        "--output",
+        "output",
+    ];
+    for language in ["en", "ru", "de"] {
+        let parsed = Cli::try_parse_from(args.into_iter().chain(["--language", language]));
+        if language == "de" {
+            assert!(parsed.is_err());
+        } else {
+            let Command::Render {
+                language: selected, ..
+            } = parsed.unwrap().command;
+            assert_eq!(selected.as_deref(), Some(language));
+        }
+    }
+}
+
+#[test]
+fn explicit_pages_language_preserves_readable_original_guides_in_both_formats() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    let published = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &snapshot,
+    )
+    .unwrap();
+    let publication = published["bundle"].as_str().unwrap();
+    let current_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+    let check = Check::load_snapshot(&repo, &snapshot).unwrap();
+    let source = &check.services["sample"].sources["src-endpoint-a"];
+    let reference = json!({"kind":"SOURCE","service":"sample","sourceId":source.id,"textDigest":source.text_digest,"startLine":source.start_line,"endLine":source.end_line});
+    for (case, available) in [Some("ru"), Some("en"), None].into_iter().enumerate() {
+        let title = if available == Some("ru") {
+            "Сохранённый обзор"
+        } else {
+            "Original saved guide"
+        };
+        let block = json!({"title":"Original block","text":"On this page","evidence":[reference]});
+        let mut plan = json!({"schema":"codeclew-system-reading-plan/1.0","publication":publication,"subject":"system:overview","title":title,"purpose":"Original source-bound purpose.","sections":[{"id":"start","title":"First original section","blocks":[block]},{"id":"confidence","title":"Original source and scope","blocks":[block]}],"conclusion":block});
+        if let Some(language) = available {
+            plan["language"] = json!(language);
+        }
+        let input = temporary.path().join(format!("guide-{case}.json"));
+        let original_input = serde_json::to_vec_pretty(&plan).unwrap();
+        fs::write(&input, &original_input).unwrap();
+        for (format_name, format) in [
+            ("html", PageFormat::Standalone),
+            ("mdx", PageFormat::Docusaurus),
+        ] {
+            let output = temporary.path().join(format!("guide-{case}-{format_name}"));
+            let rendered = run(Command::Render {
+                root: repo.root.clone(),
+                snapshot: snapshot.clone(),
+                publication: Some(publication.into()),
+                input: None,
+                reading_plan: Some(input.clone()),
+                contract_comparison: None,
+                data_model: None,
+                format,
+                language: Some("ru".into()),
+                output: output.clone(),
+            })
+            .unwrap();
+            assert_eq!(rendered["documentationLanguage"], "ru");
+            assert_eq!(rendered["requestedDocumentationLanguage"], "ru");
+            assert_eq!(
+                rendered["readingGuideTranslationComplete"],
+                available == Some("ru")
+            );
+            let (body, original) = if format == PageFormat::Standalone {
+                (
+                    fs::read_to_string(output.join("overview.html")).unwrap(),
+                    output.join("system-reading-guide.original.json"),
+                )
+            } else {
+                (
+                    fs::read_to_string(output.join("docs/overview.mdx")).unwrap(),
+                    output.join("static/clew-original/system-reading-guide.original.json"),
+                )
+            };
+            assert!(
+                body.contains(title) && body.contains("On this page"),
+                "original prose must remain readable"
+            );
+            assert!(
+                body.contains(if format == PageFormat::Standalone {
+                    "services/sample.html"
+                } else {
+                    "sources/"
+                }),
+                "unrelated technical navigation must remain"
+            );
+            if format == PageFormat::Docusaurus {
+                assert!(output.join("docs/services/sample.mdx").is_file());
+            }
+            if available != Some("ru") {
+                assert!(body.contains("Требуется перевод"));
+                assert!(body.contains("system-reading-guide.original.json"));
+            }
+            let original: Value = serde_json::from_slice(&fs::read(original).unwrap()).unwrap();
+            assert_eq!(original["title"], title);
+            assert_eq!(original["language"], json!(available));
+            assert_eq!(original["sections"][0]["blocks"][0]["text"], "On this page");
+            assert_eq!(fs::read(&input).unwrap(), original_input);
+        }
+    }
+    assert_eq!(
+        fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+        current_index
+    );
+    assert_eq!(
+        Check::load_snapshot(&repo, &snapshot)
+            .unwrap()
+            .context_digest,
+        check.context_digest
+    );
+}
+
+#[test]
 fn full_publication_catalog_and_history_inherit_the_frozen_publication_language() {
     let (temporary, repo, snapshot) = repository_snapshot();
     for language in ["en", "ru"] {
@@ -381,6 +517,7 @@ fn full_publication_catalog_and_history_inherit_the_frozen_publication_language(
         .unwrap();
         let output = temporary.path().join(format!("full-{language}"));
         let rendered = run(Command::Render {
+            language: None,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
             input: None,
@@ -422,6 +559,7 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
     edit(&repo, &snapshot, true);
     let output = temporary.path().join("full-excluded");
     let error = run(Command::Render {
+        language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot,
@@ -452,6 +590,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     let previous_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
     let output = temporary.path().join("full-valid");
     let rendered = run(Command::Render {
+        language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot: snapshot.clone(),
@@ -480,6 +619,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::write(&sentinel, "previous output").unwrap();
     assert!(
         run(Command::Render {
+            language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
@@ -503,6 +643,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::create_dir(&refused).unwrap();
     assert!(
         run(Command::Render {
+            language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot,
@@ -538,6 +679,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             fs::create_dir(&output).unwrap();
         }
         let response = run(Command::Render {
+            language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
@@ -566,6 +708,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         assert_eq!(catalogue["rows"], json!([]));
         assert!(
             run(Command::Render {
+                language: None,
                 format: PageFormat::Standalone,
                 root: repo.root.clone(),
                 snapshot: snapshot.clone(),
@@ -582,6 +725,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     edit(&repo, &snapshot, false);
     let output = temporary.path().join("restored");
     let restored = run(Command::Render {
+        language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot: snapshot.clone(),
@@ -605,6 +749,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     let rejected = temporary.path().join("invalid-empty-input");
     assert!(
         run(Command::Render {
+            language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot,

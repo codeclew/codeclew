@@ -624,5 +624,9 @@
   "These paths have no canonical field mapping. Matching names do not establish the same identity.": "Для этих путей не установлено соответствие каноническим полям. Совпадение имён не доказывает, что это одни и те же поля.",
   "These contract paths have no canonical field mapping. Matching names do not establish the same identity.": "Для этих путей контракта не установлено соответствие каноническим полям. Совпадение имён не доказывает, что это одни и те же поля.",
   "↓ Reading order only · transfer not established": "↓ Только порядок чтения · передача не установлена",
-  "Not investigated in the selected contract/consumer scope. This is not zero usage.": "Не исследовано в выбранной области контракта и потребителя. Это не означает отсутствие использования."
+  "Not investigated in the selected contract/consumer scope. This is not zero usage.": "Не исследовано в выбранной области контракта и потребителя. Это не означает отсутствие использования.",
+  "Original reading guide": "Исходный план чтения",
+  "English": "Английский",
+  "Russian": "Русский",
+  "Unknown language": "Язык не указан"
 }

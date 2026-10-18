@@ -15,6 +15,7 @@ pub(super) struct ReadingInputs<'a> {
     pub contract_comparison: Option<&'a Path>,
     pub data_model: Option<&'a Path>,
     pub format: super::PageFormat,
+    pub language: Option<&'a str>,
 }
 
 /// Prose, threads, assessments and their retained evidence stay on the existing
@@ -41,7 +42,10 @@ pub(super) fn render(
     let (manifest, raw) = history::read_frozen_bindings(repo, publication, &mut budget)?;
     let (_, bindings) =
         history::validate_frozen_bindings(repo, manifest.clone(), &raw, &mut BTreeMap::new())?;
-    let language = bindings.documentation_language.as_deref().unwrap_or("en");
+    let requested_language = inputs
+        .language
+        .or(bindings.documentation_language.as_deref());
+    let language = requested_language.unwrap_or("en");
     crate::documentation::language::validate(Some(language))?;
     let mut files = BTreeMap::new();
     let mut remaining = MAX_BYTES;
@@ -81,6 +85,8 @@ pub(super) fn render(
     let process_theme = questions
         .values()
         .any(|guide| guide["presentation"] == "SEQUENTIAL");
+    let mut guide_gaps = BTreeMap::new();
+    let mut guide_notice_files = BTreeMap::new();
     for name in manifest.files.keys().filter(|name| {
         (name.starts_with("services/") || name.starts_with("scenarios/")) && name.ends_with(".json")
     }) {
@@ -100,7 +106,22 @@ pub(super) fn render(
         }
         if let Some(guide) = questions.get(&subject) {
             payload["questionReader"] = guide.clone();
+            let original_path = format!(
+                "{}.reading-guide.original.json",
+                name.trim_end_matches(".json")
+            );
+            files.insert(
+                original_path.clone(),
+                serde_json::to_vec_pretty(guide).map_err(io_error)?,
+            );
+            if let Some(gap) =
+                super::question_reading::translation_gap(guide, requested_language, &original_path)?
+            {
+                payload["questionReaderTranslationGap"] = gap.clone();
+                guide_gaps.insert(subject.clone(), gap);
+            }
         }
+        payload["language"] = json!(language);
         payload["selectedSnapshot"] = json!(snapshot);
         payload["frozenPublication"] = json!(publication);
         payload["selectedEvidence"] = json!({"revisions":checked.services.iter().map(|(id,e)|(id,&e.revision)).collect::<BTreeMap<_,_>>(),
@@ -144,6 +165,12 @@ pub(super) fn render(
         }
         super::data_model::attach_process(model.as_ref(), &subject, &mut payload)?;
         let html_name = name.strip_suffix(".json").unwrap().to_owned() + ".html";
+        if payload["questionReaderTranslationGap"].is_object() {
+            guide_notice_files.insert(
+                html_name.clone(),
+                payload["questionReaderTranslationGap"].clone(),
+            );
+        }
         let html = render::html(&payload)?;
         let prefix = "../";
         let navigation = reader::navigation_language(
@@ -179,9 +206,22 @@ pub(super) fn render(
             .get("overview.html")
             .ok_or_else(|| invalid("system guide has no frozen overview"))?
             .clone();
-        let html = super::question_reading::overview_html(
+        let original_path = "system-reading-guide.original.json";
+        files.insert(
+            original_path.into(),
+            serde_json::to_vec_pretty(guide).map_err(io_error)?,
+        );
+        if let Some(gap) =
+            super::question_reading::translation_gap(guide, requested_language, original_path)?
+        {
+            guide_notice_files.insert("overview.html".into(), gap.clone());
+            guide_notice_files.insert("index.html".into(), gap.clone());
+            guide_gaps.insert("system:overview".into(), gap);
+        }
+        let html = super::question_reading::overview_html_in_language(
             std::str::from_utf8(&original).map_err(io_error)?,
             guide,
+            language,
         )?;
         files.insert("retained-overview.html".into(), original);
         files.insert("overview.html".into(), html.into_bytes());
@@ -244,7 +284,7 @@ pub(super) fn render(
                 .split_once("<html lang=\"")
                 .and_then(|(_, rest)| rest.split_once('"').map(|(lang, _)| lang))
                 .unwrap_or("en");
-            let navigation = if name.contains('/') {
+            let mut navigation = if name.contains('/') {
                 reader::navigation_language(
                     "../",
                     "../overview.html",
@@ -261,6 +301,9 @@ pub(super) fn render(
                     language,
                 )
             };
+            if let Some(gap) = guide_notice_files.get(name) {
+                navigation.push_str(&super::question_reading::translation_gap_html(gap));
+            }
             *bytes = reader::attach_navigation_context(
                 &reader::refresh_chrome(html, &navigation),
                 &navigation_context,
@@ -276,7 +319,7 @@ pub(super) fn render(
             }
         }
     }
-    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","documentationLanguage":language,"snapshot":snapshot,"publication":publication,
+    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});

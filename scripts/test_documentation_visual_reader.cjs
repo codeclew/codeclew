@@ -1474,6 +1474,28 @@ test('active question uses every section after long evidence expansion and scrol
  r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-story');
 });
 
+test('a foreign-language original remains readable with stable step anchors and selected-locale controls',()=>{
+ for(const available of ['en',null]){
+  const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];d.language='ru';
+  d.questionReader={...d.questionReader,presentation:'SEQUENTIAL',language:available,sections:[
+   {id:'request',title:'Forward request',number:1,blocks:[{...block,links:[]}]},
+   {id:'save',title:'Save place',number:2,blocks:[block]},
+   {id:'apply',title:'Apply response',number:3,blocks:[block]},
+   {id:'confidence',title:'Original sources',blocks:[block]}]};
+  d.questionReaderTranslationGap={requestedLanguage:'ru',availableLanguage:available,originalPath:'scenarios/example.reading-guide.original.json'};
+  const before=JSON.stringify(d),r=load(d);r.run("showEntry('process-overview')");
+  const html=r.e('scenario-content').innerHTML;
+  for(const id of ['question-request','question-save','question-apply','question-confidence'])assert.ok(html.includes('id="'+id+'"'),id);
+  for(const title of ['Forward request','Save place','Apply response'])assert.ok(html.includes(title),'original prose preserved');
+  assert.match(html,/Исходный план чтения/);
+  assert.match(html,/На этой странице/);assert.match(html,/Процессы/);
+  assert.doesNotMatch(html,/\/ Weather \//,'owned breadcrumb must not invent a project');
+  assert.match(html,/fromQuestion=save#section-entities/,'original technical cross-link preserved');
+  r.run("revealQuestion('question-apply')");assert.equal(r.document.activeElement.id,'question-apply');
+  assert.equal(JSON.stringify(d),before,'display policy never changes records or provenance');
+ }
+});
+
 test('sequential profile keeps exceptions beside their steps and original descriptions on demand',()=>{
  const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
  d.questionReader={...d.questionReader,presentation:'SEQUENTIAL',language:'en',sections:[{id:'request',title:'Forward request',navTitle:'Request',number:1,icon:'arrow-right',route:'POST /api/places → POST /places',blocks:[{...block,links:[]},{...block,id:'exchange-error',navTitle:'Exchange failure · 503',tone:'ERROR',title:'Exchange failure',text:'503 leaves commit unknown'}]},{id:'save',title:'Save place',navTitle:'Save',number:2,icon:'database',blocks:[block]},{id:'confidence',title:'Original descriptions and source',blocks:[block]}]};

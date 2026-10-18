@@ -30,6 +30,7 @@ pub use project::project;
 fn full_pages_saved_publication_replay() {
     let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path required"));
     let result = run(Command::Render {
+        language: None,
         format: PageFormat::Standalone,
         root: path("CODECLEW_FULL_PAGES_ROOT"),
         snapshot: std::env::var("CODECLEW_FULL_PAGES_SNAPSHOT").unwrap(),
@@ -51,6 +52,7 @@ fn full_pages_saved_publication_replay() {
 fn source_pages_saved_snapshot_replay() {
     let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path is required"));
     let rendered = run(Command::Render {
+        language: None,
         format: PageFormat::Standalone,
         root: path("CODECLEW_PAGES_REPLAY_ROOT"),
         snapshot: std::env::var("CODECLEW_PAGES_REPLAY_SNAPSHOT")
@@ -174,6 +176,9 @@ pub enum Command {
         /// Standalone HTML by default; a portable native MDX site for full publications.
         #[arg(long, value_enum, default_value_t = PageFormat::Standalone)]
         format: PageFormat,
+        /// Reader and prose language for a full saved publication; no automatic translation.
+        #[arg(long, requires = "publication", value_parser = ["en", "ru"])]
+        language: Option<String>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -191,6 +196,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             contract_comparison,
             data_model,
             format,
+            language,
             output,
         } => {
             let repo = Repository::open(&root)?;
@@ -206,6 +212,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                         contract_comparison: contract_comparison.as_deref(),
                         data_model: data_model.as_deref(),
                         format,
+                        language: language.as_deref(),
                     },
                     &output,
                 );

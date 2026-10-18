@@ -905,6 +905,15 @@ authored scope and assessment prose; recorded probe artifacts remain exact.
 Question and system reading plans retain their existing `language` field.
 Missing declarations remain unknown rather than silently becoming English.
 
+For a full saved publication, `docs pages render --publication PUBLICATION
+--language en|ru` selects the reader locale; omitting the flag inherits the frozen
+publication's selection. Reading guides keep their declared prose language.
+A mismatched or unknown guide language produces `readingGuideTranslationGaps`
+and a visible notice, while its readable original, step anchors, technical links
+and provenance remain available. A separate original-guide JSON download retains
+the exact bound record. This does not translate the guide or create a new review.
+`readingGuideTranslationComplete` is null when no prose language was selected.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with

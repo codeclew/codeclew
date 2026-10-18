@@ -395,6 +395,97 @@ fn project_plan(
     ))
 }
 
+/// Missing prose language is unknown, even when the reader defaults to English.
+/// This presentation decision never changes the supplied guide or its bindings.
+pub(super) fn translation_gap(
+    guide: &Value,
+    requested: Option<&str>,
+    original_path: &str,
+) -> Result<Option<Value>, ClewError> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    super::super::language::validate(Some(requested))?;
+    store::relative(original_path)?;
+    if guide["language"].as_str() == Some(requested) {
+        return Ok(None);
+    }
+    let href = Path::new(original_path)
+        .file_name()
+        .and_then(|p| p.to_str())
+        .ok_or_else(|| invalid("original reading-guide path is invalid"))?;
+    Ok(Some(
+        json!({"kind":"READING_GUIDE_TRANSLATION","requestedLanguage":requested,
+        "availableLanguage":guide["language"],"originalPath":original_path,"href":href,
+        "authority":"ORIGINAL_EDITORIAL_GUIDE_UNCHANGED"}),
+    ))
+}
+
+pub(super) fn available_language_label(gap: &Value, language: &str) -> &'static str {
+    use super::super::reader::text;
+    match gap["availableLanguage"].as_str() {
+        Some("en") => text(language, "English", "Английский"),
+        Some("ru") => text(language, "Russian", "Русский"),
+        _ => text(language, "unknown", "неизвестен"),
+    }
+}
+
+pub(super) fn translation_gap_html(gap: &Value) -> String {
+    use super::super::{reader::text, render::escape};
+    let language = gap["requestedLanguage"].as_str().unwrap_or("en");
+    let available = available_language_label(gap, language);
+    format!(
+        "<aside class=\"translation-gap gap-card\"><h2>{}</h2><p>{}</p><p>{}: {}</p><p><a href=\"{}\">{}</a></p></aside>",
+        text(language, "Translation pending", "Требуется перевод"),
+        text(
+            language,
+            "This reading guide is not available in the selected language. Its readable original remains below, with the same anchors and evidence. This is not a translation or a new review.",
+            "План чтения недоступен на выбранном языке. Ниже доступен исходный план с прежними ссылками, якорями и основаниями. Это не перевод и не новая проверка."
+        ),
+        text(
+            language,
+            "Original prose language",
+            "Язык исходного описания"
+        ),
+        available,
+        escape(gap["href"].as_str().unwrap_or("")),
+        text(
+            language,
+            "Original reading guide (JSON)",
+            "Исходный план чтения (JSON)"
+        )
+    )
+}
+
+/// Select only the owned document-root attribute before inserting guide prose.
+/// Matching text inside authored content or retained source is never replaced.
+pub(super) fn overview_html_in_language(
+    original: &str,
+    guide: &Value,
+    language: &str,
+) -> Result<String, ClewError> {
+    super::super::language::validate(Some(language))?;
+    let start = original
+        .find("<html")
+        .ok_or_else(|| invalid("retained overview document root is missing"))?;
+    let end = original[start..]
+        .find('>')
+        .map(|n| start + n)
+        .ok_or_else(|| invalid("retained overview document root is incomplete"))?;
+    let mut selected = original.to_owned();
+    if let Some(attribute) = original[start..end].find("lang=\"") {
+        let value_start = start + attribute + 6;
+        let value_end = original[value_start..end]
+            .find('"')
+            .map(|n| value_start + n)
+            .ok_or_else(|| invalid("retained overview language attribute is incomplete"))?;
+        selected.replace_range(value_start..value_end, language);
+    } else {
+        selected.insert_str(end, &format!(" lang=\"{language}\""));
+    }
+    overview_html(&selected, guide)
+}
+
 /// An additive, evidence-bound reading view. Frozen inventory and descriptions
 /// stay reachable; the renderer contains no application-specific business text.
 pub(super) fn overview_html(original: &str, guide: &Value) -> Result<String, ClewError> {
@@ -677,6 +768,54 @@ mod tests {
         );
         assert!(load_plan(&plan, &changed_source).is_err());
     }
+    #[test]
+    fn selected_guide_language_matches_or_reports_an_explicit_original_without_relabeling() {
+        let (mut plan, files) = fixture();
+        for available in [None, Some("en"), Some("ru")] {
+            if let Some(language) = available {
+                plan["language"] = json!(language);
+            } else {
+                plan.as_object_mut().unwrap().remove("language");
+            }
+            let bound = load_plan(&plan, &files).unwrap();
+            let guide = &bound["scenario:example"];
+            let original = guide.clone();
+            for requested in ["en", "ru"] {
+                let gap = translation_gap(
+                    guide,
+                    Some(requested),
+                    "scenarios/example.reading-guide.original.json",
+                )
+                .unwrap();
+                assert_eq!(gap.is_none(), available == Some(requested));
+                if let Some(gap) = gap {
+                    assert_eq!(gap["availableLanguage"], json!(available));
+                    assert_eq!(gap["requestedLanguage"], requested);
+                    assert_eq!(gap["href"], "example.reading-guide.original.json");
+                    let html = translation_gap_html(&gap);
+                    assert!(html.contains("example.reading-guide.original.json"));
+                    assert!(html.contains(if requested == "ru" {
+                        "Требуется перевод"
+                    } else {
+                        "Translation pending"
+                    }));
+                    assert!(
+                        !html.contains("<main"),
+                        "notice must not replace unrelated content"
+                    );
+                }
+            }
+            assert!(
+                translation_gap(guide, None, "scenarios/example.reading-guide.original.json")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(*guide, original);
+            assert!(translation_gap(guide, Some("de"), "original.json").is_err());
+            assert!(translation_gap(guide, Some("ru"), "../outside.json").is_err());
+        }
+    }
+
     #[test]
     fn absent_editorial_language_remains_unknown_without_relabeling_authored_text() {
         let (mut plan, files) = fixture();
