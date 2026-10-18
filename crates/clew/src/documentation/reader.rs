@@ -86,7 +86,7 @@ pub(super) fn navigation_language(
         "Search documentation metadata",
         "Поиск по метаданным документации",
     );
-    let placeholder = label("Search documentation", "Поиск по документации");
+    let placeholder = label("Search docs", "Поиск");
     let search_button = label("Search", "Найти");
     let history_link = history
         .map(|path| {
