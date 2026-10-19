@@ -44,6 +44,7 @@ RUSSIAN_LOCALIZATION_STRING_FILES = {
     "crates/clew/src/documentation/flow_dsl/publish.rs",
     "crates/clew/src/documentation/flow_dsl/tests.rs",
     "crates/clew/src/documentation/static_pages/full.rs",
+    "crates/clew/src/documentation/static_pages/catalogue.rs",
     "crates/clew/src/documentation/static_pages/publication_tests.rs",
     "crates/clew/src/documentation/static_pages/question_reading.rs",
     "crates/clew/src/documentation/static_pages/prose_language.rs",
