@@ -30,6 +30,12 @@ Read only the reference for the requested result:
 | Register services, capture source, author or publish durable documentation | [Service documentation](references/service-documentation.md) |
 | Collect or explain a saved failed Check | [Evidence and support](references/documentation-evidence.md) |
 
+For durable prose authoring, begin with the [authoring start route](references/service-documentation.md#authoring-start-route).
+It separates full-service public entrypoint coverage from a focused operation,
+and uses Work-local proposal input rather than materialized Narrative output.
+Overview sections alone do not establish full-service completion. This route
+does not apply to the prepared SOURCE shortcut above.
+
 This is the installed-product workflow for a target repository. Resolve the
 installed `clew` launcher once; never substitute a source launcher, target/capsule
 binary or runtime seed. Do not edit `CODECLEW_HOME` objects. Documentation commands

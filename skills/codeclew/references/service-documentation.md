@@ -27,6 +27,40 @@ all three maintenance cases and the local bounded-packet helper. Do not load thi
 full reference for a ready snapshot or a saved answer. Use the sections below only
 when registration, source capture or durable documentation work is requested.
 
+## Authoring start route
+
+For a complete service, paginate its retained catalogue and distinguish public
+handlers/triggers from internal helpers. Keep each requested public entrypoint
+open until it has a source-bound operation explanation or an actionable
+missing-evidence gap. The five overview sections are a separate summary layer;
+an authored ingress paragraph or a large gap count is not operation coverage.
+Carry this scope across small Work items. For one selected operation, stay within
+that operation; full-service inventory is not a prerequisite.
+
+Prepare one bounded Work, read its required pages and selected evidence through
+`nextCursor: null`, then use the [proposal input example](authoring-example.md):
+
+```sh
+clew docs work prepare --root ROOT --subject service:SERVICE_ID --input request.json --snapshot SAVED_SNAPSHOT
+clew docs work read --root ROOT --work WORK_ID --input selection.json
+clew docs proposal submit --root ROOT --work WORK_ID --input proposal.json
+clew docs proposal show --root ROOT --proposal PROPOSAL_ID
+```
+
+Use the returned references from this Work, not IDs from another example or
+Work. Read evidence before writing business claims: a delegation and its 200/404
+outcomes do not establish the downstream algorithm. Preserve that boundary.
+Proposal input is `codeclew-documentation-proposal/1.0`; Narrative 1.3 is the
+materialized output, with different fields and participant identities.
+
+Inspect the native result and all diagnostic pages, including behind a wrapper.
+`NEEDS_REPAIR` or `STRUCTURE_OR_COVERAGE_INVALID` is failure even when the outer
+process exits zero or returns a proposal ID. Fix the reported cause with current
+schema/evidence; repeated guessed actor aliases are not a recovery method.
+After `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS`, local publication can use
+`clew docs proposal publish --root ROOT --proposal PROPOSAL_ID --unassessed`.
+It preserves `UNASSESSED` meaning review and returns the publication to inspect.
+
 ## Build-independent source profile
 
 The current explicit `source-syntax` profile supports Python, Java, Kotlin and
@@ -422,6 +456,13 @@ influence maps are shared in proposals/publication rather than copied into each
 accepted operation; no new source analysis is implied by that representation.
 
 ## Reader comprehension and source checks
+
+Open the returned publication at the requested page and anchor. Verify visible
+field rows, table headings, diagram paths and navigation in the rendered reader.
+Counting `<table>` strings in HTML/JavaScript templates, or inserting Markdown
+pipe text into a prose field, does not establish a visible table. Use supported
+structured inputs; a renderer or duplicate-navigation defect needs a product fix,
+not a generated-HTML patch or a claim that the skill guarantees the output.
 
 Each overview must answer concrete decisions without requiring a source-code
 inspection: what identifies a duplicate, what wins an equal-time conflict,
