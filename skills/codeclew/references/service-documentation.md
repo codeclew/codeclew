@@ -61,6 +61,13 @@ After `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS`, local publication can use
 `clew docs proposal publish --root ROOT --proposal PROPOSAL_ID --unassessed`.
 It preserves `UNASSESSED` meaning review and returns the publication to inspect.
 
+Instruction-level example: "Document this operation" uses the normal route;
+"Document this operation, debug=true" uses the same route and decisions, adding
+only sanitized scope, Work identity, native status, diagnostics and completed
+checks to a local record outside the installed skill. A `NEEDS_REPAIR` result
+still blocks publication in both modes. This is assistant reporting, not a CLI
+debug flag or extra publication permission; do not record hidden reasoning.
+
 ## Build-independent source profile
 
 The current explicit `source-syntax` profile supports Python, Java, Kotlin and
