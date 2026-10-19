@@ -790,8 +790,19 @@ pub(super) fn attach_process(
     // The author must bind the exact legacy service link and question explicitly.
     let mut navigation = serde_json::Map::new();
     let mut references = Vec::new();
+    let mut service_links = Vec::new();
     for m in model["models"].as_array().into_iter().flatten() {
         for link in m["processLinks"].as_array().into_iter().flatten() {
+            if subject.starts_with("service:")
+                && link["subject"] == subject
+                && link["anchor"] == "section-entities"
+                && !service_links
+                    .iter()
+                    .any(|entry: &Value| entry["id"] == m["id"])
+            {
+                service_links.push(json!({"id":m["id"],"title":m["title"],
+                    "href":format!("../data-model/{}.html#fields-and-representations",strv(&m["id"]))}));
+            }
             if link["subject"] == subject && link["reference"].is_object() {
                 references.push(json!({"id":m["id"],"title":m["title"],"documentationLanguage":m["documentationLanguage"],"anchor":link["anchor"],
                     "stages":link["reference"]["stages"],"href":format!("../data-model/{}.html",strv(&m["id"]))}));
@@ -819,6 +830,9 @@ pub(super) fn attach_process(
     }
     if !navigation.is_empty() {
         payload["canonicalEntityLinks"] = Value::Object(navigation);
+    }
+    if !service_links.is_empty() {
+        payload["serviceModelLinks"] = json!(service_links);
     }
     if !references.is_empty() {
         payload["modelReferences"] = json!(references);
@@ -945,6 +959,76 @@ pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'
         .filter(|c| c["id"].as_str().is_some_and(|id| used.contains(id)))
         .collect()
 }
+
+/// A static field inventory survives without the optional interactive reader.
+/// Representation-specific types and requiredness are never collapsed into a
+/// made-up domain-wide type or constraint. Existing field anchors hold evidence.
+pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> String {
+    let literal = |value: &str| escape(value).replace('{', "&#123;").replace('}', "&#125;");
+    let attr = if portable { "className" } else { "class" };
+    let focus = if portable {
+        "tabIndex={0}"
+    } else {
+        "tabindex=\"0\""
+    };
+    let heading = |key| literal(label(language, key));
+    let mut out = format!(
+        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th><th scope=\"col\">{} / {}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        heading("Field descriptions"),
+        heading("Field descriptions"),
+        heading("Field"),
+        heading("Purpose"),
+        heading("Representation"),
+        heading("Type"),
+        heading("Requiredness / nullability")
+    );
+    for field in model["fields"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "<tr><th scope=\"row\"><a href=\"#field-{}\"><code>{}</code></a></th><td data-label=\"{}\">{}</td>",
+            literal(strv(&field["id"])),
+            literal(strv(&field["path"])),
+            heading("Purpose"),
+            literal(strv(&field["meaning"]["text"]))
+        ));
+        for (caption, columns) in [
+            ("Type", ["typeLabel", ""]),
+            (
+                "Requiredness / nullability",
+                ["requiredness", "nullability"],
+            ),
+        ] {
+            out.push_str(&format!("<td data-label=\"{}\">", heading(caption)));
+            let reps = field["representations"]
+                .as_array()
+                .filter(|reps| !reps.is_empty());
+            if let Some(reps) = reps {
+                out.push_str("<ul>");
+                for rep in reps {
+                    let values = columns
+                        .into_iter()
+                        .filter(|key| !key.is_empty())
+                        .map(|key| {
+                            let value = rep[key].as_str().filter(|value| !value.is_empty());
+                            literal(value.unwrap_or_else(|| label(language, "Not declared")))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    out.push_str(&format!(
+                        "<li><strong>{}</strong>: {values}</li>",
+                        literal(strv(&rep["label"]))
+                    ));
+                }
+                out.push_str("</ul>");
+            } else {
+                out.push_str(&heading("Not declared"));
+            }
+            out.push_str("</td>");
+        }
+        out.push_str("</tr>");
+    }
+    out.push_str("</tbody></table></div>\n\n");
+    out
+}
 pub(super) fn reference_only(model: &Value) -> bool {
     model["records"]
         .as_array()
@@ -1052,9 +1136,10 @@ pub(super) fn write_language(
             body.push_str("</tbody></table>");
         }
         body.push_str(&format!(
-            "<h2>{clew_label_0}</h2>",
+            "<h2 id=\"fields-and-representations\">{clew_label_0}</h2>",
             clew_label_0 = escape(label(language, "Fields and representations"))
         ));
+        body.push_str(&field_table(m, language, false));
         for f in m["fields"].as_array().unwrap() {
             body.push_str(&format!("<section id=\"field-{}\"><h3><code>{}</code></h3>{}<table><caption>{clew_label_0}</caption><thead><tr><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),evidence(&f["meaning"], language), clew_label_0 = escape(label(language, "Representation-specific constraints and mappings")), clew_label_1 = escape(label(language, "Representation")), clew_label_2 = escape(label(language, "Type / requiredness / nullability")), clew_label_3 = escape(label(language, "Mapping and evidence"))));
             for r in f["representations"].as_array().unwrap() {
@@ -1445,7 +1530,9 @@ mod tests {
                 );
                 if target == "ru" {
                     assert!(html.contains("<h2>Идентичность и связи</h2>"));
-                    assert!(html.contains("<h2>Поля и представления</h2>"));
+                    assert!(html.contains(
+                        "<h2 id=\"fields-and-representations\">Поля и представления</h2>"
+                    ));
                     assert!(index.contains("<h1>Модель данных</h1>"));
                 }
                 assert!(html.contains("id=\"field-value\""));
@@ -1547,6 +1634,74 @@ mod tests {
         assert!(!html.contains("href=\"#field-usage\""));
         assert!(html.contains("<summary>Source and scope</summary><p>Proposed field meaning</p>"));
         assert!(html.contains("id=\"dm-return\""));
+    }
+
+    #[test]
+    fn field_inventory_keeps_purpose_and_representation_constraints_in_accessible_rows() {
+        let model = json!({"fields":[
+            {"id":"value","path":"payload.value","meaning":{"text":"Keep <source> {value} and | punctuation"},"representations":[
+                {"label":"Request","typeLabel":"string","requiredness":"optional","nullability":"nullable"},
+                {"label":"Storage","typeLabel":"int64","requiredness":"required","nullability":"not nullable"}
+            ]},
+            {"id":"unknown","path":"unknown","meaning":{"text":"No declared representation"},"representations":[]}
+        ]});
+        let before = model.clone();
+        for portable in [false, true] {
+            let html = field_table(&model, "en", portable);
+            assert!(html.contains("<caption>Field descriptions</caption>"));
+            assert_eq!(html.matches("scope=\"row\"").count(), 2);
+            assert_eq!(html.matches("scope=\"col\"").count(), 4);
+            assert!(html.contains("href=\"#field-value\"><code>payload.value</code>"));
+            assert!(html.contains("Keep &lt;source&gt; &#123;value&#125; and | punctuation"));
+            for expected in [
+                "<strong>Request</strong>: string",
+                "<strong>Storage</strong>: int64",
+                "<strong>Request</strong>: optional · nullable",
+                "<strong>Storage</strong>: required · not nullable",
+                "Not declared</td>",
+            ] {
+                assert!(html.contains(expected), "{expected}");
+            }
+            assert!(!html.contains("<source>"));
+            assert_eq!(model, before);
+        }
+        let russian = field_table(&model, "ru", false);
+        assert!(russian.contains("Описание полей") && russian.contains("Назначение"));
+        assert!(russian.contains("No declared representation"));
+    }
+
+    #[test]
+    fn service_field_links_require_an_explicit_validated_model_link() {
+        let (mut plan, mut files, guides, check) = fixture();
+        files.insert(
+            "services/sample.json".into(),
+            serde_json::to_vec(&json!({
+                "operations":[{"id":"section-entities"}]
+            }))
+            .unwrap(),
+        );
+        plan["models"][0]["processLinks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "subject":"service:sample","anchor":"section-entities","label":"Sample data"
+            }));
+        let model = read(&plan, &files, &guides, &check).unwrap();
+        let mut service = json!({"entities":[],"original":"unchanged"});
+        attach_process(Some(&model), "service:sample", &mut service).unwrap();
+        assert_eq!(service["serviceModelLinks"][0]["id"], "record");
+        assert_eq!(
+            service["serviceModelLinks"][0]["href"],
+            "../data-model/record.html#fields-and-representations"
+        );
+        assert_eq!(
+            service["entities"],
+            json!([]),
+            "model navigation does not assert domain ownership"
+        );
+        let mut other = json!({});
+        attach_process(Some(&model), "service:other", &mut other).unwrap();
+        assert!(other.get("serviceModelLinks").is_none());
     }
     #[test]
     fn reference_records_reject_wrong_shape_unbound_evidence_and_foreign_stages() {

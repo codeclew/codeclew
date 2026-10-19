@@ -1207,6 +1207,19 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         } else {
             out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
         }
+        if sid == "section-entities" {
+            for model in rows(&page["serviceModelLinks"]) {
+                out.push_str(&format!(
+                    "- [{} · {}](../data-model/{}.mdx#fields-and-representations)\n\n",
+                    md(text(&model["title"])),
+                    md(crate::documentation::language::label(
+                        language,
+                        "Field descriptions"
+                    )),
+                    text(&model["id"])
+                ));
+            }
+        }
         if sid == "section-ingress" {
             let inventory = selected_http_links(page, None)?;
             if !inventory.is_empty() {
@@ -1571,6 +1584,7 @@ fn model_page(
             "Fields and representations"
         ))
     ));
+    out.push_str(&super::data_model::field_table(model, language, true));
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
         out.push_str(&format!(
@@ -2598,6 +2612,47 @@ mod tests {
         let matching = model_page(&model, &json!({"contracts":[]}), None, "en").unwrap();
         assert!(!matching.contains("Translation pending"));
         assert!(matching.contains("View evidence"));
+    }
+
+    #[test]
+    fn portable_model_exposes_a_static_field_table_before_original_evidence_details() {
+        let model = json!({"id":"entity","title":"Entity","purpose":{"text":"Purpose"},"identity":{"text":"Identity"},
+            "fields":[{"id":"name","path":"name","meaning":{"text":"Display name"},"representations":[
+                {"label":"Request","typeLabel":"string","requiredness":"optional","nullability":"unknown","mapping":{"text":"Original mapping"}}
+            ]}],"processLinks":[],"relatedModels":[]});
+        let original = model.clone();
+        let body = model_page(
+            &model,
+            &json!({"models":[model],"contracts":[]}),
+            None,
+            "en",
+        )
+        .unwrap();
+        assert!(body.contains("<table className=\"dm-fields\" role=\"table\">"));
+        let table = body
+            .find("<table className=\"dm-fields\" role=\"table\">")
+            .unwrap();
+        let details = body.find("### name {#field-name}").unwrap();
+        assert!(table < details);
+        assert!(body.contains("<th scope=\"row\"><a href=\"#field-name\"><code>name</code>"));
+        assert!(body.contains("<td data-label=\"Purpose\">Display name</td>"));
+        assert!(body.contains("<strong>Request</strong>: string"));
+        assert!(body.contains("Original mapping"));
+        assert_eq!(model, original);
+    }
+
+    #[test]
+    fn service_entity_section_links_to_field_tables_without_replacing_its_account() {
+        let page = json!({"title":"Places","sections":[{"id":"section-entities","title":"Domain entities",
+            "content":{"id":"section-entities","title":"Entities","summary":{"text":"Original service data account"},"events":[],"findings":[],"boundaries":[]}}],
+            "serviceModelLinks":[{"id":"place","title":"Place"}],"operations":[]});
+        let before = page.clone();
+        let body = service_page(&page, "places").unwrap();
+        assert!(body.contains("Original service data account"));
+        assert!(body.contains(
+            "[Place · Field descriptions](../data-model/place.mdx#fields-and-representations)"
+        ));
+        assert_eq!(page, before);
     }
 
     #[test]
