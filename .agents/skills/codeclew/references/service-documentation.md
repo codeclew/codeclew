@@ -36,6 +36,9 @@ missing-evidence gap. The five overview sections are a separate summary layer;
 an authored ingress paragraph or a large gap count is not operation coverage.
 Carry this scope across small Work items. For one selected operation, stay within
 that operation; full-service inventory is not a prerequisite.
+Report described requested public entrypoints separately from unresolved gaps.
+An actionable gap accounts for a target; it does not complete its explanation.
+Do not claim full-service documentation is complete while requested targets have gaps.
 
 Prepare one bounded Work, read its required pages and selected evidence through
 `nextCursor: null`, then use the [proposal input example](authoring-example.md):
