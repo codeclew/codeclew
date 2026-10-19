@@ -1672,7 +1672,7 @@ fn narrative_page_notice(page: &Value) -> Result<String, ClewError> {
     use crate::documentation::reader::text as label;
     let language = page["language"].as_str().unwrap_or("en");
     let mut out = format!(
-        "<aside className=\"translation-gap gap-card\">\n\n{}\n\n<details><summary>{}: {}</summary>\n\n",
+        "<aside className=\"translation-gap gap-card\">\n\n{}\n\n<details>\n<summary>{}: {}</summary>\n\n",
         super::prose_language::narrative_explanation(language),
         label(
             language,
@@ -2636,7 +2636,8 @@ mod tests {
         assert!(table < details);
         assert!(body.contains("<th scope=\"row\"><a href=\"#field-name\"><code>name</code>"));
         assert!(body.contains("<td data-label=\"Purpose\">Display name</td>"));
-        assert!(body.contains("<strong>Request</strong>: string"));
+        assert!(body[details..].contains("Request") && body[details..].contains("string"));
+        assert!(body[details..].contains("optional") && body[details..].contains("unknown"));
         assert!(body.contains("Original mapping"));
         assert_eq!(model, original);
     }
@@ -2652,6 +2653,22 @@ mod tests {
         assert!(body.contains(
             "[Place · Field descriptions](../data-model/place.mdx#fields-and-representations)"
         ));
+        assert_eq!(page, before);
+    }
+
+    #[test]
+    fn narrative_original_notice_keeps_details_as_an_mdx_flow_block() {
+        let page = json!({"language":"en","proseDisplayPolicy":"READABLE_ORIGINALS",
+            "translationGaps":{"original-note":{"title":"Original {note}","originalPath":"services/sample.note-original.original.json","availableLanguage":null}}});
+        let before = page.clone();
+        let body = narrative_page_notice(&page).unwrap();
+        assert!(body.contains("\n<details>\n<summary>"));
+        assert!(
+            !body.contains("<details><summary>"),
+            "an inline details opener is parsed as a paragraph across the list"
+        );
+        assert!(body.contains("/clew-original/services/sample.note-original.original.json"));
+        assert!(body.contains("\n</details>\n</aside>"));
         assert_eq!(page, before);
     }
 

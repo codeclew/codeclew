@@ -973,14 +973,11 @@ pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> Stri
     };
     let heading = |key| literal(label(language, key));
     let mut out = format!(
-        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th><th scope=\"col\">{} / {}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
         heading("Field descriptions"),
         heading("Field descriptions"),
         heading("Field"),
-        heading("Purpose"),
-        heading("Representation"),
-        heading("Type"),
-        heading("Requiredness / nullability")
+        heading("Purpose")
     );
     for field in model["fields"].as_array().into_iter().flatten() {
         out.push_str(&format!(
@@ -990,40 +987,6 @@ pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> Stri
             heading("Purpose"),
             literal(strv(&field["meaning"]["text"]))
         ));
-        for (caption, columns) in [
-            ("Type", ["typeLabel", ""]),
-            (
-                "Requiredness / nullability",
-                ["requiredness", "nullability"],
-            ),
-        ] {
-            out.push_str(&format!("<td data-label=\"{}\">", heading(caption)));
-            let reps = field["representations"]
-                .as_array()
-                .filter(|reps| !reps.is_empty());
-            if let Some(reps) = reps {
-                out.push_str("<ul>");
-                for rep in reps {
-                    let values = columns
-                        .into_iter()
-                        .filter(|key| !key.is_empty())
-                        .map(|key| {
-                            let value = rep[key].as_str().filter(|value| !value.is_empty());
-                            literal(value.unwrap_or_else(|| label(language, "Not declared")))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    out.push_str(&format!(
-                        "<li><strong>{}</strong>: {values}</li>",
-                        literal(strv(&rep["label"]))
-                    ));
-                }
-                out.push_str("</ul>");
-            } else {
-                out.push_str(&heading("Not declared"));
-            }
-            out.push_str("</td>");
-        }
         out.push_str("</tr>");
     }
     out.push_str("</tbody></table></div>\n\n");
@@ -1637,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn field_inventory_keeps_purpose_and_representation_constraints_in_accessible_rows() {
+    fn field_inventory_keeps_a_compact_purpose_overview_and_links_to_exact_details() {
         let model = json!({"fields":[
             {"id":"value","path":"payload.value","meaning":{"text":"Keep <source> {value} and | punctuation"},"representations":[
                 {"label":"Request","typeLabel":"string","requiredness":"optional","nullability":"nullable"},
@@ -1650,17 +1613,14 @@ mod tests {
             let html = field_table(&model, "en", portable);
             assert!(html.contains("<caption>Field descriptions</caption>"));
             assert_eq!(html.matches("scope=\"row\"").count(), 2);
-            assert_eq!(html.matches("scope=\"col\"").count(), 4);
+            assert_eq!(html.matches("scope=\"col\"").count(), 2);
             assert!(html.contains("href=\"#field-value\"><code>payload.value</code>"));
             assert!(html.contains("Keep &lt;source&gt; &#123;value&#125; and | punctuation"));
-            for expected in [
-                "<strong>Request</strong>: string",
-                "<strong>Storage</strong>: int64",
-                "<strong>Request</strong>: optional · nullable",
-                "<strong>Storage</strong>: required · not nullable",
-                "Not declared</td>",
-            ] {
-                assert!(html.contains(expected), "{expected}");
+            for technical in ["Request", "Storage", "int64", "optional", "nullable"] {
+                assert!(
+                    !html.contains(technical),
+                    "technical representation leaked into overview: {technical}"
+                );
             }
             assert!(!html.contains("<source>"));
             assert_eq!(model, before);

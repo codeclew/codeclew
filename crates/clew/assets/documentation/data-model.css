@@ -49,7 +49,7 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
 /* Field tables become blocks on phones; their captions must leave table layout too. */
 @media(max-width:650px){.dm-page>section>table>caption{display:block;width:100%;box-sizing:border-box;text-align:left}}
 
-/* The field inventory remains a semantic table in a contained scroll region. */
+/* Compact field/purpose inventory; technical representations stay in field details. */
 .dm-fields-scroll{max-width:100%;min-width:0;overflow:auto;margin:12px 0;overscroll-behavior:contain}
 .dm-fields-scroll:focus-visible{outline:2px solid #087b83;outline-offset:3px}
 .dm-fields-scroll table.dm-fields{display:table;width:100%;table-layout:fixed;border-collapse:collapse;margin:0}
@@ -57,9 +57,9 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
 .dm-fields-scroll .dm-fields thead{display:table-header-group;position:static;width:auto;height:auto;margin:0;clip-path:none;overflow:visible;white-space:normal}
 .dm-fields-scroll .dm-fields tbody{display:table-row-group}
 .dm-fields-scroll .dm-fields tr{display:table-row}
-.dm-fields-scroll .dm-fields :is(th,td){display:table-cell;width:25%;padding:10px;border:1px solid #cbd5db;vertical-align:top;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.dm-fields-scroll .dm-fields :is(th,td){display:table-cell;padding:10px;border:1px solid #cbd5db;vertical-align:top;text-align:left;white-space:normal;overflow-wrap:anywhere}
 .dm-fields-scroll .dm-fields th{background:#edf3f4}
-.dm-fields-scroll .dm-fields ul{padding-left:18px;margin:0}
+.dm-fields-scroll .dm-fields th:first-child{width:22%}.dm-fields-scroll .dm-fields td{width:78%}
 .dm-fields-scroll .dm-fields code{white-space:normal}
 
 @media(max-width:700px){
@@ -68,6 +68,7 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
  .dm-fields-scroll .dm-fields thead{position:absolute;width:1px;height:1px;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
  .dm-fields-scroll .dm-fields tr{margin:12px 0;border:1px solid #cbd5db;border-radius:6px}
  .dm-fields-scroll .dm-fields :is(th,td){border:0;border-bottom:1px solid #e2e9ec;padding:10px}
+ .dm-fields-scroll .dm-fields th:first-child,.dm-fields-scroll .dm-fields td{width:100%}
  .dm-fields-scroll .dm-fields td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px;color:#42516a}
  .dm-fields-scroll .dm-fields caption{display:block;width:100%;box-sizing:border-box}
 }
