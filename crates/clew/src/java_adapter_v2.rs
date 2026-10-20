@@ -681,7 +681,7 @@ fn collect_java_output(
     let error = read_result.err().or_else(|| {
         (!status.success()).then(|| ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
-            &format!("Java compiler analyzer exited unsuccessfully: exit code {:?}, stdout bytes {}, stderr bytes {}",
+            format!("Java compiler analyzer exited unsuccessfully: exit code {:?}, stdout bytes {}, stderr bytes {}",
                 status.code(), stdout_tail.observed, stderr_tail.observed),
         ))
     });
@@ -722,6 +722,7 @@ fn verify_operational_classpath(operational: &JavaOperationalModel) -> Result<()
 
 /// Decode successful emitter output before persistence or current-model projection.
 /// Source-membership records belong to projection, never to the Java subprocess.
+#[cfg(test)]
 pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerFact>, ClewError> {
     parse_java_compiler_reader(std::io::Cursor::new(raw))
 }
@@ -799,6 +800,7 @@ pub(crate) fn parse_java_compiler_reader(
     Ok(facts)
 }
 
+#[cfg(test)]
 pub(crate) fn project_java_compiler_output(
     raw: &[u8],
     operational: &JavaOperationalModel,
