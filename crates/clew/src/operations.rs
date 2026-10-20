@@ -63,6 +63,10 @@ fn agent_skill_digest() -> String {
                 .as_slice(),
         ),
         (
+            "references/thread-preparation.md",
+            include_bytes!("../../../skills/codeclew/references/thread-preparation.md").as_slice(),
+        ),
+        (
             "scripts/prepared_source.py",
             include_bytes!("../../../skills/codeclew/scripts/prepared_source.py").as_slice(),
         ),
