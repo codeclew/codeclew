@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
@@ -274,6 +274,9 @@ struct DerivedStateMount {
     device: u64,
     inode: u64,
     directory: bool,
+    // Keep an unlinked directory alive until cleanup ends, so its inode cannot
+    // be reused by a delete/recreate replacement at the same spelling.
+    _directory_lease: Option<Arc<fs::File>>,
 }
 
 impl DerivedStateMount {
@@ -937,11 +940,29 @@ fn mount_project_derived_state(
                 symlink(&target, &mount).map_err(io_error)?;
             }
             let metadata = fs::symlink_metadata(&mount).map_err(io_error)?;
+            let directory_lease = if contained_outputs {
+                let file = fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                    .open(&mount)
+                    .map_err(io_error)?;
+                let held = file.metadata().map_err(io_error)?;
+                if !held.is_dir() || held.dev() != metadata.dev() || held.ino() != metadata.ino() {
+                    return Err(ClewError::new(
+                        ErrorCode::InputMutated,
+                        "project-native derived output changed during lease acquisition",
+                    ));
+                }
+                Some(Arc::new(file))
+            } else {
+                None
+            };
             authorities.push(DerivedStateMount {
                 relative: relative.clone(),
                 device: metadata.dev(),
                 inode: metadata.ino(),
                 directory: contained_outputs,
+                _directory_lease: directory_lease,
             });
         }
     }
@@ -2275,7 +2296,7 @@ mod tests {
         let (snapshot, _) = repository_snapshot::capture(source.path(), &store).unwrap();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("keep.txt"), b"outside owned").unwrap();
-        for attack in 0..3 {
+        for attack in 0..4 {
             let workspace = ProjectNativeKotlinWorkspace::prepare(
                 &state,
                 &store,
@@ -2304,10 +2325,14 @@ mod tests {
             if attack == 0 {
                 workspace.finish().unwrap();
             } else {
-                fs::rename(repo.join("build"), repo.join("replaced-build")).unwrap();
-                if attack == 1 {
+                if attack == 3 {
+                    fs::remove_dir_all(repo.join("build")).unwrap();
+                    fs::create_dir(repo.join("build")).unwrap();
+                } else if attack == 1 {
+                    fs::rename(repo.join("build"), repo.join("replaced-build")).unwrap();
                     fs::create_dir(repo.join("build")).unwrap();
                 } else {
+                    fs::rename(repo.join("build"), repo.join("replaced-build")).unwrap();
                     symlink(outside.path(), repo.join("build")).unwrap();
                 }
                 assert_eq!(
