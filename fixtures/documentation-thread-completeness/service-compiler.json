@@ -1,0 +1,13 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "contour",
+  "title": "Thread completeness fixture",
+  "repositoryId": "thread-completeness-fixture",
+  "repository": "https://example.invalid/thread-completeness-fixture",
+  "language": "java",
+  "targetRef": "main",
+  "profile": "java-17plus-maven-read-only",
+  "compilations": [
+    ":/main"
+  ]
+}

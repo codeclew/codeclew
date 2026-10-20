@@ -61,6 +61,7 @@ pub(super) fn producer_identity() -> &'static str {
             include_str!("syntax_file_cache.rs"),
             include_str!("source_annotations.rs"),
             include_str!("source_inheritance.rs"),
+            include_str!("thread_inventory.rs"),
             include_str!("analysis.rs"),
             include_str!("model.rs"),
             include_str!("../canonical.rs"),

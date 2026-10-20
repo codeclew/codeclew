@@ -1,0 +1,3 @@
+#!/bin/sh
+FIXTURE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec mvn -s "$FIXTURE_ROOT/settings.xml" -gs "$FIXTURE_ROOT/settings.xml" "$@"

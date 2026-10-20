@@ -510,7 +510,7 @@ fn capture_session(
         transformed: transformed_map,
         contracts,
     };
-    project_scoped(
+    let mut evidence = project_scoped(
         service,
         &session.base_revision,
         service_digest,
@@ -519,7 +519,16 @@ fn capture_session(
         facts,
         &sources,
         &known,
-    )
+    )?;
+    super::thread_inventory::attach_compiler(
+        &mut evidence,
+        service,
+        &ready,
+        &store,
+        &snapshot_text,
+    )?;
+    verify_evidence(&evidence)?;
+    Ok(evidence)
 }
 
 pub(in crate::documentation) fn project_typescript_declarations(facts: &mut [(Value, String)]) {

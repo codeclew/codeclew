@@ -1,0 +1,138 @@
+{
+  "schema": "codeclew-thread-completeness-fixture-oracle/0.1",
+  "status": "PROPOSED_ORACLE_NOT_PRODUCT_RESULT",
+  "expectedRoots": [
+    {
+      "file": "src/main/java/example/contour/OrderController.java",
+      "method": "save",
+      "httpMethod": "POST",
+      "path": "/orders/save",
+      "expectation": "DIRECT"
+    },
+    {
+      "file": "src/main/java/example/contour/OrderController.java",
+      "method": "lookup",
+      "httpMethod": "GET",
+      "path": "/orders/lookup",
+      "expectation": "DIRECT"
+    },
+    {
+      "file": "src/main/java/example/contour/OrderController.java",
+      "method": "submit",
+      "httpMethod": "POST",
+      "path": "/orders/async",
+      "expectation": "DIRECT"
+    },
+    {
+      "file": "src/main/java/example/contour/AdminController.java",
+      "method": "status",
+      "httpMethod": "GET",
+      "path": "/admin/status",
+      "expectation": "DIRECT"
+    },
+    {
+      "file": "src/main/java/example/contour/AdminController.java",
+      "method": "lookupPort",
+      "httpMethod": "GET",
+      "path": "/admin/port",
+      "expectation": "DIRECT"
+    },
+    {
+      "file": "src/main/java/example/contour/BaseRoutes.java",
+      "method": "inherited",
+      "httpMethod": "GET",
+      "path": "/inherited/base",
+      "expectation": "INHERITED_CANDIDATE_OR_SUPPORTED"
+    },
+    {
+      "file": "src/main/java/example/contour/ComposedController.java",
+      "method": "shortcut",
+      "httpMethod": "GET",
+      "path": "/composed/shortcut",
+      "expectation": "COMPOSED_CANDIDATE_OR_SUPPORTED"
+    }
+  ],
+  "directCount": 5,
+  "possibleOrSupportedCount": 2,
+  "pageSize": 2,
+  "scope": {
+    "selected": [
+      "src/main/java"
+    ],
+    "excluded": [
+      "other-scope/java"
+    ],
+    "sourceFiles": [
+      "src/main/java/example/contour/AdminController.java",
+      "src/main/java/example/contour/BaseRoutes.java",
+      "src/main/java/example/contour/ComposedController.java",
+      "src/main/java/example/contour/InheritedController.java",
+      "src/main/java/example/contour/LookupPort.java",
+      "src/main/java/example/contour/OrderController.java",
+      "src/main/java/example/contour/OrderRepository.java",
+      "src/main/java/example/contour/OrderService.java",
+      "src/main/java/example/contour/ShortcutGet.java",
+      "src/main/java/example/contour/UnannotatedFacade.java",
+      "src/main/java/example/contour/Validator.java"
+    ]
+  },
+  "mustNotBecomePublicRoots": [
+    "Validator.normalize",
+    "OrderRepository.write",
+    "UnannotatedFacade.ping",
+    "OrderService.decorate(String)",
+    "OrderService.decorate(int)",
+    "other-scope/OrderService.save"
+  ],
+  "saveThread": {
+    "entry": "OrderController.save",
+    "mustRead": [
+      "OrderService.save",
+      "Validator.normalize",
+      "OrderRepository.write"
+    ],
+    "mustAccount": [
+      "blank/null -> IllegalArgumentException",
+      "validator before try block; not caught by StorageFailure handler",
+      "attempts++ before client.send",
+      "StorageFailure -> failed",
+      "normal write return -> saved",
+      "ExternalClient.send dispatch/transport boundary unknown"
+    ]
+  },
+  "ambiguity": {
+    "compiler": "lookupPort binds LookupPort.lookup declaration; no arbitrary implementation/runtime dispatch",
+    "syntax": "lookupPort produces source-backed candidates, no compiler-resolved target; read/reject or retain ambiguity",
+    "overloads": "decorate(String) versus decorate(int); no same-name/arity-only resolution"
+  },
+  "async": {
+    "entry": "OrderController.submit",
+    "boundary": "CompletableFuture.runAsync callback is deferred; accepted is not proof of persisted write"
+  },
+  "cases": [
+    {
+      "id": "A1",
+      "check": "5 direct roots and both inherited/composed forms accounted; unsupported form remains candidate/limitation, never silent absence"
+    },
+    {
+      "id": "A2",
+      "check": "pageSize2 exhausts inventory without loss; restart resumes stable membership/cursor and per-entry work progress"
+    },
+    {
+      "id": "A3",
+      "check": "save thread reaches helper/state write/client boundary and outcomes in compiler and syntax modes; controller-only text fails"
+    },
+    {
+      "id": "A4",
+      "check": "interface implementations and overloads preserve candidates/authority; no invented resolution or cross-scope substitution"
+    },
+    {
+      "id": "A5",
+      "check": "failure alternatives and deferred callback remain separate; no execution/commit guarantees inferred"
+    },
+    {
+      "id": "A6",
+      "check": "maxMethods2 cut, unavailable body, parse-failed root and unavailable scope remain incomplete, with a concrete next action"
+    }
+  ]
+}

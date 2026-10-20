@@ -330,7 +330,9 @@ fn capture_with_store_selected(
         e.coverage = "PARTIAL".into();
     }
     super::source_inheritance::apply(&mut e)?;
+    super::thread_inventory::attach_syntax_surfaces(&mut e)?;
     let mut scope = json!({"roots":config.roots,"dialect":config.dialect,"language":service.language,"extractor":SOURCE_EXTRACTOR,"inventory":inventory,"boundaries":e.boundaries});
+    scope["threadCapabilities"] = json!({"inventoryAuthority":"REGISTERED_INPUT_MEMBERSHIP_NOT_RUNTIME_REGISTRATION", "continuationCandidates":if service.language=="java"{"DECLARED_NAME_NAVIGATION"}else{"NOT_IMPLEMENTED_FOR_THIS_LANGUAGE"}, "runtimeClosure":"NOT_ESTABLISHED"});
     if !config.generated_inputs.is_empty() {
         scope["generatedInputs"] =
             serde_json::to_value(&config.generated_inputs).map_err(super::io_error)?;
@@ -845,7 +847,20 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     let index = events.len();
                     let event_identity = format!("{identity}/event/{index}");
                     let source = file.source(e, &event_identity, n.start_byte(), n.end_byte())?;
-                    let event = json!({"kind":kind,"syntaxKind":n.kind(),"authority":"SYNTAX","ordering":"LEXICAL_ONLY","text":spelling(n,file.text),"fingerprint":fingerprint(n,file.text)?,"targetStatus":"UNRESOLVED","ordinal":index,"parentOrdinal":parent,"nestingDepth":depth});
+                    let mut event = json!({"kind":kind,"syntaxKind":n.kind(),"authority":"SYNTAX","ordering":"LEXICAL_ONLY","text":spelling(n,file.text),"fingerprint":fingerprint(n,file.text)?,"targetStatus":"UNRESOLVED","ordinal":index,"parentOrdinal":parent,"nestingDepth":depth});
+                    if kind == "CALL" && file.service.language == "java" {
+                        if let Some(name) = n
+                            .child_by_field_name("name")
+                            .or_else(|| n.child_by_field_name("type"))
+                        {
+                            event["navigationName"] = json!(spelling(name, file.text));
+                            event["navigationAuthority"] =
+                                json!("DECLARED_NAME_ONLY_NOT_RESOLUTION");
+                        }
+                        if let Some(receiver) = n.child_by_field_name("object") {
+                            event["receiverText"] = json!(spelling(receiver, file.text));
+                        }
+                    }
                     observe(e, "FLOW", &event_identity, event.clone(), vec![source])?;
                     // FLOW lookup uses enclosing symbol, not its logical event identity.
                     let id = analysis::dependency_id(&e.service, "flow", &event_identity)?;
@@ -872,7 +887,7 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     .unwrap_or_else(|| spelling(n, file.text).to_owned())
             })
             .collect();
-        let mut normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","name":name,"ownerIdentity":owner,"symbolIdentity":identity,"syntaxKind":node.kind(),"fingerprint":fingerprint(node,file.text)?,"documentation":{"parameterTypes":parameter_types,"events":events,"boundaries":["CALL_TARGETS_UNRESOLVED","ORDER_LEXICAL_ONLY"]}});
+        let mut normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","name":name,"ownerIdentity":owner,"symbolIdentity":identity,"syntaxKind":node.kind(),"fingerprint":fingerprint(node,file.text)?,"documentation":{"bodyStatus":if body(node).is_some(){"RETAINED_BODY"}else{"DECLARATION_ONLY"},"parameterTypes":parameter_types,"events":events,"boundaries":["CALL_TARGETS_UNRESOLVED","ORDER_LEXICAL_ONLY"]}});
         if let Some(metadata) = annotation_context
             .as_ref()
             .and_then(|context| context.inheritance_metadata(node, &owner, &name))
@@ -966,6 +981,8 @@ fn event_kind(node: Node<'_>) -> Option<&'static str> {
         "throw_statement" | "throw_expression" | "raise_statement" => "THROW",
         "try_statement" | "try_expression" => "TRY",
         "finally_clause" | "finally_block" => "FINALLY",
+        "catch_clause" | "catch_block" => "CATCH",
+        "update_expression" | "assignment_expression" => "WRITE",
         "break_statement" => "BREAK",
         "continue_statement" => "CONTINUE",
         "lambda"
@@ -2262,4 +2279,42 @@ class Reader {
             "STALE"
         );
     }
+}
+
+/// Parse admitted immutable Java inputs for entry-surface auditing only.
+pub(super) fn audit_java_file(
+    service: &Service,
+    path: &str,
+    text: &str,
+    revision: &str,
+) -> Result<ServiceEvidence, ClewError> {
+    let mut e = ServiceEvidence {
+        schema: "codeclew-documentation-service-evidence/1.0".into(),
+        service: service.id.clone(),
+        revision: revision.into(),
+        service_digest: digest(service)?,
+        extractor: SOURCE_EXTRACTOR.into(),
+        runtime_mode: "RETAINED_COMPILATION_INPUT_AUDIT".into(),
+        coverage: "SYNTAX".into(),
+        boundaries: vec![],
+        entrypoints: vec![],
+        observations: BTreeMap::new(),
+        sources: BTreeMap::new(),
+        contracts: BTreeMap::new(),
+    };
+    let source_bytes = Cell::new(0);
+    let blob = canonical::hash_bytes(text.as_bytes());
+    let file = File {
+        service,
+        path,
+        text,
+        snapshot: revision,
+        blob: &blob,
+        source_bytes: &source_bytes,
+        recipes: None,
+        generated_origin: None,
+    };
+    let tree = parse("java", text)?;
+    extract(&file, tree.root_node(), &mut e)?;
+    Ok(e)
 }

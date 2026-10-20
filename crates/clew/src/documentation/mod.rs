@@ -89,6 +89,10 @@ mod syntax;
 mod syntax_file_cache;
 #[cfg(test)]
 mod syntax_file_cache_tests;
+mod thread_context;
+#[cfg(test)]
+mod thread_context_tests;
+mod thread_inventory;
 pub mod updates;
 pub mod visuals;
 pub mod work;

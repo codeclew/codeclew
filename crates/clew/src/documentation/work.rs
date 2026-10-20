@@ -127,6 +127,26 @@ pub enum Command {
         #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
+    /// Resume per-entry explanation accounting; independent from read/agent status.
+    ThreadStatus {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long, default_value_t=20, value_parser=clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// Save source-bound explanations for retained thread obligations, without publication.
+    AssessThread {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        input: PathBuf,
+    },
     Cancel {
         #[arg(long)]
         root: PathBuf,
@@ -954,6 +974,22 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &work,
             cursor.as_deref(),
             limit as usize,
+        ),
+        Command::ThreadStatus {
+            root,
+            work,
+            cursor,
+            limit,
+        } => super::thread_context::status(
+            &Repository::open(&root)?,
+            &work,
+            cursor.as_deref(),
+            limit as usize,
+        ),
+        Command::AssessThread { root, work, input } => super::thread_context::assess(
+            &Repository::open(&root)?,
+            &work,
+            store::read(&input, store::MAX_RECORD)?,
         ),
         Command::Cancel { root, work } => {
             super::agent_jobs::cancel(&Repository::open(&root)?, &work)
@@ -2797,7 +2833,9 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
                 "query kind is required; use * for every dependency kind",
             ));
         }
-        if query.kind == "SOURCE" {
+        if matches!(query.kind.as_str(), "THREAD_INVENTORY" | "THREAD_CONTEXT") {
+            super::thread_context::query(work, &query.kind, &query.symbol_contains)?
+        } else if query.kind == "SOURCE" {
             source_inventory_rows(work)?
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {

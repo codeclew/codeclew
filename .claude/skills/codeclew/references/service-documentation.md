@@ -29,6 +29,9 @@ when registration, source capture or durable documentation work is requested.
 
 ## Authoring start route
 
+For source-scope inventory, continuation candidates and resumable per-entry
+explanation accounting, use the [thread preparation route](thread-preparation.md).
+
 For a complete service, paginate its retained catalogue and distinguish public
 handlers/triggers from internal helpers. Keep each requested public entrypoint
 open until it has a source-bound operation explanation or an actionable

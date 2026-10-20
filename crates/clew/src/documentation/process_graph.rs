@@ -637,6 +637,51 @@ pub(super) fn collect_bounded(
                         sources_by_id.insert(source_id.clone(), source.clone());
                     }
                 }
+                // A javac relation can retain a selected declaration inside a
+                // try/lambda body that the structural FLOW intentionally does
+                // not expand. Collect that body for source review without
+                // inventing a FLOW event, execution order or parameter binding.
+                if relation.normalized["schema"] == "codeclew-java-compiler-fact/1.0"
+                    && matches!(
+                        relation.normalized["relationKind"].as_str(),
+                        Some("CALLS" | "CONSTRUCTS")
+                    )
+                    && relation.normalized["resolution"] == "COMPILER_EXACT"
+                    && relation.normalized["callSite"]["sourceStatus"] == "SOURCE_RETAINED"
+                    && relation.normalized["callSite"]["ownerStatus"] == "SOURCE_OWNER_RETAINED"
+                    && !relation.source_ids.is_empty()
+                    && relation
+                        .source_ids
+                        .iter()
+                        .all(|id| evidence.sources.contains_key(id))
+                    && !association_ambiguous
+                {
+                    let target = relation.normalized["targetIdentity"].as_str().unwrap_or("");
+                    let candidates = methods_by_scope_symbol
+                        .get(&(scope, target))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    let target_method = match candidates {
+                        [candidate]
+                            if unscoped_methods_by_symbol
+                                .get(target)
+                                .is_none_or(|m| m.is_empty()) =>
+                        {
+                            Some(*candidate)
+                        }
+                        _ => None,
+                    };
+                    if let Some(target_method) = target_method {
+                        if queued.insert(target_method.id.as_str()) {
+                            queue.push_back(target_method.id.as_str());
+                        }
+                    }
+                    edges.push(json!({"id":format!("declaration-edge:{}",relation.id),"kind":"DECLARATION_CALL",
+                        "fromMethodId":method.id,"relationId":relation.id,"eventId":null,"target":target,
+                        "targetMethodId":target_method.map(|m|&m.id),"resolution":if target_method.is_some(){"SAME_SCOPE_SELECTED_DECLARATION"}else{"UNRETAINED_OR_AMBIGUOUS_DECLARATION"},
+                        "relationshipAuthority":"JAVAC_SELECTED_DECLARATION_NOT_CONTROL_FLOW","executionContext":"NOT_ESTABLISHED_READ_ENCLOSING_BODY",
+                        "sourceIds":relation.source_ids,"dependencyIds":[relation.id]}));
+                }
                 continue;
             }
             if association_ambiguous {
