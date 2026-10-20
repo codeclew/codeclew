@@ -179,4 +179,51 @@ class KotlinJvm25QualificationTest {
             assertFalse(unavailable.second.contains("__SEMANTIC_THREAD_MODEL__"), unavailable.second)
         } finally { root.toFile().deleteRecursively() }
     }
+    @Test
+    fun modelPreparesDeclaredGeneratedSourcesWithoutCompilingSelectedTask() {
+        val root = Files.createTempDirectory("gradle-jvm25-generated-authority").toRealPath()
+        try {
+            val repository = generateSequence(Path.of(System.getProperty("user.dir")).toAbsolutePath(), Path::getParent)
+                .first { Files.isRegularFile(it.resolve("gradlew")) }
+            Files.writeString(root.resolve("settings.gradle.kts"), "pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }; dependencyResolutionManagement { repositories { mavenCentral() } }; rootProject.name = \"jvm25-generated\"")
+            Files.writeString(root.resolve("gradle.properties"), "org.gradle.java.installations.paths=${jdk25()}\norg.gradle.java.installations.auto-detect=false\norg.gradle.java.installations.auto-download=false\n")
+            Files.writeString(root.resolve("build.gradle.kts"), """
+                plugins { kotlin("jvm") version "2.3.21" }
+                kotlin { jvmToolchain(25); compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_25) } }
+                val generated = layout.buildDirectory.dir("generated/owned")
+                val generateOwned by tasks.registering {
+                    outputs.dir(generated)
+                    doLast {
+                        val output = generated.get().file("GeneratedValue.kt").asFile
+                        output.parentFile.mkdirs()
+                        output.writeText("class GeneratedValue { fun answer(): Int = 42 }")
+                    }
+                }
+                kotlin.sourceSets.getByName("main").kotlin.srcDir(generated)
+                tasks.named("compileKotlin") {
+                    dependsOn(generateOwned)
+                    doLast { file("compiled.marker").writeText("compiled") }
+                }
+            """.trimIndent())
+            val input = root.resolve("src/main/kotlin/Entry.kt")
+            Files.createDirectories(input.parent)
+            Files.writeString(input, "fun answer() = GeneratedValue().answer(); fun jdk25Api() = java.lang.classfile.ClassFile.of()")
+            val wrapper = listOf(repository.resolve("gradlew").toString(), "--no-daemon", "-p", root.toString())
+            val native = run(root, wrapper + "compileKotlin")
+            assertEquals(0, native.first, native.second)
+            val generated = root.resolve("build/generated/owned/GeneratedValue.kt")
+            assertTrue(Files.isRegularFile(generated))
+            Files.delete(generated)
+            Files.delete(root.resolve("compiled.marker"))
+            val modeled = run(root, wrapper + listOf("-I", repository.resolve("workers/kotlin/src/main/resources/semantic-thread-model.init.gradle").toString(), "semanticThreadModel"))
+            assertEquals(0, modeled.first, modeled.second)
+            assertTrue(Files.isRegularFile(generated), "model must execute the selected compilation's generator")
+            assertFalse(Files.exists(root.resolve("compiled.marker")), "model must not execute the selected compiler task")
+            val model = Json.parseToJsonElement(modeled.second.lineSequence().single { it.startsWith("__SEMANTIC_THREAD_MODEL__") }.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
+            assertEquals(setOf(input.toString(), generated.toString()), model["sourceFiles"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+            assertEquals(jdk25(), Path.of(model["jdkHome"]!!.jsonPrimitive.content).toRealPath())
+            assertEquals("JVM_25", model["jvmTarget"]!!.jsonPrimitive.content)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
 }

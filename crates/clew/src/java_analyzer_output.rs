@@ -7,7 +7,7 @@ use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::java_adapter_v2::{
-    JAVA_ANALYZER_SOURCE, MAX_ANALYZER_OUTPUT_BYTES, parse_java_compiler_output,
+    JAVA_ANALYZER_SOURCE, JavaCompilerFact, MAX_ANALYZER_OUTPUT_BYTES, parse_java_compiler_reader,
 };
 use crate::java_analysis_inputs::{
     JavaPreparedClasspathAuthority, JavaPreparedSourceAuthority, PreparedJavaAnalysisInputs,
@@ -17,12 +17,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::io::{BufReader, Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::path::Path;
 
 pub(crate) const INPUT_SCHEMA: &str = "codeclew-java-executor-input/1.0";
 pub(crate) const RECEIPT_SCHEMA: &str = "codeclew-java-executor-success/1.0";
-const OUTPUT_SCHEMA: &str = "codeclew-java-analyzer-ndjson/1.0";
+const LEGACY_OUTPUT_SCHEMA: &str = "codeclew-java-analyzer-ndjson/1.0";
+const OUTPUT_SCHEMA: &str = "codeclew-java-analyzer-output-chunks/1.0";
+const CHUNK_SCHEMA: &str = "codeclew-java-analyzer-output-chunk/1.0";
+const CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_OUTPUT_MANIFEST_BYTES: usize = 256 * 1024;
 const CHECKPOINT_SCHEMA: &str = "codeclew-java-analyzer-output-checkpoint/1.0";
 // launch --source 17; UTF-8/en/US/UTC; explicit owned JDK/source/class paths;
 // env_clear + LANG/LC_ALL/TZ/JAVA_HOME/TMPDIR/PATH; owned working, home and temporary directories;
@@ -69,9 +74,18 @@ struct Checkpoint {
 }
 
 pub(crate) struct CompilerOutput {
-    pub bytes: Vec<u8>,
+    pub facts: Vec<JavaCompilerFact>,
     pub success_receipt: CasObject,
     pub hit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChunkedOutput {
+    schema: String,
+    total_bytes: u64,
+    content_digest: String,
+    chunks: Vec<CasObject>,
 }
 
 pub(crate) fn prepare_input(
@@ -107,17 +121,29 @@ pub(crate) fn get_or_execute(
     store: &CasStore,
     repository_root: &Path,
     input: &CasObject,
-    execute: impl FnOnce() -> Result<Vec<u8>, ClewError>,
+    execute: impl FnOnce() -> Result<File, ClewError>,
 ) -> Result<CompilerOutput, ClewError> {
     let component = digest_component(&input.digest)?;
-    let directory = repository_root.join("generations/java-analyzer-output");
+    // Keep old successful computations reusable without making an older binary
+    // mistake a chunk manifest for raw NDJSON after a downgrade.
+    let directory = repository_root.join("generations/java-analyzer-stream-output");
     state.directory_at(&directory)?;
     let path = directory.join(format!("{component}.json"));
     // Store retains a shared CAS-world lease through atomic root publication.
     // Independent generation keys must serialize on the compiler input itself.
     let _lock = InputLock::acquire(state, component)?;
-    if state.private_file_exists(&path)? {
-        let bytes = state.read_private_file(&path, MAX_ENVELOPE_BYTES)?;
+    let legacy_path = repository_root
+        .join("generations/java-analyzer-output")
+        .join(format!("{component}.json"));
+    let saved_path = if state.private_file_exists(&path)? {
+        Some(&path)
+    } else if state.private_file_exists(&legacy_path)? {
+        Some(&legacy_path)
+    } else {
+        None
+    };
+    if let Some(saved_path) = saved_path {
+        let bytes = state.read_private_file(saved_path, MAX_ENVELOPE_BYTES)?;
         let checkpoint: Checkpoint = serde_json::from_slice(&bytes)
             .map_err(|_| corrupt("Java raw checkpoint is invalid"))?;
         if canonical::bytes(&checkpoint).map_err(internal)? != bytes
@@ -133,14 +159,15 @@ pub(crate) fn get_or_execute(
             return Err(corrupt("Java raw checkpoint output is inconsistent"));
         }
         return Ok(CompilerOutput {
-            bytes: output,
+            facts: output,
             success_receipt: checkpoint.success_receipt,
             hit: true,
         });
     }
-    let bytes = execute()?;
-    validate_output(store, input, &bytes)?;
-    let output = store.put(OUTPUT_SCHEMA, &bytes)?;
+    let mut raw = execute()?;
+    let facts = validate_output(store, input, &mut raw)?;
+    raw.rewind().map_err(internal)?;
+    let output = save_chunked_output(store, &mut raw)?;
     let receipt = SuccessReceipt {
         schema: RECEIPT_SCHEMA.into(),
         execution_id: uuid::Uuid::new_v4().to_string(),
@@ -161,7 +188,7 @@ pub(crate) fn get_or_execute(
     };
     state.write_private_atomic(&path, &canonical::bytes(&checkpoint).map_err(internal)?)?;
     Ok(CompilerOutput {
-        bytes,
+        facts,
         success_receipt,
         hit: false,
     })
@@ -230,14 +257,14 @@ pub(crate) fn verify_receipt(
     store: &CasStore,
     reference: &CasObject,
     expected_input: &CasObject,
-) -> Result<Vec<u8>, ClewError> {
+) -> Result<Vec<JavaCompilerFact>, ClewError> {
     if reference.object_schema != RECEIPT_SCHEMA || expected_input.object_schema != INPUT_SCHEMA {
         return Err(corrupt("Java compiler-output receipt schema is invalid"));
     }
     let receipt: SuccessReceipt = read_canonical(store, reference, MAX_ENVELOPE_BYTES)?;
     if receipt.schema != RECEIPT_SCHEMA
         || receipt.input != *expected_input
-        || receipt.output.object_schema != OUTPUT_SCHEMA
+        || ![OUTPUT_SCHEMA, LEGACY_OUTPUT_SCHEMA].contains(&receipt.output.object_schema.as_str())
         || receipt.exit_code != 0
         || receipt.java_analyzer_starts != 1
         || uuid::Uuid::parse_str(&receipt.execution_id).is_err()
@@ -246,15 +273,93 @@ pub(crate) fn verify_receipt(
             "Java compiler-output execution receipt is inconsistent",
         ));
     }
-    let output = store
-        .read(&receipt.output, MAX_ANALYZER_OUTPUT_BYTES)?
-        .bytes()
-        .to_vec();
-    validate_output(store, expected_input, &output)?;
+    if receipt.output.object_schema == LEGACY_OUTPUT_SCHEMA {
+        let output = store.read(&receipt.output, 64 * 1024 * 1024)?;
+        return validate_output(store, expected_input, output.bytes());
+    }
+    let mut output = restore_chunked_output(store, &receipt.output)?;
+    validate_output(store, expected_input, &mut output)
+}
+
+fn save_chunked_output(store: &CasStore, raw: &mut File) -> Result<CasObject, ClewError> {
+    use sha2::{Digest, Sha256};
+    let mut manifest = ChunkedOutput {
+        schema: OUTPUT_SCHEMA.into(),
+        total_bytes: 0,
+        content_digest: String::new(),
+        chunks: Vec::new(),
+    };
+    let mut digest = Sha256::new();
+    loop {
+        let mut bytes = Vec::with_capacity(CHUNK_BYTES);
+        raw.take(CHUNK_BYTES as u64)
+            .read_to_end(&mut bytes)
+            .map_err(internal)?;
+        if bytes.is_empty() {
+            break;
+        }
+        manifest.total_bytes += bytes.len() as u64;
+        if manifest.total_bytes > MAX_ANALYZER_OUTPUT_BYTES as u64 {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "Java compiler output exceeds its byte limit",
+            ));
+        }
+        digest.update(&bytes);
+        manifest.chunks.push(store.put(CHUNK_SCHEMA, &bytes)?);
+    }
+    manifest.content_digest = format!("sha256:{:x}", digest.finalize());
+    store.put(
+        OUTPUT_SCHEMA,
+        &canonical::bytes(&manifest).map_err(internal)?,
+    )
+}
+
+fn restore_chunked_output(store: &CasStore, reference: &CasObject) -> Result<File, ClewError> {
+    use sha2::{Digest, Sha256};
+    let manifest: ChunkedOutput = read_canonical(store, reference, MAX_OUTPUT_MANIFEST_BYTES)?;
+    if manifest.schema != OUTPUT_SCHEMA
+        || manifest.total_bytes > MAX_ANALYZER_OUTPUT_BYTES as u64
+        || manifest.chunks.len() != (manifest.total_bytes as usize).div_ceil(CHUNK_BYTES)
+    {
+        return Err(corrupt(
+            "Java output chunk manifest has invalid size or membership",
+        ));
+    }
+    let mut output = tempfile::tempfile().map_err(internal)?;
+    let mut digest = Sha256::new();
+    let mut total = 0u64;
+    for (index, chunk) in manifest.chunks.iter().enumerate() {
+        let expected = (manifest.total_bytes - total).min(CHUNK_BYTES as u64);
+        if chunk.object_schema != CHUNK_SCHEMA || chunk.size != expected || expected == 0 {
+            return Err(corrupt(
+                "Java output chunk has invalid schema, order or size",
+            ));
+        }
+        let bytes = store.read(chunk, CHUNK_BYTES)?;
+        output.write_all(bytes.bytes()).map_err(internal)?;
+        digest.update(bytes.bytes());
+        total += bytes.bytes().len() as u64;
+        if index + 1 < manifest.chunks.len() && bytes.bytes().len() != CHUNK_BYTES {
+            return Err(corrupt("Java output contains a short intermediate chunk"));
+        }
+    }
+    if total != manifest.total_bytes
+        || format!("sha256:{:x}", digest.finalize()) != manifest.content_digest
+    {
+        return Err(corrupt(
+            "Java output chunks differ from the complete stream authority",
+        ));
+    }
+    output.rewind().map_err(internal)?;
     Ok(output)
 }
 
-fn validate_output(store: &CasStore, input: &CasObject, bytes: &[u8]) -> Result<(), ClewError> {
+fn validate_output(
+    store: &CasStore,
+    input: &CasObject,
+    reader: impl Read,
+) -> Result<Vec<JavaCompilerFact>, ClewError> {
     if input.object_schema != INPUT_SCHEMA {
         return Err(corrupt("Java compiler input schema is invalid"));
     }
@@ -267,7 +372,8 @@ fn validate_output(store: &CasStore, input: &CasObject, bytes: &[u8]) -> Result<
         .iter()
         .map(|source| source.path.as_str())
         .collect::<BTreeSet<_>>();
-    for fact in parse_java_compiler_output(bytes)? {
+    let facts = parse_java_compiler_reader(BufReader::new(reader))?;
+    for fact in &facts {
         if let crate::java_adapter_v2::JavaCompilerFact::DependencyTarget { binary_origin, .. } =
             &fact
             && binary_origin.classpath_index >= authority.classpath.len()
@@ -282,7 +388,7 @@ fn validate_output(store: &CasStore, input: &CasObject, bytes: &[u8]) -> Result<
             ));
         }
     }
-    Ok(())
+    Ok(facts)
 }
 
 fn read_canonical<T: for<'de> Deserialize<'de> + Serialize>(
@@ -373,6 +479,12 @@ mod tests {
     fn raw() -> Vec<u8> {
         br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"BOUNDARY","code":"TEST_BOUNDARY","file":"src/Main.java","requiredChecks":[],"resolution":"TEST"}"#.to_vec()
     }
+    fn spool(bytes: Vec<u8>) -> File {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&bytes).unwrap();
+        file.rewind().unwrap();
+        file
+    }
     fn setup() -> (
         tempfile::TempDir,
         StateAuthority,
@@ -395,7 +507,8 @@ mod tests {
     #[test]
     fn saved_raw_survives_reopen_and_gc_without_any_ready_generation() {
         let (_root, state, store, repository, input) = setup();
-        let produced = get_or_execute(&state, &store, &repository, &input, || Ok(raw())).unwrap();
+        let produced =
+            get_or_execute(&state, &store, &repository, &input, || Ok(spool(raw()))).unwrap();
         assert!(!produced.hit);
         // Simulate interruption before projection/DAG/Ready: only the raw root exists.
         drop(store);
@@ -406,7 +519,10 @@ mod tests {
         })
         .unwrap();
         assert!(reused.hit);
-        assert_eq!(reused.bytes, raw());
+        assert_eq!(
+            reused.facts,
+            parse_java_compiler_reader(std::io::Cursor::new(raw())).unwrap()
+        );
         assert_eq!(reused.success_receipt, produced.success_receipt);
     }
 
@@ -423,7 +539,8 @@ mod tests {
                 .to_owned();
             let reference = put_input(&store, &input(&store));
             let output =
-                get_or_execute(&state, &store, &repository, &reference, || Ok(raw())).unwrap();
+                get_or_execute(&state, &store, &repository, &reference, || Ok(spool(raw())))
+                    .unwrap();
             assert!(!output.hit);
             // Bypass Rust destructors: the OS must release the CAS/input leases.
             // No projector, DAG, Ready object or session binding has run.
@@ -454,7 +571,10 @@ mod tests {
         })
         .unwrap();
         assert!(output.hit);
-        assert_eq!(output.bytes, raw());
+        assert_eq!(
+            output.facts,
+            parse_java_compiler_reader(std::io::Cursor::new(raw())).unwrap()
+        );
     }
 
     #[test]
@@ -474,7 +594,7 @@ mod tests {
                     barrier.wait();
                     get_or_execute(&state, &store, &repository, &input, || {
                         starts.fetch_add(1, Ordering::SeqCst);
-                        Ok(raw())
+                        Ok(spool(raw()))
                     })
                     .unwrap()
                 })
@@ -492,7 +612,7 @@ mod tests {
     #[test]
     fn input_changes_miss_and_failed_or_invalid_outputs_are_not_saved() {
         let (_root, state, store, repository, original) = setup();
-        get_or_execute(&state, &store, &repository, &original, || Ok(raw())).unwrap();
+        get_or_execute(&state, &store, &repository, &original, || Ok(spool(raw()))).unwrap();
         let baseline = input(&store);
         for field in 0..9 {
             let mut changed = baseline.clone();
@@ -521,7 +641,7 @@ mod tests {
             let reference = put_input(&store, &changed);
             assert_ne!(reference, original);
             assert!(
-                !get_or_execute(&state, &store, &repository, &reference, || Ok(raw()))
+                !get_or_execute(&state, &store, &repository, &reference, || Ok(spool(raw())))
                     .unwrap()
                     .hit
             );
@@ -536,13 +656,13 @@ mod tests {
             .is_err()
         );
         assert!(
-            get_or_execute(&state, &store, &repository, &reference, || Ok(
+            get_or_execute(&state, &store, &repository, &reference, || Ok(spool(
                 b"not ndjson".to_vec()
-            ))
+            )))
             .is_err()
         );
         assert!(
-            !get_or_execute(&state, &store, &repository, &reference, || Ok(raw()))
+            !get_or_execute(&state, &store, &repository, &reference, || Ok(spool(raw())))
                 .unwrap()
                 .hit
         );
@@ -551,19 +671,19 @@ mod tests {
     #[test]
     fn source_path_membership_and_classpath_order_are_compiler_inputs() {
         let (_root, state, store, repository, original) = setup();
-        get_or_execute(&state, &store, &repository, &original, || Ok(raw())).unwrap();
+        get_or_execute(&state, &store, &repository, &original, || Ok(spool(raw()))).unwrap();
         let baseline = input(&store);
         let mut renamed = baseline.clone();
         renamed.sources[0].path = "src/Renamed.java".into();
         let renamed_input = put_input(&store, &renamed);
         assert_ne!(original, renamed_input);
         assert!(
-            !get_or_execute(&state, &store, &repository, &renamed_input, || Ok(
+            !get_or_execute(&state, &store, &repository, &renamed_input, || Ok(spool(
                 String::from_utf8(raw())
                     .unwrap()
                     .replace("src/Main.java", "src/Renamed.java")
                     .into_bytes()
-            ))
+            )))
             .unwrap()
             .hit
         );
@@ -575,9 +695,11 @@ mod tests {
         let membership_input = put_input(&store, &membership);
         assert_ne!(original, membership_input);
         assert!(
-            !get_or_execute(&state, &store, &repository, &membership_input, || Ok(raw()))
-                .unwrap()
-                .hit
+            !get_or_execute(&state, &store, &repository, &membership_input, || Ok(
+                spool(raw())
+            ))
+            .unwrap()
+            .hit
         );
         let mut ordered = baseline;
         for name in ["first.jar", "second.jar"] {
@@ -592,26 +714,30 @@ mod tests {
         }
         let ordered_input = put_input(&store, &ordered);
         assert!(
-            !get_or_execute(&state, &store, &repository, &ordered_input, || Ok(raw()))
-                .unwrap()
-                .hit
+            !get_or_execute(&state, &store, &repository, &ordered_input, || Ok(spool(
+                raw()
+            )))
+            .unwrap()
+            .hit
         );
         ordered.classpath.reverse();
         let reversed_input = put_input(&store, &ordered);
         assert_ne!(ordered_input, reversed_input);
         assert!(
-            !get_or_execute(&state, &store, &repository, &reversed_input, || Ok(raw()))
-                .unwrap()
-                .hit
+            !get_or_execute(&state, &store, &repository, &reversed_input, || Ok(spool(
+                raw()
+            )))
+            .unwrap()
+            .hit
         );
     }
 
     #[test]
     fn corrupt_raw_receipt_is_explicit_error_without_reexecution() {
         let (_root, state, store, repository, input) = setup();
-        get_or_execute(&state, &store, &repository, &input, || Ok(raw())).unwrap();
+        get_or_execute(&state, &store, &repository, &input, || Ok(spool(raw()))).unwrap();
         let path = repository
-            .join("generations/java-analyzer-output")
+            .join("generations/java-analyzer-stream-output")
             .join(format!("{}.json", digest_component(&input.digest).unwrap()));
         let bytes = state.read_private_file(&path, MAX_ENVELOPE_BYTES).unwrap();
         let mut checkpoint: Checkpoint = serde_json::from_slice(&bytes).unwrap();
@@ -683,7 +809,130 @@ mod tests {
             .replace("codeclew-java-compiler-fact/1.0", "unknown/1");
         assert!(validate_output(&store, &input, schema.as_bytes()).is_err());
         let projected = br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"SOURCE_FILE","file":"src/Main.java","sourceContentDigest":"forged","resolution":"SOURCE_MEMBERSHIP_EXACT"}"#;
-        assert!(validate_output(&store, &input, projected).is_err());
-        assert!(parse_java_compiler_output(&[0xff]).is_err());
+        assert!(validate_output(&store, &input, projected.as_slice()).is_err());
+        assert!(parse_java_compiler_reader(std::io::Cursor::new([0xff])).is_err());
+    }
+
+    #[test]
+    fn large_stream_survives_gc_and_warm_reuse_with_all_facts() {
+        let (_root, state, store, repository, input) = setup();
+        let line = String::from_utf8(raw())
+            .unwrap()
+            .replace("TEST_BOUNDARY", &"x".repeat(64 * 1024));
+        let count = 1100;
+        let produced = get_or_execute(&state, &store, &repository, &input, || {
+            let mut file = tempfile::tempfile().unwrap();
+            for _ in 0..count {
+                file.write_all(line.as_bytes()).unwrap();
+                file.write_all(b"\r\n").unwrap();
+            }
+            assert!(file.metadata().unwrap().len() > 64 * 1024 * 1024);
+            file.rewind().unwrap();
+            Ok(file)
+        })
+        .unwrap();
+        assert_eq!(produced.facts.len(), count);
+        let receipt: SuccessReceipt =
+            read_canonical(&store, &produced.success_receipt, MAX_ENVELOPE_BYTES).unwrap();
+        let manifest: ChunkedOutput =
+            read_canonical(&store, &receipt.output, MAX_OUTPUT_MANIFEST_BYTES).unwrap();
+        assert!(manifest.chunks.len() > 64);
+        assert!(
+            manifest
+                .chunks
+                .iter()
+                .all(|chunk| chunk.size <= CHUNK_BYTES as u64)
+        );
+        drop(produced);
+        drop(store);
+        crate::cas::garbage_collect_storage(&state).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let reused = get_or_execute(&state, &store, &repository, &input, || {
+            panic!("warm stream must not execute")
+        })
+        .unwrap();
+        assert!(reused.hit);
+        assert_eq!(reused.facts.len(), count);
+        assert_eq!(
+            canonical::bytes(&reused.facts[0]).unwrap(),
+            canonical::bytes(&reused.facts[count - 1]).unwrap()
+        );
+    }
+
+    #[test]
+    fn chunk_membership_order_length_and_digest_fail_closed() {
+        let (_root, _state, store, _repository, _input) = setup();
+        let mut file = spool(vec![b'x'; CHUNK_BYTES * 2 + 17]);
+        file.seek(std::io::SeekFrom::Start(CHUNK_BYTES as u64))
+            .unwrap();
+        file.write_all(&vec![b'y'; CHUNK_BYTES]).unwrap();
+        file.rewind().unwrap();
+        let reference = save_chunked_output(&store, &mut file).unwrap();
+        let original: ChunkedOutput =
+            read_canonical(&store, &reference, MAX_OUTPUT_MANIFEST_BYTES).unwrap();
+        for attack in 0..5 {
+            let mut manifest = original.clone();
+            match attack {
+                0 => {
+                    manifest.chunks.swap(0, 1);
+                }
+                1 => {
+                    manifest.chunks.pop();
+                }
+                2 => {
+                    manifest.total_bytes -= 1;
+                }
+                3 => {
+                    manifest.content_digest = canonical::hash_bytes(b"forged");
+                }
+                _ => {
+                    manifest.total_bytes = MAX_ANALYZER_OUTPUT_BYTES as u64 + 1;
+                }
+            }
+            let forged = store
+                .put(OUTPUT_SCHEMA, &canonical::bytes(&manifest).unwrap())
+                .unwrap();
+            assert_eq!(
+                restore_chunked_output(&store, &forged).unwrap_err().code,
+                ErrorCode::StateCorrupt
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_success_is_reused_without_reexecution() {
+        let (_root, state, store, repository, input) = setup();
+        let output = store.put(LEGACY_OUTPUT_SCHEMA, &raw()).unwrap();
+        let receipt = SuccessReceipt {
+            schema: RECEIPT_SCHEMA.into(),
+            execution_id: uuid::Uuid::new_v4().to_string(),
+            input: input.clone(),
+            output: output.clone(),
+            exit_code: 0,
+            java_analyzer_starts: 1,
+        };
+        let success_receipt = store
+            .put(RECEIPT_SCHEMA, &canonical::bytes(&receipt).unwrap())
+            .unwrap();
+        let checkpoint = Checkpoint {
+            schema: CHECKPOINT_SCHEMA.into(),
+            input: input.clone(),
+            output,
+            success_receipt,
+        };
+        let directory = repository.join("generations/java-analyzer-output");
+        state.directory_at(&directory).unwrap();
+        state
+            .write_private_atomic(
+                &directory.join(format!("{}.json", digest_component(&input.digest).unwrap())),
+                &canonical::bytes(&checkpoint).unwrap(),
+            )
+            .unwrap();
+        let reused = get_or_execute(&state, &store, &repository, &input, || {
+            panic!("legacy success must be reusable")
+        })
+        .unwrap();
+        assert!(reused.hit);
+        assert_eq!(reused.facts.len(), 1);
     }
 }

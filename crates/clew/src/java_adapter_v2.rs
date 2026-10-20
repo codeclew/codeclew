@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -30,7 +31,7 @@ pub const JAVA_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const JAVA_RECEIPT_SCHEMA: &str = "codeclew-java-compiler-completeness/1.0";
 const JAVA_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-java-compiler-adapter/1.0";
 pub const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
-pub(crate) const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_ANALYZER_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_JAVA_FACTS: usize = 262_144;
 const MAX_FACT_BYTES: usize = 256 * 1024;
 const MAX_DEPENDENCY_SOURCE_ENTRIES: usize = 32;
@@ -410,8 +411,8 @@ fn build_java_compiler_index_inner(
         debug_output,
         prepared,
     )?;
-    project_java_compiler_output(
-        &raw,
+    project_java_compiler_facts(
+        parse_java_compiler_reader(BufReader::new(raw))?,
         operational,
         source_content_digests,
         writable_then_seal,
@@ -424,7 +425,7 @@ pub(crate) fn execute_prepared_java_output(
     operational: &JavaOperationalModel,
     prepared: &PreparedJavaAnalysisInputs,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
-) -> Result<Vec<u8>, ClewError> {
+) -> Result<fs::File, ClewError> {
     prepared.require_sealed()?;
     if !operational.authority.annotation_processors.is_empty()
         || !operational.authority.annotation_processor_paths.is_empty()
@@ -453,7 +454,7 @@ fn execute_java_compiler(
     writable_then_seal: bool,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
     prepared: Option<&PreparedJavaAnalysisInputs>,
-) -> Result<Vec<u8>, ClewError> {
+) -> Result<fs::File, ClewError> {
     verify_model(&operational.authority)?;
     if prepared.is_none() {
         verify_operational_classpath(operational)?;
@@ -611,43 +612,91 @@ fn execute_java_compiler(
             inputs.duplicate_liveness()?,
         )?;
     }
-    let output = command
-        .output()
+    let output = collect_java_output(&mut command, debug_output, MAX_ANALYZER_OUTPUT_BYTES)?;
+    if prepared.is_none() {
+        verify_operational_classpath(operational)?;
+    }
+    Ok(output)
+}
+
+/// Drain both pipes concurrently, retaining only bounded tails in memory. The
+/// anonymous 0600 spool is removed on close and never becomes a success receipt
+/// until the complete fact stream and its input membership have been validated.
+fn collect_java_output(
+    command: &mut Command,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    limit: usize,
+) -> Result<fs::File, ClewError> {
+    let mut output = tempfile::tempfile().map_err(io_error)?;
+    let mut child = command
+        .spawn()
         .map_err(|_| unsupported("Java compiler analyzer could not start"))?;
-    if !output.status.success()
-        || output.stdout.len() > MAX_ANALYZER_OUTPUT_BYTES
-        || output.stderr.len() > MAX_ANALYZER_OUTPUT_BYTES
-    {
-        // Only allowlisted metadata is ever surfaced publicly. Raw analyzer
-        // output is retained solely through the opt-in private diagnostic
-        // contract (byte-bounded, caller-owned 0700 directory).
-        eprintln!(
-            "Java compiler analyzer failed: status={:?} stdout_bytes={} stderr_bytes={}",
-            output.status.code(),
-            output.stdout.len(),
-            output.stderr.len(),
-        );
-        let mut stdout_tail = crate::maven_diagnostics::Tail::default();
-        stdout_tail.append(&output.stdout);
-        let mut stderr_tail = crate::maven_diagnostics::Tail::default();
-        stderr_tail.append(&output.stderr);
-        let error = ClewError::new(
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| internal("Java stdout is missing"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| internal("Java stderr is missing"))?;
+    let mut stdout_tail = crate::maven_diagnostics::Tail::default();
+    let (read_result, stderr_result) = std::thread::scope(|scope| {
+        let stderr_task = scope.spawn(move || {
+            let mut tail = crate::maven_diagnostics::Tail::default();
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let count = stderr.read(&mut buffer)?;
+                if count == 0 {
+                    return Ok::<_, std::io::Error>(tail);
+                }
+                tail.append(&buffer[..count]);
+            }
+        });
+        let read_result = (|| {
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let count = stdout.read(&mut buffer).map_err(io_error)?;
+                if count == 0 {
+                    return Ok(());
+                }
+                stdout_tail.append(&buffer[..count]);
+                if stdout_tail.observed > limit as u64 {
+                    return Err(resource(&format!(
+                        "Java analyzer stdout exceeds byte limit: observed at least {}, limit {}",
+                        stdout_tail.observed, limit
+                    )));
+                }
+                output.write_all(&buffer[..count]).map_err(io_error)?;
+            }
+        })();
+        if read_result.is_err() {
+            let _ = child.kill();
+        }
+        (read_result, stderr_task.join())
+    });
+    let status = child.wait().map_err(io_error)?;
+    let stderr_tail = stderr_result
+        .map_err(|_| internal("Java stderr reader panicked"))?
+        .map_err(io_error)?;
+    let error = read_result.err().or_else(|| {
+        (!status.success()).then(|| ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
-            "Java compiler analyzer did not produce bounded facts",
-        );
+            &format!("Java compiler analyzer exited unsuccessfully: exit code {:?}, stdout bytes {}, stderr bytes {}",
+                status.code(), stdout_tail.observed, stderr_tail.observed),
+        ))
+    });
+    if let Some(error) = error {
         return Err(crate::maven_diagnostics::annotate_failure(
             error,
             debug_output,
             "JAVA_ANALYZER",
-            &output.status,
+            &status,
             &stdout_tail,
             &stderr_tail,
         ));
     }
-    if prepared.is_none() {
-        verify_operational_classpath(operational)?;
-    }
-    Ok(output.stdout)
+    output.rewind().map_err(io_error)?;
+    Ok(output)
 }
 
 fn verify_operational_classpath(operational: &JavaOperationalModel) -> Result<(), ClewError> {
@@ -674,28 +723,55 @@ fn verify_operational_classpath(operational: &JavaOperationalModel) -> Result<()
 /// Decode successful emitter output before persistence or current-model projection.
 /// Source-membership records belong to projection, never to the Java subprocess.
 pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerFact>, ClewError> {
-    if raw.len() > MAX_ANALYZER_OUTPUT_BYTES {
-        return Err(resource("Java compiler output exceeds its byte budget"));
-    }
-    let text =
-        std::str::from_utf8(raw).map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
-    let facts = text
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            if line.len() > MAX_FACT_BYTES {
-                return Err(resource("Java compiler fact exceeds its byte budget"));
-            }
-            serde_json::from_str::<JavaCompilerFact>(line)
-                .map_err(|_| corrupt("Java compiler fact schema is invalid"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if facts.len() > MAX_JAVA_FACTS {
-        return Err(resource(
-            "Java compiler fact count exceeds its bounded profile",
-        ));
-    }
-    for fact in &facts {
+    parse_java_compiler_reader(std::io::Cursor::new(raw))
+}
+
+pub(crate) fn parse_java_compiler_reader(
+    mut reader: impl BufRead,
+) -> Result<Vec<JavaCompilerFact>, ClewError> {
+    let mut facts = Vec::new();
+    let mut line = Vec::new();
+    let mut total = 0usize;
+    loop {
+        line.clear();
+        let count = reader
+            .by_ref()
+            .take((MAX_FACT_BYTES + 3) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(io_error)?;
+        if count == 0 {
+            break;
+        }
+        total += count;
+        if total > MAX_ANALYZER_OUTPUT_BYTES {
+            return Err(resource(&format!(
+                "Java analyzer stdout exceeds byte limit: observed at least {total}, limit {MAX_ANALYZER_OUTPUT_BYTES}"
+            )));
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if line.len() > MAX_FACT_BYTES {
+            return Err(resource(&format!(
+                "Java compiler fact exceeds byte limit: observed at least {}, limit {MAX_FACT_BYTES}",
+                line.len()
+            )));
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if facts.len() == MAX_JAVA_FACTS {
+            return Err(resource(&format!(
+                "Java compiler fact count exceeds limit {MAX_JAVA_FACTS}"
+            )));
+        }
+        let text =
+            std::str::from_utf8(&line).map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
+        let fact: JavaCompilerFact = serde_json::from_str(text)
+            .map_err(|_| corrupt("Java compiler fact schema is invalid"))?;
         if matches!(fact, JavaCompilerFact::SourceFile { .. }) {
             return Err(corrupt(
                 "Java raw output contains projected source membership",
@@ -707,7 +783,7 @@ pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerF
             source_status,
             source_boundary,
             ..
-        } = fact
+        } = &fact
             && (binary_origin.artifact.is_some()
                 || dependency_source.is_some()
                 || source_boundary.is_some()
@@ -717,7 +793,8 @@ pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerF
                 "Java raw output contains projected binary authority",
             ));
         }
-        validate_fact(fact)?;
+        validate_fact(&fact)?;
+        facts.push(fact);
     }
     Ok(facts)
 }
@@ -730,7 +807,24 @@ pub(crate) fn project_java_compiler_output(
     before_digests: Option<&BTreeMap<String, String>>,
     changed_files: &[(String, String, String)],
 ) -> Result<JavaCompilerIndex, ClewError> {
-    let mut facts = parse_java_compiler_output(raw)?;
+    project_java_compiler_facts(
+        parse_java_compiler_output(raw)?,
+        operational,
+        source_content_digests,
+        writable_then_seal,
+        before_digests,
+        changed_files,
+    )
+}
+
+pub(crate) fn project_java_compiler_facts(
+    mut facts: Vec<JavaCompilerFact>,
+    operational: &JavaOperationalModel,
+    source_content_digests: &BTreeMap<String, String>,
+    writable_then_seal: bool,
+    before_digests: Option<&BTreeMap<String, String>>,
+    changed_files: &[(String, String, String)],
+) -> Result<JavaCompilerIndex, ClewError> {
     for fact in &mut facts {
         if let JavaCompilerFact::DependencyTarget { binary_origin, .. } = fact {
             binary_origin.artifact = Some(
@@ -788,6 +882,61 @@ pub(crate) fn project_java_compiler_output(
     };
     validate_index(&index)?;
     Ok(index)
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn pipe_overflow_is_resource_limit_and_exit_failure_is_distinct() {
+        let mut command = Command::new("yes");
+        command
+            .arg("facts")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = collect_java_output(&mut command, None, 1024).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert!(error.message.contains("limit 1024"));
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "printf 'private compiler error' >&2; exit 7"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = collect_java_output(&mut command, None, 1024).unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
+        assert!(error.message.contains("Some(7)"));
+        assert!(!error.message.contains("private compiler error"));
+    }
+
+    #[test]
+    fn stream_parser_rejects_oversized_fact_count_utf8_and_truncation() {
+        let line = br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"BOUNDARY","code":"X","requiredChecks":[],"resolution":"TEST"}"#;
+        let oversized = [b' '; MAX_FACT_BYTES + 1];
+        assert_eq!(
+            parse_java_compiler_output(&oversized).unwrap_err().code,
+            ErrorCode::ResourceLimit
+        );
+        let mut bytes = Vec::new();
+        for _ in 0..=MAX_JAVA_FACTS {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        }
+        let error = parse_java_compiler_output(&bytes).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert!(error.message.contains("fact count"));
+        assert_eq!(
+            parse_java_compiler_output(&[0xff]).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+        assert_eq!(
+            parse_java_compiler_output(&line[..line.len() - 1])
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
+        assert_eq!(parse_java_compiler_output(line).unwrap().len(), 1);
+    }
 }
 
 fn attach_dependency_sources(
@@ -902,35 +1051,37 @@ fn attach_dependency_sources(
                                 None,
                                 None,
                             ) {
-                                Ok(raw) => parse_java_compiler_output(&raw).ok().map(|facts| {
-                                    // Only declaration identity, coordinates and body presence are needed.
-                                    // Drop inherited annotations and flow expansion from the bounded memo.
-                                    let facts = facts
-                                        .into_iter()
-                                        .filter_map(|mut fact| match &mut fact {
-                                            JavaCompilerFact::Declaration {
-                                                spring,
-                                                jvm_annotations,
-                                                documentation,
-                                                ..
-                                            } => {
-                                                *spring = None;
-                                                *jvm_annotations = None;
-                                                if documentation.is_some() {
-                                                    *documentation = Some(Box::new(json!({})));
+                                Ok(raw) => parse_java_compiler_reader(BufReader::new(raw))
+                                    .ok()
+                                    .map(|facts| {
+                                        // Only declaration identity, coordinates and body presence are needed.
+                                        // Drop inherited annotations and flow expansion from the bounded memo.
+                                        let facts = facts
+                                            .into_iter()
+                                            .filter_map(|mut fact| match &mut fact {
+                                                JavaCompilerFact::Declaration {
+                                                    spring,
+                                                    jvm_annotations,
+                                                    documentation,
+                                                    ..
+                                                } => {
+                                                    *spring = None;
+                                                    *jvm_annotations = None;
+                                                    if documentation.is_some() {
+                                                        *documentation = Some(Box::new(json!({})));
+                                                    }
+                                                    Some(fact)
                                                 }
-                                                Some(fact)
-                                            }
-                                            JavaCompilerFact::Boundary { code, .. }
-                                                if code == "JAVA_COMPILER_DIAGNOSTIC" =>
-                                            {
-                                                Some(fact)
-                                            }
-                                            _ => None,
-                                        })
-                                        .collect();
-                                    (text, facts)
-                                }),
+                                                JavaCompilerFact::Boundary { code, .. }
+                                                    if code == "JAVA_COMPILER_DIAGNOSTIC" =>
+                                                {
+                                                    Some(fact)
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect();
+                                        (text, facts)
+                                    }),
                                 Err(error) if error.code == ErrorCode::InputMutated => {
                                     return Err(error);
                                 }

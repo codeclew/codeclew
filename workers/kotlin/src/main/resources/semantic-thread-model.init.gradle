@@ -26,14 +26,17 @@ gradle.beforeProject { project ->
     project.tasks.register("semanticThreadModel") {
         // Gradle can report repository-local project artifacts in a compilation
         // classpath before those artifacts exist in a pristine checkout. Run
-        // only the selected FileCollection's declared build dependencies; do
-        // not compile the target source set merely to extract its model.
+        // the selected compilation's declared prerequisites, including source
+        // generators attached with compile.dependsOn. Classpath dependencies
+        // alone do not describe the effective source inputs. Do not execute
+        // the selected compiler task merely to extract its model.
         dependsOn {
             def compile = project.tasks.findByName(requestedCompileTask)
             if (compile == null) return []
             def provider = selectedClasspathProvider(compile)
-            if (provider == null) return []
-            return provider.buildDependencies.getDependencies(compile).findAll { dependency ->
+            def prerequisites = new LinkedHashSet(compile.taskDependencies.getDependencies(compile))
+            if (provider != null) prerequisites.addAll(provider.buildDependencies.getDependencies(compile))
+            return prerequisites.findAll { dependency ->
                 dependency.path != compile.path
             }
         }

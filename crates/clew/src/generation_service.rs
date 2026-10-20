@@ -33,7 +33,7 @@ use crate::incremental_v2::{
 use crate::java_adapter_v2::{
     JAVA_COMPILER_FACTS_CAPABILITY, JAVA_LANGUAGE, JavaAdapterV2, JavaCompilerFact,
     JavaCompilerIndex, build_java_compiler_index, execute_prepared_java_output,
-    java_adapter_digest, java_scope_digest, project_java_compiler_output,
+    java_adapter_digest, java_scope_digest, project_java_compiler_facts,
 };
 use crate::java_analysis_inputs::{
     JavaAnalysisInputPool, JavaPreparedInputsResult, JavaPreparedRefusal,
@@ -1099,8 +1099,8 @@ fn ensure_java_generation(
         .and_then(|output| {
             raw_hit = output.hit;
             compiler_output_receipt = Some(output.success_receipt);
-            project_java_compiler_output(
-                &output.bytes,
+            project_java_compiler_facts(
+                output.facts,
                 &model,
                 &source_content_digests,
                 writable_then_seal,
