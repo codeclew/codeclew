@@ -422,6 +422,50 @@ fn owned_fixture_real_compiler_and_source_capture() {
     assert!(save.iter().any(
         |r| r["obligationKind"] == "DATA_EFFECT" && r["record"]["effect"]["name"] == "attempts"
     ));
+    for (owner, name) in [("OrderController", "save"), ("AdminController", "status")] {
+        let docs = tempfile::tempdir().unwrap();
+        Repository::init(docs.path(), "Compiler source accounts").unwrap();
+        let repo = Repository::open(docs.path()).unwrap();
+        let w = persisted_work(&repo, compiler.clone());
+        let root = method(&compiler, owner, name).id.clone();
+        let rows = query(&w, "THREAD_CONTEXT", &root).unwrap();
+        assert!(
+            rows.iter().all(|r| r["record"]["actionable"] != true),
+            "{owner}.{name}: {rows:#?}"
+        );
+        assert!(!serde_json::to_string(&rows).unwrap().contains("LAMBDA"));
+        assert_complete_accounts(&repo, &w, &root, &rows);
+    }
+    let mut missing = compiler.clone();
+    missing
+        .observations
+        .get_mut(&method(&compiler, "OrderRepository", "write").id)
+        .unwrap()
+        .source_ids
+        .clear();
+    let missing_rows = context_for(&missing, "OrderController", "save");
+    assert!(
+        missing_rows
+            .iter()
+            .any(|r| r["record"]["actionable"] == true)
+    );
+    assert!(
+        accounts_status(&missing_rows, Some(&all_accounts(&missing_rows)))["open"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    let mut unknown = compiler.clone();
+    unknown
+        .boundaries
+        .push("UNCLASSIFIED_PROVIDER_FAILURE".into());
+    let unknown_rows = context_for(&unknown, "AdminController", "status");
+    assert!(
+        accounts_status(&unknown_rows, Some(&all_accounts(&unknown_rows)))["open"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     let lookup = context_for(&compiler, "OrderController", "lookup");
     let targets = bodies(&lookup).into_iter().collect::<Vec<_>>().join(" ");
     assert!(targets.contains("#decorate(Ljava/lang/String;)"));
@@ -463,6 +507,12 @@ fn owned_fixture_real_compiler_and_source_capture() {
         assert!(limited.iter().any(
             |r| r["obligationKind"] == "BUDGET" || r["record"]["frontier"]["kind"] == "BUDGET"
         ));
+        assert!(
+            accounts_status(&limited, Some(&all_accounts(&limited)))["open"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
         let mut cursor = None;
         let mut supplied = BTreeSet::new();
         loop {
@@ -785,4 +835,144 @@ fn compilation_audit_does_not_invent_git_urls_for_transformed_inputs() {
             .all(|s| s.url.is_none() && s.occurrence.is_none())
     );
     analysis::verify_evidence(&e).unwrap();
+}
+
+fn all_accounts(rows: &[Value]) -> BTreeMap<String, Account> {
+    rows.iter()
+        .map(|row| {
+            let obligation = row["id"].as_str().unwrap().to_owned();
+            (
+                obligation.clone(),
+                Account {
+                    obligation,
+                    explanation:
+                        "Retained evidence remains bounded and does not establish runtime closure."
+                            .into(),
+                    references: vec![],
+                },
+            )
+        })
+        .collect()
+}
+fn assert_complete_accounts(repo: &Repository, w: &work::Work, root: &str, rows: &[Value]) {
+    let mut accounts = Vec::new();
+    for row in rows {
+        let sources: BTreeSet<_> = row["record"]["sourceIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let references: Vec<_> = w
+            .handles
+            .iter()
+            .filter(|(_, h)| h.kind == "SOURCE" && sources.contains(h.id.as_str()))
+            .map(|(r, _)| r.clone())
+            .collect();
+        assert!(!references.is_empty(), "{row}");
+        for reference in &references {
+            let page = work::read(
+                repo,
+                &w.id,
+                work::Selection {
+                    references: vec![reference.clone()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(page["omitted"].as_array().unwrap().is_empty());
+        }
+        accounts.push(Account { obligation: row["id"].as_str().unwrap().into(), explanation: "Source-bound accounting records the retained behavior and provider limitations; runtime execution and semantic approval remain unknown.".into(), references });
+    }
+    let result = assess(
+        repo,
+        &w.id,
+        Assessment {
+            schema: "codeclew-thread-assessment/1.0".into(),
+            root_declaration: root.into(),
+            accounts,
+        },
+    )
+    .unwrap();
+    assert_eq!(result["progress"]["status"], "ACCOUNTED_WITH_BOUNDARIES");
+    assert_eq!(result["progress"]["open"], 0);
+    assert_eq!(result["progress"]["runtimeClosure"], "NOT_ESTABLISHED");
+    assert_eq!(result["progress"]["meaningReview"], "UNASSESSED");
+}
+#[test]
+fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_delivery() {
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Small Work").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let w = persisted_work(&repo, syntax_fixture());
+    let mut request = w.request.clone();
+    request.max_bytes = 2048;
+    let small =
+        work::prepare_with_snapshot(&repo, w.subject.clone(), request, w.snapshot.as_deref())
+            .unwrap();
+    let mut cursor = None;
+    let mut omitted = 0;
+    let mut recovery = None;
+    loop {
+        let page = work::read(
+            &repo,
+            small["work"].as_str().unwrap(),
+            work::Selection {
+                query: Some(work::Query {
+                    kind: "THREAD_INVENTORY".into(),
+                    symbol_contains: String::new(),
+                    projection: Default::default(),
+                }),
+                cursor,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for row in page["omitted"].as_array().unwrap() {
+            omitted += 1;
+            assert_eq!(row["recovery"]["command"], "docs work prepare");
+            assert_eq!(row["recovery"]["snapshot"], json!(w.snapshot));
+            recovery = Some(row["recovery"]["input"].clone());
+        }
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(omitted > 0);
+    let recovered = work::prepare_with_snapshot(
+        &repo,
+        w.subject.clone(),
+        serde_json::from_value(recovery.unwrap()).unwrap(),
+        w.snapshot.as_deref(),
+    )
+    .unwrap();
+    let mut count = 0;
+    let mut cursor = None;
+    loop {
+        let page = work::read(
+            &repo,
+            recovered["work"].as_str().unwrap(),
+            work::Selection {
+                query: Some(work::Query {
+                    kind: "THREAD_INVENTORY".into(),
+                    symbol_contains: String::new(),
+                    projection: Default::default(),
+                }),
+                cursor,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(page["omitted"].as_array().unwrap().is_empty());
+        count += page["items"].as_array().unwrap().len();
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        count,
+        inventory(&w.checked.services["contour"]).unwrap().len()
+    );
 }

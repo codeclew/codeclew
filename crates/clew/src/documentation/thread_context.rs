@@ -214,6 +214,32 @@ pub(super) fn context(
             .filter_map(|m| m["id"].as_str().map(str::to_owned))
             .collect();
         for frontier in graph["frontiers"].as_array().into_iter().flatten() {
+            if frontier["kind"] == "SERVICE_PROVIDER_BOUNDARY" {
+                let code = frontier["detail"].as_str().unwrap_or("");
+                let local_flow_summary = matches!(
+                    code,
+                    "EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW"
+                        | "SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"
+                        | "LAMBDA_EXECUTION_NOT_EXPANDED"
+                ) && e.observations.values().any(|o| {
+                    process_graph::callable_observation(o)
+                        && scope(o) == scope(root)
+                        && o.normalized["documentation"]["boundaries"]
+                            .as_array()
+                            .is_some_and(|b| b.iter().any(|b| b == code))
+                });
+                let local_variable_summary = code == "JAVA_VARIABLE_LAMBDA_DEFERRED"
+                    && e.observations.values().any(|o| {
+                        o.kind == "PROVIDER_BOUNDARY"
+                            && scope(o) == scope(root)
+                            && o.normalized["code"] == code
+                    });
+                if local_flow_summary || local_variable_summary {
+                    // Relevant method/flow or anchored provider obligations below
+                    // retain this limitation. The service summary has no owner.
+                    continue;
+                }
+            }
             let key = digest(frontier)?;
             let anchor = frontier["eventId"]
                 .as_str()
@@ -302,6 +328,30 @@ pub(super) fn context(
         rows.push(row("BODY",&id,json!({"declaration":id,"symbol":method.symbol,"sourceIds":method.source_ids,"dependencyIds":[id],
             "actionable":!source_available,"nextAction":"read complete retained declaration and source through these Work references; account for inputs, effects and outcomes",
             "bodyStatus":method.normalized["documentation"]["bodyStatus"],"authority":if syntax{"SOURCE_BODY_NOT_CALL_RESOLUTION"}else{"RETAINED_COMPILER_DECLARATION_NOT_RUNTIME_DISPATCH"}})));
+        for boundary in e.observations.values().filter(|o| {
+            o.kind == "PROVIDER_BOUNDARY"
+                && scope(o) == scope(method)
+                && o.source_ids
+                    .iter()
+                    .filter_map(|id| e.sources.get(id))
+                    .any(|b| {
+                        method
+                            .source_ids
+                            .iter()
+                            .filter_map(|id| e.sources.get(id))
+                            .any(|m| {
+                                b.file == m.file
+                                    && m.start_line <= b.start_line
+                                    && b.end_line <= m.end_line
+                            })
+                    })
+        }) {
+            let reviewable = boundary.normalized["code"] == "JAVA_VARIABLE_LAMBDA_DEFERRED";
+            rows.push(row("BOUNDARY", &boundary.id, json!({"declaration":id,
+                "frontier":{"kind":"SOURCE_PROVIDER_BOUNDARY","detail":boundary.normalized},
+                "sourceIds":boundary.source_ids,"dependencyIds":[boundary.id],"actionable":!reviewable,
+                "nextAction":"explain the source-bound provider limitation; deferred execution and runtime effects remain unknown"})));
+        }
         for access in effects {
             rows.push(row("DATA_EFFECT",&access.id,json!({"declaration":id,"effect":access.normalized,"sourceIds":access.source_ids,"dependencyIds":[access.id],"actionable":false,
                 "nextAction":"explain this source-bound write under its surrounding conditions; it does not establish durable storage, delivery or runtime execution"})));

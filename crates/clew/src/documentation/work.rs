@@ -3424,6 +3424,18 @@ pub(super) fn read_loaded_with_requested(
             omitted.push(json!({"index":consumed,"kind":item["kind"],"id":item["id"],"reference":item["reference"],"reason":"ITEM_EXCEEDS_WORK_BYTE_BUDGET"}));
             if item["kind"] == "DEPENDENCY" {
                 omitted.last_mut().unwrap()["recovery"] = json!({"command":"docs work read-dependency-part", "input":{"schema":super::work_retained_parts::DEPENDENCY_REQUEST_SCHEMA,"kind":"DEPENDENCY","id":item["id"],"cursor":null},"continueUntil":"nextCursor is null"});
+            } else if item["kind"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("THREAD_"))
+            {
+                let mut request = serde_json::to_value(&work.request)
+                    .map_err(|_| invalid("Work request cannot be serialized"))?;
+                request["maxBytes"] = json!(49152);
+                omitted.last_mut().unwrap()["recovery"] = json!({
+                    "command":"docs work prepare", "subject":work.subject,
+                    "snapshot":work.snapshot, "input":request,
+                    "nextAction":"Prepare a new Work from this same saved snapshot with this request, then repeat the original thread query from cursor null. Verify omitted is empty on every page; nextCursor null alone does not establish complete delivery."
+                });
             }
             output["omitted"] = json!(omitted);
             consumed += 1;

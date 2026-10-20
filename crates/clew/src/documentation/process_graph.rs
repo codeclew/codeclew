@@ -671,10 +671,10 @@ pub(super) fn collect_bounded(
                         }
                         _ => None,
                     };
-                    if let Some(target_method) = target_method {
-                        if queued.insert(target_method.id.as_str()) {
-                            queue.push_back(target_method.id.as_str());
-                        }
+                    if let Some(target_method) = target_method
+                        && queued.insert(target_method.id.as_str())
+                    {
+                        queue.push_back(target_method.id.as_str());
                     }
                     edges.push(json!({"id":format!("declaration-edge:{}",relation.id),"kind":"DECLARATION_CALL",
                         "fromMethodId":method.id,"relationId":relation.id,"eventId":null,"target":target,

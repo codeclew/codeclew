@@ -8,6 +8,10 @@ compiler rerun, model call or publication is implicit in the reads below.
    following every `nextCursor`. Record the selected input files, excluded files,
    capture/parse failures and possible unsupported entry surfaces separately from
    discovered triggers. Unknown inventory in an older snapshot stays unknown.
+   Check `omitted` on every page: a null cursor alone does not establish full
+   delivery. If a row exceeds the Work byte budget, follow its `recovery` request
+   to prepare a larger Work from the same saved snapshot, then restart the query.
+   This recovery does not recapture source or complete an explanation.
 2. For each requested returned `rootDeclarations` ID, read
    `{"query":{"kind":"THREAD_CONTEXT","symbolContains":"EXACT_DECLARATION_ID"}}`
    through the same Work and finish pagination. This Java/Spring slice reuses

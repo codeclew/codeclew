@@ -1803,6 +1803,43 @@ pub(crate) fn project_scoped(
                     .unwrap_or("JVM_ANALYSIS_BOUNDARY")
                     .into(),
             );
+            // Keep the provider's source anchor as well as the service summary.
+            // Thread preparation must not attach another method's limitation
+            // to every entry root merely because its code occurs in the service.
+            if fact["file"].is_string()
+                && fact["byteStart"]
+                    .as_u64()
+                    .zip(fact["byteEnd"].as_u64())
+                    .is_some_and(|(start, end)| start < end)
+            {
+                let scope = resolve_scope_key(&fact["scope"], known)?;
+                let identity = digest(&(fact, binding))?;
+                if let Some((source, _)) = add_exact_byte_source(
+                    &mut evidence,
+                    service,
+                    sources,
+                    &scope,
+                    fact,
+                    binding,
+                    &identity,
+                )? {
+                    let id = dependency_id(&service.id, "provider-boundary", &identity)?;
+                    let mut normalized = strip_coordinates(fact);
+                    normalized["scope"] = json!(scope);
+                    evidence.observations.insert(
+                        id.clone(),
+                        Observation {
+                            id,
+                            kind: "PROVIDER_BOUNDARY".into(),
+                            service: service.id.clone(),
+                            symbol: String::new(),
+                            digest: digest(&normalized)?,
+                            normalized,
+                            source_ids: vec![source],
+                        },
+                    );
+                }
+            }
             continue;
         }
         // An exact dependency declaration identifies the admitted binary
