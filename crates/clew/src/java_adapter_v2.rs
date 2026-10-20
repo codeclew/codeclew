@@ -889,6 +889,45 @@ mod stream_tests {
     use super::*;
 
     #[test]
+    fn batched_fact_publication_preserves_byte_authority_keys_order_and_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let state = crate::state::StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let rows = [
+            b"first fact".to_vec(),
+            b"second fact".to_vec(),
+            b"first fact".to_vec(),
+        ];
+        let expected = rows
+            .iter()
+            .map(|bytes| store.put(JAVA_FACT_SCHEMA, bytes).unwrap())
+            .collect::<Vec<_>>();
+        let capability = CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY).unwrap();
+        let mut pending = rows.to_vec();
+        let mut records = Vec::new();
+        persist_java_fact_batch(&store, &capability, &mut pending, &mut records).unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(records.len(), rows.len());
+        for ((record, reference), bytes) in records.iter().zip(expected).zip(rows) {
+            assert_eq!(record.payload, reference);
+            assert_eq!(
+                record.fact_key,
+                format!(
+                    "java:{}",
+                    canonical::hash_bytes(&bytes).trim_start_matches("sha256:")
+                )
+            );
+            assert_eq!(
+                store.read(&record.payload, bytes.len()).unwrap().bytes(),
+                bytes
+            );
+        }
+        assert_eq!(records[0].fact_key, records[2].fact_key);
+        persist_java_fact_batch(&store, &capability, &mut pending, &mut records).unwrap();
+        assert_eq!(records.len(), 3, "empty publication adds no records");
+    }
+
+    #[test]
     fn pipe_overflow_is_resource_limit_and_exit_failure_is_distinct() {
         let mut command = Command::new("yes");
         command
@@ -1342,18 +1381,23 @@ impl LanguageAdapter for JavaAdapterV2 {
         }
         let capability = CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?;
         let mut records = Vec::with_capacity(self.index.facts.len());
+        let mut pending = Vec::new();
+        let mut pending_bytes = 0usize;
         for fact in &self.index.facts {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(cancelled_error());
+            }
             let bytes = canonical::bytes(fact).map_err(internal)?;
-            let payload = self.store.put(JAVA_FACT_SCHEMA, &bytes)?;
-            records.push(FactRecord {
-                fact_key: format!(
-                    "java:{}",
-                    canonical::hash_bytes(&bytes).trim_start_matches("sha256:")
-                ),
-                domain_uri: capability.clone(),
-                payload,
-            });
+            if !pending.is_empty()
+                && (pending.len() == 1024 || pending_bytes + bytes.len() > 8 * 1024 * 1024)
+            {
+                persist_java_fact_batch(&self.store, &capability, &mut pending, &mut records)?;
+                pending_bytes = 0;
+            }
+            pending_bytes += bytes.len();
+            pending.push(bytes);
         }
+        persist_java_fact_batch(&self.store, &capability, &mut pending, &mut records)?;
         records.sort_by(|left, right| left.fact_key.cmp(&right.fact_key));
         for (sequence, chunk) in records.chunks(1024).enumerate() {
             if cancelled.load(Ordering::Acquire) {
@@ -1407,6 +1451,42 @@ impl LanguageAdapter for JavaAdapterV2 {
         self.stopped.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn persist_java_fact_batch(
+    store: &CasStore,
+    capability: &CapabilityUri,
+    pending: &mut Vec<Vec<u8>>,
+    records: &mut Vec<FactRecord>,
+) -> Result<(), ClewError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let keys = pending
+        .iter()
+        .map(|bytes| {
+            format!(
+                "java:{}",
+                canonical::hash_bytes(bytes).trim_start_matches("sha256:")
+            )
+        })
+        .collect::<Vec<_>>();
+    let payloads = store.put_batch(
+        std::mem::take(pending)
+            .into_iter()
+            .map(|bytes| (JAVA_FACT_SCHEMA.into(), bytes))
+            .collect(),
+    )?;
+    records.extend(
+        keys.into_iter()
+            .zip(payloads)
+            .map(|(fact_key, payload)| FactRecord {
+                fact_key,
+                domain_uri: capability.clone(),
+                payload,
+            }),
+    );
+    Ok(())
 }
 
 pub(crate) fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
@@ -246,7 +246,7 @@ pub(crate) struct ProjectNativeKotlinWorkspace {
     snapshot: RepositoryInputSnapshot,
     _attempt_root: Option<ManagedTemporaryDirectory>,
     repo: std::path::PathBuf,
-    derived_mounts: Vec<std::path::PathBuf>,
+    derived_mounts: Vec<DerivedStateMount>,
     preparation_profile: ProjectNativeKotlinWorkspaceProfile,
     authorized_compilations: BTreeSet<String>,
     issued_compilations: Mutex<BTreeSet<String>>,
@@ -260,12 +260,42 @@ pub(crate) struct ProjectNativeKotlinAttempt {
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
     repo: std::path::PathBuf,
-    derived_mounts: Vec<std::path::PathBuf>,
+    derived_mounts: Vec<DerivedStateMount>,
     worker: Option<WorkerClient>,
     request: Value,
     project: Value,
     compilation: String,
     operational_timing: Arc<Mutex<ProjectNativeKotlinOperationalTiming>>,
+}
+
+#[derive(Clone)]
+struct DerivedStateMount {
+    relative: std::path::PathBuf,
+    device: u64,
+    inode: u64,
+    directory: bool,
+}
+
+impl DerivedStateMount {
+    fn verify(&self, repo: &Path) -> Result<(), ClewError> {
+        let metadata = fs::symlink_metadata(repo.join(&self.relative)).map_err(|_| {
+            ClewError::new(
+                ErrorCode::InputMutated,
+                "project-native derived output authority is unavailable",
+            )
+        })?;
+        if metadata.dev() != self.device
+            || metadata.ino() != self.inode
+            || (self.directory && !metadata.file_type().is_dir())
+            || (!self.directory && !metadata.file_type().is_symlink())
+        {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "project-native derived output authority changed",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl ProjectNativeKotlinWorkspace {
@@ -301,6 +331,7 @@ impl ProjectNativeKotlinWorkspace {
             "compilations":compilations,
             "language":language,
             "providerMode":"PROJECT_NATIVE_LEGACY_BRIDGE",
+            "derivedOutputLayout":if language == "kotlin" { "CONTAINED_DIRECTORIES" } else { "EXTERNAL_SYMLINKS" },
             "repositorySnapshot":snapshot.snapshot_id,
         }))
         .map_err(internal)?;
@@ -316,7 +347,8 @@ impl ProjectNativeKotlinWorkspace {
         operational_timing.materialization_micros = Some(elapsed_micros(materialization_started));
         preparation_profile.materializations += 1;
         let derived_mount_started = Instant::now();
-        let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
+        let derived_mounts =
+            mount_project_derived_state(&attempt_path, &repo, snapshot, language == "kotlin")?;
         operational_timing.derived_mount_micros = Some(elapsed_micros(derived_mount_started));
         preparation_profile.derived_mount_sets += 1;
         preparation_profile.workspace_set_authority_digest = workspace_set_authority_digest;
@@ -540,7 +572,7 @@ impl ProjectNativeKotlinWorkspace {
         Ok(self.current_profile())
     }
 
-    /// Remove the derived-state mounts (build/target/.gradle symlink stubs)
+    /// Remove the owned derived-state roots (directories or symlink stubs)
     /// without consuming or dropping the workspace. Used by the
     /// writable-then-seal profile so the transformed source can be sealed
     /// read-only while the derived mounts are still removable.
@@ -782,12 +814,19 @@ fn verify_materialized_inputs(
     repo: &std::path::Path,
     snapshot: &RepositoryInputSnapshot,
     store: &CasStore,
-    derived_mounts: &[std::path::PathBuf],
+    derived_mounts: &[DerivedStateMount],
 ) -> Result<(), ClewError> {
+    for mount in derived_mounts {
+        mount.verify(repo)?;
+    }
     let (observed_snapshot, _) = if derived_mounts.is_empty() {
         capture(repo, store)?
     } else {
-        capture_ignoring_derived_mounts(repo, store, derived_mounts)?
+        let paths = derived_mounts
+            .iter()
+            .map(|mount| mount.relative.clone())
+            .collect::<Vec<_>>();
+        capture_ignoring_derived_mounts(repo, store, &paths)?
     };
     let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
         && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
@@ -814,18 +853,20 @@ fn verify_materialized_inputs(
 
 fn unmount_project_derived_state(
     repo: &std::path::Path,
-    mounts: &[std::path::PathBuf],
+    mounts: &[DerivedStateMount],
 ) -> Result<(), ClewError> {
-    for relative in mounts {
-        let path = repo.join(relative);
-        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-        if !metadata.file_type().is_symlink() {
-            return Err(ClewError::new(
-                ErrorCode::InputMutated,
-                "project-native derived mount authority changed",
-            ));
+    // Check the whole set before deleting anything. Outputs are disposable only
+    // while their exact owned root identities still match the preparation.
+    for mount in mounts {
+        mount.verify(repo)?;
+    }
+    for mount in mounts {
+        let path = repo.join(&mount.relative);
+        if mount.directory {
+            fs::remove_dir_all(path).map_err(io_error)?;
+        } else {
+            fs::remove_file(path).map_err(io_error)?;
         }
-        fs::remove_file(path).map_err(io_error)?;
     }
     Ok(())
 }
@@ -834,7 +875,8 @@ fn mount_project_derived_state(
     attempt_root: &std::path::Path,
     repo: &std::path::Path,
     snapshot: &RepositoryInputSnapshot,
-) -> Result<Vec<std::path::PathBuf>, ClewError> {
+    contained_outputs: bool,
+) -> Result<Vec<DerivedStateMount>, ClewError> {
     let mut mounts = std::collections::BTreeSet::from([
         std::path::PathBuf::from(".gradle"),
         std::path::PathBuf::from("build"),
@@ -870,6 +912,7 @@ fn mount_project_derived_state(
                 .map_err(io_error)?;
         }
     }
+    let mut authorities = Vec::new();
     #[cfg(unix)]
     {
         for relative in &mounts {
@@ -880,17 +923,29 @@ fn mount_project_derived_state(
                     "derived output path overlaps a repository input",
                 ));
             }
-            let identity = canonical::hash(&relative.to_string_lossy()).map_err(internal)?;
-            let target = attempt_root
-                .join("derived")
-                .join(identity.strip_prefix("sha256:").unwrap_or(&identity));
-            create_private_directory(&target)?;
-            if let Err(error) = symlink(&target, &mount) {
-                return Err(io_error(error));
+            // Kotlin source admission rejects symlinks in every selected source
+            // path. Generated sources therefore need real directories inside
+            // this disposable materialization, never a symlink exception.
+            if contained_outputs {
+                create_private_directory(&mount)?;
+            } else {
+                let identity = canonical::hash(&relative.to_string_lossy()).map_err(internal)?;
+                let target = attempt_root
+                    .join("derived")
+                    .join(identity.strip_prefix("sha256:").unwrap_or(&identity));
+                create_private_directory(&target)?;
+                symlink(&target, &mount).map_err(io_error)?;
             }
+            let metadata = fs::symlink_metadata(&mount).map_err(io_error)?;
+            authorities.push(DerivedStateMount {
+                relative: relative.clone(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                directory: contained_outputs,
+            });
         }
     }
-    Ok(mounts.into_iter().collect())
+    Ok(authorities)
 }
 
 pub(crate) fn translate_facts(
@@ -1818,9 +1873,12 @@ mod tests {
         let repo = attempt.join("repo");
         materialize(&snapshot, &store, &repo).unwrap();
 
-        let mounts = mount_project_derived_state(&attempt, &repo, &snapshot).unwrap();
+        let mounts = mount_project_derived_state(&attempt, &repo, &snapshot, false).unwrap();
         assert_eq!(
-            mounts,
+            mounts
+                .iter()
+                .map(|mount| mount.relative.clone())
+                .collect::<Vec<_>>(),
             vec![
                 std::path::PathBuf::from(".gradle"),
                 std::path::PathBuf::from("build"),
@@ -2152,6 +2210,7 @@ mod tests {
                 "compilations":[":/main"],
                 "language":"kotlin",
                 "providerMode":"PROJECT_NATIVE_LEGACY_BRIDGE",
+                "derivedOutputLayout":"CONTAINED_DIRECTORIES",
                 "repositorySnapshot":snapshot.snapshot_id,
             }))
             .unwrap()
@@ -2165,13 +2224,13 @@ mod tests {
             std::fs::symlink_metadata(workspace.repo.join(".gradle"))
                 .unwrap()
                 .file_type()
-                .is_symlink()
+                .is_dir()
         );
         assert!(
             std::fs::symlink_metadata(workspace.repo.join("build"))
                 .unwrap()
                 .file_type()
-                .is_symlink()
+                .is_dir()
         );
         let profile = workspace.finish().unwrap();
         assert_eq!(profile.materializations, 1);
@@ -2201,6 +2260,77 @@ mod tests {
         .err()
         .expect("duplicate workspace set must be rejected");
         assert_eq!(duplicate.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn contained_generated_outputs_preserve_inputs_cleanup_and_reject_root_replacement() {
+        let source = tempfile::tempdir().unwrap();
+        copy_kotlin_basic_fixture(source.path());
+        fs::create_dir_all(source.path().join("build")).unwrap();
+        let caller_output = source.path().join("build/caller-output.txt");
+        fs::write(&caller_output, b"caller owned").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = repository_snapshot::capture(source.path(), &store).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("keep.txt"), b"outside owned").unwrap();
+        for attack in 0..3 {
+            let workspace = ProjectNativeKotlinWorkspace::prepare(
+                &state,
+                &store,
+                &snapshot,
+                &[":/main".into()],
+            )
+            .unwrap();
+            let repo = workspace.repository().to_path_buf();
+            let generated = repo.join("build/generated/Generated.kt");
+            fs::create_dir_all(generated.parent().unwrap()).unwrap();
+            fs::write(&generated, "class Generated").unwrap();
+            assert!(
+                generated
+                    .canonicalize()
+                    .unwrap()
+                    .starts_with(repo.canonicalize().unwrap())
+            );
+            assert!(
+                !fs::symlink_metadata(repo.join("build"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            verify_materialized_inputs(&repo, &snapshot, &store, &workspace.derived_mounts)
+                .unwrap();
+            if attack == 0 {
+                workspace.finish().unwrap();
+            } else {
+                fs::rename(repo.join("build"), repo.join("replaced-build")).unwrap();
+                if attack == 1 {
+                    fs::create_dir(repo.join("build")).unwrap();
+                } else {
+                    symlink(outside.path(), repo.join("build")).unwrap();
+                }
+                assert_eq!(
+                    verify_materialized_inputs(&repo, &snapshot, &store, &workspace.derived_mounts)
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::InputMutated
+                );
+                assert_eq!(
+                    workspace.finish().unwrap_err().code,
+                    ErrorCode::InputMutated
+                );
+            }
+            assert!(
+                !repo.exists(),
+                "owned attempts must be disposed on success and failure"
+            );
+            assert_eq!(fs::read(&caller_output).unwrap(), b"caller owned");
+            assert_eq!(
+                fs::read(outside.path().join("keep.txt")).unwrap(),
+                b"outside owned"
+            );
+        }
     }
 
     #[test]
@@ -2379,12 +2509,12 @@ mod tests {
         let workspace =
             ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
                 .unwrap();
-        // Break a derived mount (replace the .gradle symlink with a real dir) so
+        // Break a derived output root (replace its directory with a file) so
         // unmount fails; the primary error must be preserved and the owned
         // attempt still cleaned by the best-effort Drop fallback.
         let mount = workspace.repository().join(".gradle");
-        std::fs::remove_file(&mount).unwrap();
-        std::fs::create_dir(&mount).unwrap();
+        std::fs::remove_dir(&mount).unwrap();
+        std::fs::write(&mount, b"replacement").unwrap();
         let error = workspace
             .finish()
             .expect_err("finish must reject an unexpected derived mount authority");
