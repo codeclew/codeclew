@@ -133,6 +133,7 @@ ci_run retained-docs cargo test --locked -p clew --test documentation_external_c
 ci_run retained-docs cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 ci_run kotlin cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
+ci_run java cargo test --locked -p clew --lib documentation::thread_context_tests::owned_fixture_real_compiler_and_source_capture -- --exact --ignored --test-threads=1
 ci_run kotlin ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest \
   :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest
 ci_run java cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
