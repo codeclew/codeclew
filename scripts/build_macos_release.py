@@ -118,6 +118,7 @@ MINIMAL_SOURCE_FILES = (
     "skills/codeclew/references/documentation-views.md",
     "skills/codeclew/references/service-documentation.md",
     "skills/codeclew/references/managed-code.md",
+    "skills/codeclew/references/thread-preparation.md",
     "skills/codeclew/scripts/prepared_source.py",
 )
 
