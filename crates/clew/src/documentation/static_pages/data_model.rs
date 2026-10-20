@@ -748,7 +748,20 @@ fn evidence(claim: &Value, language: &str) -> String {
             } else {
                 ""
             };
-            out.push_str(&format!("<p><a href=\"{}#L{}-L{}\">{}:{}–{}</a> · {clew_label_0} <code>{}</code> · {}</p><pre tabindex=\"0\">{}</pre>",escape(url),start,end,escape(strv(&s["file"])),start,end,escape(strv(&s["revision"])),escape(strv(&s["authority"])),escape(&source), clew_label_0 = escape(label(language, "revision"))));
+            let href = crate::documentation::source_export::range_url(url, start, end);
+            out.push_str(&format!(
+                "<p><a href=\"{}\">{}:{}–{}</a> · {} <code>{}</code> · {}</p>",
+                escape(&href),
+                escape(strv(&s["file"])),
+                start,
+                end,
+                escape(label(language, "revision")),
+                escape(strv(&s["revision"])),
+                escape(strv(&s["authority"]))
+            ));
+            if !source.is_empty() {
+                out.push_str(&format!("<pre tabindex=\"0\">{}</pre>", escape(&source)));
+            }
         }
     }
     out.push_str("</details>");

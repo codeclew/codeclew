@@ -1098,5 +1098,6 @@
   "Retained source": "Сохранённый исходный материал",
   "Revision:": "Ревизия:",
   "Field descriptions": "Описание полей",
-  "Purpose": "Назначение"
+  "Purpose": "Назначение",
+  "Source text is omitted from this export. Open the exact retained revision in the repository.": "Текст исходного кода не включён в этот экспорт. Откройте точную сохранённую ревизию в репозитории."
 }

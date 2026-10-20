@@ -48,5 +48,7 @@ For execution details, use the [agent workflow](skills/codeclew/SKILL.md) and
 [native source documentation guide](docs/guides/native-retained-source.md).
 For a full saved publication, the [Docusaurus export](docs/operations/docusaurus-export.md)
 provides linked Markdown/MDX pages, source evidence and optional field readers.
+Use [remote source rendering](docs/operations/source-link-export.md) to export exact
+GitHub/GitLab links instead of automatically attached source text.
 The [Weather reader](https://codeclew.github.io/clew-weather-demo/index.html) has
 its own retained evidence and limits; it is separate from the fictional example.

@@ -242,6 +242,8 @@ fn render_narrative_files(fixture: &Fixture, inputs: &[Value]) -> Value {
         })
         .collect();
     cli::run(cli::Command::Render {
+        source_export: Default::default(),
+        output: None,
         root: fixture.repo.root.clone(),
         language: None,
         input: paths,

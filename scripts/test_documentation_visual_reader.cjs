@@ -102,15 +102,15 @@ function processOutline(svgAvailable=false){
  return {status:'STATIC_SOURCE_OUTLINE',authority:'STATIC_SOURCE_STRUCTURE_NOT_REVIEWED',causal:true,origin:'source',diagramStem:'scenario-checkout-process-outline-91ab42',pumlAvailable:true,svgAvailable,sourceIds:['checkout-root'],root:{service:'orders',scope:':main',symbol:'method:class:example.CheckoutController#checkout()Ljava/lang/String;',observation:'orders:symbol:checkout',observationDigest:'flow-digest',sourceIds:['checkout-root'],sourceRecordDigests:{'checkout-root':'source-record-digest'},candidates:[]},tree:'Entry: method:class:example.CheckoutController#checkout()Ljava/lang/String;\n[D] if (!hasPositiveQuantity(request)) then\n  return invalid()\n[W] reservations.save(request)\nreturn inventory.reserve(request)'};
 }
 function load(data=fixture(),mobile=false){
- const elements=new Map(),listeners={},navigationHistory=[],browserLocation={hash:''};
+ const elements=new Map(),listeners={},navigationHistory=[],opened=[],browserLocation={hash:''};
  let testDocument;
  const media={matches:mobile,addEventListener(){}};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
  testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
- const context=vm.createContext({document:testDocument,URLSearchParams,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
+ const context=vm.createContext({document:testDocument,URLSearchParams,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{open(...args){opened.push(args);},addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
+ return {data,e:element,document:testDocument,media,navigationHistory,opened,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 function importedObservationFixture(value){
  const data=fixture(),text=JSON.stringify(value,null,2),id='assessment-observation';
@@ -1722,4 +1722,32 @@ test('response source opens its exact line span while preserving the complete re
  assert.match(ui.e('source-meta').innerHTML,new RegExp('#L'+line+'-L'));assert.match(ui.e('source-meta').innerHTML,/Selected response/);
  assert.match(ui.e('source-code').innerHTML,/openapi/);assert.match(ui.e('source-code').innerHTML,/QUEUED/);
  assert.equal(JSON.stringify(data.selectedSources),before);assert.match(ui.e('source-foot').innerHTML,/retained-digest/);
+});
+
+test('remote process sources open exact repository ranges without empty local code panes',()=>{
+ const data=declaredThreadFixture();
+ const revision='a'.repeat(40);
+ for(const [id,method] of Object.entries(data.processThread.methods)){
+  const record=method.source;record.text='';record.revision=revision;
+  record.url=id==='client'?`https://github.com/example/client/blob/${revision}/src/Client.kt#L10`:`https://git.example:8443/gitlab/team/provider/-/blob/${revision}/src/Provider.kt#L20`;
+ }
+ data.processThread.steps[0].endLine=12;
+ const reader=load(data);reader.run("showEntry('process-overview')");
+ const html=reader.e('scenario-content').innerHTML;
+ assert.match(html,new RegExp(`href="https://github.com/example/client/blob/${revision}/src/Client.kt#L10-L12"`));
+ assert.match(html,new RegExp(`href="https://git.example:8443/gitlab/team/provider/-/blob/${revision}/src/Provider.kt#L20"`));
+ assert.doesNotMatch(html,/href="#thread-source-[^"]*-L|class="thread-code"|class="thread-code-line"/);
+ assert.match(html,/Source text is omitted from this export/);
+ assert.equal(reader.run("threadSourceHref('receiver',20,23)"),`https://git.example:8443/gitlab/team/provider/-/blob/${revision}/src/Provider.kt#L20-23`);
+});
+
+
+test('remote single source opens the repository and multiple sources show links without copy controls',()=>{
+ const data=fixture();data.sourceExport={mode:'remote'};
+ data.sources['same-source']={...source(''),url:'https://github.com/example/repo/blob/'+ 'a'.repeat(40)+'/A.kt#L1-L3'};
+ data.sources['other']={...source(''),file:'B.kt',url:'https://git.example/group/repo/-/blob/'+ 'b'.repeat(40)+'/B.kt#L4-9'};
+ const r=load(data);r.e('source-select').parentElement=r.e('source-toolbar');
+ r.click({sources:'same-source'});assert.deepEqual(r.opened,[[data.sources['same-source'].url,'_blank','noopener,noreferrer']]);assert.equal(r.e('source-panel').hidden,true);
+ r.click({sources:'same-source other'});assert.equal(r.e('source-panel').hidden,false);assert.equal(r.e('source-code').hidden,true);assert.equal(r.e('source-toolbar').hidden,true);
+ assert.match(r.e('source-meta').innerHTML,/B.kt#L4-9/);assert.match(r.e('source-foot').textContent,/Source text is omitted/);
 });

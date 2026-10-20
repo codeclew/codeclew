@@ -30,8 +30,8 @@
  }
  function sourceHtml(source,start=source.startLine,end=source.endLine){
   const text=(source.text||'').split('\n').slice(Math.max(0,start-source.startLine),end-source.startLine+1).join('\n');
-  const base=(source.url||'').split('#')[0],link=/^https?:\/\//.test(base)?chromeHtml`<a href="${esc(base)}#L${start}-L${end}">${esc(source.file)}:${start}–${end}</a>`:esc(source.file)+':'+start+'–'+end;
-  return chromeHtml`<p>${link} · revision <code>${esc(source.revision)}</code></p><pre tabindex="0">${esc(text)}</pre><details><summary>Exact source binding</summary><pre>${esc(JSON.stringify({sourceId:source.id,textDigest:source.textDigest,authority:source.authority,startLine:start,endLine:end},null,2))}</pre></details>`;
+  const base=(source.url||'').split('#')[0],link=/^https?:\/\//.test(base)?chromeHtml`<a href="${esc(base)}#L${start}${base.includes('/-/blob/')?'-':'-L'}${end}">${esc(source.file)}:${start}–${end}</a>`:esc(source.file)+':'+start+'–'+end;
+  return chromeHtml`<p>${link} · revision <code>${esc(source.revision)}</code></p>${source.text?chromeHtml`<pre tabindex="0">${esc(text)}</pre>`:''}<details><summary>Exact source binding</summary><pre>${esc(JSON.stringify({sourceId:source.id,textDigest:source.textDigest,authority:source.authority,startLine:start,endLine:end},null,2))}</pre></details>`;
  }
  function evidence(claim){
   return chromeHtml`<details class="dm-evidence"><summary>Evidence and scope</summary><p>Agent proposal · Not reviewed. Source interpretation does not establish runtime delivery.</p>${(claim?.evidence||[]).map(e=>e.kind==='SELECTED_SOURCE'?sourceHtml(e.source,e.startLine,e.endLine):chromeHtml`<blockquote>${esc(e.fragment?.text)}</blockquote>${e.state?chromeHtml`<p>Retained freshness: ${esc(t(e.state.freshness))} · meaning review: ${esc(t(e.state.verification))}</p>`:''}${Object.values(e.sources||{}).map(s=>sourceHtml(s)).join('')}`).join('')}</details>`;

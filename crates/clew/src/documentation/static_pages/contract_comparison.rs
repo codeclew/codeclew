@@ -391,7 +391,7 @@ fn project(
         return Err(invalid("HTTP comparison contains unbound case assessments"));
     }
     Ok(
-        json!({"schema":"codeclew-http-comparison-view/1.0","documentationLanguage":packet.documentation_language,"service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifactBindings":artifact_bindings,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
+        json!({"schema":"codeclew-http-comparison-view/1.0","documentationLanguage":packet.documentation_language,"service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifactBindings":artifact_bindings,"probeArtifact":packet.probe_artifact,"assessmentArtifact":packet.assessment_artifact,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
     )
 }
 

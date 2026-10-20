@@ -15,6 +15,8 @@ use std::{
 struct Ui<'a> {
     language: &'a str,
     presentation: &'a super::selected_language::Presentation,
+    remote: bool,
+    remote_urls: BTreeMap<String, String>,
 }
 impl Ui<'_> {
     fn t<'a>(&self, key: &'a str) -> &'a str {
@@ -106,6 +108,9 @@ fn link(path: &str, label: &str) -> String {
     format!("<a href=\"{}\">{}</a>", escape(path), escape(label))
 }
 fn cite(id: &str, ext: &str, ui: &Ui<'_>) -> String {
+    if let Some(url) = ui.remote_urls.get(id) {
+        return link(url, ui.t("Retained source"));
+    }
     link(
         &format!("sources.{ext}#{}", anchor(id)),
         ui.t("Retained source"),
@@ -1214,7 +1219,14 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str, ui: &Ui<'_>) -> St
             out += &format!(
                 "<li>{}</li>\n",
                 link(
-                    &format!("sources.{ext}#{}", authored_source_anchor(row, id)),
+                    &if ui.remote {
+                        row.source_records
+                            .get(id)
+                            .and_then(|s| s.url.clone())
+                            .unwrap_or_default()
+                    } else {
+                        format!("sources.{ext}#{}", authored_source_anchor(row, id))
+                    },
                     &format!(
                         "{} {ui_text0} {id}",
                         if authorship.context_migration.is_some() {
@@ -1389,6 +1401,24 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str, ui: &Ui<'_>) -> String {
             ui_text1 = ui.t(". Compiler scope:"),
             ui_text2 = ui.t(". Examined source digest:")
         ));
+        if ui.remote {
+            for source in node.sources.values() {
+                if let Some(url) = &source.url {
+                    out += &format!(
+                        "<p>{}</p>",
+                        link(
+                            url,
+                            &format!(
+                                "{}:{}–{} ↗",
+                                source.file, source.start_line, source.end_line
+                            )
+                        )
+                    );
+                }
+            }
+            out += "</section>\n";
+            continue;
+        }
         let producer_label = if node
             .observations
             .get(&node.callable.declaration_id)
@@ -1954,6 +1984,20 @@ fn appendix(p: &BundleProjection, ext: &str, ui: &Ui<'_>) -> String {
         }
     }
     for source in sources.values() {
+        if ui.remote
+            && let Some(url) = &source.url
+        {
+            out += &format!(
+                "<p>{}</p>",
+                link(
+                    url,
+                    &format!(
+                        "{}:{}–{} ↗",
+                        source.file, source.start_line, source.end_line
+                    )
+                )
+            );
+        }
         out += &format!(
             "<details id=\"{}\"><summary>{}:{}–{}</summary><p>{}</p><pre>{}</pre></details>\n",
             anchor(&format!("source:{}:{}", source.service, source.id)),
@@ -2213,6 +2257,30 @@ pub(super) fn write_language(
     p: &BundleProjection,
     language: Option<&str>,
 ) -> Result<Value, ClewError> {
+    write_inner(output, snapshot, p, language, None)
+}
+
+pub(super) fn write_source_policy(
+    output: &Path,
+    snapshot: &str,
+    p: &BundleProjection,
+    language: Option<&str>,
+    policy: &crate::documentation::source_export::Policy,
+    checked: &crate::documentation::check::Check,
+) -> Result<Value, ClewError> {
+    write_inner(output, snapshot, p, language, Some((policy, checked)))
+}
+
+fn write_inner(
+    output: &Path,
+    snapshot: &str,
+    p: &BundleProjection,
+    language: Option<&str>,
+    source_export: Option<(
+        &crate::documentation::source_export::Policy,
+        &crate::documentation::check::Check,
+    )>,
+) -> Result<Value, ClewError> {
     crate::documentation::language::validate(language)?;
     // Portable preflight before constructing or creating any output files.
     validate_projection_kind(p)?;
@@ -2227,10 +2295,40 @@ pub(super) fn write_language(
             ));
         }
     }
+    let projected;
+    let p = if let Some((policy, checked)) = source_export.filter(|(policy, _)| policy.remote()) {
+        projected =
+            crate::documentation::source_export::Projection::new(policy, checked)?.typed(p)?;
+        &projected
+    } else {
+        p
+    };
     let presentation = super::selected_language::Presentation::new(p, language)?;
+    let remote = source_export.is_some_and(|(policy, _)| policy.remote());
+    let mut remote_urls = BTreeMap::new();
+    if remote {
+        for page in &p.pages {
+            for (id, citation) in &page.citations {
+                if let Some(url) = &citation.url {
+                    remote_urls.insert(id.clone(), url.clone());
+                }
+            }
+        }
+        if let Some(graph) = &p.source_call_graph {
+            for node in graph.nodes.values() {
+                for (id, citation) in &node.citations {
+                    if let Some(url) = &citation.url {
+                        remote_urls.insert(id.clone(), url.clone());
+                    }
+                }
+            }
+        }
+    }
     let ui = Ui {
         language: language.unwrap_or("en"),
         presentation: &presentation,
+        remote,
+        remote_urls,
     };
     let catalogue = catalogue::rows_language(p, ui.language)?;
     let has_declaration_only = p.pages.iter().any(|page| {
@@ -2336,6 +2434,11 @@ pub(super) fn write_language(
             // Scalar and source newlines are already escaped. These remaining
             // newlines only format native JSX and must not start MDX paragraphs.
             let mut body = body.replace('\n', "");
+            if ui.remote {
+                body = body
+                    .replace("<pre></pre>", "")
+                    .replace("<pre tabindex=\"0\"></pre>", "");
+            }
             if let Some(language) = language {
                 body = body.replacen("<main>", &format!("<main lang=\"{language}\">"), 1);
             }
@@ -2386,6 +2489,10 @@ pub(super) fn write_language(
         "projectionDigest":digest(p)?, "mdxProfile":"MDX 3; inert native JSX; no imports, executable expressions, scripts or network dependencies",
         "pages":page_rows,
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    if let Some((policy, _)) = source_export {
+        manifest["sourceExport"] = policy.manifest()?;
+        manifest["exportIdentity"] = digest(&(snapshot, policy, &manifest["files"]))?.into();
+    }
     if let Some(language) = language {
         manifest["documentationLanguage"] = json!(language);
         manifest["requestedDocumentationLanguage"] = json!(language);
@@ -2554,6 +2661,8 @@ mod tests {
             &Ui {
                 language: "en",
                 presentation: &super::super::selected_language::Presentation::default(),
+                remote: false,
+                remote_urls: BTreeMap::new(),
             },
         );
         assert!(body.contains("café☕&#13;&#10;&lt;Panel&gt;&#123;probe()&#125;&lt;/Panel&gt;"));

@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.13.39"
+  version: "0.13.40"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 

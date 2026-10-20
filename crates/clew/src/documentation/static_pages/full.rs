@@ -16,6 +16,7 @@ pub(super) struct ReadingInputs<'a> {
     pub data_model: Option<&'a Path>,
     pub format: super::PageFormat,
     pub language: Option<&'a str>,
+    pub source_policy: &'a crate::documentation::source_export::Policy,
 }
 
 /// Prose, threads, assessments and their retained evidence stay on the existing
@@ -29,6 +30,8 @@ pub(super) fn render(
     output: &Path,
 ) -> Result<Value, ClewError> {
     validate_output(output)?;
+    let mut source_projection =
+        crate::documentation::source_export::Projection::new(inputs.source_policy, checked)?;
     let policy = crate::documentation::endpoint_publication::load(repo)?;
     let policy_digest = policy.digest()?;
     if !policy.exclusions.is_empty() {
@@ -66,6 +69,7 @@ pub(super) fn render(
         remaining -= bytes.len() as u64;
         files.insert(name.clone(), bytes);
     }
+    source_projection.register_frozen_files(&files)?;
     let questions =
         super::question_reading::load(inputs.reading_plan, publication, &files, checked)?;
     let model = super::data_model::load(
@@ -254,6 +258,14 @@ pub(super) fn render(
             serde_json::to_vec_pretty(guide).map_err(io_error)?,
         );
     }
+    let model = if inputs.source_policy.remote() {
+        model
+            .as_ref()
+            .map(|model| source_projection.typed(model))
+            .transpose()?
+    } else {
+        model
+    };
     let availability = if let Some(model) = &model {
         super::data_model::write_language(model, &mut files, requested_language)?
     } else {
@@ -355,14 +367,38 @@ pub(super) fn render(
             }
         }
     }
+    source_projection.files(&mut files)?;
     let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty() && model_gaps.is_empty() && contract_gaps.is_empty() && authored_gaps.is_empty() && narrative_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"narrativeTranslationGaps":narrative_gaps,"narrativeTranslationComplete":requested_language.map(|_|narrative_gaps.is_empty()),"narrativeTranslationCoverage":["OPERATIONS","SECTIONS","NOTE_ASSESSMENTS","NOTE_ORIGINALS"],"authoredTranslationGaps":authored_gaps,"authoredTranslationComplete":requested_language.map(|_|authored_gaps.is_empty()),"declaredContractTranslationGaps":contract_gaps,"declaredContractTranslationComplete":requested_language.map(|_|contract_gaps.is_empty()),"modelTranslationGaps":model_gaps,"modelTranslationComplete":requested_language.map(|_|model_gaps.is_empty()),"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    result["sourceExport"] = inputs.source_policy.manifest()?;
+    result["exportIdentity"] = digest(&(
+        publication,
+        snapshot,
+        inputs.source_policy,
+        &result["files"],
+    ))?
+    .into();
     let portable = inputs.format == super::PageFormat::Docusaurus;
     if portable {
         (files, result) = super::docusaurus::project(&files, &result, &inputs)?;
     }
+    source_projection.files(&mut files)?;
+    result["files"] = json!(
+        files
+            .iter()
+            .map(|(path, bytes)| json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)}))
+            .collect::<Vec<_>>()
+    );
+    result["sourceExport"] = inputs.source_policy.manifest()?;
+    result["exportIdentity"] = digest(&(
+        publication,
+        snapshot,
+        inputs.source_policy,
+        &result["files"],
+    ))?
+    .into();
     files.insert(
         if portable {
             "export-manifest.json"
@@ -460,7 +496,7 @@ fn merge_sources(payload: &mut Value, selected: Value) -> Result<(), ClewError> 
     Ok(())
 }
 
-fn validate_output(output: &Path) -> Result<(), ClewError> {
+pub(super) fn validate_output(output: &Path) -> Result<(), ClewError> {
     if let Ok(metadata) = fs::symlink_metadata(output)
         && (!metadata.is_dir()
             || metadata.file_type().is_symlink()

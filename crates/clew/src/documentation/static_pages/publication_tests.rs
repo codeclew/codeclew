@@ -429,6 +429,7 @@ fn explicit_pages_language_preserves_readable_original_guides_in_both_formats() 
         ] {
             let output = temporary.path().join(format!("guide-{case}-{format_name}"));
             let rendered = run(Command::Render {
+                source_export: Default::default(),
                 root: repo.root.clone(),
                 snapshot: snapshot.clone(),
                 publication: Some(publication.into()),
@@ -522,6 +523,7 @@ fn full_publication_catalog_and_history_inherit_the_frozen_publication_language(
         .unwrap();
         let output = temporary.path().join(format!("full-{language}"));
         let rendered = run(Command::Render {
+            source_export: Default::default(),
             language: None,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
@@ -564,6 +566,7 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
     edit(&repo, &snapshot, true);
     let output = temporary.path().join("full-excluded");
     let error = run(Command::Render {
+        source_export: Default::default(),
         language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
@@ -595,6 +598,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     let previous_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
     let output = temporary.path().join("full-valid");
     let rendered = run(Command::Render {
+        source_export: Default::default(),
         language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
@@ -624,6 +628,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::write(&sentinel, "previous output").unwrap();
     assert!(
         run(Command::Render {
+            source_export: Default::default(),
             language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
@@ -648,6 +653,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::create_dir(&refused).unwrap();
     assert!(
         run(Command::Render {
+            source_export: Default::default(),
             language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
@@ -684,6 +690,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             fs::create_dir(&output).unwrap();
         }
         let response = run(Command::Render {
+            source_export: Default::default(),
             language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
@@ -713,6 +720,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         assert_eq!(catalogue["rows"], json!([]));
         assert!(
             run(Command::Render {
+                source_export: Default::default(),
                 language: None,
                 format: PageFormat::Standalone,
                 root: repo.root.clone(),
@@ -730,6 +738,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     edit(&repo, &snapshot, false);
     let output = temporary.path().join("restored");
     let restored = run(Command::Render {
+        source_export: Default::default(),
         language: None,
         format: PageFormat::Standalone,
         root: repo.root.clone(),
@@ -754,6 +763,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     let rejected = temporary.path().join("invalid-empty-input");
     assert!(
         run(Command::Render {
+            source_export: Default::default(),
             language: None,
             format: PageFormat::Standalone,
             root: repo.root.clone(),
@@ -790,6 +800,7 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
         &snapshot,
         &projection,
         None,
+        None,
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::WwConflict);
@@ -812,6 +823,7 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
             &snapshot,
             &empty_projection,
             None,
+            None,
         )
         .is_err()
     );
@@ -831,6 +843,7 @@ fn native_write_rejects_policy_race_and_preserves_nonempty_or_symlink_output() {
             &link,
             &snapshot,
             &empty_projection,
+            None,
             None,
         )
         .is_err()
@@ -854,6 +867,7 @@ fn selected_language_preserves_question_sources_and_format_boundaries() {
             .path()
             .join(format!("selected-{}", available.unwrap_or("unknown")));
         let command = |format, language, output| Command::Render {
+            source_export: Default::default(),
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
             input: Some(input.clone()),
@@ -1038,4 +1052,495 @@ fn selected_native_locale_is_local_to_each_export_and_does_not_rewrite_evidence(
         }
     }
     assert_eq!(serde_json::to_vec_pretty(&projection).unwrap(), original);
+}
+
+fn source_export_fixture() -> (
+    tempfile::TempDir,
+    Repository,
+    Check,
+    String,
+    crate::documentation::source_export::Policy,
+) {
+    use crate::documentation::source_export::{
+        Policy as ExportPolicy, RepositoryMapping, SourceMode,
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    Repository::init(temporary.path(), "Remote-source fixture").unwrap();
+    let repo = Repository::open(temporary.path()).unwrap();
+    let mut check = checked();
+    let mut remote = ExportPolicy {
+        mode: SourceMode::Remote,
+        ..ExportPolicy::default()
+    };
+    for (id, origin, provider, base, file, start, text) in [
+        (
+            "sample",
+            "https://github.com/example/render-fixture.git",
+            "github",
+            "https://github.com/example/render-fixture",
+            "src/A file#.java",
+            7,
+            "void submit() {\n // CLEW_SOURCE_ONLY_20261020_0123456789\n int value=1;\n if (value>0) { return; }\n return;\n}",
+        ),
+        (
+            "sibling",
+            "ssh://git@git.example.invalid:2222/team/nested/render-fixture.git",
+            "gitlab",
+            "https://git.example.invalid:8443/gitlab/team/nested/render-fixture",
+            "src/Пример.java",
+            3,
+            "void submit() {\n // CLEW_SOURCE_ONLY_20261020_0123456789\n int value=1;\n if (value>0) { return; }\n value++;\n return;\n}",
+        ),
+    ] {
+        let service:Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":id,"title":id,"repositoryId":id,"repository":origin,"language":"java","profile":"source-syntax","targetRef":"main","source":{"roots":["not-a-live-checkout"],"dialect":"17"}})).unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let e = check.services.get_mut(id).unwrap();
+        e.service_digest = crate::documentation::digest(&service).unwrap();
+        let source = e.sources.get_mut("src-endpoint-a").unwrap();
+        source.file = file.into();
+        source.text = text.into();
+        source.start_line = start;
+        source.end_line = start + text.lines().count() as u64 - 1;
+        source.text_digest = crate::canonical::hash_bytes(text.as_bytes());
+        let occurrence = source.occurrence.as_mut().unwrap();
+        occurrence.blob = source.text_digest.clone();
+        occurrence.start_byte = 0;
+        occurrence.end_byte = text.len();
+        remote.repositories.insert(
+            id.into(),
+            RepositoryMapping {
+                provider: provider.into(),
+                web_base: base.into(),
+                origin: None,
+            },
+        );
+    }
+    check.input_digest = repo.input_digest().unwrap();
+    check.source_inputs = Some(SourceInputs {
+        schema: SOURCE_INPUTS_SCHEMA.into(),
+        input_digest: check.input_digest.clone(),
+        inputs: repo.inputs().unwrap(),
+        selected_services: BTreeSet::from(["sample".into(), "sibling".into()]),
+        retained_services: BTreeSet::new(),
+    });
+    check.refresh_digest().unwrap();
+    let snapshot = check.save_snapshot(&repo).unwrap();
+    (temporary, repo, check, snapshot, remote)
+}
+
+#[test]
+fn remote_source_exports_preserve_prose_without_any_source_body_attachment() {
+    use crate::documentation::source_export::Policy as ExportPolicy;
+    let (temporary, _repo, check, snapshot, remote) = source_export_fixture();
+    let marker = "CLEW_SOURCE_ONLY_20261020_0123456789";
+    let authored = "CLEW_AUTHORED_EXPLANATION_20261020_9876543210";
+    let mut p = project::project(
+        &check,
+        &[
+            selection("github", "sample", "endpoint-a"),
+            selection("gitlab", "sibling", "endpoint-a"),
+        ],
+    )
+    .unwrap();
+    p.pages[0].human_instructions.push(model::HumanInstruction {
+        id: "authored-note".into(),
+        title: "Preserved authored explanation".into(),
+        declared_author: "Fixture author".into(),
+        classification: "USER_DOCUMENTATION".into(),
+        period: "v1".into(),
+        version_digest: "fixture-version".into(),
+        content_digest: crate::canonical::hash_bytes(authored.as_bytes()),
+        association_digest: "fixture-association".into(),
+        text: authored.into(),
+        authority: "HUMAN_OR_IMPORTED_UNVERIFIED".into(),
+        source_claim_status: "UNASSESSED".into(),
+        association: json!({}),
+    });
+    let output = std::env::var_os("CODECLEW_SOURCE_EXPORT_FIXTURE_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temporary.path().join("exports"));
+    fs::create_dir_all(&output).unwrap();
+    let embedded = publish::write_source_policy(
+        &output.join("embedded"),
+        &snapshot,
+        &p,
+        Some("en"),
+        &ExportPolicy::default(),
+        &check,
+    )
+    .unwrap();
+    let exported = publish::write_source_policy(
+        &output.join("remote"),
+        &snapshot,
+        &p,
+        Some("en"),
+        &remote,
+        &check,
+    )
+    .unwrap();
+    assert_ne!(embedded["exportIdentity"], exported["exportIdentity"]);
+    let all_files = |dir: &Path| {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| fs::read(entry.unwrap().path()).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        all_files(&output.join("embedded"))
+            .iter()
+            .any(|b| String::from_utf8_lossy(b).contains(marker))
+    );
+    let remote_files = all_files(&output.join("remote"));
+    assert!(
+        remote_files
+            .iter()
+            .all(|b| !String::from_utf8_lossy(b).contains(marker))
+    );
+    assert!(
+        remote_files
+            .iter()
+            .any(|b| String::from_utf8_lossy(b).contains(authored))
+    );
+    let expected = [
+        format!(
+            "https://github.com/example/render-fixture/blob/{}/src/A%20file%23.java#L7-L12",
+            "a".repeat(40)
+        ),
+        format!(
+            "https://git.example.invalid:8443/gitlab/team/nested/render-fixture/-/blob/{}/src/%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80.java#L3-9",
+            "a".repeat(40)
+        ),
+    ];
+    for url in &expected {
+        assert!(
+            remote_files
+                .iter()
+                .any(|b| String::from_utf8_lossy(b).contains(url)),
+            "{url}"
+        );
+    }
+    if std::env::var_os("CODECLEW_SOURCE_EXPORT_FIXTURE_OUTPUT").is_some() {
+        fs::write(output.join("cases.json"),serde_json::to_vec_pretty(&json!({"cases":[{"id":"native-embedded","directory":output.join("embedded"),"mode":"embedded","sourceOnlyMarkers":[marker],"authoredProse":[authored]},{"id":"native-remote","directory":output.join("remote"),"mode":"remote","sourceOnlyMarkers":[marker],"authoredProse":[authored],"expectedUrls":expected}],"snapshot":snapshot,"repositoryBindings":remote.repositories,"scope":"Actual production native publisher over a synthetic retained compiler fixture; remote availability is not queried"})).unwrap()).unwrap();
+        println!("Remote source fixture pair: {}", output.display());
+    }
+}
+
+#[test]
+fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_formats() {
+    use crate::documentation::source_export::{Args as ExportArgs, SourceMode};
+    let (temporary, repo, mut check, _, remote) = source_export_fixture();
+    let old_marker = "CLEW_SOURCE_ONLY_20261020_0123456789";
+    let new_marker = "CLEW_SOURCE_ONLY_NEW_20261020_0123456789";
+    let authored = "CLEW_AUTHORED_FULL_PUBLICATION_20261020_9876543210";
+    // Global dependency identities must remain distinct across the two services.
+    for (service, evidence) in &mut check.services {
+        let ids = evidence
+            .sources
+            .keys()
+            .map(|id| (id.clone(), format!("{service}-{id}")))
+            .collect::<BTreeMap<_, _>>();
+        evidence.sources = std::mem::take(&mut evidence.sources)
+            .into_iter()
+            .map(|(id, mut source)| {
+                source.id = ids[&id].clone();
+                (source.id.clone(), source)
+            })
+            .collect();
+        for observation in evidence.observations.values_mut() {
+            observation.source_ids = observation
+                .source_ids
+                .iter()
+                .map(|id| ids[id].clone())
+                .collect();
+            replace_ids(&mut observation.normalized, &ids);
+            observation.digest = crate::documentation::digest(&observation.normalized).unwrap();
+        }
+        evidence.observations = std::mem::take(&mut evidence.observations)
+            .into_iter()
+            .map(|(id, mut observation)| {
+                observation.id = format!("{service}.{id}");
+                (observation.id.clone(), observation)
+            })
+            .collect();
+    }
+    check.dependencies = check
+        .services
+        .values()
+        .flat_map(|e| e.observations.clone())
+        .collect();
+    // Reproduce legacy URL construction, including SSH transport ports and
+    // unescaped file names. Repository metadata, not targetRef, owns the origin.
+    for (id, e) in &mut check.services {
+        let repository = &check.source_inputs.as_ref().unwrap().inputs.services[id].repository;
+        let base = if repository.starts_with("https://") {
+            repository.trim_end_matches(".git")
+        } else {
+            repository
+        };
+        for source in e.sources.values_mut() {
+            source.url = Some(format!(
+                "{base}/blob/{}/{file}#L{}-L{}",
+                source.revision,
+                source.start_line,
+                source.end_line,
+                file = source.file
+            ));
+        }
+    }
+    check.refresh_digest().unwrap();
+    let old_snapshot = check.save_snapshot(&repo).unwrap();
+    let narratives = check.services.keys().map(|service| {
+        serde_json::from_value(json!({
+            "schema":"codeclew-documentation-narrative/1.3",
+            "subject":format!("service:{service}"),
+            "contextDigest":check.context_digest,
+            "operations":crate::documentation::sections::REQUIRED.iter().map(|(id,title,_)| json!({
+                "id":id,"title":title,"documentationLanguage":"en",
+                "summary":{"id":"summary","text":authored,
+                    "dependencyIds":[format!("{service}.endpoint-a")],"sourceIds":[format!("{service}-src-endpoint-a")]},
+                "participants":[],"events":[]
+            })).collect::<Vec<_>>(),
+            "gaps":{}
+        })).unwrap()
+    }).collect();
+    let published = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        narratives,
+        false,
+        BTreeMap::new(),
+        &old_snapshot,
+    )
+    .unwrap();
+    let publication = published["bundle"].as_str().unwrap().to_owned();
+    let original_bindings = fs::read(
+        repo.path(&format!("docs/generated/{publication}/bindings.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    fn replace_ids(value: &mut Value, ids: &BTreeMap<String, String>) {
+        match value {
+            Value::String(v) => {
+                if let Some(new) = ids.get(v) {
+                    *v = new.clone()
+                }
+            }
+            Value::Object(o) => {
+                for v in o.values_mut() {
+                    replace_ids(v, ids)
+                }
+            }
+            Value::Array(a) => {
+                for v in a {
+                    replace_ids(v, ids)
+                }
+            }
+            _ => {}
+        }
+    }
+    for e in check.services.values_mut() {
+        e.revision = "b".repeat(40);
+        let ids = e
+            .sources
+            .keys()
+            .map(|id| (id.clone(), format!("selected-{id}")))
+            .collect::<BTreeMap<_, _>>();
+        let mut sources = BTreeMap::new();
+        for (id, mut source) in std::mem::take(&mut e.sources) {
+            source.id = ids[&id].clone();
+            source.revision = e.revision.clone();
+            source.text = source.text.replace(old_marker, new_marker);
+            source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+            if let Some(o) = source.occurrence.as_mut() {
+                o.blob = source.text_digest.clone();
+                o.end_byte = o.start_byte + source.text.len();
+            }
+            source.url = source
+                .url
+                .map(|url| url.replace(&"a".repeat(40), &"b".repeat(40)));
+            sources.insert(source.id.clone(), source);
+        }
+        e.sources = sources;
+        for observation in e.observations.values_mut() {
+            for source in &mut observation.source_ids {
+                *source = ids[source].clone();
+            }
+            replace_ids(&mut observation.normalized, &ids);
+            observation.digest = crate::documentation::digest(&observation.normalized).unwrap();
+        }
+    }
+    check.dependencies = check
+        .services
+        .values()
+        .flat_map(|e| e.observations.clone())
+        .collect();
+    check.refresh_digest().unwrap();
+    let snapshot = check.save_snapshot(&repo).unwrap();
+    let source = &check.services["sample"].sources["selected-sample-src-endpoint-a"];
+    let reference = json!({"kind":"SOURCE","service":"sample","sourceId":source.id,"textDigest":source.text_digest,"startLine":source.start_line,"endLine":source.end_line});
+    let block = json!({"title":"Authored reading guidance","text":authored,"evidence":[reference]});
+    let guide = json!({"schema":"codeclew-system-reading-plan/1.0","publication":publication,"subject":"system:overview","language":"en","title":"Source links reference","purpose":authored,"sections":[{"id":"start","title":"Start","blocks":[block]},{"id":"confidence","title":"Source and scope","blocks":[block]}],"conclusion":block});
+    let input = temporary.path().join("guide.json");
+    fs::write(&input, serde_json::to_vec_pretty(&guide).unwrap()).unwrap();
+    let mapping = temporary.path().join("source-map.json");
+    fs::write(&mapping,serde_json::to_vec_pretty(&json!({"schema":"codeclew-source-repositories/1.0","repositories":remote.repositories})).unwrap()).unwrap();
+    let output = std::env::var_os("CODECLEW_SOURCE_EXPORT_FULL_FIXTURE_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temporary.path().join("full-exports"));
+    fs::create_dir_all(&output).unwrap();
+    let mut cases = Vec::new();
+    let mut identities = BTreeSet::new();
+    let formats = [
+        ("standalone", PageFormat::Standalone),
+        ("docusaurus", PageFormat::Docusaurus),
+    ];
+    let formats = if std::env::var_os("CODECLEW_SOURCE_EXPORT_STANDALONE_ONLY").is_some() {
+        &formats[..1]
+    } else {
+        &formats[..]
+    };
+    for (format_name, format) in formats.iter().copied() {
+        for (mode_name, mode) in [
+            ("embedded", SourceMode::Embedded),
+            ("remote", SourceMode::Remote),
+        ] {
+            let directory = output.join(format!("{format_name}-{mode_name}"));
+            let result = run(Command::Render {
+                root: repo.root.clone(),
+                snapshot: snapshot.clone(),
+                input: None,
+                publication: Some(publication.clone()),
+                reading_plan: Some(input.clone()),
+                contract_comparison: None,
+                data_model: None,
+                format,
+                language: Some("en".into()),
+                source_export: ExportArgs {
+                    source_mode: mode,
+                    source_map: Some(mapping.clone()),
+                },
+                output: directory.clone(),
+            })
+            .unwrap();
+            assert_eq!(result["sourceExport"]["mode"], mode_name);
+            identities.insert(result["exportIdentity"].as_str().unwrap().to_owned());
+            let mut files = Vec::new();
+            fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
+                for entry in fs::read_dir(dir).unwrap() {
+                    let p = entry.unwrap().path();
+                    if p.is_dir() {
+                        collect(&p, files)
+                    } else {
+                        files.push(p)
+                    }
+                }
+            }
+            collect(&directory, &mut files);
+            let bodies = files
+                .iter()
+                .map(|p| fs::read_to_string(p).unwrap_or_default())
+                .collect::<Vec<_>>();
+            for marker in [old_marker, new_marker] {
+                assert_eq!(
+                    bodies.iter().any(|text| text.contains(marker)),
+                    mode == SourceMode::Embedded,
+                    "{format_name}/{mode_name}: {marker}"
+                );
+            }
+            assert!(bodies.iter().any(|text| text.contains(authored)));
+            let expected = [
+                format!(
+                    "https://github.com/example/render-fixture/blob/{}/src/A%20file%23.java#L7-L12",
+                    "a".repeat(40)
+                ),
+                format!(
+                    "https://github.com/example/render-fixture/blob/{}/src/A%20file%23.java#L7-L12",
+                    "b".repeat(40)
+                ),
+                format!(
+                    "https://git.example.invalid:8443/gitlab/team/nested/render-fixture/-/blob/{}/src/%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80.java#L3-9",
+                    "a".repeat(40)
+                ),
+                format!(
+                    "https://git.example.invalid:8443/gitlab/team/nested/render-fixture/-/blob/{}/src/%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80.java#L3-9",
+                    "b".repeat(40)
+                ),
+            ];
+            if mode == SourceMode::Remote {
+                for url in &expected {
+                    assert!(
+                        bodies.iter().any(|text| text.contains(url)),
+                        "{format_name}: {url}"
+                    );
+                }
+            }
+            cases.push(json!({"id":format!("full-{format_name}-{mode_name}"),"directory":directory,"mode":mode_name,"sourceOnlyMarkers":[old_marker,new_marker],"authoredProse":[authored],"expectedUrls":if mode==SourceMode::Remote{expected.to_vec()}else{vec![]}}));
+        }
+    }
+    let cli_output = output.join("cli-remote");
+    let cli = crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+        root: repo.root.clone(),
+        language: Some("en".into()),
+        input: vec![],
+        require_complete: false,
+        refresh: false,
+        snapshot: Some(snapshot.clone()),
+        publish: false,
+        source_export: ExportArgs {
+            source_mode: SourceMode::Remote,
+            source_map: Some(mapping.clone()),
+        },
+        output: Some(cli_output.clone()),
+    })
+    .unwrap();
+    assert_eq!(cli["sourceExport"]["mode"], "remote");
+    cases.push(json!({"id":"cli-remote","directory":cli_output,"mode":"remote","sourceOnlyMarkers":[old_marker,new_marker],"authoredProse":[authored]}));
+    for (input, refresh, publish, require_complete) in [
+        (vec![input.clone()], false, false, false),
+        (vec![], true, false, false),
+        (vec![], false, true, false),
+        (vec![], false, false, true),
+    ] {
+        let forbidden = output.join("must-not-exist");
+        assert!(
+            crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+                root: repo.root.clone(),
+                language: None,
+                input,
+                require_complete,
+                refresh,
+                snapshot: Some(snapshot.clone()),
+                publish,
+                source_export: ExportArgs {
+                    source_mode: SourceMode::Remote,
+                    source_map: Some(mapping.clone())
+                },
+                output: Some(forbidden.clone())
+            })
+            .is_err()
+        );
+        assert!(!forbidden.exists());
+    }
+    assert_eq!(
+        identities.len(),
+        formats.len() * 2,
+        "format and mode have independent export identities"
+    );
+    assert_eq!(
+        fs::read(
+            repo.path(&format!("docs/generated/{publication}/bindings.json"))
+                .unwrap()
+        )
+        .unwrap(),
+        original_bindings
+    );
+    assert!(
+        serde_json::to_string(&Check::load_snapshot(&repo, &old_snapshot).unwrap())
+            .unwrap()
+            .contains(old_marker)
+    );
+    if std::env::var_os("CODECLEW_SOURCE_EXPORT_FULL_FIXTURE_OUTPUT").is_some() {
+        fs::write(output.join("cases.json"),serde_json::to_vec_pretty(&json!({"cases":cases,"retainedSnapshot":old_snapshot,"selectedSnapshot":snapshot,"publication":publication,"repositoryBindings":remote.repositories,"scope":"Actual full saved-publication rendering through pages command; synthetic retained compiler fixtures; no remote availability probe"})).unwrap()).unwrap();
+        println!("Full publication source-mode fixture: {}", output.display());
+    }
 }

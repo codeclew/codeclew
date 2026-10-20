@@ -562,7 +562,7 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         || !valid_id(&s.id)
         || !valid_id(&s.repository_id)
         || s.title.trim().is_empty()
-        || !safe_url(&s.repository)
+        || !(safe_url(&s.repository) || super::source_export::safe_ssh_repository(&s.repository))
         || s.target_ref.is_empty()
         || s.target_ref.starts_with('-')
     {

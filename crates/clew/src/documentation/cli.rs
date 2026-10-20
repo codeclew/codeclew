@@ -183,6 +183,11 @@ pub enum Command {
         /// Add this render to released documentation history.
         #[arg(long)]
         publish: bool,
+        #[command(flatten)]
+        source_export: super::source_export::Args,
+        /// Optional new export directory. Required for remote mode; the root remains a local evidence workspace.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 #[derive(Debug, Args)]
@@ -521,7 +526,39 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             refresh,
             snapshot,
             publish,
+            source_export,
+            output,
         } => {
+            let policy = source_export.policy()?;
+            if policy.remote() && output.is_none() {
+                return Err(invalid(
+                    "remote docs render requires --output NEW_DIRECTORY; local retained evidence and working publications remain in --root",
+                ));
+            }
+            if let Some(output) = &output {
+                super::static_pages::validate_export_output(output)?;
+            }
+            if policy.remote() {
+                if !input.is_empty() || refresh || publish || require_complete {
+                    return Err(invalid(
+                        "remote docs render exports an existing saved publication; --input, --refresh, --publish and --require-complete belong to the preceding local render",
+                    ));
+                }
+                let repo = Repository::open(&root)?;
+                let (publication, _) = super::bindings::baseline(&repo)?.ok_or_else(||invalid(
+                    "remote docs render requires an existing local publication; run docs render locally first or select --publication with docs pages render"))?;
+                let (checked, snapshot) =
+                    super::check::Check::retained(&repo, snapshot.as_deref(), &Default::default())?;
+                return super::static_pages::export_publication(
+                    &repo,
+                    &checked,
+                    &snapshot,
+                    &publication,
+                    language.as_deref(),
+                    &policy,
+                    output.as_deref().unwrap(),
+                );
+            }
             let mut narratives = Vec::new();
             let mut failures = BTreeMap::new();
             for (index, path) in input.iter().enumerate() {
@@ -533,7 +570,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                 }
             }
             let repo = Repository::open(&root)?;
-            super::render::publish_language_with_mode(
+            let mut result = super::render::publish_language_with_mode(
                 &repo,
                 narratives,
                 require_complete,
@@ -542,7 +579,28 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                 refresh,
                 language.as_deref(),
                 publish,
-            )
+            )?;
+            if let Some(output) = output {
+                let snapshot = result["snapshot"]
+                    .as_str()
+                    .ok_or_else(|| invalid("rendered snapshot is unavailable"))?;
+                let checked = super::check::Check::load_snapshot(&repo, snapshot)?;
+                let exported = super::static_pages::export_publication(
+                    &repo,
+                    &checked,
+                    snapshot,
+                    result["bundle"]
+                        .as_str()
+                        .ok_or_else(|| invalid("rendered publication is unavailable"))?,
+                    language.as_deref(),
+                    &policy,
+                    &output,
+                )?;
+                result["export"] = exported;
+                result["index"] = json!(output.join("index.html"));
+            }
+            result["sourceExport"] = policy.manifest()?;
+            Ok(result)
         }
     }
 }
@@ -1910,6 +1968,96 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_export_options_are_available_on_public_render_commands() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Docs {
+            #[command(subcommand)]
+            command: Command,
+        }
+        for args in [
+            vec![
+                "clew-docs",
+                "render",
+                "--root",
+                "docs",
+                "--source-mode",
+                "remote",
+                "--output",
+                "site",
+            ],
+            vec![
+                "clew-docs",
+                "pages",
+                "render",
+                "--root",
+                "docs",
+                "--snapshot",
+                "saved",
+                "--publication",
+                "pub",
+                "--source-mode",
+                "remote",
+                "--source-map",
+                "repos.json",
+                "--output",
+                "site",
+            ],
+            vec![
+                "clew-docs",
+                "dsl",
+                "render",
+                "--root",
+                "docs",
+                "--snapshot",
+                "saved",
+                "--service",
+                "orders",
+                "--profile",
+                "profile.json",
+                "--source-mode",
+                "remote",
+                "--output",
+                "site",
+            ],
+        ] {
+            Docs::try_parse_from(args).unwrap();
+        }
+        for args in [
+            vec!["clew-docs", "render", "--help"],
+            vec!["clew-docs", "pages", "render", "--help"],
+            vec!["clew-docs", "dsl", "render", "--help"],
+        ] {
+            let help = Docs::try_parse_from(args).err().unwrap().to_string();
+            assert!(
+                help.contains("--source-mode")
+                    && help.contains("--source-map")
+                    && help.contains("embedded")
+                    && help.contains("remote")
+            );
+        }
+        let parsed = Docs::try_parse_from(["clew-docs", "render", "--root", "docs"]).unwrap();
+        let Command::Render { source_export, .. } = parsed.command else {
+            panic!("render expected")
+        };
+        assert_eq!(
+            source_export.source_mode,
+            super::super::source_export::SourceMode::Embedded
+        );
+        assert!(
+            Docs::try_parse_from([
+                "clew-docs",
+                "render",
+                "--root",
+                "docs",
+                "--source-mode",
+                "unknown"
+            ])
+            .is_err()
+        );
+    }
 
     fn symbol_context(observations: &[(&str, &str)]) -> check::Check {
         let observations: BTreeMap<_, _> = observations

@@ -1229,6 +1229,7 @@ mod tests {
         );
         assert_ne!(snapshot, old_snapshot);
         let result = super::super::static_pages::run(super::super::static_pages::Command::Render {
+            source_export: Default::default(),
             language: None,
             format: super::super::static_pages::PageFormat::Standalone,
             root: doc_repo.root.clone(),

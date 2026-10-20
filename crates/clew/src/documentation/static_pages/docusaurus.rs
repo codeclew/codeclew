@@ -214,6 +214,16 @@ fn source_link_in_language(
         )
         .into());
     }
+    if text(&source["text"]).is_empty() && text(&source["url"]).starts_with("https://") {
+        return Ok(format!(
+            "[{}:{}–{} · {}]({})",
+            md(text(&source["file"])),
+            source["startLine"],
+            source["endLine"],
+            md(text(&source["revision"])),
+            text(&source["url"])
+        ));
+    }
     let id = digest(source)?;
     Ok(format!(
         "[{}:{}–{} · {} {}]({prefix}sources/{}.mdx)",
@@ -1381,7 +1391,7 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
             &format!(
                 "{clew_label_0}: {}\n\n{}",
                 md(text(&artifact["digest"])),
-                fence(text(&artifact["text"]), "text"),
+                if artifact["sourceExport"]["mode"]=="remote" {"Source attachment omitted from this remote export; open its exact repository source bindings.".into()} else {fence(text(&artifact["text"]), "text")},
                 clew_label_0 =
                     contracts::literal(crate::documentation::language::label(language, "Digest"))
             ),
@@ -1394,6 +1404,10 @@ fn source_page(source: &Value, title: &str, slug: &str, language: &str) -> Strin
     use crate::documentation::language::label;
     let mut body = header(title, &format!("/sources/{slug}"));
     body.push_str(IMPORTS);
+    if text(&source["text"]).is_empty() && text(&source["url"]).starts_with("https://") {
+        body.push_str(&format!("# {}\n\n[Open exact source in repository]({})\n\nRevision: {}\n\nText digest: {}\n\nSource text is omitted from this remote export.\n",md(title),text(&source["url"]),md(text(&source["revision"])),md(text(&source["textDigest"]))));
+        return body;
+    }
     body.push_str(&format!(
         "# {}\n\n{}: {}\n\n{}: {}\n\n{}: {}\n\n## {} {{#retained-text}}\n\n{}",
         md(title),
@@ -2089,8 +2103,14 @@ pub(super) fn project(
         );
         let body = source_page(source, &title, slug, language);
         put(&mut files, format!("docs/sources/{slug}.mdx"), body);
+        let target =
+            if text(&source["text"]).is_empty() && text(&source["url"]).starts_with("https://") {
+                text(&source["url"]).to_owned()
+            } else {
+                format!("{slug}.mdx")
+            };
         source_index.push_str(&format!(
-            "- [{}]({slug}.mdx) · {}\n",
+            "- [{}]({target}) · {}\n",
             md(&title),
             md(text(&source["revision"]))
         ));
@@ -2745,6 +2765,7 @@ mod tests {
             serde_json::to_vec(&guide).unwrap(),
         )]);
         let inputs = super::super::full::ReadingInputs {
+            source_policy: &crate::documentation::source_export::Policy::default(),
             language: None,
             reading_plan: None,
             contract_comparison: None,

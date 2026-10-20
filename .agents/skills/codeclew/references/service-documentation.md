@@ -1070,3 +1070,31 @@ links to available original publications. Prepare a new language-specific Work
 to author their translation; never recapture source merely to change language.
 Old versions remain immutable. Language metadata does not establish semantic or
 linguistic correctness, and unassessed publication remains unassessed.
+
+
+## Source links for shared documentation
+
+Use `--source-mode remote` on `clew docs pages render` or `clew docs dsl render`
+to replace automatic source attachments with exact GitHub/GitLab links. Embedded
+source is the default. Both standalone and Docusaurus publication exports apply
+the policy to auxiliary downloads and shared objects too. Authored quotations,
+contract examples, semantic identities and provenance remain; review them before
+sharing. Export into a new directory and share that directory, not the local root.
+
+`clew docs render --root "$DOCS_ROOT" --snapshot "$SNAPSHOT" --source-mode remote
+--output site` exports the current saved publication. This form requires output
+and refuses input, refresh, publish and require-complete flags. Perform local
+publication first, or use pages render with an explicit publication.
+
+For a self-managed host, pass `--source-map repos.json` with schema
+`codeclew-source-repositories/1.0` and a `repositories` object keyed by immutable
+repository IDs. Each mapping has `provider` (`github` or `gitlab`) and HTTPS
+`webBase`, for example `https://git.example.invalid:8443/gitlab/team/orders`.
+Optional `origin`, for example `ssh://git@git.example.invalid:2222/team/orders.git`,
+binds historical repositories absent from the selected snapshot. Never infer a
+provider from an unknown host or substitute current/main for old source revisions.
+Missing exact bindings, dirty/generated evidence and ambiguous mappings fail.
+No authentication or provider availability request occurs; committed does not
+mean pushed or accessible. The manifest records mode, mapping policy and export
+identity. Source digests still identify original local evidence; remote exports
+are reading artifacts and cannot replace local evidence for authoring or reimport.

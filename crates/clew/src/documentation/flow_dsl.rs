@@ -36,6 +36,8 @@ pub enum Command {
         /// Reader language. Inherits the profile prose language, otherwise English.
         #[arg(long, value_parser = ["en", "ru"])]
         language: Option<String>,
+        #[command(flatten)]
+        source_export: super::source_export::Args,
         /// A new directory, or an existing empty directory. Existing files are preserved.
         #[arg(long)]
         output: PathBuf,
@@ -249,8 +251,10 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             service,
             profile,
             language,
+            source_export,
             output,
         } => {
+            let policy = source_export.policy()?;
             let repo = Repository::open(&root)?;
             // Preserve the original loader's integrity/admission errors without translation.
             let checked = Check::load_snapshot(&repo, &snapshot)?;
@@ -266,7 +270,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 .unwrap_or("en");
             let projection = extract::project_language(evidence, &snapshot, &profile, requested)?;
             let complete = profile.documentation_language.as_deref() == Some(requested);
-            publish::write_language(&output, &projection, &profile, requested)?;
+            let projection =
+                super::source_export::Projection::new(&policy, &checked)?.typed(&projection)?;
+            publish::write_source_policy(&output, &projection, &profile, requested, &policy)?;
             Ok(
                 json!({"schema":"codeclew-flow-dsl-render/1.0", "status":if complete {"RENDERED"} else {"PARTIAL"},"documentationLanguage":requested,"availableDocumentationLanguage":profile.documentation_language,"translationComplete":complete,"translationGaps":if complete {0} else {1},"snapshot":snapshot,"service":service,"profileDigest":digest(&profile)?,"projection":projection,"output":output,"files":["projection.json","profile.json","page.mdx","page.html","style.css","manifest.json","sources.html"]}),
             )

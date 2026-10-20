@@ -438,3 +438,7 @@ MDX use that saved evidence without a checkout, recapture or model call. The
 analysis requires .NET SDK 10+ and restored project inputs; the analyzer does not
 restore them. Constructors and other unsupported native declaration kinds are
 rejected explicitly rather than parsed as Java.
+
+Use [source-link export](../operations/source-link-export.md) with `--source-mode remote` to omit automatic
+source attachments and open exact GitHub/GitLab revisions instead. The default
+`embedded` mode retains source fragments. Authored quotations and examples remain.

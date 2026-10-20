@@ -71,3 +71,7 @@ unrelated evidence.
 The export includes bounded retained source fragments and original evidence
 metadata. It is not a Git repository backup. Declarations, source interpretations,
 review states and unresolved runtime behavior remain distinct in both formats.
+
+Use [source-link export](source-link-export.md) with `--source-mode remote` to omit automatic
+source attachments and open exact GitHub/GitLab revisions instead. The default
+`embedded` mode retains source fragments. Authored quotations and examples remain.

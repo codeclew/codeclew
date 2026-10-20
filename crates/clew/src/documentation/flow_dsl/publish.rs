@@ -129,15 +129,36 @@ fn content(p: &Projection, language: &str, notice: &str) -> String {
                 out += &format!("<h4>{}</h4>\n", title);
                 out += &list(i.members.clone());
             }
-            out += &format!("<pre>{}</pre>\n", escape(&i.expression));
+            if !i.expression.is_empty() {
+                out += &format!("<pre>{}</pre>\n", escape(&i.expression));
+            }
             out += &list(i.limitations.clone());
+            let source = &p.sources[&i.reference.source_id];
+            let href = if source.text.is_empty() {
+                source
+                    .url
+                    .as_ref()
+                    .map(|u| {
+                        super::super::source_export::range_url(
+                            u,
+                            i.reference.start_line,
+                            i.reference.end_line,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                format!(
+                    "sources.html#source-{}",
+                    p.sources
+                        .keys()
+                        .position(|id| id == &i.reference.source_id)
+                        .unwrap()
+                        + 1
+                )
+            };
             out += &format!(
-                "<p><a href=\"sources.html#source-{}\">{}: {}–{}</a></p>\n",
-                p.sources
-                    .keys()
-                    .position(|id| id == &i.reference.source_id)
-                    .unwrap()
-                    + 1,
+                "<p><a href=\"{}\">{}: {}–{}</a></p>\n",
+                escape(&href),
                 l("Source: lines", "Исходный код: строки"),
                 i.reference.start_line,
                 i.reference.end_line
@@ -179,8 +200,15 @@ fn html(title: &str, body: &str, language: &str) -> String {
 const CSS: &str = "html{background:#f7f4ec;color:#172d49;font-family:system-ui,sans-serif;line-height:1.6}body{margin:0}main{max-width:960px;margin:auto;padding:32px 24px;overflow-wrap:anywhere}h1{line-height:1.2}a{color:#245d97}nav{margin:20px 0}details{border-top:1px solid #d4d9df;padding:12px 0}summary{cursor:pointer;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f2;padding:12px;font-size:14px}li{margin:8px 0}section{scroll-margin-top:16px}@media(max-width:600px){main{padding:20px 16px}h1{font-size:28px}nav a{display:inline-block;margin:4px 0}}\n";
 #[cfg(test)]
 pub(super) fn write(output: &Path, p: &Projection) -> Result<(), ClewError> {
-    write_inner(output, p, None, "en")
+    write_inner(
+        output,
+        p,
+        None,
+        "en",
+        &super::super::source_export::Policy::default(),
+    )
 }
+#[cfg(test)]
 pub(super) fn write_language(
     output: &Path,
     p: &Projection,
@@ -188,13 +216,30 @@ pub(super) fn write_language(
     language: &str,
 ) -> Result<(), ClewError> {
     super::super::language::validate(Some(language))?;
-    write_inner(output, p, Some(profile), language)
+    write_inner(
+        output,
+        p,
+        Some(profile),
+        language,
+        &super::super::source_export::Policy::default(),
+    )
+}
+pub(super) fn write_source_policy(
+    output: &Path,
+    p: &Projection,
+    profile: &Profile,
+    language: &str,
+    policy: &super::super::source_export::Policy,
+) -> Result<(), ClewError> {
+    super::super::language::validate(Some(language))?;
+    write_inner(output, p, Some(profile), language, policy)
 }
 fn write_inner(
     output: &Path,
     p: &Projection,
     profile: Option<&Profile>,
     language: &str,
+    source_policy: &super::super::source_export::Policy,
 ) -> Result<(), ClewError> {
     let l = |en, ru| language::choose(language, en, ru);
     let available = profile.and_then(|p| p.documentation_language.as_deref());
@@ -277,7 +322,20 @@ fn write_inner(
                 "Точный сохранённый исходный код рассматривается отдельно от интерпретации DSL"
             )
         ));
-        appendix += &format!("<pre>{}</pre></details>\n", escape(&s.text));
+        if s.text.is_empty() {
+            if let Some(url) = &s.url {
+                appendix += &format!(
+                    "<p><a href=\"{}\">{}:{}–{} ↗</a></p>",
+                    escape(url),
+                    escape(&s.file),
+                    s.start_line,
+                    s.end_line
+                );
+            }
+        } else {
+            appendix += &format!("<pre>{}</pre>", escape(&s.text));
+        }
+        appendix += "</details>\n";
     }
     appendix += "</main>\n";
     let mdx = format!(
@@ -302,7 +360,9 @@ fn write_inner(
             serde_json::to_vec_pretty(profile).map_err(io_error)?,
         );
     }
-    let manifest = json!({"schema":"codeclew-flow-dsl-static-manifest/1.0","pageId":p.id,"documentationLanguage":language,"availableDocumentationLanguage":available,"translationComplete":complete,"translationGaps":if complete {json!([])} else {json!([{"kind":"PROFILE_PROSE_LANGUAGE","requestedLanguage":language,"availableLanguage":available,"original":"profile.json"}])},"snapshot":p.snapshot,"revision":p.revision,"profileDigest":p.profile_digest,"contentDigest":crate::canonical::hash_bytes(body.as_bytes()),"mdxProfile":"MDX 3; inert native JSX; no executable expressions or imports","authority":p.authority,"files":files.iter().map(|(name,bytes)|json!({"path":name,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    let mut manifest = json!({"schema":"codeclew-flow-dsl-static-manifest/1.0","pageId":p.id,"documentationLanguage":language,"availableDocumentationLanguage":available,"translationComplete":complete,"translationGaps":if complete {json!([])} else {json!([{"kind":"PROFILE_PROSE_LANGUAGE","requestedLanguage":language,"availableLanguage":available,"original":"profile.json"}])},"snapshot":p.snapshot,"revision":p.revision,"profileDigest":p.profile_digest,"contentDigest":crate::canonical::hash_bytes(body.as_bytes()),"mdxProfile":"MDX 3; inert native JSX; no executable expressions or imports","authority":p.authority,"files":files.iter().map(|(name,bytes)|json!({"path":name,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    manifest["sourceExport"] = source_policy.manifest()?;
+    manifest["exportIdentity"] = super::super::digest(&(p, source_policy))?.into();
     files.insert(
         "manifest.json",
         serde_json::to_vec_pretty(&manifest).map_err(io_error)?,

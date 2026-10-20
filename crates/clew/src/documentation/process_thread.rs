@@ -1138,30 +1138,48 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
             esc(link["proof"]["pageDigest"].as_str().unwrap_or(""))
         ));
     }
-    fn steps(out: &mut String, rows: &[Value], page: &str, depth: usize) {
+    fn href(citation: &Value, methods: &Value, page: &str) -> String {
+        let method = citation["method"].as_str().unwrap_or("");
+        let source = &methods[method]["source"];
+        if source["text"] == ""
+            && let Some(url) = source["url"]
+                .as_str()
+                .filter(|url| url.starts_with("https://"))
+        {
+            return super::source_export::range_url(
+                url,
+                citation["startLine"].as_u64().unwrap_or(1),
+                citation["endLine"]
+                    .as_u64()
+                    .or_else(|| citation["startLine"].as_u64())
+                    .unwrap_or(1),
+            );
+        }
+        format!(
+            "./{page}.html#thread-source-{method}-L{}",
+            citation["startLine"]
+        )
+    }
+    fn steps(out: &mut String, rows: &[Value], page: &str, depth: usize, methods: &Value) {
         for row in rows {
             let text = |key: &str| row[key].as_str().unwrap_or("");
             out.push_str(&format!(
-                "{}- **{}**: {} ([source](./{}.html#thread-source-{}-L{}), lines {}–{}).\n",
+                "{}- **{}**: {} ([source]({}), lines {}–{}).\n",
                 "  ".repeat(depth),
                 super::render::escape(text("title")),
                 super::render::escape(text("text")),
-                page,
-                text("method"),
-                row["startLine"],
+                href(row, methods, page),
                 row["startLine"],
                 row["endLine"],
             ));
             for effect in row["effects"].as_array().into_iter().flatten() {
                 let c = &effect["citation"];
                 out.push_str(&format!(
-                    "{}- [{}] {} ([source](./{}.html#thread-source-{}-L{})).\n",
+                    "{}- [{}] {} ([source]({})).\n",
                     "  ".repeat(depth + 1),
                     super::render::escape(effect["kind"].as_str().unwrap_or("")),
                     super::render::escape(effect["label"].as_str().unwrap_or("")),
-                    page,
-                    c["method"].as_str().unwrap_or(""),
-                    c["startLine"]
+                    href(c, methods, page)
                 ));
             }
             if let Some(group) = row.get("branchGroup") {
@@ -1178,25 +1196,23 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
                     ));
                     if let Some(guard) = arm.get("guard") {
                         out.push_str(&format!(
-                            "{}- [guard source](./{}.html#thread-source-{}-L{})\n",
+                            "{}- [guard source]({})\n",
                             "  ".repeat(depth + 3),
-                            page,
-                            guard["method"].as_str().unwrap_or(""),
-                            guard["startLine"]
+                            href(guard, methods, page)
                         ));
                     }
                     if let Some(rows) = arm["steps"].as_array() {
-                        steps(out, rows, page, depth + 3);
+                        steps(out, rows, page, depth + 3, methods);
                     }
                 }
             }
             if let Some(children) = row["children"].as_array() {
-                steps(out, children, page, depth + 1);
+                steps(out, children, page, depth + 1, methods);
             }
         }
     }
     if let Some(rows) = thread["steps"].as_array() {
-        steps(&mut out, rows, page, 0);
+        steps(&mut out, rows, page, 0, &thread["methods"]);
     }
     out.push_str(&format!(
         "\n### {}\n\n{}\n\n",
@@ -1214,6 +1230,22 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
         let method = &thread["methods"][id.as_str().unwrap_or("")];
         let source = &method["source"];
         let text = source["text"].as_str().unwrap_or("");
+        if text.is_empty()
+            && let Some(url) = source["url"]
+                .as_str()
+                .filter(|url| url.starts_with("https://"))
+        {
+            out.push_str(&format!(
+                "### {}\n\n[{}:{}–{}]({}) · {}\n\nSource text is omitted from this export.\n\n",
+                esc(method["label"].as_str().unwrap_or("")),
+                esc(source["file"].as_str().unwrap_or("")),
+                source["startLine"],
+                source["endLine"],
+                url,
+                source["revision"]
+            ));
+            continue;
+        }
         let fence = "`".repeat(
             text.split(|ch| ch != '`')
                 .map(str::len)

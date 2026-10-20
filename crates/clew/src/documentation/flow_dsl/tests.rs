@@ -737,3 +737,80 @@ fn compiler_call_relations_require_exact_occurrence_not_same_line_text() {
             .all(|i| i.reference.call_target_authority == "DECLARED_RECEIVER_AST_SYNTAX")
     );
 }
+
+#[test]
+fn remote_dsl_exports_keep_profile_prose_and_exact_links_without_automatic_source_text() {
+    use crate::documentation::{
+        check::Check,
+        source_export::{Policy, Projection as SourceProjection, SourceMode},
+    };
+    let marker = "CLEW_DSL_SOURCE_ONLY_20261020";
+    let mut e = fixture();
+    e.revision = "a".repeat(40);
+    for s in e.sources.values_mut() {
+        s.revision = e.revision.clone();
+        s.text.push_str(&format!("\n// {marker}"));
+        s.end_line = s.start_line + s.text.lines().count() as u64 - 1;
+        s.text_digest = canonical::hash_bytes(s.text.as_bytes());
+        s.url = Some(format!(
+            "https://github.com/example/flows/blob/{}/{}#L{}-L{}",
+            s.revision, s.file, s.start_line, s.end_line
+        ));
+    }
+    let checked:Check=serde_json::from_value(json!({"schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context","services":{"example":e},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{}})).unwrap();
+    let mut profile = profile(false);
+    profile.title = "Authored DSL explanation remains intact".into();
+    let original =
+        extract::project(&checked.services["example"], "saved-snapshot", &profile).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let output = std::env::var_os("CODECLEW_SOURCE_EXPORT_DSL_FIXTURE_OUTPUT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temp.path().to_owned());
+    std::fs::create_dir_all(&output).unwrap();
+    let mut cases = Vec::new();
+    let mut identities = std::collections::BTreeSet::new();
+    for mode in [SourceMode::Embedded, SourceMode::Remote] {
+        let policy = Policy {
+            mode,
+            ..Policy::default()
+        };
+        let projected = SourceProjection::new(&policy, &checked)
+            .unwrap()
+            .typed(&original)
+            .unwrap();
+        let output = output.join(if mode == SourceMode::Remote {
+            "remote"
+        } else {
+            "embedded"
+        });
+        publish::write_source_policy(&output, &projected, &profile, "en", &policy).unwrap();
+        let all = std::fs::read_dir(&output)
+            .unwrap()
+            .map(|p| std::fs::read_to_string(p.unwrap().path()).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(all.contains(marker), mode == SourceMode::Embedded);
+        assert!(all.contains(&profile.title));
+        if mode == SourceMode::Remote {
+            assert!(all.contains("https://github.com/example/flows/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Example.java#L"));
+            assert!(
+                !std::fs::read_to_string(output.join("sources.html"))
+                    .unwrap()
+                    .contains("<pre>")
+            );
+        }
+        cases.push(json!({"id":if mode==SourceMode::Remote{"dsl-remote"}else{"dsl-embedded"},"directory":output,"mode":mode,"sourceOnlyMarkers":[marker],"authoredProse":[profile.title]}));
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        identities.insert(manifest["exportIdentity"].as_str().unwrap().to_owned());
+    }
+    if std::env::var_os("CODECLEW_SOURCE_EXPORT_DSL_FIXTURE_OUTPUT").is_some() {
+        std::fs::write(
+            output.join("cases.json"),
+            serde_json::to_vec_pretty(&json!({"cases":cases})).unwrap(),
+        )
+        .unwrap();
+    }
+    assert_eq!(identities.len(), 2);
+    assert!(original.sources.values().any(|s| s.text.contains(marker)));
+}

@@ -75,6 +75,7 @@ pub mod sections;
 mod semantic_overlay;
 pub mod snapshot_pins;
 mod source_data_context;
+pub mod source_export;
 mod source_inputs;
 mod source_span;
 mod source_statement;
