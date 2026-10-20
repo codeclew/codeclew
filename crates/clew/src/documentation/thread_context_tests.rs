@@ -408,12 +408,12 @@ fn owned_fixture_real_compiler_and_source_capture() {
             .unwrap();
             fs::write(
                 output.join(format!("{mode}-inventory.json")),
-                super::bytes(&inventory(&e).unwrap()).unwrap(),
+                super::bytes(&inventory(e).unwrap()).unwrap(),
             )
             .unwrap();
             fs::write(
                 output.join(format!("{mode}-save-thread.json")),
-                super::bytes(&context_for(&e, "OrderController", "save")).unwrap(),
+                super::bytes(&context_for(e, "OrderController", "save")).unwrap(),
             )
             .unwrap();
         }

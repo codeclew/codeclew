@@ -1137,6 +1137,44 @@ pub(super) fn source_for_provider_test(
     source
 }
 
+/// Parse admitted immutable Java inputs for entry-surface auditing only.
+pub(super) fn audit_java_file(
+    service: &Service,
+    path: &str,
+    text: &str,
+    revision: &str,
+) -> Result<ServiceEvidence, ClewError> {
+    let mut e = ServiceEvidence {
+        schema: "codeclew-documentation-service-evidence/1.0".into(),
+        service: service.id.clone(),
+        revision: revision.into(),
+        service_digest: digest(service)?,
+        extractor: SOURCE_EXTRACTOR.into(),
+        runtime_mode: "RETAINED_COMPILATION_INPUT_AUDIT".into(),
+        coverage: "SYNTAX".into(),
+        boundaries: vec![],
+        entrypoints: vec![],
+        observations: BTreeMap::new(),
+        sources: BTreeMap::new(),
+        contracts: BTreeMap::new(),
+    };
+    let source_bytes = Cell::new(0);
+    let blob = canonical::hash_bytes(text.as_bytes());
+    let file = File {
+        service,
+        path,
+        text,
+        snapshot: revision,
+        blob: &blob,
+        source_bytes: &source_bytes,
+        recipes: None,
+        generated_origin: None,
+    };
+    let tree = parse("java", text)?;
+    extract(&file, tree.root_node(), &mut e)?;
+    Ok(e)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2279,42 +2317,4 @@ class Reader {
             "STALE"
         );
     }
-}
-
-/// Parse admitted immutable Java inputs for entry-surface auditing only.
-pub(super) fn audit_java_file(
-    service: &Service,
-    path: &str,
-    text: &str,
-    revision: &str,
-) -> Result<ServiceEvidence, ClewError> {
-    let mut e = ServiceEvidence {
-        schema: "codeclew-documentation-service-evidence/1.0".into(),
-        service: service.id.clone(),
-        revision: revision.into(),
-        service_digest: digest(service)?,
-        extractor: SOURCE_EXTRACTOR.into(),
-        runtime_mode: "RETAINED_COMPILATION_INPUT_AUDIT".into(),
-        coverage: "SYNTAX".into(),
-        boundaries: vec![],
-        entrypoints: vec![],
-        observations: BTreeMap::new(),
-        sources: BTreeMap::new(),
-        contracts: BTreeMap::new(),
-    };
-    let source_bytes = Cell::new(0);
-    let blob = canonical::hash_bytes(text.as_bytes());
-    let file = File {
-        service,
-        path,
-        text,
-        snapshot: revision,
-        blob: &blob,
-        source_bytes: &source_bytes,
-        recipes: None,
-        generated_origin: None,
-    };
-    let tree = parse("java", text)?;
-    extract(&file, tree.root_node(), &mut e)?;
-    Ok(e)
 }
