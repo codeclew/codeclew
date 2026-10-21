@@ -267,12 +267,11 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     wrong_event["interaction"] = json!("reserve-external");
     let wrong_arrow: clew::documentation::model::Narrative =
         serde_json::from_value(wrong_arrow).unwrap();
-    assert!(
-        clew::documentation::render::validate(&wrong_arrow, &checked)
-            .unwrap_err()
-            .message
-            .contains("declared arrow endpoints or selected call site are unresolved")
-    );
+    let diagnostic = clew::documentation::render::validate(&wrong_arrow, &checked)
+        .unwrap_err()
+        .message;
+    assert!(diagnostic.contains("interaction reserve-external: external boundary"));
+    assert!(diagnostic.contains("source-derived contract") && diagnostic.contains("receiver gap"));
     // Unsupported executable schemes are rejected at the supported CLI boundary.
     let credential_address = ["https:", "//user:secret", "@example.invalid/"].concat();
     for url in [
