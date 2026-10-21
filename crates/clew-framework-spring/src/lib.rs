@@ -43,6 +43,49 @@ struct Binding {
     attributes: serde_json::Map<String, Value>,
 }
 
+/// Bounded source-name candidates from declared on-demand imports. Unknown
+/// competing packages stop qualification; this never resolves a compiler name.
+pub fn source_annotation_candidate(name: &str, imports: &[String]) -> Option<String> {
+    let qualified = match name {
+        "RequestMapping" | "GetMapping" | "PostMapping" | "PutMapping" | "DeleteMapping"
+        | "PatchMapping" | "RestController" => format!("{WEB}{name}"),
+        "Controller" => CONTROLLER.into(),
+        "FeignClient" => FEIGN.into(),
+        "KafkaListener" => LISTENER.into(),
+        "KafkaHandler" => HANDLER.into(),
+        "Scheduled" => SCHEDULED.into(),
+        _ => return None,
+    };
+    let known = [
+        WEB.trim_end_matches('.'),
+        "org.springframework.http",
+        "org.springframework.stereotype",
+        "org.springframework.cloud.openfeign",
+        "org.springframework.kafka.annotation",
+        "org.springframework.scheduling.annotation",
+    ];
+    let mut matched = false;
+    for import in imports {
+        let compact = import.split_whitespace().collect::<String>();
+        let Some(path) = compact
+            .strip_prefix("import")
+            .map(|s| s.trim_end_matches(';'))
+        else {
+            continue;
+        };
+        if let Some(package) = path.strip_suffix(".*") {
+            if !known.contains(&package) {
+                return None;
+            }
+            matched |= qualified
+                .strip_suffix(name)
+                .map(|p| p.trim_end_matches('.'))
+                == Some(package);
+        }
+    }
+    matched.then_some(qualified)
+}
+
 /// No compiler callbacks or filesystem access are available to this interpreter.
 /// The caller owns cancellation between bounded compilation/declaration inputs.
 pub fn analyze(facts: &JvmAnnotationFacts) -> Result<SpringMetadata, String> {
@@ -68,6 +111,9 @@ pub fn analyze_source(
                     boundaries.insert("SOURCE_ANNOTATION_NAME_UNRESOLVED".into());
                     return None;
                 };
+                if a.qualification == "WILDCARD_IMPORT_CANDIDATE" {
+                    boundaries.insert("SOURCE_WILDCARD_ANNOTATION_CANDIDATE".into());
+                }
                 let mut arguments = a.arguments.clone();
                 // A compiler would reject a mismatched enum type; syntax has no such proof.
                 if name == REQUEST

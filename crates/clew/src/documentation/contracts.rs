@@ -650,6 +650,10 @@ pub fn enrich(evidence: &mut ServiceEvidence) -> Result<(), ClewError> {
                     _ => "AMBIGUOUS_SOURCE_ROUTE_MATCH",
                 };
                 let entry = (matched.len() == 1).then(|| matched[0]);
+                if matched.is_empty() && evidence.extractor == SOURCE_EXTRACTOR {
+                    resolver.gaps.insert("SOURCE_ROUTE_ABSENCE_UNPROVEN".into());
+                    contract_features.insert("SOURCE_ROUTE_ABSENCE_UNPROVEN".into());
+                }
                 let security = resolver.resolve(
                     operation.get("security").unwrap_or(&document["security"]),
                     file,
@@ -778,6 +782,34 @@ mod tests {
         ]);
         import(&service, &mut evidence, &files).unwrap();
         evidence
+    }
+
+    #[test]
+    fn unmatched_source_route_is_not_proof_of_missing_implementation() {
+        let mut evidence = imported_contract("3.0.3");
+        evidence
+            .boundaries
+            .push("SOURCE_ANNOTATION_NAME_UNRESOLVED".into());
+        enrich(&mut evidence).unwrap();
+        let operations: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "CONTRACT_OPERATION")
+            .collect();
+        assert!(!operations.is_empty());
+        for operation in operations {
+            assert_eq!(
+                operation.normalized["sourceMapping"],
+                "NO_SOURCE_ROUTE_MATCH"
+            );
+            assert!(
+                operation.normalized["boundaries"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("SOURCE_ROUTE_ABSENCE_UNPROVEN"))
+            );
+            assert_eq!(operation.normalized["runtimeEnforcement"], "UNVERIFIED");
+        }
     }
 
     #[test]

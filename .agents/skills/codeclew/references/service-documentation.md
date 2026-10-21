@@ -80,6 +80,17 @@ The current explicit `source-syntax` profile supports Python, Java, Kotlin and
 TypeScript with a declared dialect. Inspect the selected launcher's help/version
 before using new flags on an installed release. This profile selects syntax authority
 explicitly; it does not substitute syntax evidence after compiler admission fails.
+
+Spring wildcard imports can yield `WILDCARD_IMPORT_CANDIDATE` names under the
+bounded framework rules. These remain SOURCE candidates, never compiler-resolved
+names or proof of bean registration. Explicit import conflicts and known local
+shadows block qualification, including same-package types in other selected files.
+An unmatched SOURCE contract route carries `SOURCE_ROUTE_ABSENCE_UNPROVEN`; do not
+report it as proof of a missing implementation. Other unresolved names, dynamic
+paths and unsupported registrations remain unknown. Valid compact Kotlin class
+members retain their original bytes; other parser errors remain explicit partial
+capture. Do not reformat a retained fixture to hide a capture gap.
+
 Set `source.roots` and `source.dialect`; omit compiler `compilations`. Include
 configuration and helper files in the roots, or record those omitted inputs as
 limitations. Committed files come only from the selected revision; ordinary

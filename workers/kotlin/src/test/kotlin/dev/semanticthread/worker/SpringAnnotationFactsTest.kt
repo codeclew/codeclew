@@ -192,6 +192,48 @@ class SpringAnnotationFactsTest {
         assertTrue("CONTROLLER_REGISTRATION_UNPROVEN" in strings(unknown["boundaries"]))
     }
 
+    @Test
+    fun namedJavaAnnotationArraysHaveOnePackingLayerAndKeepNestedAnnotations() {
+        val facts = compile("""
+            package roots
+            import org.springframework.web.bind.annotation.*
+            annotation class Numbers(vararg val value: Int)
+            annotation class Inner(val names: Array<String>)
+            annotation class Outer(val value: Array<Inner>)
+            @RestController
+            class Api {
+                @GetMapping("/same") fun scalar() = "ok"
+                @GetMapping(value = ["/same"]) fun literal() = "ok"
+                @GetMapping(value = arrayOf("/same")) fun factory() = "ok"
+                @GetMapping(value = []) fun empty() = "ok"
+                @Numbers(value = [1, 2])
+                @Outer(value = [Inner(names = ["a", "b"])])
+                @GetMapping(value = ["/same"]) fun nested() = "ok"
+            }
+        """.trimIndent())
+        for (name in listOf("scalar", "literal", "factory", "nested")) {
+            val row = facts.single { it["symbolIdentity"]!!.jsonPrimitive.content.contains("Api.$name#") }
+            val annotations = row["jvmAnnotations"]!!.jsonObject["callables"]!!.jsonArray.single().jsonObject["method"]!!.jsonObject["annotations"]!!.jsonArray
+            val mapping = annotations.single { it.jsonObject["typeName"]!!.jsonPrimitive.content.endsWith(".GetMapping") }.jsonObject
+            val argument = mapping["arguments"]!!.jsonObject["value"]!!.jsonObject
+            assertEquals("ARRAY", argument["kind"]!!.jsonPrimitive.content)
+            assertEquals(listOf("/same"), argument["values"]!!.jsonArray.map { it.jsonObject["value"]!!.jsonPrimitive.content })
+            assertEquals(listOf("/same"), strings(row["spring"]!!.jsonObject["entries"]!!.jsonArray.single().jsonObject["attributes"]!!.jsonObject["path"]))
+            if (name == "nested") {
+                val numbers = annotations.single { it.jsonObject["typeName"]!!.jsonPrimitive.content == "roots.Numbers" }.jsonObject
+                val values = numbers["arguments"]!!.jsonObject["value"]!!.jsonObject["values"]!!.jsonArray
+                assertEquals(listOf(1,2), values.map { it.jsonObject["value"]!!.jsonPrimitive.int })
+                val outer = annotations.single { it.jsonObject["typeName"]!!.jsonPrimitive.content == "roots.Outer" }.jsonObject
+                val inner = outer["arguments"]!!.jsonObject["value"]!!.jsonObject["values"]!!.jsonArray.single().jsonObject
+                assertEquals("ANNOTATION", inner["kind"]!!.jsonPrimitive.content)
+                assertEquals(2, inner["value"]!!.jsonObject["arguments"]!!.jsonObject["names"]!!.jsonObject["values"]!!.jsonArray.size)
+            }
+        }
+        val empty = facts.single { it["symbolIdentity"]!!.jsonPrimitive.content.contains("Api.empty#") }
+        val emptyUse = empty["jvmAnnotations"]!!.jsonObject["callables"]!!.jsonArray.single().jsonObject["method"]!!.jsonObject["annotations"]!!.jsonArray.single().jsonObject
+        assertTrue(emptyUse["arguments"]!!.jsonObject["value"]!!.jsonObject["values"]!!.jsonArray.isEmpty())
+    }
+
     private fun strings(value: JsonElement?): List<String> = when (value) {
         is JsonArray -> value.map { it.jsonPrimitive.content }
         null -> emptyList()

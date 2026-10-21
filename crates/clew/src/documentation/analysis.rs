@@ -2515,6 +2515,7 @@ pub(crate) fn project_scoped(
                 .push(format!("SCOPE_AMBIGUOUS:{symbol}"));
         }
     }
+    super::spring_inventory::normalize(&mut evidence)?;
     super::contracts::import(service, &mut evidence, &sources.contracts)?;
     for entry in &mut evidence.entrypoints {
         if !evidence.observations.values().any(|o| {

@@ -7,6 +7,86 @@ use clew_facts::{
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
 
+/// File payloads stay reusable. Apply selected-scope package shadowing only after
+/// all files have been replayed, so adding a same-package type invalidates a
+/// wildcard candidate even when its own file was an unchanged cache hit.
+pub(super) fn suppress_package_shadows(
+    e: &mut super::model::ServiceEvidence,
+) -> Result<(), ClewError> {
+    let mut types = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut packages = BTreeMap::<String, String>::new();
+    for observation in e.observations.values().filter(|o| o.kind == "SYMBOL") {
+        let value = &observation.normalized;
+        let Some(package) = value["ownerIdentity"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("package:"))
+        else {
+            continue;
+        };
+        for id in &observation.source_ids {
+            if let Some(source) = e.sources.get(id) {
+                packages.insert(source.file.clone(), package.into());
+            }
+        }
+        if value["syntaxKind"].as_str().is_some_and(is_type)
+            && let Some(name) = value["name"].as_str()
+        {
+            types.entry(package.into()).or_default().insert(name.into());
+        }
+    }
+    let mut affected = BTreeMap::new();
+    for observation in e
+        .observations
+        .values_mut()
+        .filter(|o| o.kind == "SOURCE_ANNOTATIONS")
+    {
+        let package = observation
+            .source_ids
+            .iter()
+            .filter_map(|id| e.sources.get(id))
+            .find_map(|s| packages.get(&s.file));
+        let Some(local) = package.and_then(|p| types.get(p)) else {
+            continue;
+        };
+        let mut facts: SourceAnnotationFacts =
+            serde_json::from_value(observation.normalized["facts"].clone())
+                .map_err(super::io_error)?;
+        let mut changed = false;
+        for element in std::iter::once(&mut facts.declaration).chain(&mut facts.owners) {
+            for annotation in &mut element.annotations {
+                if annotation.qualification == "WILDCARD_IMPORT_CANDIDATE"
+                    && local.contains(&annotation.spelling)
+                {
+                    annotation.qualified_name = None;
+                    annotation.qualification = "UNRESOLVED".into();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            facts
+                .boundaries
+                .push("PACKAGE_LOCAL_ANNOTATION_SHADOWS_WILDCARD".into());
+            facts.boundaries.sort();
+            facts.boundaries.dedup();
+            let metadata = clew_framework_spring::analyze_source(&facts).map_err(invalid)?;
+            observation.normalized["facts"] =
+                serde_json::to_value(facts).map_err(super::io_error)?;
+            observation.normalized["framework"] =
+                serde_json::to_value(&metadata).map_err(super::io_error)?;
+            observation.digest = super::digest(&observation.normalized)?;
+            e.boundaries.extend(metadata.boundaries.clone());
+            affected.insert(observation.symbol.clone(), metadata);
+        }
+    }
+    for entry in &mut e.entrypoints {
+        if let Some(metadata) = affected.get(&entry.symbol) {
+            super::syntax::project_source_framework(entry, metadata);
+        }
+    }
+    Ok(())
+}
+
 pub(super) struct Context<'a> {
     language: &'a str,
     file: &'a str,
@@ -14,6 +94,7 @@ pub(super) struct Context<'a> {
     imports: Vec<String>,
     names: BTreeMap<String, BTreeSet<String>>,
     local_types: BTreeSet<String>,
+    local_callables: BTreeSet<String>,
     package: String,
 }
 fn children(node: Node<'_>) -> Vec<Node<'_>> {
@@ -169,6 +250,7 @@ impl<'a> Context<'a> {
         let mut imports = Vec::new();
         let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut local_types = BTreeSet::new();
+        let mut local_callables = BTreeSet::new();
         for node in children(root)
             .into_iter()
             .filter(|n| matches!(n.kind(), "import_declaration" | "import_header" | "import"))
@@ -203,6 +285,11 @@ impl<'a> Context<'a> {
             {
                 local_types.insert(spelling(name, text).into());
             }
+            if node.kind() == "function_declaration"
+                && let Some(name) = node.child_by_field_name("name")
+            {
+                local_callables.insert(spelling(name, text).into());
+            }
             stack.extend(children(node));
         }
         Ok(Self {
@@ -212,6 +299,7 @@ impl<'a> Context<'a> {
             imports,
             names,
             local_types,
+            local_callables,
             package: children(root)
                 .into_iter()
                 .find(|n| matches!(n.kind(), "package_header" | "package_declaration"))
@@ -232,11 +320,12 @@ impl<'a> Context<'a> {
         if self.local_types.contains(name) {
             return None;
         }
-        self.names
-            .get(name)
-            .filter(|s| s.len() == 1)
-            .and_then(|s| s.first())
-            .map(|name| (name.clone(), "EXPLICIT_IMPORT".into()))
+        if let Some(names) = self.names.get(name) {
+            return (names.len() == 1)
+                .then(|| (names.first().unwrap().clone(), "EXPLICIT_IMPORT".into()));
+        }
+        clew_framework_spring::source_annotation_candidate(name, &self.imports)
+            .map(|name| (name, "WILDCARD_IMPORT_CANDIDATE".into()))
     }
     fn value(&self, tokens: &[String], depth: usize) -> AnnotationValue {
         let unresolved = || AnnotationValue::Unresolved {
@@ -265,6 +354,11 @@ impl<'a> Context<'a> {
         ) {
             (1, tokens.len() - 1)
         } else if tokens.first().is_some_and(|s| s == "arrayOf")
+            && !self.local_types.contains("arrayOf")
+            && !self.local_callables.contains("arrayOf")
+            && self.names.get("arrayOf").is_none_or(|names| {
+                names.len() == 1 && names.first().is_some_and(|name| name == "kotlin.arrayOf")
+            })
             && tokens.get(1).is_some_and(|s| s == "(")
             && tokens.last().is_some_and(|s| s == ")")
         {

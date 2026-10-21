@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 pub const JAVA_MODEL_SCHEMA: &str = "codeclew-java-project-model/1.0";
 const GRADLE_MARKER: &str = "__CODECLEW_JAVA_MODEL__";
@@ -399,6 +400,7 @@ fn maven_command(
 }
 
 struct MavenPreflight {
+    effective_xml: Arc<str>,
     selector: JavaCompilationSelector,
     project: PathBuf,
     source_root: PathBuf,
@@ -424,7 +426,7 @@ fn extract_maven_batch(
         .map(crate::maven::MavenSettings::materialize)
         .transpose()?;
     let settings_path = settings_file.as_ref().map(|file| file.path().to_owned());
-    let mut effective_cache = BTreeMap::<(PathBuf, String), String>::new();
+    let mut effective_cache = BTreeMap::<(PathBuf, String), Arc<str>>::new();
     let mut preflights = Vec::with_capacity(selectors.len());
     for selector in selectors {
         let project = selector.maven_project_directory(repository)?;
@@ -456,6 +458,7 @@ fn extract_maven_batch(
                     "Maven Java effective model exceeds the byte limit",
                 ));
             }
+            let effective_xml: Arc<str> = effective_xml.into();
             effective_cache.insert(key, effective_xml.clone());
             effective_xml
         };
@@ -473,6 +476,7 @@ fn extract_maven_batch(
         let (processor_names, processor_coordinates) =
             maven_compiler_processor_declarations(&effective_xml)?;
         preflights.push(MavenPreflight {
+            effective_xml,
             selector: selector.clone(),
             project,
             source_root,
@@ -572,30 +576,37 @@ fn extract_maven_batch(
             if source_set == "test" && preflight.project.join("target/test-classes").is_dir() {
                 classpath_paths.push(preflight.project.join("target/test-classes"));
             }
-            let release_output = bounded_output(
-                maven_command(repository, settings_path.as_deref(), &source_set)?
-                    .args([
-                        "-f",
-                        preflight
-                            .project
-                            .join("pom.xml")
-                            .to_str()
-                            .ok_or_else(|| unsupported("Maven pom path is not UTF-8"))?,
-                        "-q",
-                        "-DforceStdout",
-                        "help:evaluate",
-                        "-Dexpression=maven.compiler.release",
-                    ])
-                    .current_dir(repository),
-                "Maven Java release extraction failed",
-                "RELEASE",
-                debug_output,
-            )?;
-            let release = release_output
-                .lines()
-                .filter_map(|line| parse_java_level(line.trim()))
-                .next_back()
-                .ok_or_else(|| unsupported("Maven Java release authority is unavailable"))?;
+            let mut properties = BTreeMap::new();
+            for property in if source_set == "test" {
+                vec!["maven.compiler.release", "maven.compiler.testRelease"]
+            } else {
+                vec!["maven.compiler.release"]
+            } {
+                let output = bounded_output(
+                    maven_command(repository, settings_path.as_deref(), &source_set)?
+                        .arg("-f")
+                        .arg(preflight.project.join("pom.xml"))
+                        .args(["-q", "-DforceStdout", "help:evaluate"])
+                        .arg(format!("-Dexpression={property}"))
+                        .current_dir(repository),
+                    "Maven Java release extraction failed",
+                    "RELEASE",
+                    debug_output,
+                )?;
+                if let Some(level) = output
+                    .lines()
+                    .filter_map(|line| parse_java_level(line.trim()))
+                    .next_back()
+                {
+                    properties.insert(property, level);
+                }
+            }
+            let release = maven_effective_release_with_properties(
+                &preflight.effective_xml,
+                &source_set,
+                Some(&properties),
+            )?
+            .ok_or_else(|| unsupported("Maven Java release authority is unavailable"))?;
             if release < 17 {
                 return Err(unsupported("Java analysis requires release 17 or newer"));
             }
@@ -800,6 +811,247 @@ fn validate_maven_build_layout(project: &Path, effective_xml: &str) -> Result<()
         ));
     }
     Ok(())
+}
+
+/// Maven has already merged parents and active profiles in this bounded effective
+/// POM. Read the selected compiler goal's merged parameter configuration, never a
+/// similarly named property or the running JDK as a substitute for `<release>`.
+#[cfg(test)]
+fn maven_effective_release(xml: &str, source_set: &str) -> Result<Option<u16>, ClewError> {
+    maven_effective_release_with_properties(xml, source_set, None)
+}
+
+fn maven_effective_release_with_properties(
+    xml: &str,
+    source_set: &str,
+    evaluated: Option<&BTreeMap<&str, u16>>,
+) -> Result<Option<u16>, ClewError> {
+    let document = roxmltree::Document::parse(xml)
+        .map_err(|_| unsupported("Maven Java effective model is invalid XML"))?;
+    let root = document.root_element();
+    let build = root.children().find(|node| node.has_tag_name("build"));
+    let properties = root.children().find(|node| node.has_tag_name("properties"));
+    let field = |node: Option<roxmltree::Node<'_, '_>>, tag: &str| {
+        node.and_then(|node| node.children().find(|child| child.has_tag_name(tag)))
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let plugins: Vec<_> = build
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| node.has_tag_name("plugins"))
+        .flat_map(|node| node.children())
+        .filter(|node| {
+            node.has_tag_name("plugin")
+                && field(Some(*node), "artifactId").as_deref() == Some("maven-compiler-plugin")
+                && field(Some(*node), "groupId")
+                    .as_deref()
+                    .is_none_or(|group| group == "org.apache.maven.plugins")
+        })
+        .collect();
+    if plugins.len() > 1 {
+        return Err(unsupported(
+            "Maven Java compiler plugin configuration is ambiguous",
+        ));
+    }
+    let plugin = plugins.first().copied();
+    let base = plugin.and_then(|node| {
+        node.children()
+            .find(|child| child.has_tag_name("configuration"))
+    });
+    let goal = if source_set == "test" {
+        "testCompile"
+    } else {
+        "compile"
+    };
+    let default_id = format!("default-{goal}");
+    let phases = [
+        "validate",
+        "initialize",
+        "generate-sources",
+        "process-sources",
+        "generate-resources",
+        "process-resources",
+        "compile",
+        "process-classes",
+        "generate-test-sources",
+        "process-test-sources",
+        "generate-test-resources",
+        "process-test-resources",
+        "test-compile",
+        "process-test-classes",
+        "test",
+        "prepare-package",
+        "package",
+        "pre-integration-test",
+        "integration-test",
+        "post-integration-test",
+        "verify",
+        "install",
+        "deploy",
+    ];
+    let last = if source_set == "test" { 12 } else { 6 };
+    let mut configurations = Vec::new();
+    let mut disabled_default = false;
+    for execution in plugin
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| node.has_tag_name("executions"))
+        .flat_map(|node| node.children())
+        .filter(|node| node.has_tag_name("execution"))
+    {
+        let is_default = field(Some(execution), "id").as_deref() == Some(default_id.as_str());
+        let selected = is_default
+            || execution
+                .children()
+                .filter(|node| node.has_tag_name("goals"))
+                .flat_map(|node| node.children())
+                .any(|node| node.has_tag_name("goal") && node.text().map(str::trim) == Some(goal));
+        if !selected {
+            continue;
+        }
+        if let Some(phase) = field(Some(execution), "phase") {
+            if phase == "none" {
+                disabled_default |= is_default;
+                continue;
+            }
+            let position = phases
+                .iter()
+                .position(|known| *known == phase)
+                .ok_or_else(|| unsupported("Maven Java compiler execution phase is unsupported"))?;
+            if position > last {
+                disabled_default |= is_default;
+                continue;
+            }
+        }
+        configurations.push(
+            execution
+                .children()
+                .find(|node| node.has_tag_name("configuration")),
+        );
+    }
+    if configurations.is_empty() {
+        if disabled_default {
+            return Err(unsupported("Maven Java selected compiler goal is disabled"));
+        }
+        configurations.push(None);
+    }
+    let mut levels = std::collections::BTreeSet::new();
+    let mut unavailable = false;
+    for configuration in configurations {
+        if configuration.into_iter().chain(base).any(|node| {
+            node.attribute("combine.children") == Some("append")
+                || ["release", "testRelease"].iter().any(|tag| {
+                    node.children()
+                        .filter(|child| child.has_tag_name(*tag))
+                        .count()
+                        > 1
+                })
+        }) {
+            return Err(unsupported(
+                "Maven Java compiler configuration has an unsupported or ambiguous parameter merge",
+            ));
+        }
+        let inherited = if configuration
+            .is_some_and(|node| node.attribute("combine.self") == Some("override"))
+        {
+            None
+        } else {
+            base
+        };
+        for node in configuration.into_iter().chain(inherited) {
+            for arguments in node.children().filter(|child| {
+                matches!(
+                    child.tag_name().name(),
+                    "compilerArgs" | "compilerArgument" | "compilerArguments"
+                )
+            }) {
+                if arguments.has_tag_name("compilerArguments")
+                    && arguments.children().any(|arg| {
+                        matches!(
+                            arg.tag_name().name(),
+                            "release"
+                                | "source"
+                                | "target"
+                                | "system"
+                                | "-release"
+                                | "-source"
+                                | "-target"
+                                | "-system"
+                        )
+                    })
+                {
+                    return Err(unsupported(
+                        "Maven Java compiler level overrides in raw compiler arguments are unsupported",
+                    ));
+                }
+                if arguments
+                    .descendants()
+                    .filter_map(|child| child.text())
+                    .flat_map(str::split_whitespace)
+                    .any(|arg| {
+                        [
+                            "--release",
+                            "-source",
+                            "--source",
+                            "-target",
+                            "--target",
+                            "--system",
+                        ]
+                        .iter()
+                        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+                    })
+                {
+                    return Err(unsupported(
+                        "Maven Java compiler level overrides in raw compiler arguments are unsupported",
+                    ));
+                }
+            }
+        }
+        let parameter = |tag: &str, property: &str| {
+            field(configuration, tag)
+                .or_else(|| field(inherited, tag))
+                .or_else(|| {
+                    if ["maven.compiler.release", "maven.compiler.testRelease"].contains(&property)
+                        && let Some(values) = evaluated
+                    {
+                        values.get(property).map(u16::to_string)
+                    } else {
+                        field(properties, property)
+                    }
+                })
+        };
+        if configuration.into_iter().chain(inherited).any(|node| {
+            node.children()
+                .any(|child| child.has_tag_name("jdkToolchain"))
+        }) || parameter("compilerId", "maven.compiler.compilerId")
+            .is_some_and(|id| id != "javac")
+            || (parameter("fork", "maven.compiler.fork").as_deref() == Some("true")
+                && parameter("executable", "maven.compiler.executable").is_some())
+        {
+            return Err(unsupported(
+                "Maven Java compiler requires an unsupported compiler or toolchain; selected process JDK authority is required",
+            ));
+        }
+        let release = (source_set == "test")
+            .then(|| parameter("testRelease", "maven.compiler.testRelease"))
+            .flatten()
+            .or_else(|| parameter("release", "maven.compiler.release"));
+        if let Some(value) = release {
+            levels.insert(parse_java_level(&value).ok_or_else(|| {
+                unsupported("Maven Java effective compiler release is unresolved or invalid")
+            })?);
+        } else {
+            unavailable = true;
+        }
+    }
+    if levels.len() > 1 || (unavailable && !levels.is_empty()) {
+        return Err(unsupported(
+            "Maven Java selected compiler executions have conflicting release authority",
+        ));
+    }
+    Ok(levels.first().copied())
 }
 
 /// Parse processor declarations without resolving artifacts. Resolution waits
@@ -1814,6 +2066,148 @@ mod tests {
         assert!(error.message.contains("repository root"));
     }
 
+    #[test]
+    fn maven_effective_plugin_release_respects_goal_overrides_and_properties() {
+        let pom = |configuration: &str, executions: &str, properties: &str| {
+            format!(
+                "<project><properties>{properties}</properties><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><configuration>{configuration}</configuration><executions>{executions}</executions></plugin></plugins></build></project>"
+            )
+        };
+        assert_eq!(
+            maven_effective_release(&pom("<release>17</release>", "", ""), "main").unwrap(),
+            Some(17)
+        );
+        assert_eq!(
+            maven_effective_release(
+                &pom(
+                    "<release>21</release>",
+                    "",
+                    "<maven.compiler.release>17</maven.compiler.release>"
+                ),
+                "main"
+            )
+            .unwrap(),
+            Some(21)
+        );
+        let execution = "<execution><id>default-compile</id><goals><goal>compile</goal></goals><configuration><release>21</release></configuration></execution>";
+        assert_eq!(
+            maven_effective_release(&pom("<release>17</release>", execution, ""), "main").unwrap(),
+            Some(21)
+        );
+        assert_eq!(
+            maven_effective_release(
+                &pom("<release>17</release><testRelease>21</testRelease>", "", ""),
+                "test"
+            )
+            .unwrap(),
+            Some(21)
+        );
+        assert_eq!(
+            maven_effective_release(
+                &pom(
+                    "<release>17</release>",
+                    "",
+                    "<maven.compiler.testRelease>21</maven.compiler.testRelease>"
+                ),
+                "test"
+            )
+            .unwrap(),
+            Some(21)
+        );
+        assert_eq!(
+            maven_effective_release(
+                &pom(
+                    "",
+                    "",
+                    "<maven.compiler.release>17</maven.compiler.release>"
+                ),
+                "main"
+            )
+            .unwrap(),
+            Some(17)
+        );
+        for config in [
+            "<release>${unresolved}</release>",
+            "<release>17</release><jdkToolchain><version>21</version></jdkToolchain>",
+            "<release>17</release><fork>true</fork><executable>/other/javac</executable>",
+            "<release>17</release><compilerId>eclipse</compilerId>",
+        ] {
+            assert!(maven_effective_release(&pom(config, "", ""), "main").is_err());
+        }
+        let conflicting = format!(
+            "{execution}<execution><id>other</id><goals><goal>compile</goal></goals></execution>"
+        );
+        assert!(
+            maven_effective_release(&pom("<release>17</release>", &conflicting, ""), "main")
+                .is_err()
+        );
+        assert!(
+            maven_effective_release(
+                &pom(
+                    "<release>17</release>",
+                    "<execution><id>default-compile</id><phase>none</phase></execution>",
+                    ""
+                ),
+                "main"
+            )
+            .is_err()
+        );
+        let user = BTreeMap::from([
+            ("maven.compiler.release", 21),
+            ("maven.compiler.testRelease", 21),
+        ]);
+        assert_eq!(
+            maven_effective_release_with_properties(
+                &pom(
+                    "",
+                    "",
+                    "<maven.compiler.release>17</maven.compiler.release>"
+                ),
+                "main",
+                Some(&user)
+            )
+            .unwrap(),
+            Some(21)
+        );
+        assert_eq!(
+            maven_effective_release_with_properties(
+                &pom("<release>17</release>", "", ""),
+                "main",
+                Some(&user)
+            )
+            .unwrap(),
+            Some(17)
+        );
+        assert_eq!(
+            maven_effective_release_with_properties(
+                &pom("<release>17</release>", "", ""),
+                "test",
+                Some(&user)
+            )
+            .unwrap(),
+            Some(21)
+        );
+        assert!(
+            maven_effective_release(
+                &pom(
+                    "<release>17</release><compilerArgs><arg>--release=21</arg></compilerArgs>",
+                    "",
+                    ""
+                ),
+                "main"
+            )
+            .is_err()
+        );
+        let clear = "<execution><id>default-compile</id><configuration combine.self=\"override\"></configuration></execution>";
+        assert_eq!(
+            maven_effective_release(&pom("<release>17</release>", clear, ""), "main").unwrap(),
+            None
+        );
+        // Inactive profile/plugin-management declarations cannot override the effective build.
+        let inactive = "<project><profiles><profile><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><configuration><release>21</release></configuration></plugin></plugins></build></profile></profiles><properties><maven.compiler.release>17</maven.compiler.release></properties></project>";
+        assert_eq!(maven_effective_release(inactive, "main").unwrap(), Some(17));
+    }
+
     #[cfg(unix)]
     #[test]
     fn build_signal_and_model_encoding_remain_distinct_from_output_limits() {
@@ -1835,6 +2229,43 @@ mod tests {
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_MODEL_OUTPUT_ENCODING"));
         assert!(error.message.contains("exit status: 0"));
+    }
+
+    #[test]
+    #[ignore = "launches real Maven/JDK 21 to verify inherited and active-profile compiler configuration"]
+    fn native_maven_effective_parent_profile_release_without_convenience_property() {
+        for (profile, expected) in [(false, 17u16), (true, 21u16)] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let child = root.join("app");
+            fs::create_dir_all(child.join("src/main/java")).unwrap();
+            fs::write(
+                child.join("src/main/java/App.java"),
+                "public class App { public int value() { return 1; } }",
+            )
+            .unwrap();
+            fs::write(root.join("pom.xml"),r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example.fixture</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>app</module></modules><build><pluginManagement><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version><configuration><release>17</release></configuration></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version></plugin></plugins></pluginManagement></build></project>"#).unwrap();
+            let profiles = if profile {
+                r#"<profiles><profile><id>selected</id><activation><activeByDefault>true</activeByDefault></activation><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><configuration><release>21</release></configuration></plugin></plugins></build></profile></profiles>"#
+            } else {
+                ""
+            };
+            fs::write(child.join("pom.xml"),format!(r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>example.fixture</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>app</artifactId><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId></plugin></plugins></build>{profiles}</project>"#)).unwrap();
+            let settings_path = root.join("settings.xml");
+            fs::write(&settings_path, "<settings/>").unwrap();
+            let settings = crate::maven::MavenSettings::capture(&settings_path).unwrap();
+            let model =
+                extract_java_model_with_settings(root, ":app/main", Some(&settings)).unwrap();
+            assert_eq!(model.authority.release, expected);
+            assert!(
+                model
+                    .authority
+                    .compiler_options
+                    .contains(&format!("--release={expected}"))
+            );
+            let bytes = fs::read(child.join("target/classes/App.class")).unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[6], bytes[7]]), expected + 44);
+        }
     }
 
     #[cfg(unix)]

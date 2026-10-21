@@ -8,7 +8,17 @@ Java Maven model extraction invokes three stages from the repository root:
 1. Effective POM: selected module POM, `-B -q -N help:effective-pom`, temporary output file.
 2. Compilation/classpath: root POM, `-pl <module> -am` for submodules,
    `compile` or `test-compile`, and `dependency:build-classpath`.
-3. Release: selected module POM, `-q -DforceStdout help:evaluate -Dexpression=maven.compiler.release`.
+3. Release: selected module POM, `-q -DforceStdout help:evaluate -Dexpression=maven.compiler.release`
+   and, for a test compilation, `maven.compiler.testRelease`. These evaluated properties
+   supply Mojo defaults. The selected effective compiler plugin/execution configuration
+   takes precedence; `testRelease` takes precedence over `release` for tests.
+
+The bounded effective model incorporates parents and active profiles. A numeric
+`maven-compiler-plugin` release needs no convenience property. Distinct selected
+compiler executions with conflicting levels, unsupported toolchains/custom compiler
+executables and raw compiler-argument level overrides are rejected explicitly;
+the running JDK never supplies a missing release. This does not add arbitrary
+Maven compiler-argument or toolchain support.
 
 All stages inherit the process environment, use the repository wrapper when
 present (supported non-executable shell wrappers run through their interpreter),

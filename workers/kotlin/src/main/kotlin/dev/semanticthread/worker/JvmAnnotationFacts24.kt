@@ -231,6 +231,31 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
     private fun array(values: List<FirExpression>, depth: Int): JsonObject = buildJsonObject {
         put("kind", "ARRAY"); put("values", JsonArray(values.map { value(it, depth + 1) }))
     }
+    // Java annotation `value` arrays are packed as FIR varargs. A named array
+    // is the complete argument, not an extra array element. Match its resolved
+    // element type before removing that one packing layer; nested annotations
+    // and genuine nested arrays retain their structure.
+    private fun varargValue(expression: FirVarargArgumentsExpression, depth: Int): JsonObject {
+        var packed = expression.arguments.singleOrNull()
+        while (packed is FirWrappedArgumentExpression) packed = packed.expression
+        val expected = (expression.resolvedType.typeArguments.singleOrNull() as? ConeKotlinTypeProjection)?.type?.classId
+        val actual = packed?.let { (it.resolvedType.typeArguments.singleOrNull() as? ConeKotlinTypeProjection)?.type?.classId }
+        val primitiveArrays = setOf("kotlin.BooleanArray", "kotlin.ByteArray", "kotlin.ShortArray", "kotlin.IntArray", "kotlin.LongArray", "kotlin.CharArray", "kotlin.FloatArray", "kotlin.DoubleArray")
+        val container = expression.resolvedType.classId?.asSingleFqName()?.asString()
+        val primitivePacked = container in primitiveArrays && container == packed?.resolvedType?.classId?.asSingleFqName()?.asString()
+        val emptyLiteral = packed is FirCollectionLiteral && packed.argumentList.arguments.isEmpty()
+        val genericPacked = expected != null && expected.asSingleFqName().asString() != "kotlin.Array" && (expected == actual || emptyLiteral)
+        if ((primitivePacked || genericPacked) && (packed is FirCollectionLiteral || packed is FirFunctionCall && arrayFactory(packed))) {
+            return value(packed, depth + 1)
+        }
+        return array(expression.arguments, depth)
+    }
+
+    private fun arrayFactory(call: FirFunctionCall): Boolean =
+        (call.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
+            ?.let { it as? org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol }
+            ?.callableId?.asSingleFqName()?.asString() in setOf("kotlin.arrayOf", "kotlin.booleanArrayOf", "kotlin.byteArrayOf", "kotlin.shortArrayOf", "kotlin.intArrayOf", "kotlin.longArrayOf", "kotlin.charArrayOf", "kotlin.floatArrayOf", "kotlin.doubleArrayOf")
+
     private fun value(expression: FirExpression, depth: Int): JsonObject {
         if (depth > 32) return unresolved("ANNOTATION_VALUE_LIMIT")
         if (expression !is FirAnnotation) asAnnotation(expression)?.let { return value(it, depth + 1) }
@@ -244,7 +269,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
                 }
             }
             is FirWrappedArgumentExpression -> return value(expression.expression, depth + 1)
-            is FirVarargArgumentsExpression -> return array(expression.arguments, depth)
+            is FirVarargArgumentsExpression -> return varargValue(expression, depth)
             is FirCollectionLiteral -> return array(expression.argumentList.arguments, depth)
             is FirAnnotation -> return annotation(expression)?.let { buildJsonObject { put("kind", "ANNOTATION"); put("value", it) } }
                 ?: unresolved("UNRESOLVED_ANNOTATION_CLASS")
@@ -258,6 +283,11 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
                     else -> JsonPrimitive(literal.toString())
                 })
             }
+        }
+        if (expression is FirFunctionCall && arrayFactory(expression)) {
+            val args = expression.argumentList.arguments
+            return (args.singleOrNull() as? FirVarargArgumentsExpression)?.let { varargValue(it, depth + 1) }
+                ?: array(args, depth)
         }
         expression.extractEnumValueArgumentInfo()?.let { info -> return buildJsonObject {
             put("kind", "ENUM"); put("type", expression.resolvedType.classId?.asSingleFqName()?.asString() ?: expression.resolvedType.toString())

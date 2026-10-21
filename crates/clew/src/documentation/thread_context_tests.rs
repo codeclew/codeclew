@@ -1028,3 +1028,140 @@ fn assert_full_source_exports(repo: &Repository, w: &work::Work) {
         }
     }
 }
+
+#[test]
+#[ignore = "real Maven/JDK Spring inheritance registration controls"]
+fn native_java_spring_registration_preserves_distinct_beans_and_overrides() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    fs::create_dir_all(repo.join("src/main/java/example")).unwrap();
+    fs::write(repo.join("pom.xml"),r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example.fixture</groupId><artifactId>routes</artifactId><version>1</version><dependencies><dependency><groupId>org.springframework</groupId><artifactId>spring-webmvc</artifactId><version>6.1.13</version></dependency></dependencies><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version><configuration><release>17</release></configuration></plugin><plugin><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version></plugin></plugins></build></project>"#).unwrap();
+    for (name, body) in [
+        (
+            "Base",
+            r#"public class Base { @GetMapping("/inherited") public String inherited() { return "base"; } }"#,
+        ),
+        (
+            "Child",
+            "@RestController public class Child extends Base {}",
+        ),
+        (
+            "Sibling",
+            "@RestController public class Sibling extends Base {}",
+        ),
+        (
+            "OverrideController",
+            r#"@RestController public class OverrideController extends Base { @Override @GetMapping("/override") public String inherited() { return "override"; } }"#,
+        ),
+        (
+            "OverrideBase",
+            r#"public class OverrideBase { @GetMapping("/retired") public String changed() { return "base"; } }"#,
+        ),
+        (
+            "OnlyOverride",
+            r#"@RestController public class OnlyOverride extends OverrideBase { @Override @GetMapping("/replacement") public String changed() { return "new"; } }"#,
+        ),
+        (
+            "BeanBase",
+            r#"@RestController public class BeanBase { @GetMapping("/bean") public String call() { return "base"; } }"#,
+        ),
+        (
+            "BeanChild",
+            "@RestController public class BeanChild extends BeanBase {}",
+        ),
+    ] {
+        fs::write(
+            repo.join(format!("src/main/java/example/{name}.java")),
+            format!("package example; import org.springframework.web.bind.annotation.*; {body}"),
+        )
+        .unwrap();
+    }
+    let model = crate::java_project_model::extract_java_model(repo, ":/main").unwrap();
+    assert_eq!(model.authority.release, 17);
+    let files: BTreeMap<_, _> = model
+        .authority
+        .source_files
+        .iter()
+        .map(|path| (path.clone(), fs::read_to_string(repo.join(path)).unwrap()))
+        .collect();
+    let digests = files
+        .iter()
+        .map(|(path, text)| (path.clone(), crate::canonical::hash_bytes(text.as_bytes())))
+        .collect();
+    let index = crate::java_adapter_v2::build_java_compiler_index(
+        repo,
+        &model,
+        &digests,
+        false,
+        None,
+        &[],
+        None,
+    )
+    .unwrap();
+    let facts = index
+        .facts
+        .iter()
+        .map(|fact| {
+            let mut value = serde_json::to_value(fact).unwrap();
+            let binding = crate::cas::CasObject::for_bytes(
+                crate::java_adapter_v2::JAVA_FACT_SCHEMA,
+                &super::bytes(&value).unwrap(),
+            )
+            .unwrap()
+            .digest;
+            value["scope"] = json!({"compilation":":/main"});
+            (value, binding)
+        })
+        .collect();
+    let service = service("compiler");
+    let evidence = analysis::project(
+        &service,
+        &"a".repeat(40),
+        &digest(&service).unwrap(),
+        "PROJECT_NATIVE",
+        "FULL",
+        facts,
+        &files,
+        false,
+    )
+    .unwrap();
+    for (path, expected) in [
+        ("/inherited", 2),
+        ("/override", 1),
+        ("/bean", 2),
+        ("/retired", 0),
+        ("/replacement", 1),
+    ] {
+        let routes: Vec<_> = evidence
+            .entrypoints
+            .iter()
+            .filter(|entry| {
+                entry.kind == "HTTP_ENDPOINT"
+                    && entry.trigger["paths"]
+                        .as_array()
+                        .is_some_and(|paths| paths.contains(&json!(path)))
+            })
+            .collect();
+        assert_eq!(
+            routes.len(),
+            expected,
+            "{path}: {:#?}",
+            evidence.entrypoints
+        );
+        if path == "/inherited" {
+            assert!(routes.iter().all(|entry| {
+                entry
+                    .source_ids
+                    .iter()
+                    .any(|id| evidence.sources[id].file.ends_with("/Base.java"))
+            }));
+        }
+    }
+    assert!(
+        evidence
+            .observations
+            .values()
+            .any(|observation| observation.normalized["binding"]["controller"] == false)
+    );
+    analysis::verify_evidence(&evidence).unwrap();
+}

@@ -189,6 +189,17 @@ impl SourceAnnotationFacts {
                             && self.imports.iter().any(|import| {
                                 source_import_matches(import, &annotation.spelling, name)
                             }) => {}
+                    ("WILDCARD_IMPORT_CANDIDATE", Some(name))
+                        if name.len() <= 1024
+                            && !annotation.spelling.contains('.')
+                            && name.rsplit('.').next() == Some(annotation.spelling.as_str())
+                            && self.imports.iter().any(|import| {
+                                let compact = import.split_whitespace().collect::<String>();
+                                compact
+                                    .strip_prefix("import")
+                                    .and_then(|p| p.trim_end_matches(';').strip_suffix(".*"))
+                                    == name.rsplit_once('.').map(|(package, _)| package)
+                            }) => {}
                     ("UNRESOLVED", None) => {}
                     _ => {
                         return Err(

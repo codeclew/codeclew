@@ -232,8 +232,8 @@ fn capture_with_store_selected(
                 parsed_files += 1;
                 let tree = parse(&service.language, text)?;
                 let root_fingerprint = fingerprint(tree.root_node(), text)?;
-                inventory.insert(entry.path.clone(), json!({"digest":root_fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
-                if tree.root_node().has_error() {
+                inventory.insert(entry.path.clone(), json!({"digest":root_fingerprint,"coverage":if has_syntax_error(&service.language, tree.root_node()){"PARTIAL"}else{"SYNTAX"}}));
+                if has_syntax_error(&service.language, tree.root_node()) {
                     // Preserve the complete partial analysis and never publish it as a hit.
                     extract(&file, tree.root_node(), &mut e)?;
                     #[cfg(test)]
@@ -276,7 +276,7 @@ fn capture_with_store_selected(
                 parsed_files += 1;
                 let tree = parse(&service.language, text)?;
                 let fingerprint = fingerprint(tree.root_node(), text)?;
-                inventory.insert(entry.path.clone(), json!({"digest":fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
+                inventory.insert(entry.path.clone(), json!({"digest":fingerprint,"coverage":if has_syntax_error(&service.language, tree.root_node()){"PARTIAL"}else{"SYNTAX"}}));
                 extract(&file, tree.root_node(), &mut e)?;
             }
         } else {
@@ -329,6 +329,7 @@ fn capture_with_store_selected(
     }) {
         e.coverage = "PARTIAL".into();
     }
+    super::source_annotations::suppress_package_shadows(&mut e)?;
     super::source_inheritance::apply(&mut e)?;
     super::thread_inventory::attach_syntax_surfaces(&mut e)?;
     let mut scope = json!({"roots":config.roots,"dialect":config.dialect,"language":service.language,"extractor":SOURCE_EXTRACTOR,"inventory":inventory,"boundaries":e.boundaries});
@@ -343,6 +344,38 @@ fn capture_with_store_selected(
     analysis::verify_evidence(&e)?;
     super::progress::syntax_file_cache(cache_hits, cache_misses, parsed_files);
     Ok(e)
+}
+
+// The pinned Kotlin grammar requires a class-member terminator even directly
+// before `}`. Kotlin permits its omission. Admit only that zero-width recovery;
+// every real ERROR and every other missing token still makes capture partial.
+fn has_syntax_error(language: &str, root: Node<'_>) -> bool {
+    if language != "kotlin" || !root.has_error() {
+        return root.has_error();
+    }
+    let mut pending = vec![root];
+    let mut visited = 0;
+    while let Some(node) = pending.pop() {
+        visited += 1;
+        if visited > 200_000 || node.is_error() {
+            return true;
+        }
+        if node.is_missing()
+            && !(node.kind() == "_class_member_semi"
+                && node.parent().is_some_and(|parent| {
+                    matches!(parent.kind(), "class_body" | "enum_class_body")
+                })
+                && node.next_sibling().is_some_and(|next| next.kind() == "}"))
+        {
+            return true;
+        }
+        let mut cursor = node.walk();
+        pending.extend(
+            node.children(&mut cursor)
+                .filter(|child| child.has_error() || child.is_missing()),
+        );
+    }
+    false
 }
 
 fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
@@ -682,7 +715,7 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
         // when they do not form an enumerated callable declaration.
         file.source(e, &format!("file:{}", file.path), 0, file.text.len())?;
     }
-    if root.has_error() {
+    if has_syntax_error(&file.service.language, root) {
         e.coverage = "PARTIAL".into();
         e.boundaries.push(format!("PARSE_ERROR:{}", file.path));
     }
@@ -922,44 +955,23 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     spring = Some(metadata);
                 }
             }
-            let mut trigger = json!({"authority":"SYNTAX","name":name,"owner":owner});
-            let mut kind = "SOURCE_DECLARATION".to_owned();
-            let mut boundaries = vec![
-                "TRIGGER_NOT_FRAMEWORK_RESOLVED".into(),
-                "CALL_TARGETS_UNRESOLVED".into(),
-            ];
-            if let Some(metadata) = spring {
-                boundaries.extend(metadata.boundaries.clone());
-                trigger["frameworkDeclarations"]=json!(metadata.entries.iter().map(|entry|json!({"kind":entry.kind,"trigger":crate::spring_entrypoints::describe_trigger(entry),"registration":entry.registration,"controller":entry.controller})).collect::<Vec<_>>());
-                trigger["frameworkDerivation"] = json!(metadata.derivation);
-                if metadata.entries.len() == 1 {
-                    boundaries.retain(|b| b != "TRIGGER_NOT_FRAMEWORK_RESOLVED");
-                    kind = if metadata.entries[0].kind == "HTTP_ENDPOINT"
-                        && metadata.entries[0].controller == Some(false)
-                    {
-                        "SOURCE_HTTP_MAPPING".into()
-                    } else {
-                        metadata.entries[0].kind.clone()
-                    };
-                    let derived = crate::spring_entrypoints::describe_trigger(&metadata.entries[0]);
-                    for (key, value) in derived.as_object().into_iter().flatten() {
-                        trigger[key] = value.clone();
-                    }
-                    trigger["authority"] = json!("FRAMEWORK_DERIVED_SOURCE");
-                }
-            }
-            boundaries.sort();
-            boundaries.dedup();
-            e.entrypoints.push(Entrypoint {
+            let mut entry = Entrypoint {
                 id: analysis::source_id(&e.service, &format!("entry:{identity}"))?,
                 service: e.service.clone(),
                 symbol: identity,
-                kind,
-                trigger,
+                kind: "SOURCE_DECLARATION".into(),
+                trigger: json!({"authority":"SYNTAX","name":name,"owner":owner}),
                 source_ids: vec![source],
                 dependency_ids: dependencies,
-                boundaries,
-            });
+                boundaries: vec![
+                    "TRIGGER_NOT_FRAMEWORK_RESOLVED".into(),
+                    "CALL_TARGETS_UNRESOLVED".into(),
+                ],
+            };
+            if let Some(metadata) = spring {
+                project_source_framework(&mut entry, &metadata);
+            }
+            e.entrypoints.push(entry);
         }
     }
     if file.service.language == "typescript" {
@@ -967,6 +979,40 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
     }
     Ok(())
 }
+pub(super) fn project_source_framework(
+    entry: &mut Entrypoint,
+    metadata: &clew_framework_spring::SpringMetadata,
+) {
+    entry.kind = "SOURCE_DECLARATION".into();
+    entry.trigger =
+        json!({"authority":"SYNTAX","name":entry.trigger["name"],"owner":entry.trigger["owner"]});
+    entry.boundaries = vec![
+        "TRIGGER_NOT_FRAMEWORK_RESOLVED".into(),
+        "CALL_TARGETS_UNRESOLVED".into(),
+    ];
+    entry.boundaries.extend(metadata.boundaries.clone());
+    entry.trigger["frameworkDeclarations"]=json!(metadata.entries.iter().map(|row|json!({"kind":row.kind,"trigger":crate::spring_entrypoints::describe_trigger(row),"registration":row.registration,"controller":row.controller})).collect::<Vec<_>>());
+    entry.trigger["frameworkDerivation"] = json!(metadata.derivation);
+    if metadata.entries.len() == 1 {
+        let row = &metadata.entries[0];
+        entry
+            .boundaries
+            .retain(|b| b != "TRIGGER_NOT_FRAMEWORK_RESOLVED");
+        entry.kind = if row.kind == "HTTP_ENDPOINT" && row.controller == Some(false) {
+            "SOURCE_HTTP_MAPPING".into()
+        } else {
+            row.kind.clone()
+        };
+        let derived = crate::spring_entrypoints::describe_trigger(row);
+        for (key, value) in derived.as_object().into_iter().flatten() {
+            entry.trigger[key] = value.clone();
+        }
+        entry.trigger["authority"] = json!("FRAMEWORK_DERIVED_SOURCE");
+    }
+    entry.boundaries.sort();
+    entry.boundaries.dedup();
+}
+
 fn event_kind(node: Node<'_>) -> Option<&'static str> {
     Some(match node.kind() {
         "if_statement"
@@ -1126,6 +1172,7 @@ pub(super) fn source_for_provider_test(
         )
         .unwrap();
     }
+    super::source_annotations::suppress_package_shadows(&mut source).unwrap();
     super::source_inheritance::apply(&mut source).unwrap();
     observe(
         &mut source,
@@ -1190,11 +1237,158 @@ mod tests {
     fn service(language: &str) -> Service {
         serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":language,"profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":if language=="kotlin"{"1.9"}else{"declared"}}})).unwrap()
     }
+    #[test]
+    fn kotlin_compact_class_members_preserve_inventory_without_rewriting_source() {
+        for (compact, expanded) in [
+            ("class A { fun x() = 1 }", "class A {\n fun x() = 1\n}"),
+            (
+                "class A { fun x() = 1; fun y() = 2 }",
+                "class A {\n fun x() = 1\n fun y() = 2\n}",
+            ),
+            (
+                "class A { var x: Int? = null; fun get(): Int? = x }",
+                "class A {\n var x: Int? = null\n fun get(): Int? = x\n}",
+            ),
+            (
+                "enum class A { ENTRY; fun x() = 1 }",
+                "enum class A { ENTRY;\n fun x() = 1\n}",
+            ),
+        ] {
+            let a = fixture("kotlin", compact);
+            let b = fixture("kotlin", expanded);
+            assert_eq!(a.coverage, "SYNTAX");
+            let symbols = |e: &ServiceEvidence| {
+                e.observations
+                    .values()
+                    .filter(|o| o.kind == "SYMBOL")
+                    .map(|o| o.symbol.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            assert_eq!(symbols(&a), symbols(&b));
+            assert!(
+                a.sources
+                    .values()
+                    .all(|source| compact.contains(&source.text))
+            );
+        }
+        for malformed in [
+            "class A { fun x( }",
+            "class A { fun x() = }",
+            "class A { fun x() = 1",
+            "class A { fun x() = 1 fun y() = 2 }",
+            "enum class A { ENTRY; fun x( }",
+        ] {
+            let tree = parse("kotlin", malformed).unwrap();
+            assert!(
+                has_syntax_error("kotlin", tree.root_node()),
+                "{malformed}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+
+    #[test]
+    fn spring_wildcard_candidates_preserve_source_authority_and_block_shadowing() {
+        for (language, source, local) in [
+            (
+                "java",
+                "package demo; import org.springframework.web.bind.annotation.*; import org.springframework.http.*; @RestController class Api { @GetMapping(value={\"/ok\"}) String get(){return \"ok\";} }",
+                " @interface GetMapping {String[] value();}",
+            ),
+            (
+                "kotlin",
+                "package demo\nimport org.springframework.web.bind.annotation.*\nimport org.springframework.http.*\n@RestController class Api { @GetMapping(value=[\"/ok\"]) fun get() = \"ok\" }",
+                "\nannotation class GetMapping(val value: Array<String>)",
+            ),
+        ] {
+            let captured = fixture(language, source);
+            let routes: Vec<_> = captured
+                .entrypoints
+                .iter()
+                .filter(|entry| entry.kind == "HTTP_ENDPOINT")
+                .collect();
+            assert_eq!(routes.len(), 1, "{language}: {captured:#?}");
+            assert_eq!(routes[0].trigger["paths"], json!(["/ok"]));
+            assert_eq!(routes[0].trigger["authority"], "FRAMEWORK_DERIVED_SOURCE");
+            assert!(
+                routes[0]
+                    .boundaries
+                    .contains(&"SOURCE_WILDCARD_ANNOTATION_CANDIDATE".into())
+            );
+            assert!(
+                !serde_json::to_string(&captured)
+                    .unwrap()
+                    .contains("COMPILER_EXACT")
+            );
+            let shadowed = fixture(language, &format!("{source}{local}"));
+            assert!(
+                !shadowed
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+            let competing =
+                source.replacen("import org.springframework.http.*", "import collision.*", 1);
+            assert!(
+                !fixture(language, &competing)
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+        }
+        let routes = "package demo\nimport org.springframework.web.bind.annotation.*\n@RestController class Api { @GetMapping(\"/ok\") fun get() = \"ok\" }";
+        let factory = routes.replace(
+            "@GetMapping(\"/ok\")",
+            "@GetMapping(value=arrayOf(\"/ok\"))",
+        );
+        let paths = |e: ServiceEvidence| {
+            e.entrypoints
+                .into_iter()
+                .find(|entry| entry.kind == "HTTP_ENDPOINT")
+                .unwrap()
+                .trigger["paths"]
+                .clone()
+        };
+        assert_eq!(paths(fixture("kotlin", &factory)), json!(["/ok"]));
+        assert!(
+            paths(fixture(
+                "kotlin",
+                &format!("{factory}\nfun arrayOf(value: String) = value")
+            ))
+            .is_null()
+        );
+        let imported = factory.replace(
+            "import org.springframework.web.bind.annotation.*",
+            "import org.springframework.web.bind.annotation.*\nimport other.arrayOf",
+        );
+        assert!(paths(fixture("kotlin", &imported)).is_null());
+        let provider = fixture("kotlin", routes);
+        let files = BTreeMap::from([
+            ("Api.kt".into(), routes.into()),
+            (
+                "GetMapping.kt".into(),
+                "package demo\nannotation class GetMapping(val value: String)".into(),
+            ),
+        ]);
+        let shadowed = source_for_provider_test(&service("kotlin"), &provider, &files);
+        assert!(
+            !shadowed
+                .entrypoints
+                .iter()
+                .any(|entry| entry.kind == "HTTP_ENDPOINT")
+        );
+        assert!(
+            shadowed
+                .boundaries
+                .contains(&"PACKAGE_LOCAL_ANNOTATION_SHADOWS_WILDCARD".into())
+        );
+    }
+
     fn fixture(language: &str, text: &str) -> ServiceEvidence {
         let service = service(language);
         let tree = parse(language, text).unwrap();
         assert!(
-            !tree.root_node().has_error(),
+            !has_syntax_error(language, tree.root_node()),
             "{}",
             tree.root_node().to_sexp()
         );

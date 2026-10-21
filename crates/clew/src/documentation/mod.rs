@@ -84,6 +84,7 @@ mod source_origin;
 mod source_span;
 mod source_statement;
 pub mod source_steps;
+mod spring_inventory;
 pub(crate) mod sqlite_objects;
 pub mod static_pages;
 pub mod status;
