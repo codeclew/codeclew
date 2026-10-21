@@ -48,7 +48,11 @@ jobs:
       - name: Qualify Kotlin JVM 25 project semantics on the packaged analyzer
         run: ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.KotlinJvm25QualificationTest
       - name: Qualify Rust and Python conditional mutation
-        run: python3 -I -S scripts/language_mutation_pilot.py
+        run: |
+          # Keep bootstrap diagnostics visible before the pilot captures command output.
+          export CODECLEW_HOME="$HOME/.codeclew-release-qualification-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ./clew --version
+          python3 -I -S scripts/language_mutation_pilot.py --reuse-primed-runtime
 
   build:
     name: Build ${{ matrix.os }} ${{ matrix.arch }}
