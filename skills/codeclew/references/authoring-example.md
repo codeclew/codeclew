@@ -112,8 +112,8 @@ For a small body that delegates to an HTTP client, the proposal shape is:
     "title":"Request an external reservation",
     "summary":{"text":"Delegate the reservation request and return the client result.","evidence":["METHOD_REF"]},
     "steps":[
-      {"kind":"note","from":"SERVICE_ID","meaning":{"text":"Call the external client; receiver execution is not captured.","evidence":["METHOD_REF","INTERACTION_REF"],"uncertainty":"Receiver implementation and runtime delivery are unknown."}},
-      {"kind":"return","from":"SERVICE_ID","to":"caller","meaning":{"text":"Return the client result.","evidence":["METHOD_REF"]}}
+      {"kind":"note","from":"SERVICE_ID","meaning":{"text":"Call the external client; receiver execution is not captured.","evidence":["CALL_REF","INTERACTION_REF"],"uncertainty":"Receiver implementation and runtime delivery are unknown."}},
+      {"kind":"return","from":"SERVICE_ID","to":"caller","meaning":{"text":"Return the client result.","evidence":["RETURN_REF"]}}
     ],
     "contracts":[{"title":"Caller request","kind":"payload","rows":[{"label":"Request argument","description":{"text":"The caller forwards the request argument to the client.","evidence":["METHOD_REF"]}}]}]
   }],
