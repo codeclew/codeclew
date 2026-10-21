@@ -188,7 +188,7 @@ fn section_visuals_publish_with_evidence_and_replay_without_source() {
     // Construct a historical-renderer fixture without changing its evidence,
     // accepted content or output hashes. Production baselines are never edited.
     let binding_path = f.bundle(bundle, "bindings.json");
-    let mut historical = read(binding_path.clone());
+    let mut historical = f.bindings(bundle);
     historical["renderer"] = json!("codeclew-documentation-html/1.14");
     fs::write(&binding_path, serde_json::to_vec(&historical).unwrap()).unwrap();
     let preserved_bytes = fs::read(&binding_path).unwrap();

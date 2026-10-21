@@ -64,7 +64,7 @@ fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_rev
     let root = data["operations"][0]["id"].as_str().unwrap();
     assert_eq!(data["operationStates"][root]["freshness"], "UNVERIFIED");
     assert_eq!(data["operationStates"][root]["verification"], "UNASSESSED");
-    let binding = read(f.bundle(bundle, "bindings.json"));
+    let binding = f.bindings(bundle);
     let version = &binding["acceptedVersions"][format!("service:orders/{root}")];
     assert!(version["invocation"].is_null());
     assert!(version["reviewDigest"].is_null());
@@ -170,7 +170,7 @@ fn docsys_t17_current_narrative_rejects_obsolete_versions_and_preserves_protecte
         "{published}"
     );
     let bundle = published["bundle"].as_str().unwrap();
-    let bindings = read(f.bundle(bundle, "bindings.json"));
+    let bindings = f.bindings(bundle);
     assert_eq!(
         bindings["narratives"]["service:orders"]["operations"][0]["title"],
         title

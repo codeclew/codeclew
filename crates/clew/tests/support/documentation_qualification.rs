@@ -188,7 +188,7 @@ pub fn forty_services() {
     let publication_ms = publication_start.elapsed().as_millis();
     let initial = published["bundle"].as_str().unwrap();
     let initial_binding: clew::documentation::bindings::Bindings =
-        serde_json::from_value(read(f.bundle(initial, "bindings.json"))).unwrap();
+        serde_json::from_value(f.bindings(initial)).unwrap();
     assert_eq!(initial_binding.revisions.len(), 40);
     for (service, root) in &roots {
         assert_eq!(
@@ -235,7 +235,7 @@ pub fn forty_services() {
         .unwrap()
         .to_owned();
     let binding: clew::documentation::bindings::Bindings =
-        serde_json::from_value(read(f.bundle(&current, "bindings.json"))).unwrap();
+        serde_json::from_value(f.bindings(&current)).unwrap();
     let mut affected_roots = Vec::new();
     let mut reused = 0;
     for (service, root) in &roots {

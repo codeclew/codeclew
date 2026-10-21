@@ -116,7 +116,7 @@ fn independently_prepared_services_publish_through_generated_placeholders_but_no
         &orders,
         "--unassessed",
     ]);
-    let first_binding = read(f.bundle(first["bundle"].as_str().unwrap(), "bindings.json"));
+    let first_binding = f.bindings(first["bundle"].as_str().unwrap());
     assert_eq!(
         first_binding["narratives"]["service:shipping"]["operations"],
         json!([])
@@ -132,7 +132,7 @@ fn independently_prepared_services_publish_through_generated_placeholders_but_no
         "--unassessed",
     ]);
     assert_eq!(second["updateFailures"], json!({}));
-    let second_binding = read(f.bundle(second["bundle"].as_str().unwrap(), "bindings.json"));
+    let second_binding = f.bindings(second["bundle"].as_str().unwrap());
     assert_eq!(
         second_binding["narratives"]["service:orders"],
         first_binding["narratives"]["service:orders"]

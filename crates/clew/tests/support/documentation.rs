@@ -367,6 +367,16 @@ impl Fixture {
     pub fn bundle(&self, id: &str, path: &str) -> PathBuf {
         self.docs.join("docs/generated").join(id).join(path)
     }
+    /// Assert logical content through the product's shared reader, independent
+    /// of whether this publication uses inline or partitioned wire storage.
+    pub fn bindings(&self, id: &str) -> Value {
+        let repo = clew::documentation::store::Repository::open(&self.docs).unwrap();
+        let raw = fs::read(self.bundle(id, "bindings.json")).unwrap();
+        serde_json::to_value(
+            clew::documentation::bindings::validate_retained_bindings(&repo, &raw).unwrap(),
+        )
+        .unwrap()
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {

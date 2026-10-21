@@ -299,8 +299,8 @@ fn assert_new_reviewer_publication(
         new_operations, original_operations,
         "recovery changed the accepted operation's semantic content"
     );
-    let original_bindings = read(f.bundle(original_bundle, "bindings.json"));
-    let new_bindings = read(f.bundle(new_bundle, "bindings.json"));
+    let original_bindings = f.bindings(original_bundle);
+    let new_bindings = f.bindings(new_bundle);
     let original_version =
         accepted_version_for_invocation(&original_bindings, &seed.original_reviewer_invocation);
     let new_version = accepted_version_for_invocation(

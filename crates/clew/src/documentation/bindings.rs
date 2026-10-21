@@ -447,10 +447,10 @@ pub(super) fn capture_baseline(
 
 /// Validate exact retained bytes independently of the mutable publication pointer.
 /// Both live baselines and explicitly selected frozen bundles use this contract.
-pub(super) fn validate_retained_bindings(
-    repo: &Repository,
-    raw: &[u8],
-) -> Result<Bindings, ClewError> {
+/// Resolve supported portable representations and validate retained semantics,
+/// including original protected authoring contexts. This does not revalidate
+/// current source code or replace publication output verification.
+pub fn validate_retained_bindings(repo: &Repository, raw: &[u8]) -> Result<Bindings, ClewError> {
     validate_retained_bindings_with_contexts(repo, raw, &mut BTreeMap::new())
 }
 

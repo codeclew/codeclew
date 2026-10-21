@@ -306,7 +306,7 @@ fn oversized_authored_operation_is_part_readable_and_title_edit_is_machine_ready
     ]);
     assert_eq!(publication["updateFailures"], json!({}), "{publication}");
     let bundle = publication["bundle"].as_str().unwrap().to_owned();
-    let baseline = read(f.bundle(&bundle, "bindings.json"));
+    let baseline = f.bindings(&bundle);
     let retained = baseline["narratives"]["service:orders"]["operations"]
         .as_array()
         .unwrap()
