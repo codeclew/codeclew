@@ -365,6 +365,86 @@ fn changed_scope_membership_and_annotations_match_uncached_capture() {
 }
 
 #[test]
+fn package_annotation_shadows_replay_after_warm_membership_changes() {
+    for (language, extension, route) in [
+        (
+            "java",
+            "java",
+            "package probe.shadow; import org.springframework.web.bind.annotation.*; @RestController class Route { @GetMapping(\"/shadow\") String get(){return \"ok\";} }",
+        ),
+        (
+            "kotlin",
+            "kt",
+            "package probe.shadow\nimport org.springframework.web.bind.annotation.*\n@RestController class Route { @GetMapping(\"/shadow\") fun get() = \"ok\" }",
+        ),
+    ] {
+        for annotation in ["RestController", "GetMapping"] {
+            let fixture = Fixture::new();
+            let service = service(language);
+            fixture.write(&format!("Route.{extension}"), route);
+            let before = fixture.commit();
+            let original = fixture.cached(&service, &before);
+            assert!(
+                original
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+            let shadow_file = format!("{annotation}.{extension}");
+            let declaration = if language == "java" {
+                format!(
+                    "package probe.shadow; public @interface {annotation} {{ String[] value() default {{}}; }}"
+                )
+            } else {
+                format!(
+                    "package probe.shadow\nannotation class {annotation}(val value: String = \"\")"
+                )
+            };
+            fixture.write(&shadow_file, &declaration);
+            let after = fixture.commit();
+            let fresh = fixture.uncached(&service, &after);
+            syntax::take_file_cache_stats();
+            let reused = fixture.cached(&service, &after);
+            let stats = syntax::take_file_cache_stats();
+            assert_eq!((stats.hits, stats.misses, stats.parses), (1, 1, 1));
+            assert_eq!(reused, fresh);
+            assert!(
+                !reused
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT"),
+                "{language}/{annotation}: {reused:#?}"
+            );
+            assert!(
+                reused
+                    .boundaries
+                    .contains(&"PACKAGE_LOCAL_ANNOTATION_SHADOWS_WILDCARD".into())
+            );
+            if annotation == "RestController" {
+                assert!(
+                    reused
+                        .entrypoints
+                        .iter()
+                        .any(|entry| entry.kind == "SOURCE_HTTP_MAPPING"
+                            && entry.trigger["paths"] == json!(["/shadow"])
+                            && entry.trigger["frameworkDeclarations"][0]["controller"] == false)
+                );
+            }
+            assert_eq!(fixture.cached(&service, &before), original);
+            fs::remove_file(fixture.source.path().join(shadow_file)).unwrap();
+            let restored = fixture.commit();
+            assert!(
+                fixture
+                    .cached(&service, &restored)
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+        }
+    }
+}
+
+#[test]
 fn partial_parse_is_reparsed_and_never_promoted_to_a_cache_hit() {
     let fixture = Fixture::new();
     let service = service("python");

@@ -451,6 +451,7 @@ fn class(kind: &str) -> bool {
         "class_definition"
             | "class_declaration"
             | "interface_declaration"
+            | "annotation_type_declaration"
             | "enum_declaration"
             | "record_declaration"
             | "object_declaration"
