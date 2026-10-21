@@ -192,7 +192,7 @@ pub(super) fn read_frozen_bindings(
     }
     if canonical::hash_bytes(&binding_raw) != *expected_bindings {
         return Err(invalid(
-            "selected frozen publication bindings changed after preflight",
+            "selected frozen publication is damaged or incomplete: bindings changed after preflight",
         ));
     }
     let closure = super::bindings_storage::closure(&binding_raw)?;

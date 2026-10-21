@@ -83,6 +83,59 @@ def assert_local_destination(case, site, pages, source, url):
             case.assertIn(unquote(target.fragment), page.ids, f'{source}: missing fragment {url}')
 
 
+def portable_output_hashes(case, root, bindings, raw):
+    """Verify the flat wire byte closure, not logical evidence membership.
+
+    The product resolver owns semantic reconstitution and logicalDigest checks.
+    This static role check uses the same logical outputHashes in the bounded
+    manifest header; it never invents a second source/bindings loader.
+    """
+    case.assertLessEqual(len(raw), 1024 * 1024, 'portable manifest exceeds budget')
+    case.assertEqual(bindings.get('objectRoot'), 'docs/evidence/objects')
+    header = bindings.get('header', {})
+    case.assertIn(header.get('schema'), ('codeclew-documentation-bindings/1.4',
+                                       'codeclew-documentation-bindings/1.5'))
+    objects = bindings.get('objects')
+    case.assertIsInstance(objects, list)
+    case.assertLessEqual(len(objects), 8192)
+    seen = set()
+    total = len(raw)
+    for reference in objects:
+        digest = reference.get('digest', '')
+        case.assertRegex(digest, r'^sha256:[0-9a-f]{64}$')
+        case.assertNotIn(digest, seen, 'duplicate portable object')
+        seen.add(digest)
+        schema = reference.get('schema')
+        case.assertIn(schema, ('codeclew-bindings-record-chunk/1.0',
+                              'codeclew-bindings-partition/1.0'))
+        size = reference.get('size')
+        case.assertIs(type(size), int)
+        case.assertGreaterEqual(size, 0)
+        case.assertLessEqual(size, 1024 * 1024 if schema.endswith('partition/1.0')
+                             else 128 * 1024 * 1024)
+        total += size
+        case.assertLessEqual(total, 128 * 1024 * 1024, 'portable closure exceeds budget')
+        relative = Path('docs/evidence/objects') / (digest[7:] + '.json')
+        base = root.parent
+        object_path = base / relative
+        for parent in (object_path, *object_path.parents):
+            if parent == base:
+                break
+            case.assertFalse(parent.is_symlink(), 'unsafe portable object symlink')
+        case.assertTrue(object_path.is_file(), 'portable object missing')
+        case.assertEqual(object_path.stat().st_size, size, 'portable object size mismatch')
+        hashed = hashlib.sha256()
+        remaining = size
+        with object_path.open('rb') as stream:
+            while block := stream.read(min(1024 * 1024, remaining + 1)):
+                remaining -= len(block)
+                case.assertGreaterEqual(remaining, 0, 'portable object grew during verification')
+                hashed.update(block)
+        case.assertEqual(remaining, 0, 'portable object shrank during verification')
+        case.assertEqual('sha256:' + hashed.hexdigest(), digest, 'portable object digest mismatch')
+    return header.get('outputHashes', {})
+
+
 def archived_root_context(case, root, path):
     """Admit the native root-output role, not a filename-based link exemption."""
     relative = path.relative_to(root)
@@ -96,20 +149,24 @@ def archived_root_context(case, root, path):
     case.assertTrue(manifest_path.is_file() and bindings_path.is_file(),
                     f'{path}: missing native root-output records')
     manifest = json.loads(manifest_path.read_text())
+    case.assertLessEqual(bindings_path.stat().st_size, 128 * 1024 * 1024)
     bindings_bytes = bindings_path.read_bytes()
     bindings = json.loads(bindings_bytes)
     digest = lambda data: 'sha256:' + hashlib.sha256(data).hexdigest()
     case.assertEqual(manifest.get('schema'), 'codeclew-documentation-publication/1.0')
     case.assertEqual(manifest.get('id'), bundle, f'{path}: publication identity mismatch')
     case.assertIn(bindings.get('schema'), ('codeclew-documentation-bindings/1.4',
-                                         'codeclew-documentation-bindings/1.5'))
+                                         'codeclew-documentation-bindings/1.5',
+                                         'codeclew-documentation-bindings/1.6'))
     files = manifest.get('files', {})
     case.assertEqual(files.get('bindings.json'), digest(bindings_bytes),
                      f'{path}: bindings digest mismatch')
     root_digest = digest(path.read_bytes())
     case.assertEqual(files.get('root-overview.html'), root_digest,
                      f'{path}: archived root digest mismatch')
-    case.assertEqual(bindings.get('outputHashes', {}).get('root-overview.html'), root_digest,
+    outputs = (portable_output_hashes(case, root, bindings, bindings_bytes)
+               if bindings['schema'].endswith('/1.6') else bindings.get('outputHashes', {}))
+    case.assertEqual(outputs.get('root-overview.html'), root_digest,
                      f'{path}: root-output binding mismatch')
     # Native commit deploys these bytes at this path. Historical templates keep
     # their own self-anchor IDs, even when the current root points at a new bundle.
@@ -481,6 +538,7 @@ class GeneratedDocumentationTests(unittest.TestCase):
             archive.write_text(markup + '<p>Modified</p>')
             with self.assertRaisesRegex(AssertionError, 'archived root digest mismatch'):
                 archived_root_context(self, root, archive)
+
             archive.write_text(markup)
             bindings['outputHashes']['root-overview.html'] = 'sha256:' + '0' * 64
             binding_path.write_text(json.dumps(bindings))
@@ -490,6 +548,58 @@ class GeneratedDocumentationTests(unittest.TestCase):
                 archived_root_context(self, root, archive)
             manifest_path.unlink()
             with self.assertRaisesRegex(AssertionError, 'missing native root-output records'):
+                archived_root_context(self, root, archive)
+
+    def test_portable_archive_role_verifies_every_declared_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / 'docs'
+            bundle = 'a' * 64
+            frozen = root / 'generated' / bundle
+            frozen.mkdir(parents=True)
+            archive = frozen / 'root-overview.html'
+            archive.write_text('<h1>Portable root</h1>')
+            digest = lambda data: 'sha256:' + hashlib.sha256(data).hexdigest()
+            root_hash = digest(archive.read_bytes())
+            # The role checker verifies wire bytes, not logical membership.
+            # The Rust regression separately supplies actual production output.
+            payload = b'{"schema":"codeclew-bindings-record-chunk/1.0","records":{}}'
+            identity = digest(payload)
+            object_path = root / 'evidence/objects' / (identity[7:] + '.json')
+            object_path.parent.mkdir(parents=True)
+            object_path.write_bytes(payload)
+            bindings = {'schema': 'codeclew-documentation-bindings/1.6',
+                        'objectRoot': 'docs/evidence/objects',
+                        'header': {'schema': 'codeclew-documentation-bindings/1.4',
+                                   'outputHashes': {'root-overview.html': root_hash}},
+                        'objects': [{'schema': 'codeclew-bindings-record-chunk/1.0',
+                                     'digest': identity, 'size': len(payload)}]}
+
+            def write_manifest():
+                raw = json.dumps(bindings).encode()
+                (frozen / 'bindings.json').write_bytes(raw)
+                (frozen / 'publication.json').write_text(json.dumps({
+                    'schema': 'codeclew-documentation-publication/1.0', 'id': bundle,
+                    'files': {'bindings.json': digest(raw), 'root-overview.html': root_hash}}))
+
+            write_manifest()
+            archived_root_context(self, root, archive)
+            object_path.write_bytes(b'x' * len(payload))
+            with self.assertRaisesRegex(AssertionError, 'portable object digest mismatch'):
+                archived_root_context(self, root, archive)
+            object_path.unlink()
+            with self.assertRaisesRegex(AssertionError, 'portable object missing'):
+                archived_root_context(self, root, archive)
+            external = base / 'external.json'
+            external.write_bytes(payload)
+            object_path.symlink_to(external)
+            with self.assertRaisesRegex(AssertionError, 'unsafe portable object symlink'):
+                archived_root_context(self, root, archive)
+            object_path.unlink()
+            object_path.write_bytes(payload)
+            bindings['objects'].append(dict(bindings['objects'][0]))
+            write_manifest()
+            with self.assertRaisesRegex(AssertionError, 'duplicate portable object'):
                 archived_root_context(self, root, archive)
 
     def test_unregistered_archive_is_rejected(self):

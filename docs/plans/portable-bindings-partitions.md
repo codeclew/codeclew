@@ -15,6 +15,11 @@ inline compatibility copy. Partition membership retains table keys separately
 from content identity, including shared scenario records and historical source
 occurrences.
 
+Publication `outputHashes` stays in the bounded manifest header as small root
+metadata. The common resolver includes it in the exact logical digest check.
+Static-site validation can verify the archived root-output role and the flat
+declared byte closure without implementing another logical evidence resolver.
+
 Objects live at `docs/evidence/objects/<sha256>.json`, outside the private cache.
 They reuse the documentation `ObjectRef` schema/digest/size contract, canonical
 hashing and repository safe-path/atomic-write primitives. There is no additional
@@ -125,19 +130,22 @@ logical bindings and recomputes publication hashes in the same inventory.
 
 | Services | Total bytes after three publications | Inline reference bytes | Reduction | New pool bytes for one-service change | Process peak RSS bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 3,051,371 | 3,280,549 | 6.99% | 64,042 | 43,728,896 |
-| 10 | 4,701,583 | 7,529,866 | 37.56% | 66,910 | 84,541,440 |
-| 100 | 21,205,800 | 50,087,002 | 57.66% | 66,915 | 509,116,416 |
+| 1 | 3,043,723 | 3,280,549 | 7.22% | 61,767 | 43,597,824 |
+| 10 | 4,693,935 | 7,529,866 | 37.66% | 64,635 | 86,933,504 |
+| 100 | 21,198,152 | 50,087,002 | 57.68% | 64,640 | 507,510,784 |
 
-The unchanged-evidence generation adds 2,275 pool bytes for output hash metadata
-at each count; evidence partition identities remain unchanged. Three deliberately
+The unchanged-evidence generation adds no pool bytes; output hash metadata
+stays in each bounded root header, and evidence partition identities remain
+unchanged. Three deliberately
 distinct publication IDs exercise storage reuse. This is not a claim that an
 ordinary no-op render creates another publication. Two initial harness failures
 incorrectly required this changing metadata to remain identical; their logs are
-retained, and only those assertions were corrected. The fixture and budgets were
-unchanged. RSS is the per-count test process high-water mark, not a release or
+retained, and only those assertions were corrected. A later static-site
+compatibility fix moved output hash metadata from chunks to the bounded header;
+the same fixture was rerun and intermediate successful results were preserved.
+The fixture and budgets were unchanged. RSS is the per-count test process high-water mark, not a release or
 customer workload memory guarantee.
 
-The first publication is larger than the inline reference by 1.64%, 6.86% and
-11.80% at these service counts. Partitions and explicit membership have a cost;
+The first publication is larger than the inline reference by 1.46%, 6.76% and
+11.78% at these service counts. Partitions and explicit membership have a cost;
 the measured benefit is reuse across retained generations.

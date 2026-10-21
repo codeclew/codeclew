@@ -125,6 +125,19 @@ fn cold_publication_closure_supports_baseline_history_and_export_without_a_datab
     let id = publish(&repo, logical("SOURCE_SYNTAX"), 1);
     let manifest_path = format!("docs/generated/{id}/bindings.json");
     let raw = fs::read(repo.path(&manifest_path).unwrap()).unwrap();
+    fn site_validator(repo: &Repository, id: &str, full: bool) -> std::process::Output {
+        let script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test_site.py");
+        std::process::Command::new("python3").args(["-I", "-S", "-B", "-c",
+            "import importlib.util,sys,unittest;from pathlib import Path;s=importlib.util.spec_from_file_location('site_validator',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);root=Path(sys.argv[2]);m.assert_generated_documentation(unittest.TestCase(),root,root/'docs') if sys.argv[4]=='full' else m.archived_root_context(unittest.TestCase(),root/'docs',root/'docs/generated'/sys.argv[3]/'root-overview.html')"])
+            .arg(script).arg(&repo.root).arg(id).arg(if full {"full"} else {"role"}).output().unwrap_or_else(|e|panic!("site validator {id}: {e}"))
+    }
+    let validation = site_validator(&repo, &id, true);
+    assert!(
+        validation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validation.stderr)
+    );
     let unchanged = publish(&repo, logical("SOURCE_SYNTAX"), 1);
     assert_eq!(unchanged, id);
     assert_eq!(fs::read(repo.path(&manifest_path).unwrap()).unwrap(), raw);
@@ -180,13 +193,16 @@ fn cold_publication_closure_supports_baseline_history_and_export_without_a_datab
     assert!(super::super::bindings::baseline(&cold).is_err());
     let report = super::super::history::run(super::super::history::Command::Show {
         root: copy.path().to_owned(),
-        id,
+        id: id.clone(),
         kind: "summary".into(),
         cursor: None,
         limit: 100,
     })
     .unwrap();
     assert_eq!(report["status"], "DAMAGED_OR_EXPIRED");
+    let validation = site_validator(&cold, &id, false);
+    assert!(!validation.status.success());
+    assert!(String::from_utf8_lossy(&validation.stderr).contains("portable object missing"));
     assert!(!copy.path().join(".codeclew").exists());
 }
 

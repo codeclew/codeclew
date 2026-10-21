@@ -467,6 +467,13 @@ pub(super) fn encode(
         .as_object()
         .ok_or_else(|| corrupt("logical bindings are not an object"))?
     {
+        // Publication hashes are small root metadata. Keeping them in the
+        // bounded header lets static-site tooling verify the archived HTML role
+        // without implementing a second logical bindings resolver.
+        if table == "outputHashes" {
+            header.insert(table.clone(), values.clone());
+            continue;
+        }
         let Some(values) = values.as_object() else {
             header.insert(table.clone(), values.clone());
             continue;
