@@ -477,6 +477,41 @@ fn partial_parse_is_reparsed_and_never_promoted_to_a_cache_hit() {
 }
 
 #[test]
+fn kotlin_annotated_expression_gap_stays_partial_on_repeated_capture() {
+    let base = "package demo\nimport org.springframework.web.bind.annotation.*\n@RestController\n@RequestMapping(\"/v1\")\nclass Api { @GetMapping(\"/ok\") fun get() = 1\n}\nfun after() = \"fin\"\n";
+    for text in [base.to_string(), base.replace('\n', "\r\n")] {
+        let fixture = Fixture::new();
+        let service = service("kotlin");
+        fixture.write("Api.kt", &text);
+        let revision = fixture.commit();
+        let fresh = fixture.uncached(&service, &revision);
+        assert_eq!(fresh.coverage, "PARTIAL");
+        assert!(fresh.boundaries.contains(&"PARSE_ERROR:Api.kt".into()));
+        assert!(
+            !fresh
+                .entrypoints
+                .iter()
+                .any(|entry| entry.kind == "HTTP_ENDPOINT")
+        );
+        for _ in 0..2 {
+            syntax::take_file_cache_stats();
+            assert_eq!(fixture.cached(&service, &revision), fresh);
+            let stats = syntax::take_file_cache_stats();
+            assert_eq!((stats.hits, stats.misses, stats.parses), (0, 1, 1));
+            assert_eq!(stats.parse_errors, 1);
+        }
+        let key = syntax_file_cache::producer_key(&service, "Api.kt", &text).unwrap();
+        assert!(
+            !fixture
+                .documentation
+                .path(&syntax_file_cache::manifest_path(&key))
+                .unwrap()
+                .exists()
+        );
+    }
+}
+
+#[test]
 fn complete_producer_identity_and_each_file_domain_part_admit_separate_cache_keys() {
     let fixture = Fixture::new();
     let service = service("python");

@@ -346,36 +346,63 @@ fn capture_with_store_selected(
     Ok(e)
 }
 
-// The pinned Kotlin grammar requires a class-member terminator even directly
-// before `}`. Kotlin permits its omission. Admit only that zero-width recovery;
-// every real ERROR and every other missing token still makes capture partial.
-fn has_syntax_error(language: &str, root: Node<'_>) -> bool {
-    if language != "kotlin" || !root.has_error() {
-        return root.has_error();
+// The pinned Kotlin grammar can detach a class annotation when it inserts a
+// missing member terminator before `}`. Reparse only that exact recovery with
+// one existing inline whitespace byte treated as a newline. Byte offsets stay
+// identical; all evidence text and line numbers still come from the original.
+fn kotlin_terminator_parse_view(root: Node<'_>, text: &str) -> Option<Vec<u8>> {
+    if !root.has_error() {
+        return None;
     }
+    let mut view = text.as_bytes().to_vec();
     let mut pending = vec![root];
     let mut visited = 0;
+    let mut repaired = false;
     while let Some(node) = pending.pop() {
         visited += 1;
         if visited > 200_000 || node.is_error() {
-            return true;
-        }
-        if node.is_missing()
-            && !(node.kind() == "_class_member_semi"
-                && node.parent().is_some_and(|parent| {
-                    matches!(parent.kind(), "class_body" | "enum_class_body")
-                })
-                && node.next_sibling().is_some_and(|next| next.kind() == "}"))
-        {
-            return true;
+            return None;
         }
         let mut cursor = node.walk();
-        pending.extend(
-            node.children(&mut cursor)
-                .filter(|child| child.has_error() || child.is_missing()),
-        );
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        let errors: Vec<_> = children
+            .iter()
+            .filter(|child| child.has_error())
+            .copied()
+            .collect();
+        if errors.is_empty() && node.has_error() {
+            // This pinned grammar hides the missing `_class_member_semi`
+            // from Node::children, although it appears in its S-expression.
+            // Require exactly that one hidden recovery on a class body.
+            let sexp = node.to_sexp();
+            let marker = "(MISSING _class_member_semi)";
+            if !matches!(node.kind(), "class_body" | "enum_class_body")
+                || sexp.matches(marker).count() != 1
+                || sexp.replace(marker, "").contains("MISSING")
+                || sexp.contains("ERROR")
+            {
+                return None;
+            }
+            let close = children.last().filter(|child| child.kind() == "}")?;
+            let before = close.start_byte().checked_sub(1)?;
+            if !matches!(view.get(before), Some(b' ' | b'\t')) {
+                return None;
+            }
+            view[before] = b'\n';
+            repaired = true;
+        } else {
+            pending.extend(errors);
+        }
     }
-    false
+    repaired.then_some(view)
+}
+
+fn has_syntax_error(language: &str, root: Node<'_>) -> bool {
+    root.has_error()
+        || (language == "kotlin"
+            && children(root)
+                .iter()
+                .any(|node| node.kind() == "annotated_expression"))
 }
 
 fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
@@ -394,13 +421,28 @@ fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
         .map_err(|_| invalid("pinned source grammar is incompatible"))?;
     let started = Instant::now();
     let mut progress = |_: &tree_sitter::ParseState| started.elapsed() > Duration::from_secs(2);
-    parser
+    let tree = parser
         .parse_with_options(
             &mut |offset, _| &text.as_bytes()[offset..],
             None,
             Some(ParseOptions::new().progress_callback(&mut progress)),
         )
-        .ok_or_else(budget)
+        .ok_or_else(budget)?;
+    if language == "kotlin"
+        && let Some(view) = kotlin_terminator_parse_view(tree.root_node(), text)
+    {
+        let repaired = parser
+            .parse_with_options(
+                &mut |offset, _| &view[offset..],
+                None,
+                Some(ParseOptions::new().progress_callback(&mut progress)),
+            )
+            .ok_or_else(budget)?;
+        if !repaired.root_node().has_error() {
+            return Ok(repaired);
+        }
+    }
+    Ok(tree)
 }
 
 /// Topology and leaf spelling retain Python nesting, comments, strings, and numbers;
@@ -1286,6 +1328,60 @@ mod tests {
                 tree.root_node().to_sexp()
             );
         }
+    }
+
+    #[test]
+    fn kotlin_terminator_recovery_preserves_original_utf8_crlf_ranges_and_lines() {
+        let original = "package demo\r\nimport org.springframework.web.bind.annotation.*\r\n@RestController\r\nclass Api { @GetMapping(\"/ok\") fun get() = \"été\" }\r\nfun after() = \"fin\"\r\n";
+        let captured = fixture("kotlin", original);
+        assert_eq!(captured.coverage, "SYNTAX");
+        for source in captured.sources.values() {
+            let occurrence = source.occurrence.as_ref().unwrap();
+            assert_eq!(
+                original.get(occurrence.start_byte..occurrence.end_byte),
+                Some(source.text.as_str())
+            );
+            let line = 1 + original[..occurrence.start_byte]
+                .bytes()
+                .filter(|b| *b == b'\n')
+                .count() as u64;
+            assert_eq!(source.start_line, line);
+            assert_eq!(
+                source.end_line,
+                line + source.text.lines().count() as u64 - 1
+            );
+            assert_eq!(
+                source.text_digest,
+                canonical::hash_bytes(source.text.as_bytes())
+            );
+        }
+        let after = captured
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "after")
+            .unwrap();
+        assert!(
+            after
+                .source_ids
+                .iter()
+                .any(|id| captured.sources[id].start_line == 5)
+        );
+        assert!(
+            captured
+                .entrypoints
+                .iter()
+                .any(|e| e.trigger["paths"] == json!(["/ok"])),
+            "{:#?}",
+            captured.entrypoints
+        );
+
+        // Without an existing inline whitespace byte, offsets cannot be repaired
+        // by this bounded view. Keep the pinned parser's partial result explicit.
+        let no_space = "class A { fun x() = 1}";
+        assert!(has_syntax_error(
+            "kotlin",
+            parse("kotlin", no_space).unwrap().root_node()
+        ));
     }
 
     #[test]

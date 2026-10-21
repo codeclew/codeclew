@@ -172,8 +172,12 @@ def build_runtime_state(
         stderr=subprocess.PIPE,
         check=False,
     )
-    if completed.returncode != 0 or len(completed.stdout) > 1024 * 1024:
-        raise ReleaseError("release runtime build failed")
+    if completed.returncode != 0:
+        diagnostic = completed.stderr.decode("utf-8", errors="replace").strip()[-4096:]
+        suffix = f": {diagnostic}" if diagnostic else ""
+        raise ReleaseError(f"release runtime build failed ({completed.returncode}){suffix}")
+    if len(completed.stdout) > 1024 * 1024:
+        raise ReleaseError("release capabilities exceed the output bound")
     try:
         capabilities = json.loads(completed.stdout)
     except (TypeError, ValueError) as error:

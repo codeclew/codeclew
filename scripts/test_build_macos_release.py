@@ -22,6 +22,16 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_runtime_build_failure_retains_bounded_bootstrap_stderr(self) -> None:
+        detail = b"x" * 5000 + b'\n{"schema":"codeclew-bootstrap-error/1.0","error":"controlled failure"}'
+        completed = subprocess.CompletedProcess([], 7, stdout=b"", stderr=detail)
+        with mock.patch.object(release, "require_dotnet_sdk"), mock.patch.object(release.subprocess, "run", return_value=completed):
+            with self.assertRaises(release.ReleaseError) as raised:
+                release.build_runtime_state(Path("/source"), Path("/work"), "v1.2.3")
+        self.assertIn("release runtime build failed (7)", str(raised.exception))
+        self.assertIn("controlled failure", str(raised.exception))
+        self.assertLessEqual(len(str(raised.exception)), 4096 + 40)
+
     def capabilities(self, profile: str) -> dict:
         return {
             "schema": "codeclew-capabilities/1.0", "status": "PILOT_READY",
