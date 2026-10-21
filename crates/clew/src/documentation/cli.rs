@@ -1071,9 +1071,11 @@ pub(super) fn context_items(
             return Err(invalid("select at most eight dependencies"));
         }
         for dependency in &args.dependency_ids {
-            if checked.dependencies.get(dependency).is_none_or(|d| {
-                d.service != *id && !matches!(d.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE")
-            }) {
+            if checked
+                .dependencies
+                .get(dependency)
+                .is_none_or(|d| !d.in_service_scope(id))
+            {
                 return Err(invalid("unknown service dependency"));
             }
             selected.insert(dependency.clone());

@@ -64,13 +64,71 @@ keep the rejecting return in one branch and delegation/result in the other.
 Source evidence of delegation does not establish the downstream algorithm.
 
 Materialized event kinds are `message`, `return`, `note`, `alt`, `else`, `loop`, `opt`, `end`,
-and `declared`. For a cross-service request use `kind: declared`, participants
-with the two registered service IDs, and `interaction: reserve-inventory`.
+and `declared`. A resolved cross-service request uses `kind: declared` and
+participants with the two captured service IDs. Proposal input must use the
+interaction reference delivered by a recorded read in that same immutable Work:
+
+```json
+{"kind":"declared","from":"orders","to":"inventory","interaction":"INTERACTION_REF","meaning":{"text":"Request a reservation.","evidence":["INTERACTION_REF","CALL_REF","RECEIVER_REF"]}}
+```
+
+For example, if the read delivers reference `d141` for dependency
+`interaction:reserve-inventory`, replace `INTERACTION_REF` with `d141`. The host
+then writes `interaction: reserve-inventory` in the materialized event. Neither
+the catalogue ID `reserve-inventory` nor dependency ID
+`interaction:reserve-inventory` is a proposal reference. References such as `d141`
+are local to their Work; the same spelling in another Work can name different
+evidence. Read and verify the returned record rather than copying a handle.
+
+In service Work, query `DECLARED_INTERACTION` to obtain declarations whose
+`from.service` or `to.service` is the selected service. Their visibility is
+boundary evidence, not permission to read another service's implementation or
+draw an executable arrow. A declared arrow requires scenario Work with an
+actually composed transition, `RESOLVED` endpoints and call site, and an admitted
+declaration. `SOURCE_MATCH` and `AMBIGUOUS` do not satisfy this requirement.
 Bind the edge to the declaration and the returned call/receiver dependencies.
 A corresponding HTTP reverse return also names that interaction. Kafka delivery
 has no synchronous return; declare a separate reply-event interaction. Nest receiver
 conditions within the caller's successful branch. Do not omit failures just
 because the named scenario focuses on success.
+
+## External HTTP and Kafka boundaries
+
+An `external: true` interaction has no captured receiver. Keep its request or
+publish behavior on the caller's lifeline using a source-bound `note`, and
+describe the available contract and receiver limitation. Do not add the external
+service as a captured participant or disguise a service transition as an actor
+without a service. Do not claim receiver execution, delivery, retries, failure
+handling, or a synchronous reply unless the selected source establishes that
+specific caller behavior. Runtime remains `UNKNOWN`.
+
+For a small body that delegates to an HTTP client, the proposal shape is:
+
+```json
+{
+  "schema":"codeclew-documentation-proposal/1.0",
+  "operations":[{
+    "entrypoint":"ENTRYPOINT_REF",
+    "title":"Request an external reservation",
+    "summary":{"text":"Delegate the reservation request and return the client result.","evidence":["METHOD_REF"]},
+    "steps":[
+      {"kind":"note","from":"SERVICE_ID","meaning":{"text":"Call the external client; receiver execution is not captured.","evidence":["METHOD_REF","INTERACTION_REF"],"uncertainty":"Receiver implementation and runtime delivery are unknown."}},
+      {"kind":"return","from":"SERVICE_ID","to":"caller","meaning":{"text":"Return the client result.","evidence":["METHOD_REF"]}}
+    ],
+    "contracts":[{"title":"Caller request","kind":"payload","rows":[{"label":"Request argument","description":{"text":"The caller forwards the request argument to the client.","evidence":["METHOD_REF"]}}]}]
+  }],
+  "uncertainties":["The external receiver and its failures are not captured; runtime delivery is UNKNOWN."]
+}
+```
+
+Replace all references with delivered evidence and `SERVICE_ID` with the selected
+service. Add any actual branches, failures and returns required by its source.
+For Kafka, describe the source-observed publish and the caller's own return;
+that return is not a synchronous consumer reply. A source-derived contract must
+separate observed arguments from engineer-declared transport facts. If an entire
+operation cannot be explained, use its Work-keyed proposal `gaps` entry instead
+of proposing that same operation. A partial receiver limitation belongs in
+`uncertainty`/`uncertainties`; an operation and a gap for its target conflict.
 
 A proposal gap is keyed by its current Work reference; the host materializes
 Narrative `gaps` under the canonical entrypoint ID, with an

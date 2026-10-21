@@ -477,7 +477,9 @@ impl Builder<'_> {
     fn handle(&self, reference: &str) -> Result<&work::Handle, ClewError> {
         if !self.received.contains(reference) {
             if !self.work.handles.contains_key(reference) {
-                return Err(invalid(format!("unknown work reference {reference}")));
+                return Err(invalid(format!(
+                    "unknown work reference {reference}; use a reference returned by docs work read in this Work, not a catalogue ID or a reference copied from another Work"
+                )));
             }
             return Err(invalid(format!(
                 "evidence {reference} was not supplied by a recorded work read; expand it first"
@@ -1610,6 +1612,98 @@ mod storage_tests {
 mod operation_input_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn interaction_reference_is_delivered_work_identity_not_a_catalogue_id() {
+        let mut work = work("dispatch");
+        for (reference, id) in [("d7", "selected"), ("d8", "unread")] {
+            let dependency = format!("interaction:{id}");
+            work.handles.insert(
+                reference.into(),
+                work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: dependency.clone(),
+                },
+            );
+            work.checked.dependencies.insert(
+                dependency.clone(),
+                super::super::model::Observation {
+                    id: dependency,
+                    kind: "DECLARED_INTERACTION".into(),
+                    service: String::new(),
+                    symbol: id.into(),
+                    normalized: json!({}),
+                    digest: "digest".into(),
+                    source_ids: vec!["caller-source".into()],
+                },
+            );
+        }
+        let mut builder = Builder {
+            work: &work,
+            received: BTreeSet::from(["d7".into()]),
+            claims: BTreeMap::new(),
+            diagnostics: Vec::new(),
+            events: 0,
+        };
+        let mut operation: Operation = serde_json::from_value(json!({
+            "id":"dispatch","title":"Dispatch","summary":{"id":"summary","text":"Dispatch",
+                "dependencyIds":[],"sourceIds":[]},"participants":[],"events":[]
+        }))
+        .unwrap();
+        let step: Step = serde_json::from_value(json!({"kind":"declared","interaction":"d7",
+            "meaning":{"text":"Declared request","evidence":["d7"]}}))
+        .unwrap();
+        builder
+            .steps(
+                "scenario:dispatch",
+                &[step],
+                "step",
+                0,
+                &mut operation,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(operation.events[0].interaction.as_deref(), Some("selected"));
+        assert_eq!(operation.events[0].dependency_ids, ["interaction:selected"]);
+        assert!(
+            builder
+                .handle("d8")
+                .unwrap_err()
+                .message
+                .contains("expand it first")
+        );
+        for id in ["selected", "interaction:selected", "other-work-only"] {
+            assert!(
+                builder
+                    .handle(id)
+                    .unwrap_err()
+                    .message
+                    .contains("not a catalogue ID")
+            );
+        }
+        // A second Work may reuse d7 for different evidence. A read in the first
+        // Work never supplies that second Work's record. Once legitimately read,
+        // the handle must resolve to the second record, not to the first one.
+        let mut other = work.clone();
+        other.id = "other-work".into();
+        other.handles.get_mut("d7").unwrap().id = "interaction:unread".into();
+        let mut other_builder = Builder {
+            work: &other,
+            received: BTreeSet::new(),
+            claims: BTreeMap::new(),
+            diagnostics: Vec::new(),
+            events: 0,
+        };
+        assert!(
+            other_builder
+                .handle("d7")
+                .unwrap_err()
+                .message
+                .contains("expand it first")
+        );
+        other_builder.received.insert("d7".into());
+        assert_eq!(other_builder.handle("d7").unwrap().id, "interaction:unread");
+    }
 
     fn work(root: &str) -> Work {
         let subject = "scenario:dispatch".to_string();

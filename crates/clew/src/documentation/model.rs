@@ -250,6 +250,18 @@ pub struct Observation {
     pub source_ids: Vec<String>,
 }
 
+impl Observation {
+    /// Declaration visibility is evidence admission, not permission to traverse
+    /// the receiver or to read another service's implementation.
+    pub(super) fn in_service_scope(&self, service: &str) -> bool {
+        self.service == service
+            || matches!(self.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE")
+            || (self.kind == "DECLARED_INTERACTION"
+                && (self.normalized["from"]["service"] == service
+                    || self.normalized["to"]["service"] == service))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Entrypoint {

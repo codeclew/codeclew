@@ -2839,9 +2839,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
             source_inventory_rows(work)?
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {
-                (kind != "service"
-                    || dependency.service == id
-                    || matches!(dependency.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE"))
+                (kind != "service" || dependency.in_service_scope(id))
                     && (query.kind == "*" || dependency.kind == query.kind)
                     && dependency.symbol.contains(&query.symbol_contains)
             });

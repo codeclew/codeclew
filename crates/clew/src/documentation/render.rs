@@ -260,6 +260,56 @@ pub(super) fn sequence_step_requires_interaction(step_kind: &str) -> bool {
     step_kind == "declared"
 }
 
+fn validate_declared_arrow(event: &Event, checked: &Check, subject: &str) -> Result<(), ClewError> {
+    let id = event
+        .interaction
+        .as_ref()
+        .ok_or_else(|| invalid("declared transition needs an interaction ID"))?;
+    let check = checked
+        .interactions
+        .get(id)
+        .ok_or_else(|| invalid(format!("unknown declared interaction {id}")))?;
+    let dependency = checked
+        .dependencies
+        .get(&format!("interaction:{id}"))
+        .ok_or_else(|| invalid(format!("interaction {id}: declaration missing")))?;
+    if dependency.normalized["external"] == true {
+        return Err(invalid(format!(
+            "interaction {id}: external boundary cannot be a resolved declared arrow; describe the caller's source-observed request or publish in a note and source-derived contract, and state the receiver gap; do not add a captured receiver or synchronous reply"
+        )));
+    }
+    if event.kind == "return" && dependency.normalized["transport"]["kind"] == "kafka" {
+        return Err(invalid(format!(
+            "interaction {id}: Kafka delivery has no synchronous return; declare a separate reply-event interaction"
+        )));
+    }
+    if check.origin == "agent-proposal"
+        || check.from.status != "RESOLVED"
+        || check.to.status != "RESOLVED"
+        || check.call_site.status != "RESOLVED"
+    {
+        return Err(invalid(format!(
+            "interaction {id}: declared arrow endpoints or selected call site are unresolved (from={}, to={}, callSite={}, origin={}); select unambiguous source endpoints and a resolved call site in an admitted declaration, then recompose; SOURCE_MATCH alone does not establish a transition",
+            check.from.status, check.to.status, check.call_site.status, check.origin
+        )));
+    }
+    if !subject.strip_prefix("scenario:").is_some_and(|scenario| {
+        checked.scenarios.get(scenario).is_some_and(|scenario| {
+            scenario.steps.iter().any(|step| {
+                matches!(
+                    step.kind.as_str(),
+                    "DECLARED_HTTP_TRANSITION" | "DECLARED_KAFKA_TRANSITION"
+                ) && step.detail["interaction"] == *id
+            })
+        })
+    }) {
+        return Err(invalid(format!(
+            "interaction {id}: declared arrow is not reachable in this scenario context ({subject}); use a scenario Work whose composed steps contain this transition; service Work declaration evidence alone does not authorize an arrow"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn sequence_skipped(checked: &Check, subject: &str, operation_id: &str) -> bool {
     let service_summary = subject.starts_with("service:")
         && (super::sections::contains(operation_id) || super::notes::is_root(operation_id));
@@ -459,6 +509,15 @@ pub(super) fn validate_with_retained(
                 "sequence requires 2..24 participants and 1..512 events",
             ));
         }
+        // Explain unsupported boundary arrows before a missing external service
+        // participant obscures the actual authoring constraint.
+        for event in &o.events {
+            if sequence_step_requires_interaction(&event.kind)
+                || (event.kind == "return" && event.interaction.is_some())
+            {
+                validate_declared_arrow(event, checked, &n.subject)?;
+            }
+        }
         let mut participants = BTreeMap::new();
         for p in &o.participants {
             if !store::valid_id(&p.id)
@@ -545,28 +604,10 @@ pub(super) fn validate_with_retained(
                         .interaction
                         .as_ref()
                         .ok_or_else(|| invalid("declared transition needs an interaction ID"))?;
-                    let check = checked
-                        .interactions
-                        .get(id)
-                        .ok_or_else(|| invalid("unknown declared interaction"))?;
                     let dependency = checked
                         .dependencies
                         .get(&format!("interaction:{id}"))
                         .ok_or_else(|| invalid("interaction declaration missing"))?;
-                    if e.kind == "return" && dependency.normalized["transport"]["kind"] == "kafka" {
-                        return Err(invalid(
-                            "Kafka delivery has no synchronous return; declare a separate reply-event interaction",
-                        ));
-                    }
-                    if check.origin == "agent-proposal"
-                        || check.from.status != "RESOLVED"
-                        || check.to.status != "RESOLVED"
-                        || check.call_site.status != "RESOLVED"
-                    {
-                        return Err(invalid(
-                            "declared arrow endpoints or selected call site are unresolved",
-                        ));
-                    }
                     let (expected_from, expected_to) = if e.kind == "return" {
                         (
                             &dependency.normalized["to"]["service"],
@@ -584,21 +625,6 @@ pub(super) fn validate_with_retained(
                     {
                         return Err(invalid(
                             "declared arrow direction or dependency disagrees with the interaction",
-                        ));
-                    }
-                    if kind != "scenario"
-                        || !checked.scenarios[id_from_subject(&n.subject)]
-                            .steps
-                            .iter()
-                            .any(|s| {
-                                matches!(
-                                    s.kind.as_str(),
-                                    "DECLARED_HTTP_TRANSITION" | "DECLARED_KAFKA_TRANSITION"
-                                ) && s.detail["interaction"] == *id
-                            })
-                    {
-                        return Err(invalid(
-                            "declared arrow is not reachable in this scenario context",
                         ));
                     }
                 }
@@ -4957,6 +4983,91 @@ mod sequence_contract_tests {
             assert_eq!(sequence_event_kinds(flow), events, "{flow}");
         }
         assert!(sequence_event_kinds("CALL").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod interaction_arrow_tests {
+    use super::*;
+
+    fn fixture() -> (Event, Check) {
+        let resolution = json!({"status":"RESOLVED","candidates":[],"sourceIds":[],"details":[]});
+        let checked = serde_json::from_value(json!({"schema":"test","inputDigest":"i","contextDigest":"c",
+            "services":{},"unresolved":{},"interactions":{"reserve":{
+                "id":"reserve","origin":"human","declarationDigest":"d","from":resolution,
+                "to":resolution,"callSite":resolution,"method":null,"path":null,"destination":null,
+                "contractStatus":"NOT_ASSESSED","runtime":"UNKNOWN","boundaries":[]}},
+            "dependencies":{"interaction:reserve":{"id":"interaction:reserve","kind":"DECLARED_INTERACTION",
+                "service":"","symbol":"reserve","digest":"d","sourceIds":[],
+                "normalized":{"external":false,"transport":{"kind":"http"}}}},
+            "scenarios":{"checkout":{"id":"checkout","steps":[{"id":"transition","service":"orders",
+                "symbol":"reserve","kind":"DECLARED_HTTP_TRANSITION","dependencyIds":[],"sourceIds":[],
+                "detail":{"interaction":"reserve"},"depth":0}],"boundaries":[],"truncated":false,"dependencyIds":[]}}
+        })).unwrap();
+        let event = serde_json::from_value(json!({"id":"request","kind":"declared","text":"Request",
+            "dependencyIds":["interaction:reserve"],"sourceIds":["source"],"interaction":"reserve"})).unwrap();
+        (event, checked)
+    }
+
+    #[test]
+    fn interaction_arrow_requires_resolved_composed_scenario_and_reports_statuses() {
+        let (event, mut checked) = fixture();
+        validate_declared_arrow(&event, &checked, "scenario:checkout").unwrap();
+        for subject in ["service:orders", "scenario:missing"] {
+            let message = validate_declared_arrow(&event, &checked, subject)
+                .unwrap_err()
+                .message;
+            assert!(message.contains("interaction reserve") && message.contains("composed steps"));
+        }
+        for status in ["SOURCE_MATCH", "AMBIGUOUS", "MISSING", "INCOMPLETE"] {
+            for part in ["from", "to", "callSite"] {
+                let mut changed = serde_json::to_value(&checked).unwrap();
+                changed["interactions"]["reserve"][part]["status"] = json!(status);
+                let message = validate_declared_arrow(
+                    &event,
+                    &serde_json::from_value(changed).unwrap(),
+                    "scenario:checkout",
+                )
+                .unwrap_err()
+                .message;
+                assert!(message.contains(status) && message.contains("interaction reserve"));
+            }
+        }
+        checked.interactions.get_mut("reserve").unwrap().origin = "agent-proposal".into();
+        assert!(
+            validate_declared_arrow(&event, &checked, "scenario:checkout")
+                .unwrap_err()
+                .message
+                .contains("origin=agent-proposal")
+        );
+    }
+
+    #[test]
+    fn interaction_arrow_external_http_kafka_and_reply_do_not_gain_execution_authority() {
+        let (mut event, mut checked) = fixture();
+        for transport in ["http", "kafka"] {
+            checked
+                .dependencies
+                .get_mut("interaction:reserve")
+                .unwrap()
+                .normalized = json!({"external":true,"transport":{"kind":transport}});
+            let message = validate_declared_arrow(&event, &checked, "scenario:checkout")
+                .unwrap_err()
+                .message;
+            assert!(message.contains("external boundary") && message.contains("receiver gap"));
+        }
+        checked
+            .dependencies
+            .get_mut("interaction:reserve")
+            .unwrap()
+            .normalized["external"] = json!(false);
+        event.kind = "return".into();
+        assert!(
+            validate_declared_arrow(&event, &checked, "scenario:checkout")
+                .unwrap_err()
+                .message
+                .contains("Kafka delivery has no synchronous return")
+        );
     }
 }
 

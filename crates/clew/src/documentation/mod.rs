@@ -34,6 +34,8 @@ pub mod fact_index;
 pub mod flow_dsl;
 mod generated_source;
 pub mod history;
+#[cfg(test)]
+mod interaction_work_tests;
 mod job_context;
 mod kotlin;
 mod language;
