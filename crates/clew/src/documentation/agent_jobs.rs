@@ -5818,6 +5818,7 @@ mod input_cap_tests {
             text_digest: text_digest.clone(),
             evidence_digest: text_digest,
             authority: "CAPTURED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

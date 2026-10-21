@@ -166,6 +166,7 @@ mod tests {
             text_digest: cache::content_digest(text.as_bytes()),
             evidence_digest: digest(&json!({"fixture":"dispatch"})).unwrap(),
             authority: "FIXTURE_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

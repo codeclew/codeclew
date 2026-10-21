@@ -680,6 +680,7 @@ mod tests {
             text_digest: "sha256:1111".into(),
             evidence_digest: "sha256:2222".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -875,6 +876,7 @@ mod tests {
             text_digest: "sha256:1111".into(),
             evidence_digest: "sha256:2222".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

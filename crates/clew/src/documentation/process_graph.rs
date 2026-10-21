@@ -1472,6 +1472,7 @@ mod tests {
                 text_digest: "text-digest".into(),
                 evidence_digest: "evidence-digest".into(),
                 authority: "RETAINED_SOURCE".into(),
+                text_origin: None,
                 occurrence: None,
                 url: None,
             },

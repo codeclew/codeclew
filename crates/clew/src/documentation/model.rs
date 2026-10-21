@@ -221,9 +221,30 @@ pub struct Source {
     pub text_digest: String,
     pub evidence_digest: String,
     pub authority: String,
+    /// Byte origin is independent of semantic/call-resolution authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_origin: Option<CommittedTextOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurrence: Option<SourceOccurrence>,
     pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommittedTextOrigin {
+    pub schema: String,
+    pub revision: String,
+    pub file: String,
+    pub git_blob: String,
+    pub content_digest: String,
+    pub snapshot_digest: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub line_start: u64,
+    pub line_end: u64,
+    pub text_digest: String,
+    pub evidence_digest: String,
+    pub receipt: String,
 }
 
 /// Immutable byte occurrence; logical Source.id intentionally survives relocation.

@@ -3732,6 +3732,7 @@ mod tests {
             text_digest: source_digest.clone(),
             evidence_digest: "source-evidence-digest".into(),
             authority: "RETAINED_SNAPSHOT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

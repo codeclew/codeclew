@@ -113,6 +113,7 @@ fn fixture() -> (tempfile::TempDir, Repository, String) {
             text_digest: cache::content_digest(text.as_bytes()),
             evidence_digest: cache::content_digest(text.as_bytes()),
             authority: "COMPILER_EXACT".into(),
+            text_origin: None,
             occurrence: None,
             url: Some(format!(
                 "https://example.invalid/{service}/blob/{}/src/Pricing.java#L1",

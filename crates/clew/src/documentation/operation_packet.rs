@@ -1825,6 +1825,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(helper_source_text.as_bytes()),
             evidence_digest: "test-helper-source-evidence".into(),
             authority: "TRANSFORMED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -1851,6 +1852,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(sibling_source_text.as_bytes()),
             evidence_digest: "test-sibling-source-evidence".into(),
             authority: "TRANSFORMED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -1995,6 +1997,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(text.as_bytes()),
             evidence_digest: format!("test-evidence-{id}"),
             authority: "TRANSFORMED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -3193,6 +3196,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(text.as_bytes()),
             evidence_digest: format!("evidence-{id}"),
             authority: "TRANSFORMED_SOURCE".into(),
+            text_origin: None,
             occurrence,
             url: None,
         }

@@ -1186,6 +1186,7 @@ mod tests {
             text_digest: hash_bytes(text.as_bytes()),
             evidence_digest: "synthetic-receipt".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         }

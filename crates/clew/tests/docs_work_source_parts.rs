@@ -109,6 +109,7 @@ fn add_synthetic_source_text(
         text,
         evidence_digest: format!("sha256:{}", "e".repeat(64)),
         authority: "EXACT_SNAPSHOT_TEXT".into(),
+        text_origin: None,
         occurrence: None,
         url: None,
     };

@@ -388,6 +388,7 @@ pub fn import(
                 text_digest: hash.clone(),
                 evidence_digest: hash.clone(),
                 authority: "DECLARED_OPENAPI".into(),
+                text_origin: None,
                 occurrence: None,
                 url: analysis::source_link(
                     service,

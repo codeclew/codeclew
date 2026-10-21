@@ -2606,6 +2606,7 @@ mod tests {
                     text: "void process() { return; }".into(),
                     evidence_digest: "fixture".into(),
                     authority: "EXACT_SNAPSHOT_TEXT".into(),
+                    text_origin: None,
                     occurrence: None,
                     url: None,
                 },

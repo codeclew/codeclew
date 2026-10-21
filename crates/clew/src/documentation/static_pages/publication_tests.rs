@@ -1544,3 +1544,89 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
         println!("Full publication source-mode fixture: {}", output.display());
     }
 }
+
+#[test]
+fn repeated_pinned_render_keeps_both_snapshot_reasons_and_publication_identity() {
+    let (_temporary, repo, mut first_snapshot) = repository_snapshot();
+    let mut changed = Check::load_snapshot(&repo, &first_snapshot).unwrap();
+    changed
+        .services
+        .get_mut("sample")
+        .unwrap()
+        .boundaries
+        .push("OWNED_TEST_SNAPSHOT_CHANGE".into());
+    changed.refresh_digest().unwrap();
+    let mut second_snapshot = changed.save_snapshot(&repo).unwrap();
+    // Appending the smaller snapshot after the larger forces the historical
+    // reason-order bug, independently of random digest ordering.
+    if first_snapshot < second_snapshot {
+        std::mem::swap(&mut first_snapshot, &mut second_snapshot);
+    }
+    assert!(first_snapshot > second_snapshot);
+    let original_check = Check::load_snapshot(&repo, &first_snapshot).unwrap();
+    let narrative = serde_json::from_value(json!({
+        "schema":"codeclew-documentation-narrative/1.3", "subject":"service:sibling",
+        "contextDigest":original_check.context_digest,
+        "operations":[{"id":"section-overview", "title":"Owned service overview", "documentationLanguage":"en",
+            "summary":{"id":"summary", "text":"Maintainers use this retained service overview.", "dependencyIds":["endpoint-a"], "sourceIds":["src-endpoint-a"]},
+            "participants":[], "events":[]}], "gaps":{}
+    })).unwrap();
+    let first = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![narrative],
+        false,
+        BTreeMap::new(),
+        &first_snapshot,
+    )
+    .unwrap();
+    assert_eq!(first["documentedSections"], 1, "{first:#?}");
+    let second = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &second_snapshot,
+    )
+    .unwrap();
+    assert_ne!(first["bundle"], second["bundle"]);
+    let (_, binding) = crate::documentation::bindings::baseline(&repo)
+        .unwrap()
+        .unwrap();
+    let retained = binding.section_states.values().any(|state| {
+        [&first_snapshot, &second_snapshot]
+            .into_iter()
+            .all(|snapshot| {
+                state.reasons.iter().any(|reason| {
+                    reason["reason"] == "PINNED_SNAPSHOT_NOT_REVERIFIED"
+                        && reason["snapshot"] == *snapshot
+                })
+            })
+    });
+    assert!(retained, "both pinned snapshots must remain represented");
+    let before = fs::read(
+        repo.path(&format!(
+            "docs/generated/{}/bindings.json",
+            second["bundle"].as_str().unwrap()
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let replay = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &second_snapshot,
+    )
+    .unwrap();
+    assert_eq!(second["bundle"], replay["bundle"]);
+    let after = fs::read(
+        repo.path(&format!(
+            "docs/generated/{}/bindings.json",
+            replay["bundle"].as_str().unwrap()
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(before, after);
+}

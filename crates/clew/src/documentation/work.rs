@@ -3621,6 +3621,7 @@ mod section_context_tests {
             text_digest: "text-digest".into(),
             evidence_digest: "evidence-digest".into(),
             authority: "CAPTURED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -5218,6 +5219,7 @@ pub(super) mod api_contract_tests {
             text,
             evidence_digest: "evidence-test".into(),
             authority: "CAPTURED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

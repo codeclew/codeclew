@@ -481,6 +481,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(text.as_bytes()),
             evidence_digest: "retained".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: Some(SourceOccurrence {
                 generated_origin: None,
                 snapshot: "snapshot".into(),

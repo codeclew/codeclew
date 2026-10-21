@@ -85,6 +85,7 @@ pub(super) fn attach_java_inputs(
     inputs: &BTreeMap<String, Arc<str>>,
     excluded: &BTreeSet<String>,
     authority: &str,
+    committed: Option<&BTreeMap<String, super::source_origin::CommittedFile>>,
 ) -> Result<(), ClewError> {
     let mut inventory = BTreeMap::new();
     let mut boundaries = Vec::new();
@@ -137,11 +138,12 @@ pub(super) fn attach_java_inputs(
             let mut ids = Vec::new();
             for id in source_ids {
                 let mut source = audit.sources[&id].clone();
+                let occurrence = source.occurrence.take();
                 source.id = analysis::source_id(&e.service, &format!("audit:{scope}:{id}"))?;
                 source.authority = "ADMITTED_COMPILATION_SOURCE_AUDIT_NOT_CALL_RESOLUTION".into();
-                // These can be sealed transformed inputs, not bytes in the
-                // repository revision. Bind the admitted input receipt without
-                // inventing a Git occurrence or a remote line URL.
+                // Semantic authority stays the admitted-input audit. A separate
+                // proof may establish exact committed text; sealed/transformed
+                // input alone never establishes a Git occurrence or URL.
                 source.occurrence = None;
                 source.url = None;
                 source.evidence_digest = super::digest(&(
@@ -152,6 +154,22 @@ pub(super) fn attach_java_inputs(
                     source.end_line,
                     &source.text_digest,
                 ))?;
+                if let (Some(file), Some(occurrence)) = (
+                    committed.and_then(|files| files.get(&source.file)),
+                    occurrence.as_ref(),
+                ) {
+                    source.text_origin =
+                        super::source_origin::bind(&source, occurrence, text, file)?;
+                    if source.text_origin.is_some() {
+                        source.url = analysis::source_link(
+                            service,
+                            &e.revision,
+                            &source.file,
+                            source.start_line,
+                            source.end_line,
+                        );
+                    }
+                }
                 ids.push(source.id.clone());
                 e.sources.insert(source.id.clone(), source);
             }
@@ -185,6 +203,7 @@ pub(super) fn attach_compiler(
     ready: &ReadyGenerationSet,
     store: &CasStore,
     original: &BTreeMap<String, Arc<str>>,
+    repository: Option<&std::path::Path>,
 ) -> Result<(), ClewError> {
     if service.language != "java" {
         return Ok(());
@@ -254,6 +273,19 @@ pub(super) fn attach_compiler(
             .filter(|p| p.ends_with(".java") && !selected.contains(*p))
             .cloned()
             .collect();
+        // A compilation receipt alone can describe transformed/generated input.
+        // Only admitted bytes equal to an explicit committed Git blob may carry
+        // independent linkable text provenance. Sealing can copy original bytes;
+        // the equality check, not the presence of a transformed table, decides.
+        let committed = repository.and_then(|repository| {
+            super::source_origin::capture(repository, &e.revision, &inputs, store).ok()
+        });
+        if committed.is_none() {
+            e.boundaries.push(format!(
+                "AUDIT_COMMITTED_BYTE_ORIGIN_UNAVAILABLE:{}",
+                compilation.compilation
+            ));
+        }
         attach_java_inputs(
             e,
             service,
@@ -264,6 +296,7 @@ pub(super) fn attach_compiler(
                 &compilation.derived_input_manifest,
                 &compilation.transformed_source,
             ))?,
+            committed.as_ref(),
         )?;
     }
     Ok(())

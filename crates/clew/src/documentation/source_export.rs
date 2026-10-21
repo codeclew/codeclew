@@ -140,10 +140,11 @@ fn is_source(v: &Value) -> bool {
 }
 
 fn exact_source(v: &Value) -> bool {
-    matches!(
+    (matches!(
         v["authority"].as_str(),
         Some("EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI")
-    ) && !v["occurrence"]["generatedOrigin"].is_string()
+    ) || super::source_origin::exact_audit(v))
+        && !v["occurrence"]["generatedOrigin"].is_string()
 }
 
 #[derive(Clone)]
@@ -371,6 +372,12 @@ impl<'a> Projection<'a> {
             first.clone()
         } else {
             if !exact_source(value) {
+                if value["authority"] == super::source_origin::AUDIT {
+                    return Err(invalid(format!(
+                        "remote export requires verified committed-byte provenance for compilation-audit source {} at {}; use embedded mode for retained audit evidence without this proof",
+                        value["file"], value["revision"]
+                    )));
+                }
                 return Err(invalid(format!(
                     "remote export cannot link dirty, generated or unbound source {} at {}; use embedded mode for this evidence",
                     value["file"], value["revision"]

@@ -526,6 +526,7 @@ fn validate_decoded_binding(
         }
     }
     for source in binding.retained_sources.values() {
+        super::source_origin::verify(source)?;
         if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
             return Err(invalid("retained source digest is invalid"));
         }
@@ -562,6 +563,7 @@ fn validate_decoded_binding(
                 }
             }
             for source in evidence.sources.values() {
+                super::source_origin::verify(source)?;
                 if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
                     return Err(invalid("retained section source digest is invalid"));
                 }
@@ -1054,6 +1056,7 @@ mod tests {
             text_digest: canonical::hash_bytes(b"return reserve();"),
             evidence_digest: canonical::hash_bytes(b"evidence"),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

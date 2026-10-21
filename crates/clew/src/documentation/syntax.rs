@@ -496,6 +496,7 @@ impl File<'_> {
                     "EXACT_SNAPSHOT_TEXT"
                 }
                 .into(),
+                text_origin: None,
                 occurrence: Some(SourceOccurrence {
                     generated_origin: self.generated_origin.map(str::to_owned),
                     snapshot: self.snapshot.into(),
@@ -1426,6 +1427,7 @@ export async function start() {
                 text_digest: canonical::hash_bytes(contract_source.as_bytes()),
                 evidence_digest: "retained-contract".into(),
                 authority: "DECLARED_CONTRACT".into(),
+                text_origin: None,
                 occurrence: None,
                 url: None,
             },

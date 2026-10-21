@@ -58,6 +58,7 @@ fn evidence_at(text: &str, file: &str, package_prefix: &str) -> ServiceEvidence 
                     text_digest: canonical::hash_bytes(exact.as_bytes()),
                     evidence_digest: "fixture".into(),
                     authority: "EXACT_SNAPSHOT_TEXT".into(),
+                    text_origin: None,
                     occurrence: None,
                     url: None,
                 },

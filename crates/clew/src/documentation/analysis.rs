@@ -520,12 +520,14 @@ fn capture_session(
         &sources,
         &known,
     )?;
+    let source_repository = session.target_repository_path().ok();
     super::thread_inventory::attach_compiler(
         &mut evidence,
         service,
         &ready,
         &store,
         &snapshot_text,
+        source_repository.as_deref(),
     )?;
     verify_evidence(&evidence)?;
     Ok(evidence)
@@ -786,6 +788,7 @@ fn add_source(
             text: exact,
             evidence_digest: binding.into(),
             authority,
+            text_origin: None,
             occurrence: None,
             url,
         },
@@ -868,6 +871,7 @@ fn add_exact_byte_source(
             text_digest: text_digest.clone(),
             evidence_digest: binding.into(),
             authority,
+            text_origin: None,
             occurrence: None,
             url,
         },
@@ -1063,6 +1067,7 @@ fn add_kotlin_local_cfg(
             text_digest: source_digest.clone(),
             evidence_digest: graph_binding.into(),
             authority: authority.clone(),
+            text_origin: None,
             occurrence: None,
             url,
         },
@@ -1191,6 +1196,7 @@ fn add_variable_source(
             text_digest: canonical::hash_bytes(exact.as_bytes()),
             evidence_digest: binding.into(),
             authority,
+            text_origin: None,
             occurrence: None,
             url,
         },
@@ -1905,6 +1911,7 @@ pub(crate) fn project_scoped(
                         text_digest,
                         evidence_digest: binding.clone(),
                         authority: "EXACT_DEPENDENCY_SOURCE_ARCHIVE".into(),
+                        text_origin: None,
                         occurrence: None,
                         url: None,
                     },
@@ -2696,6 +2703,7 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
         .flat_map(|o| o.source_ids.iter())
         .collect();
     for s in e.sources.values() {
+        super::source_origin::verify(s)?;
         let line_count = if variable_sources.contains(&s.id) {
             javac_line_ranges(&s.text).len()
         } else {

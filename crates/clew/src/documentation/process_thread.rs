@@ -1286,6 +1286,7 @@ mod tests {
             text_digest: crate::canonical::hash_bytes(text.as_bytes()),
             evidence_digest: "evidence".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };

@@ -3423,6 +3423,10 @@ fn publish_internal_phases(
             if !state.reasons.contains(&reason) {
                 state.reasons.push(reason);
             }
+            // Reasons are a set. Keep replay identity stable even when a prior
+            // snapshot reason sorts before the newly appended pinned snapshot.
+            state.reasons.sort_by_key(Value::to_string);
+            state.reasons.dedup();
         }
     }
     let mut previous_pages = BTreeMap::new();
@@ -5758,6 +5762,7 @@ public void checkout() {
             text_digest: "d".into(),
             evidence_digest: "d".into(),
             authority: "TRANSFORMED_SOURCE".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -5795,6 +5800,7 @@ public void checkout() {
             text_digest: "other-d".into(),
             evidence_digest: "other-d".into(),
             authority: "TEST".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
@@ -5883,6 +5889,7 @@ public void checkout() {
             text_digest: "checkout-text-digest".into(),
             evidence_digest: "checkout-evidence-digest".into(),
             authority: "RETAINED_SOURCE_NOT_REVERIFIED".into(),
+            text_origin: None,
             occurrence: None,
             url: None,
         };
