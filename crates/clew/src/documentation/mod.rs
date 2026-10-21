@@ -9,6 +9,7 @@ mod answer_reuse_projection;
 #[cfg(test)]
 mod answer_reuse_tests;
 pub mod bindings;
+mod bindings_storage;
 pub mod cache;
 mod capture_export;
 mod capture_recovery;

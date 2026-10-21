@@ -198,7 +198,18 @@ source checkout. Commands do not change application source.
 For recovery, open the existing documentation root and first try its retained
 snapshot/context. Keep `.codeclew/`: it contains immutable evidence, Work records,
 pins and local bindings, not merely disposable scratch. Existing HTML and portable
-`bindings.json` can be read without source repositories. Do not start another
+bindings can be read without source repositories. New 1.6 `bindings.json` files
+are manifests: preserve their entire declared `docs/evidence/objects/` closure
+alongside the selected generated bundle and pointer. Inspect all pages of
+`clew docs history show --root ROOT --id PUBLICATION --kind bindings-closure`;
+copying only the manifest is incomplete. Inline 1.4/1.5 reads remain supported;
+older public readers cannot read 1.6. A portable publication does not replace
+original protected-paragraph snapshots or Work state in `.codeclew/`.
+Embedded standalone/Docusaurus exports include their complete closure; remote
+exports repack a reading-only closure after source projection and cannot be
+reimported as evidence. Keep the whole export directory. The 128 MiB bindings
+and 64 MiB Full Pages aggregate bounds remain; partitioning does not establish
+lazy loading or bounded memory. Do not start another
 capture just because a source checkout is unavailable or the agent restarted.
 When new source acquisition is actually required, bind the selected checkout and
 run `docs check --service ID`. A full `docs check` acquires every configured service.

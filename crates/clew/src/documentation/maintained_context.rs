@@ -401,7 +401,7 @@ pub(super) fn load(
         remaining_bytes: 64 * 1024 * 1024,
     };
     let (publication, raw) = history::read_frozen_bindings(repo, &bundle, &mut budget)?;
-    let preliminary: Bindings = serde_yaml_ng::from_slice(&raw).map_err(super::io_error)?;
+    let preliminary = super::bindings::decode_retained_bindings(repo, &raw)?;
     let contexts: BTreeSet<_> = preliminary
         .fragments
         .values()

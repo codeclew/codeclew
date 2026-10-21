@@ -959,6 +959,16 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         }]}),
     );
     let bundle = authored["bundle"].as_str().unwrap();
+    // Keep a logical legacy fixture for the deliberate provenance forgeries
+    // below. New publications store a partition manifest rather than inline
+    // narratives; the supported baseline reader resolves either representation.
+    let logical_binding = serde_json::to_value(
+        clew::documentation::bindings::baseline(&repo)
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
     let old_bundle = frozen_tree(&f.bundle(bundle, ""));
     let old_data = support::read(f.bundle(bundle, "services/alpha.json"));
     let maintained: Operation = serde_json::from_value(old_data["operations"][0].clone()).unwrap();
@@ -1312,7 +1322,7 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     // A manifest-consistent forged map still cannot borrow another source digest.
     let fake = "f".repeat(64);
     copy_tree(&f.bundle(bundle, ""), &f.bundle(&fake, ""));
-    let mut binding: Value = serde_json::from_slice(&binding_bytes).unwrap();
+    let mut binding = logical_binding.clone();
     let forged = {
         let p = &mut binding["narratives"]["service:alpha"]["operations"][0]["explanation"];
         let forged = p
@@ -1359,7 +1369,7 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     // deliberately unavailable snapshots must reject before any Check is loaded.
     let budget_bundle = "e".repeat(64);
     copy_tree(&f.bundle(bundle, ""), &f.bundle(&budget_bundle, ""));
-    let mut many: Value = serde_json::from_slice(&binding_bytes).unwrap();
+    let mut many = logical_binding;
     for i in 1..=9 {
         let mut fragment = many["fragments"][&key].clone();
         fragment["content"]["authorship"]["sourceSnapshot"] = json!(format!("{:064x}", i));

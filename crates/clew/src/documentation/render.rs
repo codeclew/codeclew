@@ -4108,6 +4108,7 @@ fn publish_internal_phases(
     )?;
     let bundle = digest(&json!({
         "binding": binding,
+        "bindingsStorage":super::bindings_storage::SCHEMA,
         "rendererAssets": renderer_digest()?,
         "output": output_digest,
         "released": released
@@ -4290,9 +4291,18 @@ fn commit_bundle_with_mode(
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
     bindings::compact(&mut binding);
-    // Portable bindings already retain the complete inline payload. Do not
-    // also write unused CAS copies: baseline readers consume the inline data.
-    files.insert("bindings.json".into(), bytes(&binding)?);
+    let prior_storage = previous
+        .map(|(id, _)| {
+            fs::read(repo.path(&format!("docs/generated/{id}/bindings.json"))?).map_err(io_error)
+        })
+        .transpose()?;
+    let portable = super::bindings_storage::encode_publication(
+        repo,
+        bundle,
+        serde_json::to_value(&binding).map_err(io_error)?,
+        prior_storage.as_deref(),
+    )?;
+    files.insert("bindings.json".into(), portable.manifest.clone());
     publication.files = files
         .iter()
         .map(|(name, data)| (name.clone(), canonical::hash_bytes(data)))
@@ -4378,6 +4388,9 @@ fn commit_bundle_with_mode(
     if let Some((id, binding)) = previous {
         bindings::verify_outputs(repo, id, binding)?;
     }
+    // Complete and verify the immutable portable closure before exposing a
+    // generated bundle or switching the live pointer. Never repair old objects.
+    portable.persist(repo)?;
     let destination = repo.path(&format!("docs/generated/{bundle}"))?;
     if !destination.exists() {
         let parent = repo.path("docs/generated")?;

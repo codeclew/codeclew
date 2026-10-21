@@ -1048,6 +1048,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let repo = Repository {
             object_database: Default::default(),
+            portable_read_only: false,
             root: temporary.path().to_path_buf(),
             manifest: DocumentationManifest {
                 schema: String::new(),

@@ -21,6 +21,7 @@ pub use narrative_input::read_narrative;
 pub struct Repository {
     pub root: PathBuf,
     pub manifest: Manifest,
+    pub(crate) portable_read_only: bool,
     pub(crate) object_database:
         std::sync::Mutex<Option<(String, std::sync::Arc<super::sqlite_objects::SqliteObjects>)>>,
 }
@@ -118,6 +119,7 @@ impl Repository {
         let repo = Self {
             root,
             manifest,
+            portable_read_only: false,
             object_database: Default::default(),
         };
         let path = repo.path("codeclew-docs.yaml")?;
@@ -240,6 +242,7 @@ impl Repository {
         let root = root.canonicalize().map_err(io_error)?;
         let provisional = Self {
             root,
+            portable_read_only: false,
             object_database: Default::default(),
             manifest: Manifest {
                 schema: String::new(),
@@ -283,7 +286,38 @@ impl Repository {
         Ok(path)
     }
 
+    /// Frozen history can be inspected from a Git/copy publication closure alone.
+    /// Existing local stores retain their strict admission; this fallback never
+    /// initializes, repairs or migrates a cache and cannot perform mutations.
+    pub(super) fn open_portable(root: &Path) -> Result<Self, ClewError> {
+        let mut repo = Self {
+            root: root.canonicalize().map_err(io_error)?,
+            manifest: Manifest {
+                schema: String::new(),
+                title: String::new(),
+            },
+            portable_read_only: true,
+            object_database: Default::default(),
+        };
+        if repo.path(".codeclew/cache/object-layout.json")?.exists() {
+            return Self::open(root);
+        }
+        repo.manifest = read(&repo.path("codeclew-docs.yaml")?, MAX_RECORD)?;
+        validate_manifest_schema(&repo.manifest)?;
+        Ok(repo)
+    }
+
+    fn writable(&self) -> Result<(), ClewError> {
+        if self.portable_read_only {
+            return Err(invalid(
+                "portable publication checkout is read-only; restore the original local authoring state before mutations",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn lock(&self) -> Result<WriteLock, ClewError> {
+        self.writable()?;
         fs::create_dir_all(self.path(".codeclew")?).map_err(io_error)?;
         let path = self.path(".codeclew/write.lock")?;
         let file = OpenOptions::new()
@@ -314,6 +348,7 @@ impl Repository {
     /// Serialize dependent read-modify-write operations with the repository lock.
     /// Independent idempotent signals need no global lock. Tempfiles stay on the same filesystem.
     pub fn atomic(&self, relative_path: &str, data: &[u8]) -> Result<(), ClewError> {
+        self.writable()?;
         let path = self.path(relative_path)?;
         let parent = path
             .parent()
@@ -329,6 +364,46 @@ impl Repository {
         temp.persist(&path).map_err(io_error)?;
         fs::File::open(parent)
             .and_then(|f| f.sync_all())
+            .map_err(io_error)
+    }
+
+    /// Publish a portable immutable unit without replacing a conflicting file.
+    /// The repository lock coordinates normal writers; no-clobber also protects
+    /// against a concurrent creator outside that lock.
+    pub(super) fn immutable(&self, relative_path: &str, data: &[u8]) -> Result<(), ClewError> {
+        self.writable()?;
+        let verify = || -> Result<(), ClewError> {
+            let path = self.path(relative_path)?;
+            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+            if !metadata.is_file()
+                || metadata.len() != data.len() as u64
+                || fs::read(&path).map_err(io_error)? != data
+            {
+                return Err(invalid(
+                    "portable immutable object conflicts with existing bytes",
+                ));
+            }
+            Ok(())
+        };
+        let path = self.path(relative_path)?;
+        if path.exists() {
+            return verify();
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid("missing object parent"))?;
+        fs::create_dir_all(parent).map_err(io_error)?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
+        temp.write_all(data).map_err(io_error)?;
+        temp.as_file().sync_all().map_err(io_error)?;
+        self.path(relative_path)?;
+        match temp.persist_noclobber(&path) {
+            Ok(_) => {}
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => verify()?,
+            Err(error) => return Err(io_error(error)),
+        }
+        fs::File::open(parent)
+            .and_then(|file| file.sync_all())
             .map_err(io_error)
     }
 

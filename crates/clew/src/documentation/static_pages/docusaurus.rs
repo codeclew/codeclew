@@ -1821,9 +1821,24 @@ pub(super) fn project(
     crate::documentation::language::validate(Some(language))?;
     let mut files = BTreeMap::new();
     let mut documents = BTreeMap::new();
+    let binding_value = if native.contains_key("frozen-bindings.json") {
+        Some(crate::documentation::bindings_storage::resolve_export(
+            native, "",
+        )?)
+    } else {
+        None
+    };
     let context = crate::documentation::reader::navigation_context(native)?;
     let mut sidebars = vec![json!("overview")];
     for (name, bytes) in native.iter().filter(|(name, _)| name.ends_with(".json")) {
+        if crate::documentation::bindings_storage::export_file(name) {
+            put(
+                &mut files,
+                format!("static/clew-bindings/{name}"),
+                bytes.clone(),
+            );
+            continue;
+        }
         if name.ends_with(".original.json") {
             put(
                 &mut files,
@@ -2057,6 +2072,32 @@ pub(super) fn project(
         serde_json::to_vec_pretty(&routes).map_err(io_error)?,
     );
     let mut objects = Objects::default();
+    // Keep historical source appendix entries through the existing normalizer,
+    // without emitting an additional inline/normalized bindings monolith.
+    fn binding_sources(objects: &mut Objects, value: &Value) -> Result<(), ClewError> {
+        if is_source(value) {
+            objects.count(value)?;
+            objects.normalize(value)?;
+            return Ok(());
+        }
+        match value {
+            Value::Object(map) => {
+                for value in map.values() {
+                    binding_sources(objects, value)?;
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    binding_sources(objects, value)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    if let Some(value) = &binding_value {
+        binding_sources(&mut objects, value)?;
+    }
     for value in documents.values() {
         objects.count(value)?;
     }
@@ -2218,6 +2259,10 @@ pub(super) fn project(
         json!({"subject":page["subject"],"mdx":format!("docs/{}.mdx",original.trim_end_matches(".json")),"data":format!("static/clew-data/native/{original}")})
     }).collect::<Vec<_>>());
     result["referenceEncoding"] = json!("codeclew-export-object/1.0");
+    if binding_value.is_some() {
+        crate::documentation::bindings_storage::resolve_export(&files, "static/clew-bindings/")?;
+        result["bindingsClosure"] = json!({"manifest":"static/clew-bindings/frozen-bindings.json","objectRoot":format!("static/clew-bindings/{}",crate::documentation::bindings_storage::OBJECT_ROOT),"resolvedPayloadParity":"VERIFIED","copyRequirement":"Copy the manifest and its complete declared closure."});
+    }
     result["resolvedPayloadParity"] = json!({"status":"VERIFIED","documents":verified,"sourceBindings":objects.sources.len(),"sharedObjects":objects.values.len()});
     result["files"] = json!(
         files

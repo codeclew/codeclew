@@ -2,8 +2,8 @@
 use super::model::{AuthoredParagraph, BundleProjection, CallableProjection};
 use crate::{
     documentation::{
-        bindings::Bindings, check::Check, digest, explanation_authorship, history, invalid,
-        model::ServiceEvidence, store::Repository,
+        check::Check, digest, explanation_authorship, history, invalid, model::ServiceEvidence,
+        store::Repository,
     },
     error::ClewError,
 };
@@ -48,8 +48,7 @@ pub(super) fn attach(
     let mut snapshots = BTreeSet::new();
     for id in bundles {
         let (publication, raw) = history::read_frozen_bindings(repo, id, &mut budget)?;
-        let binding: Bindings =
-            serde_yaml_ng::from_slice(&raw).map_err(crate::documentation::io_error)?;
+        let binding = crate::documentation::bindings::decode_retained_bindings(repo, &raw)?;
         for fragment in binding.fragments.values() {
             if let Some(snapshot) = fragment.content["authorship"]["sourceSnapshot"].as_str() {
                 snapshots.insert(snapshot.to_owned());

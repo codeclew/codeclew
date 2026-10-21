@@ -459,11 +459,25 @@ pub(super) fn validate_retained_bindings_with_contexts(
     raw: &[u8],
     authored_contexts: &mut BTreeMap<String, Check>,
 ) -> Result<Bindings, ClewError> {
+    let mut binding = decode_retained_bindings(repo, raw)?;
+    validate_decoded_binding(repo, &mut binding, authored_contexts)?;
+    Ok(binding)
+}
+
+/// Common wire decoder, also used for bounded discovery of protected contexts.
+/// This does not waive semantic validation or original author snapshot checks.
+pub(super) fn decode_retained_bindings(
+    repo: &Repository,
+    raw: &[u8],
+) -> Result<Bindings, ClewError> {
     if raw.len() as u64 > super::check::PORTABLE_CACHE_MAX_BYTES {
         return Err(invalid("documentation bindings exceed their record budget"));
     }
-    let mut binding: Bindings = serde_yaml_ng::from_slice(raw).map_err(|error| invalid(format!(
-        "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); initialize a fresh documentation root and run docs check")))?;
+    let binding: Bindings = match super::bindings_storage::resolve_optional(repo, raw)? {
+        Some(value) => serde_json::from_value(value).map_err(|error| error.to_string()),
+        None => serde_yaml_ng::from_slice(raw).map_err(|error| error.to_string()),
+    }.map_err(|error| invalid(format!(
+        "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); preserve the original publication and authoring state, then use a reader that supports this schema or explicitly restore a complete supported publication")))?;
     if !matches!(
         binding.schema.as_str(),
         "codeclew-documentation-bindings/1.4" | "codeclew-documentation-bindings/1.5"
@@ -471,20 +485,28 @@ pub(super) fn validate_retained_bindings_with_contexts(
         && !binding.reviewed_answers.is_empty())
     {
         return Err(invalid(
-            "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; initialize a fresh documentation root and run docs check",
+            "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; preserve the original publication and authoring state, then use a reader that supports this schema or explicitly restore a complete supported publication",
         ));
     }
+    Ok(binding)
+}
+
+fn validate_decoded_binding(
+    repo: &Repository,
+    binding: &mut Bindings,
+    authored_contexts: &mut BTreeMap<String, Check>,
+) -> Result<(), ClewError> {
     super::reviewed_answers::validate_entries(&binding.reviewed_answers)?;
     super::review::resolve_influence_scopes(
         &mut binding.accepted_versions,
         &binding.influence_scopes,
     )?;
-    expand_shared(&mut binding)?;
+    expand_shared(binding)?;
     for (id, fragment) in &binding.fragments {
         let operation = id.split('/').take(2).collect::<Vec<_>>().join("/");
         if let Some(version) = binding.accepted_versions.get(&operation)
             && fragment.influence_scope.as_ref() != Some(&version.influence.scope)
-            && !super::explanation_authorship::retained_scope(&binding, id)?
+            && !super::explanation_authorship::retained_scope(binding, id)?
         {
             return Err(invalid(
                 "accepted fragment does not match its influence scope",
@@ -509,16 +531,21 @@ pub(super) fn validate_retained_bindings_with_contexts(
         }
     }
     for key in binding.fragments.keys() {
-        if super::explanation_authorship::authored_binding(&binding, key)? {
+        if super::explanation_authorship::authored_binding(binding, key)? {
             let snapshot = binding.fragments[key].content["authorship"]["sourceSnapshot"]
                 .as_str()
                 .ok_or_else(|| invalid("authored source snapshot is unavailable"))?;
             if !authored_contexts.contains_key(snapshot) {
+                if repo.portable_read_only {
+                    return Err(invalid(format!(
+                        "DOCS_AUTHORING_CONTEXT_REQUIRED: protected fragment needs original source snapshot {snapshot}; restore its original .codeclew authoring/snapshot closure; a portable publication does not replace that state and a new capture cannot substitute it"
+                    )));
+                }
                 authored_contexts
                     .insert(snapshot.to_owned(), Check::load_snapshot(repo, snapshot)?);
             }
             super::explanation_authorship::validate_binding_pin(
-                &binding,
+                binding,
                 key,
                 &authored_contexts[snapshot],
             )?;
@@ -570,7 +597,7 @@ pub(super) fn validate_retained_bindings_with_contexts(
             "documentation renderer provenance identity is invalid",
         ));
     }
-    Ok(binding)
+    Ok(())
 }
 
 pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result<(), ClewError> {

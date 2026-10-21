@@ -1,0 +1,20 @@
+{
+  "schema": "codeclew-bindings-storage-scale-fixture/1.0",
+  "serviceCounts": [1, 10, 100],
+  "generationOrder": ["initial", "unchanged-evidence", "one-service-operation-change"],
+  "ordering": "lexicographic service, subject, table and record identity",
+  "observationsPerService": 24,
+  "observationPayloadBytes": 2048,
+  "sourcesPerService": 8,
+  "sourceTextBytes": 8192,
+  "fragmentsPerService": 4,
+  "fragmentTextBytes": 2048,
+  "scenarioGroupSize": 4,
+  "sharedFactsPerScenario": 2,
+  "changedService": "service-000",
+  "changedOperation": "operation-0",
+  "compilerCaptures": 0,
+  "requiredMetrics": ["wallMs", "peakRss", "totalBytes", "deltaBytes", "fileCount", "objectCount", "manifestBytes", "hydratedObjects", "hydratedBytes", "legacyInlineBytes"],
+  "overBudget": {"structuredSourceCount": 129, "sourceTextBytes": 1048576},
+  "interpretation": "Synthetic storage workload only; no customer scale, latency, or bounded RAM claim. Workload and budgets remain fixed if a case fails."
+}

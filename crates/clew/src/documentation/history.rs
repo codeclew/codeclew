@@ -55,6 +55,8 @@ pub enum Command {
         #[arg(long)]
         id: String,
         #[arg(long, default_value = "summary")]
+        /// summary, sections, explanations, reviewed-answers, files, inputs,
+        /// evidence, or bindings-closure (root-relative portable object paths).
         kind: String,
         #[arg(long)]
         cursor: Option<String>,
@@ -115,8 +117,13 @@ fn integrity(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewErro
         let file = repo.path(&format!("docs/generated/{}/{name}", p.id))?;
         match fs::metadata(&file) {
             Ok(m) if m.is_file() && m.len() <= super::check::PORTABLE_CACHE_MAX_BYTES => {
-                if canonical::hash_bytes(&fs::read(&file).map_err(io_error)?) != *expected {
+                let raw = fs::read(&file).map_err(io_error)?;
+                if canonical::hash_bytes(&raw) != *expected {
                     missing.push(name.clone());
+                } else if name == "bindings.json"
+                    && super::bindings_storage::resolve_optional(repo, &raw).is_err()
+                {
+                    missing.push("bindings portable closure".into());
                 }
             }
             _ => missing.push(name.clone()),
@@ -165,6 +172,74 @@ pub(super) fn read_frozen_bindings(
             ));
         }
     }
+    // The root manifest is bounded by the ordinary frozen-file preflight. Its
+    // declared portable closure is charged before any payload hydration.
+    let expected_bindings = publication
+        .files
+        .get("bindings.json")
+        .ok_or_else(|| invalid("selected publication has no frozen bindings hash"))?;
+    let binding_path = repo.path(&format!("docs/generated/{id}/bindings.json"))?;
+    let mut binding_raw = Vec::new();
+    fs::File::open(binding_path)
+        .map_err(io_error)?
+        .take(budget.remaining_bytes + 1)
+        .read_to_end(&mut binding_raw)
+        .map_err(io_error)?;
+    if binding_raw.len() as u64 > budget.remaining_bytes {
+        return Err(invalid(
+            "native frozen publication input exceeds 64 MiB; narrow the selection",
+        ));
+    }
+    if canonical::hash_bytes(&binding_raw) != *expected_bindings {
+        return Err(invalid(
+            "selected frozen publication bindings changed after preflight",
+        ));
+    }
+    let closure = super::bindings_storage::closure(&binding_raw)?;
+    let closure_bytes = closure.iter().map(|r| r.size).sum::<u64>();
+    let physical_bindings = binding_raw.len() as u64 + closure_bytes;
+    let logical_extra = super::bindings_storage::logical_size(&binding_raw)?
+        .unwrap_or(0)
+        .saturating_sub(physical_bindings);
+    for reference in &closure {
+        let metadata =
+            fs::symlink_metadata(repo.path(&super::bindings_storage::object_path(reference)?)?)
+                .map_err(|_| invalid("selected frozen publication portable closure is missing"))?;
+        if !metadata.is_file() || metadata.len() != reference.size {
+            return Err(invalid(
+                "selected frozen publication portable closure is damaged",
+            ));
+        }
+        total = total
+            .checked_add(reference.size)
+            .ok_or_else(|| invalid("native frozen input size overflow"))?;
+        if total > budget.remaining_bytes {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::SliceBudgetExceeded,
+                "native frozen publication input exceeds 64 MiB including its portable closure; narrow the selection",
+            ));
+        }
+    }
+    total = total
+        .checked_add(logical_extra)
+        .ok_or_else(|| invalid("native frozen input size overflow"))?;
+    if total > budget.remaining_bytes {
+        return Err(crate::error::ClewError::new(
+            crate::error::ErrorCode::SliceBudgetExceeded,
+            "native frozen publication input exceeds 64 MiB including reconstructed logical bindings; narrow the selection",
+        ));
+    }
+    // Hash verification uses the same portable reader; no source capture or
+    // private snapshot loading occurs during this physical-input admission.
+    let other_bytes = total
+        .saturating_sub(physical_bindings)
+        .saturating_sub(logical_extra);
+    super::bindings_storage::preflight_frozen(
+        repo,
+        &binding_raw,
+        budget.remaining_bytes.saturating_sub(other_bytes),
+    )?;
+    budget.remaining_bytes -= closure_bytes + logical_extra;
     let mut raw = None;
     for (name, expected) in &publication.files {
         let mut bytes = Vec::new();
@@ -477,7 +552,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             cursor,
             limit,
         } => {
-            let repo = Repository::open(&root)?;
+            let repo = Repository::open_portable(&root)?;
             let rows = records(&repo)?;
             let baseline = bindings::baseline(&repo)?.map(|b| b.0);
             let current =
@@ -493,7 +568,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             cursor,
             limit,
         } => {
-            let repo = Repository::open(&root)?;
+            let repo = Repository::open_portable(&root)?;
             if !repo.path(&path(&id)?)?.exists() {
                 return Ok(
                     json!({"schema":"codeclew-docs-history-show/1.0","status":"EXPIRED_OR_LEGACY_MANIFEST_MISSING","id":id}),
@@ -508,6 +583,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             "explanations"=>p.explanation_versions.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
             "reviewed-answers"=>p.reviewed_answers.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
             "files"=>p.files.iter().map(|(id,hash)|json!({"id":id,"digest":hash})).collect(),
+            "bindings-closure"=>{
+                use std::io::Read;
+                let mut raw=Vec::new();fs::File::open(repo.path(&format!("docs/generated/{id}/bindings.json"))?).map_err(io_error)?
+                    .take(super::check::PORTABLE_CACHE_MAX_BYTES+1).read_to_end(&mut raw).map_err(io_error)?;
+                super::bindings_storage::closure(&raw)?.into_iter().map(|r|Ok(json!({"id":r.digest,"path":super::bindings_storage::object_path(&r)?,"schema":r.schema,"size":r.size}))).collect::<Result<Vec<_>,ClewError>>()?
+            },
             "inputs"=>{let value:Value=store::read(&repo.path(&format!("docs/generated/{id}/inputs.json"))?,super::check::PORTABLE_CACHE_MAX_BYTES)?;value.as_object().ok_or_else(||invalid("invalid frozen inputs"))?.iter().map(|(id,value)|json!({"id":id,"record":value})).collect()},
             "evidence"=>p.evidence_packages.iter().map(|id|json!({"id":id,"status":if packages.contains(id){"MISSING_OR_DAMAGED"}else{"RETAINED"}})).collect(),
             _=>return Err(invalid("unknown history record kind")),
@@ -527,7 +608,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             cursor,
             limit,
         } => {
-            let repo = Repository::open(&root)?;
+            let repo = Repository::open_portable(&root)?;
             let a = load(&repo, &before)?;
             let b = load(&repo, &after)?;
             if !integrity(&repo, &a)?.is_empty() || !integrity(&repo, &b)?.is_empty() {
