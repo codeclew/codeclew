@@ -80,6 +80,10 @@ gradle.beforeProject { project ->
             def sourceFiles = []
             def sourceFilesAvailable = true
             try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) { sourceFilesAvailable = false }
+            // KotlinCompile resolves Java declarations from a separate selected
+            // input collection. These are analysis inputs, not Kotlin index files.
+            def javaSources = filesOf("javaSources")
+            if (!javaSources.available) throw new GradleException("Selected Kotlin compilation Java source inputs are unavailable")
             // Kotlin's task-level `libraries` is the first-choice compilation
             // authority when the plugin exposes it. The named resolvable
             // configuration is the explicit fallback across other plugin lines.
@@ -165,7 +169,7 @@ gradle.beforeProject { project ->
                     repositories.add([name: repository.name, url: url])
                 }
             } catch (Throwable ignored) { repositoriesAvailable = false }
-            def generatedRoots = sourceFiles.findAll { path ->
+            def generatedRoots = (sourceFiles + javaSources.values).findAll { path ->
                 path.replace('\\', '/').contains('/build/generated/')
             }.collect { new File(it).parentFile.absolutePath }.unique().sort()
             def jdkHome = System.getProperty("java.home")
@@ -221,6 +225,7 @@ gradle.beforeProject { project ->
                 platform: "JVM",
                 compileTask: compile.path,
                 sourceFiles: sourceFiles,
+                javaSourceFiles: javaSources.values.unique().sort(),
                 classpath: classpath,
                 classpathAuthority: [
                     chosen: classpathAuthority,

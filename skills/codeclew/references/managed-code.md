@@ -90,6 +90,16 @@ output as explicit boundaries. ASP.NET Core MVC attribute-route facts do not
 establish running endpoints, conventional routing, minimal APIs or custom
 controller discovery. The profile never admits candidate generation.
 
+For Kotlin/Gradle, the selected compilation's Java files are separate analysis
+inputs, including generated Java attached through declared source/task providers.
+Model extraction runs the selected compilation's prerequisites without running
+that Kotlin compiler task. A prior native build is not required. The Kotlin index
+still contains Kotlin declarations; Java analysis membership and bytes enter the
+semantic input authority. Java inputs use direct compiler analysis and retain
+`KOTLIN_JAVA_INPUTS_DISABLE_INCREMENTAL_BACKEND`. Missing or invalid generated
+inputs must fail compiler verification; they never authorize cached classes or a
+SOURCE fallback. The explicit SOURCE profile does not run these generators.
+
 For Java/Maven, read caller-local launch preferences from `codeclew.yaml` through
 normal admission. The supported shape is `version: 1` and
 `maven: {settings: ../private/settings.xml}`; the path is relative to the

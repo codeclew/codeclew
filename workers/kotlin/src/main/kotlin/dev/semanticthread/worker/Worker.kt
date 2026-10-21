@@ -738,6 +738,27 @@ internal fun repositorySourceFile(repo: Path, raw: String): Path {
     return canonical
 }
 
+/** Java files resolve Kotlin references but are not Kotlin PSI/index declarations. */
+internal fun withJavaAnalysisSources(model: JsonObject): JsonObject {
+    val javaSources = model["javaSourceFiles"] ?: return model
+    val selectedJava = javaSources as? JsonArray ?: throw WorkerFailure(
+        "UNSUPPORTED_PROJECT_CONFIGURATION", "Kotlin build model javaSourceFiles is not an array",
+    )
+    val existing = (model["analysisSourceFiles"] ?: model["sourceFiles"]) as? JsonArray
+        ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Kotlin build model has no analysis source selection")
+    val sources = (existing + selectedJava).distinctBy { it.jsonPrimitive.content }.sortedBy { it.jsonPrimitive.content }
+    return buildJsonObject {
+        model.forEach { (key, value) -> if (key !in setOf("analysisSourceFiles", "buildModelBoundaries")) put(key, value) }
+        put("analysisSourceFiles", JsonArray(sources))
+        putJsonArray("buildModelBoundaries") {
+            val existingBoundaries = model["buildModelBoundaries"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }
+            val directBoundary = listOf("KOTLIN_JAVA_INPUTS_DISABLE_INCREMENTAL_BACKEND")
+                .takeIf { sources.any { it.jsonPrimitive.content.endsWith(".java") } }.orEmpty()
+            (existingBoundaries + directBoundary).distinct().sorted().forEach(::add)
+        }
+    }
+}
+
 internal fun validateProjectModelSourceFiles(repo: Path, model: JsonObject): JsonObject = buildJsonObject {
     model.forEach { (key, value) ->
         if (key !in setOf("sourceFiles", "analysisSourceFiles")) {
@@ -1733,7 +1754,8 @@ internal class Worker(
             val sourceAuthority = currentSourceAuthority
         val sourceFiles = buildModel["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
-        val generatedRoots = sourceFiles.filter {
+        val generatedRoots = (buildModel["analysisSourceFiles"] ?: buildModel["sourceFiles"])?.jsonArray
+            ?.map { Path.of(it.jsonPrimitive.content) }.orEmpty().filter {
             val normalized = it.normalize()
             normalized.startsWith(repo.resolve("build/generated").normalize()) ||
                 normalized.startsWith(repo.resolve("target/generated-sources").normalize())
@@ -2080,7 +2102,7 @@ internal class Worker(
                     put(key, value)
                 }
             }
-            putJsonArray("sourceFiles") { analysisSources.forEach(::add) }
+            putJsonArray("sourceFiles") { analysisSources.filterNot { it.jsonPrimitive.content.endsWith(".java") }.forEach(::add) }
             putJsonArray("analysisSourceFiles") { analysisSources.forEach(::add) }
             putJsonArray("friendPaths") { retainedFriendPaths.forEach(::add) }
             retainedClasspath?.let { put("classpath", JsonArray(it)) }
@@ -2117,9 +2139,10 @@ internal class Worker(
         }
         val compatible = applyCompilerPluginCompatibility(model)
         val module = compilation?.substringBeforeLast('/')?.ifBlank { ":" } ?: ":"
-        return sourceComposedTestProjectModel(repo, compilation, compatible) {
+        val composed = sourceComposedTestProjectModel(repo, compilation, compatible) {
             projectModel(repo, "$module/main")
         }
+        return withJavaAnalysisSources(composed)
     }
 
     private fun cachedProjectModel(
@@ -2357,6 +2380,7 @@ internal class Worker(
                 val btaEligible = semanticModel["engineCompatibility"]?.jsonObject
                     ?.get("btaEligible")?.jsonPrimitive?.booleanOrNull == true
                 val useBackend = overrides.isEmpty() &&
+                    sources.none { it.fileName.toString().endsWith(".java") } &&
                     backend != null &&
                     indexRoot != null &&
                     btaEligible
@@ -2452,7 +2476,10 @@ internal class Worker(
             }.toList()
             val parsedFacts = if (factsFile.isRegularFile()) parseCompilerFactLines(factsFile.readLines()) else emptyList()
             val facts = if (status == 0) {
-                validateDirectK2ReceiptClosure(analysisRepo, sources, sourceArgs, parsedFacts)
+                // Java inputs are separately bound by sourceSelectionAuthority;
+                // FIR file receipts cover the Kotlin files analyzed by the plugin.
+                val kotlinIndexes = sources.indices.filterNot { sources[it].fileName.toString().endsWith(".java") }
+                validateDirectK2ReceiptClosure(analysisRepo, kotlinIndexes.map(sources::get), kotlinIndexes.map(sourceArgs::get), parsedFacts)
             } else {
                 emptyList()
             }

@@ -226,4 +226,67 @@ class KotlinJvm25QualificationTest {
         } finally { root.toFile().deleteRecursively() }
     }
 
+
+    @Test
+    fun generatedJavaInputsResolveOnFirstCleanAnalysisAndChangesCannotReuseOldFacts() {
+        val root = Files.createTempDirectory("gradle-generated-java-analysis").toRealPath()
+        try {
+            val repository = generateSequence(Path.of(System.getProperty("user.dir")).toAbsolutePath(), Path::getParent)
+                .first { Files.isRegularFile(it.resolve("gradlew")) }
+            val fixture = repository.resolve("fixtures/kotlin-generated-java")
+            fun copy(name: String): Path {
+                val target = Files.createDirectories(root.resolve(name))
+                Files.walk(fixture).use { files -> files.forEach { source ->
+                    val destination = target.resolve(fixture.relativize(source))
+                    if (Files.isDirectory(source)) Files.createDirectories(destination)
+                    else Files.copy(source, destination)
+                } }
+                Files.writeString(target.resolve("gradle.properties"), "org.gradle.java.installations.paths=${jdk25()}\norg.gradle.java.installations.auto-detect=false\norg.gradle.java.installations.auto-download=false\n")
+                return target
+            }
+            val nativeRoot = copy("native")
+            val analysisRoot = copy("analysis")
+            val unattachedRoot = copy("unattached-generator")
+            val unattachedBuild = unattachedRoot.resolve("build.gradle.kts")
+            Files.writeString(unattachedBuild, Files.readString(unattachedBuild)
+                .replace("java.srcDir(generateOwnedJava)", "java.srcDir(generatedJava)"))
+            val native = run(nativeRoot, listOf(repository.resolve("gradlew").toString(), "--no-daemon", "--offline", "-p", nativeRoot.toString(), "compileKotlin"))
+            assertEquals(0, native.first, native.second)
+            assertTrue(Files.exists(nativeRoot.resolve("build/kotlin-compiled.marker")))
+            assertFalse(Files.exists(analysisRoot.resolve("build")))
+            val request = buildJsonObject { put("repo", analysisRoot.toString()); put("compilation", ":/main") }.toString().toByteArray()
+            Worker().use { worker ->
+                fun inspect() = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                fun index() = Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+                val first = inspect()
+                val generated = analysisRoot.resolve("build/generated/sources/owned/main/fixture/generated/OwnedValue.java")
+                assertTrue(Files.exists(generated))
+                assertTrue(Files.exists(analysisRoot.resolve("build/generator-ran.marker")))
+                assertFalse(Files.exists(analysisRoot.resolve("build/kotlin-compiled.marker")), "model extraction must not compile selected Kotlin task")
+                val manifest = first["semanticInputManifest"]!!.jsonObject
+                fun selected(role: String) = manifest[role]!!.jsonObject["files"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }
+                assertEquals(listOf("src/main/kotlin/fixture/Entry.kt"), selected("sourceFiles"))
+                assertTrue(selected("analysisSourceFiles").contains("build/generated/sources/owned/main/fixture/generated/OwnedValue.java"))
+                assertEquals("K2_SEMANTIC", index()["analysisMode"]!!.jsonPrimitive.content)
+
+                Files.writeString(analysisRoot.resolve("input.txt"), "number\n")
+                val changed = inspect()
+                assertNotEquals(first["semanticInputManifestHash"], changed["semanticInputManifestHash"])
+                assertEquals("SYNTAX_DECLARATIONS", index()["analysisMode"]!!.jsonPrimitive.content, "Java return type changed; old successful analysis must not be reused")
+
+                Files.writeString(analysisRoot.resolve("input.txt"), "missing\n")
+                inspect()
+                assertFalse(Files.exists(generated))
+                assertEquals("SYNTAX_DECLARATIONS", index()["analysisMode"]!!.jsonPrimitive.content, "missing Java must fail compiler verification")
+            }
+            Worker().use { worker ->
+                val unattachedRequest = buildJsonObject { put("repo", unattachedRoot.toString()); put("compilation", ":/main") }.toString().toByteArray()
+                val indexed = Json.parseToJsonElement(worker.handle(3, unattachedRequest)).jsonObject
+                assertEquals("SYNTAX_DECLARATIONS", indexed["analysisMode"]!!.jsonPrimitive.content)
+                assertFalse(Files.exists(unattachedRoot.resolve("build/generator-ran.marker")), "unattached generators must not be discovered by a broad scan")
+                assertFalse(Files.exists(unattachedRoot.resolve("build/kotlin-compiled.marker")))
+            }
+        } finally { root.toFile().deleteRecursively() }
+    }
+
 }

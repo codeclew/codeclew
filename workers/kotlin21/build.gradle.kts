@@ -43,7 +43,7 @@ tasks.test {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     exclude { element ->
         (!element.isDirectory && element.file.absolutePath.startsWith(file("../kotlin/src/test/kotlin").absolutePath) &&
-            element.file.name !in setOf("SpringAnnotationFactsTest.kt", "KotlinDocumentationFlowTest.kt")) ||
+            element.file.name !in setOf("SpringAnnotationFactsTest.kt", "KotlinDocumentationFlowTest.kt", "JavaAnalysisSourcesTest.kt")) ||
         element.file.name == "SpringAnnotationFacts24.kt" ||
         element.file.name == "JvmAnnotationFacts24.kt" ||
         element.file.name == "KotlinValueFacts24.kt" ||
