@@ -273,6 +273,11 @@ class KotlinJvm25QualificationTest {
                 val changed = inspect()
                 assertNotEquals(first["semanticInputManifestHash"], changed["semanticInputManifestHash"])
                 assertEquals("SYNTAX_DECLARATIONS", index()["analysisMode"]!!.jsonPrimitive.content, "Java return type changed; old successful analysis must not be reused")
+                val caller = analysisRoot.resolve("src/main/kotlin/fixture/Entry.kt")
+                Files.writeString(caller, Files.readString(caller).replace("generatedLabel(): String", "generatedLabel(): Int"))
+                val matched = inspect()
+                assertNotEquals(first["semanticInputManifestHash"], matched["semanticInputManifestHash"])
+                assertEquals("K2_SEMANTIC", index()["analysisMode"]!!.jsonPrimitive.content, "matching the changed Java API must produce new verified semantics")
 
                 Files.writeString(analysisRoot.resolve("input.txt"), "missing\n")
                 inspect()
