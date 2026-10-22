@@ -47,6 +47,10 @@ method discrepancies independently of the absence frontier. Positive declaration
 differences are retained even when other evidence is incomplete. A conditional
 controller is never counted as an extra runtime endpoint.
 
+`sameRouteContracts` lists competing operation declarations for the normalized
+pair. Multiple contracts are ambiguous in both directions, including equivalent
+template names, even when there is only one source registration.
+
 Methods are case-normalized. Literal paths compare exactly, including trailing
 slashes. Simple whole-segment `{id}` and `{key}` templates normalize to `{}`;
 regex templates, wildcards, placeholders and unsupported path syntax remain

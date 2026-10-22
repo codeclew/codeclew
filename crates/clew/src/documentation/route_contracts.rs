@@ -280,8 +280,15 @@ pub fn report(
                 .and_then(|k| by_path.get(k))
                 .cloned()
                 .unwrap_or_default();
+            let competing = key
+                .as_ref()
+                .and_then(|k| contracts_by_route.get(&(method.clone(), k.clone())))
+                .cloned()
+                .unwrap_or_default();
             let state = if key.is_none() || !METHODS.contains(&method.as_str()) {
                 "UNSUPPORTED_INCOMPLETE"
+            } else if competing.len() > 1 {
+                "AMBIGUOUS"
             } else if matched.is_empty() {
                 "CONTRACT_ONLY_UNPROVEN"
             } else {
@@ -289,6 +296,7 @@ pub fn report(
             };
             findings.push(json!({"direction":"CONTRACT_TO_SOURCE","status":state,"method":method,"path":path,
                 "contract":contract_ref(e,o),"associations":matched.iter().map(|r| source_ref(e,r)).collect::<Vec<_>>(),
+                "sameRouteContracts":competing.iter().map(|o|contract_ref(e,o)).collect::<Vec<_>>(),
                 "samePathDeclarations":same_path.iter().filter(|r| r.method != method || !r.unknown.is_empty()).map(|r|source_ref(e,r)).collect::<Vec<_>>(),
                 "methodDifferenceObserved":matched.is_empty() && same_path.iter().any(|r| r.unknown.is_empty() && r.method != method),
                 "unknown":["RUNTIME_ACTIVATION_UNVERIFIED","SOURCE_ROUTE_ABSENCE_UNPROVEN","SERVLET_AND_GATEWAY_PREFIXES_UNVERIFIED"],
@@ -600,5 +608,35 @@ mod tests {
             report["services"]["svc"]["findings"][0]["status"],
             "CONTRACT_ONLY_UNPROVEN"
         );
+    }
+
+    #[test]
+    fn competing_contracts_are_ambiguous_in_both_directions_including_templates() {
+        for (first, second, source) in [
+            ("/same", "/same", "/same"),
+            ("/a/{id}", "/a/{key}", "/a/{value}"),
+        ] {
+            let mut e = evidence();
+            e.entrypoints.push(entry(
+                "handler",
+                json!({"methods":["GET"],"paths":[source]}),
+            ));
+            for (id, path, file) in [("first", first, "one.json"), ("second", second, "two.json")] {
+                let mut c = contract(id, "GET", path);
+                c.normalized["declaredSource"] = json!(file);
+                e.observations.insert(id.into(), c);
+            }
+            let report = run_report(e);
+            for row in report["services"]["svc"]["findings"].as_array().unwrap() {
+                assert_eq!(row["status"], "AMBIGUOUS");
+                let refs = if row["direction"] == "CONTRACT_TO_SOURCE" {
+                    &row["sameRouteContracts"]
+                } else {
+                    &row["contracts"]
+                };
+                assert_eq!(refs.as_array().unwrap().len(), 2);
+                assert_ne!(refs[0]["declaredSource"], refs[1]["declaredSource"]);
+            }
+        }
     }
 }
