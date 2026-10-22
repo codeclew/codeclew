@@ -3019,11 +3019,40 @@ fn source_inventory_evidence(work: &Work) -> Result<&ServiceEvidence, ClewError>
         .filter(|handle| handle.kind == "SOURCE")
         .map(|handle| handle.id.as_str())
         .collect();
+    // Contract text is admitted separately from programming-source roots. Its
+    // retained file must still belong to an exact same-Work contract scope.
+    let contract_scopes: Vec<_> = work
+        .checked
+        .dependencies
+        .values()
+        .filter(|dependency| dependency.service == service && dependency.kind == "CONTRACT_SCOPE")
+        .collect();
+    let contract_inputs = match contract_scopes.as_slice() {
+        [scope]
+            if work.influence.get(&scope.id) == Some(&scope.digest)
+                && digest(&scope.normalized)? == scope.digest
+                && scope.normalized["schema"] == super::contracts::SCHEMA
+                && scope.normalized["authority"] == "DECLARED_OPENAPI" =>
+        {
+            scope.normalized["inputs"].as_object()
+        }
+        _ => None,
+    };
     for (id, source) in &evidence.sources {
+        let admitted_contract = source.authority == "DECLARED_OPENAPI"
+            && source.revision == evidence.revision
+            && source.start_line == 1
+            && source.end_line == source.text.lines().count() as u64
+            && source.text_digest == crate::canonical::hash_bytes(source.text.as_bytes())
+            && source.evidence_digest == source.text_digest
+            && *id == super::analysis::source_id(service, &format!("contract/{}", source.file))?
+            && contract_inputs
+                .and_then(|inputs| inputs.get(&source.file))
+                .is_some_and(|input| input["digest"] == source.text_digest);
         if evidence.service != service
             || source.service != service
             || source.id != *id
-            || !inventory.contains_key(&source.file)
+            || (!inventory.contains_key(&source.file) && !admitted_contract)
             || !registered.contains(id.as_str())
         {
             return Err(invalid("SOURCE inventory contains an unregistered source"));
@@ -4152,6 +4181,127 @@ mod section_context_tests {
 
     fn source_inventory_selection() -> Selection {
         serde_json::from_value(json!({"query":{"kind":"SOURCE"}})).unwrap()
+    }
+
+    #[test]
+    fn source_inventory_admits_exact_contract_scope_without_widening_programming_membership() {
+        let mut work = source_inventory_fixture("programming source\n".into());
+        let file = "src/main/resources/openapi.json";
+        let id = super::super::analysis::source_id("orders", &format!("contract/{file}")).unwrap();
+        let mut source = work.checked.services["orders"].sources["retained-source"].clone();
+        source.id = id.clone();
+        source.file = file.into();
+        source.authority = "DECLARED_OPENAPI".into();
+        source.text = "{\"openapi\":\"3.1.0\"}\n".into();
+        source.start_line = 1;
+        source.end_line = 1;
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.evidence_digest = source.text_digest.clone();
+        let normalized = json!({"schema":super::super::contracts::SCHEMA,"authority":"DECLARED_OPENAPI", "inputs":{file:{"digest":source.text_digest,"status":"DECLARED_OPENAPI"}}});
+        let contract = Observation {
+            id: "orders:contract-scope".into(),
+            kind: "CONTRACT_SCOPE".into(),
+            service: "orders".into(),
+            symbol: "selected-contracts".into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        };
+        work.influence
+            .insert(contract.id.clone(), contract.digest.clone());
+        work.checked
+            .dependencies
+            .insert(contract.id.clone(), contract.clone());
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .insert(id.clone(), source);
+        work.handles.insert(
+            "s2".into(),
+            Handle {
+                kind: "SOURCE".into(),
+                id: id.clone(),
+            },
+        );
+        let found = rows(&work, &source_inventory_selection()).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(
+            found
+                .iter()
+                .any(|row| row["reference"] == "s2" && row["record"]["file"] == file)
+        );
+        assert!(
+            work.checked.dependencies["orders:source-scope"].normalized["inventory"]
+                .get(file)
+                .is_none()
+        );
+        for defect in [
+            "scope-influence",
+            "scope-digest",
+            "scope-membership",
+            "source-digest",
+            "source-revision",
+            "source-authority",
+            "source-file",
+            "source-service",
+            "handle",
+            "scenario",
+        ] {
+            let mut invalid = work.clone();
+            match defect {
+                "scope-influence" => {
+                    invalid.influence.remove("orders:contract-scope");
+                }
+                "scope-digest" => {
+                    invalid
+                        .checked
+                        .dependencies
+                        .get_mut("orders:contract-scope")
+                        .unwrap()
+                        .normalized["authority"] = json!("FORGED")
+                }
+                "scope-membership" => {
+                    let scope = invalid
+                        .checked
+                        .dependencies
+                        .get_mut("orders:contract-scope")
+                        .unwrap();
+                    scope.normalized["inputs"] = json!({});
+                    scope.digest = digest(&scope.normalized).unwrap();
+                    invalid
+                        .influence
+                        .insert(scope.id.clone(), scope.digest.clone());
+                }
+                "handle" => {
+                    invalid.handles.remove("s2");
+                }
+                "scenario" => invalid.subject = "scenario:example".into(),
+                other => {
+                    let source = invalid
+                        .checked
+                        .services
+                        .get_mut("orders")
+                        .unwrap()
+                        .sources
+                        .get_mut(&id)
+                        .unwrap();
+                    match other {
+                        "source-digest" => source.text.push_str("corrupt"),
+                        "source-revision" => source.revision = "f".repeat(40),
+                        "source-authority" => source.authority = "EXACT_SNAPSHOT_TEXT".into(),
+                        "source-file" => source.file = "outside.json".into(),
+                        "source-service" => source.service = "other".into(),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            assert!(
+                rows(&invalid, &source_inventory_selection()).is_err(),
+                "{defect}"
+            );
+        }
     }
 
     fn exact_file_only_proposal_fixture() -> Work {

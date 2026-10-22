@@ -272,6 +272,17 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// New occurrence-qualified compiler flows carry an exact owner pin. Legacy
+    /// flows remain readable only for declarations without an occurrence key.
+    pub(super) fn belongs_to_declaration(&self, owner: &Observation) -> bool {
+        self.service == owner.service
+            && self.symbol == owner.symbol
+            && match self.normalized["ownerDeclarationId"].as_str() {
+                Some(id) => id == owner.id,
+                None => !owner.normalized["documentationIdentity"].is_string(),
+            }
+    }
+
     /// Declaration visibility is evidence admission, not permission to traverse
     /// the receiver or to read another service's implementation.
     pub(super) fn in_service_scope(&self, service: &str) -> bool {

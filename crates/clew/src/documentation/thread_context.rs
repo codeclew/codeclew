@@ -298,6 +298,7 @@ pub(super) fn context(
             .into_iter()
             .flatten()
             .copied()
+            .filter(|event| event.belongs_to_declaration(method))
             .filter(|event| syntax || graph_events.contains(event.id.as_str()))
             .collect();
         let effects = effects_index

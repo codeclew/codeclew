@@ -17,6 +17,27 @@ import kotlin.test.*
 
 class KotlinDocumentationFlowTest {
     @Test
+    fun documentationOwnersKeepExactByteRangesIncludingEmptyBodies() {
+        val source = "// π🙂 before declarations\nprivate fun empty() {}\nprivate fun value(): Int = 2\n"
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        val rows = extract(source)
+        assertEquals(setOf("empty", "value"), rows.map { it["name"]!!.jsonPrimitive.content }.toSet())
+        for (row in rows) {
+            val owner = assertNotNull(row["documentationOwner"]).jsonObject
+            assertEquals(row["documentationSymbol"], owner["symbolIdentity"])
+            assertEquals("src/Importer.kt", owner["file"]!!.jsonPrimitive.content)
+            val exact = bytes.copyOfRange(owner["byteStart"]!!.jsonPrimitive.int, owner["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+            assertTrue(exact.contains("fun ${row["name"]!!.jsonPrimitive.content}"), exact)
+            for (event in row["documentation"]!!.jsonObject["events"]!!.jsonArray) {
+                val span = event.jsonObject["sourceSpan"]!!.jsonObject
+                assertEquals(owner["byteStart"], span["ownerByteStart"])
+                assertEquals(owner["byteEnd"], span["ownerByteEnd"])
+            }
+        }
+        assertTrue(rows.single { it["name"]!!.jsonPrimitive.content == "empty" }["documentation"]!!.jsonObject["events"]!!.jsonArray.isEmpty())
+    }
+
+    @Test
     fun compilerCfgLabelsAreStableAndPreserveExceptionalJumpTargets() {
         val root = Files.createTempDirectory("compiler-cfg-labels").toRealPath()
         try {

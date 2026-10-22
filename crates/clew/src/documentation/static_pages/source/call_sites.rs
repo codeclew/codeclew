@@ -303,7 +303,7 @@ fn augment_source_events(
         .filter(|(_, flow)| {
             flow.kind == "FLOW"
                 && flow.service == owner.service
-                && flow.symbol == owner.symbol
+                && flow.belongs_to_declaration(owner)
                 && flow.normalized["scope"] == scope
         })
         .collect();

@@ -55,7 +55,13 @@ internal class KotlinDocumentationSource(
             coordinates, compilerCoordinates, dataFacts, dataCalls, storageDescriptors).read(function)
         val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
         val values = normalizeKotlinValueProjection(dataFacts, descriptor, file, originalSource, compilerCoordinates, sourceDigest)
-        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented) +
+        val owner = buildJsonObject {
+            put("file", file)
+            put("symbolIdentity", identity)
+            put("byteStart", descriptor["start"]!!)
+            put("byteEnd", descriptor["end"]!!)
+        }
+        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentationOwner" to owner, "documentation" to documented) +
             if (values == null) emptyMap() else mapOf("valueProjection" to values))
     }
 }

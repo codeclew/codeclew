@@ -132,7 +132,15 @@ pub fn catalog(
         let id = declaration["id"].as_str().unwrap();
         let observation = &evidence.observations[id];
         let scope = scope(observation);
-        let flow = flows.get(&(scope, observation.symbol.as_str()));
+        let owned_flows = flows
+            .get(&(scope, observation.symbol.as_str()))
+            .map(|rows| {
+                rows.iter()
+                    .copied()
+                    .filter(|event| event.belongs_to_declaration(observation))
+                    .collect::<Vec<_>>()
+            });
+        let flow = owned_flows.as_ref();
         let expected = observation
             .normalized
             .pointer("/documentation/events")

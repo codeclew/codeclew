@@ -2230,7 +2230,11 @@ pub(crate) fn project_scoped(
             .as_str()
             .ok_or_else(|| invalid("compiler declaration lacks identity"))?;
         let scope = resolve_scope_key(&fact["scope"], known)?;
-        let scoped = scoped_identity(&scope, symbol);
+        // Kotlin compiler callable families can name multiple file-private or
+        // local declarations. Preserve that compiler identity, while storage
+        // and source/flow ownership use the exact declaration occurrence.
+        let declaration_identity = fact["documentationIdentity"].as_str().unwrap_or(symbol);
+        let scoped = scoped_identity(&scope, declaration_identity);
         let id = dependency_id(&service.id, "symbol", &scoped)?;
         let source = add_source(
             &mut evidence,
@@ -2337,7 +2341,8 @@ pub(crate) fn project_scoped(
                 );
             }
             for (index, event) in events.iter().enumerate() {
-                let identity = scoped_identity(&scope, &format!("{symbol}/event/{index}"));
+                let identity =
+                    scoped_identity(&scope, &format!("{declaration_identity}/event/{index}"));
                 let event_id = dependency_id(&service.id, "flow", &identity)?;
                 let mut event_source = add_source(
                     &mut evidence,
@@ -2380,6 +2385,9 @@ pub(crate) fn project_scoped(
                     }
                 }
                 let mut normalized = strip_coordinates(event);
+                if fact["documentationIdentity"].is_string() {
+                    normalized["ownerDeclarationId"] = json!(id);
+                }
                 if let Some(site) = outline_site {
                     normalized["outlineSite"] = site;
                 }

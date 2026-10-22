@@ -545,11 +545,10 @@ pub fn check_interaction(
                 .is_some_and(|site| site.observation.is_some()))
     {
         let e = &services[&i.from.service];
-        let symbol = &e.observations[&from.candidates[0]].symbol;
-        let events = e
-            .observations
-            .values()
-            .filter(|o| o.kind == "FLOW" && o.symbol == *symbol && o.normalized["kind"] == "CALL");
+        let owner = &e.observations[&from.candidates[0]];
+        let events = e.observations.values().filter(|o| {
+            o.kind == "FLOW" && o.belongs_to_declaration(owner) && o.normalized["kind"] == "CALL"
+        });
         calls = events
             .filter(|o| {
                 if let Some(call) = &i.from.call_site {

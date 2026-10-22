@@ -9,6 +9,17 @@ const DOCUMENTATION_CALL_SCHEMA: &str = "codeclew-kotlin-documentation-call/1.0"
 const DOCUMENTATION_LOCAL_CFG_SCHEMA: &str = "codeclew-kotlin-documentation-local-cfg/1.0";
 
 type CallOccurrence = (String, String, u64, u64);
+type DeclarationOccurrence = (String, String, String, u64, u64);
+
+fn declaration_occurrence(fact: &Value) -> Option<DeclarationOccurrence> {
+    Some((
+        fact_scope(fact),
+        fact["file"].as_str()?.into(),
+        fact["symbolIdentity"].as_str()?.into(),
+        fact["start"].as_u64().unwrap_or(0),
+        fact["end"].as_u64().unwrap_or(0),
+    ))
+}
 
 #[derive(Clone)]
 struct FunctionDescriptor {
@@ -217,6 +228,31 @@ pub(super) fn project_facts(
     let compiler = facts.iter().find(|(fact, _)| fact["schema"].as_str().is_some_and(|s| s.starts_with("codeclew-kotlin-index-metadata/")))
         .map(|(fact, _)| json!({"projectCompilerVersion":fact["projectCompilerVersion"],"analyzerCompilerVersion":fact["analyzerCompilerVersion"],
             "projectSemantics":fact["kotlinProjectSemantics"],"semanticEngine":fact["kotlinSemanticEngine"]}));
+    let mut descriptor_occurrences = BTreeSet::new();
+    let mut symbol_occurrences: BTreeMap<(String, String), BTreeSet<DeclarationOccurrence>> =
+        BTreeMap::new();
+    for (fact, _) in &facts {
+        if fact["schema"] == "declaration-descriptor/0.1"
+            && fact.get("attributeCoverage").is_none()
+            && fact.get("sourceRowHash").is_none()
+            && let Some(key) = declaration_occurrence(fact)
+        {
+            if !descriptor_occurrences.insert(key.clone()) {
+                return Err(invalid(
+                    "Kotlin documentation repeats an exact compiler declaration occurrence",
+                ));
+            }
+            symbol_occurrences
+                .entry((key.0.clone(), key.2.clone()))
+                .or_default()
+                .insert(key);
+        }
+    }
+    let ambiguous: BTreeSet<_> = symbol_occurrences
+        .iter()
+        .filter(|(_, occurrences)| occurrences.len() > 1)
+        .map(|(identity, _)| identity.clone())
+        .collect();
     let mut flows = BTreeMap::new();
     for (fact, binding) in &facts {
         if let Some(declarations) = fact["declarations"].as_array() {
@@ -224,13 +260,48 @@ pub(super) fn project_facts(
                 if let (Some(symbol), Some(flow)) = (
                     declaration["documentationSymbol"].as_str(),
                     declaration.get("documentation"),
-                ) && flows
-                    .insert(symbol.to_owned(), (flow.clone(), binding.clone()))
-                    .is_some()
-                {
-                    return Err(invalid(
-                        "Kotlin documentation has duplicate compiler declaration identities",
-                    ));
+                ) {
+                    let scope = fact_scope(fact);
+                    let file = declaration["file"]
+                        .as_str()
+                        .or_else(|| fact["path"].as_str());
+                    let owner = &declaration["documentationOwner"];
+                    if declaration.get("documentationOwner").is_some() && !owner.is_object()
+                        || fact["path"]
+                            .as_str()
+                            .zip(declaration["file"].as_str())
+                            .is_some_and(|(a, b)| a != b)
+                    {
+                        return Err(invalid(
+                            "Kotlin documentation flow has an invalid file/owner binding",
+                        ));
+                    }
+                    let candidates: Vec<_> = descriptor_occurrences
+                        .iter()
+                        .filter(|key| {
+                            key.0 == scope
+                                && key.2 == symbol
+                                && file.is_none_or(|file| key.1 == file)
+                                && (!owner.is_object()
+                                    || (owner["file"] == key.1
+                                        && owner["symbolIdentity"] == key.2
+                                        && owner["byteStart"] == key.3
+                                        && owner["byteEnd"] == key.4))
+                        })
+                        .collect();
+                    let [key] = candidates.as_slice() else {
+                        return Err(invalid(
+                            "Kotlin documentation flow lacks one exact scope/file/declaration owner",
+                        ));
+                    };
+                    if flows
+                        .insert((**key).clone(), (flow.clone(), binding.clone()))
+                        .is_some()
+                    {
+                        return Err(invalid(
+                            "Kotlin documentation repeats a compiler declaration flow owner",
+                        ));
+                    }
                 }
             }
         }
@@ -384,6 +455,18 @@ pub(super) fn project_facts(
                     "kind":"BOUNDARY",
                     "code":"KOTLIN_CALL_OWNER_NOT_UNIQUE"
                 }),
+                binding.clone(),
+            ));
+            continue;
+        }
+        if ambiguous.contains(&(
+            scope.clone(),
+            fact["target"].as_str().unwrap_or_default().into(),
+        )) || ambiguous.contains(&(scope.clone(), owners[0].symbol.clone()))
+        {
+            blocked_occurrences.insert(occurrence.clone());
+            call_boundaries.push((
+                json!({"kind":"BOUNDARY","code":"KOTLIN_CALL_DECLARATION_IDENTITY_NOT_UNIQUE"}),
                 binding.clone(),
             ));
             continue;
@@ -551,12 +634,45 @@ pub(super) fn project_facts(
             }
             let callable = fact["compilerCallableId"].as_str().unwrap_or("");
             fact["name"] = json!(callable.rsplit(['.', '/']).next().unwrap_or(""));
-            let combined_binding = if let Some((flow, flow_binding)) = flows.remove(&symbol) {
-                fact["documentation"] = flow;
-                digest(&json!([binding, flow_binding]))?
-            } else {
-                binding
-            };
+            let key = declaration_occurrence(&fact);
+            if ambiguous.contains(&(fact_scope(&fact), symbol.clone())) {
+                let key = key.as_ref().ok_or_else(|| {
+                    invalid("Kotlin ambiguous declaration lacks exact source occurrence")
+                })?;
+                fact["documentationIdentity"] = json!(format!(
+                    "kotlin-declaration:{}",
+                    digest(&(&key.1, &key.2, key.3, key.4))?
+                ));
+            }
+            let combined_binding =
+                if let Some((mut flow, flow_binding)) = key.and_then(|key| flows.remove(&key)) {
+                    let owner_ambiguous = ambiguous.contains(&(fact_scope(&fact), symbol.clone()));
+                    let scope = fact_scope(&fact);
+                    let mut blocked = false;
+                    for event in flow["events"].as_array_mut().into_iter().flatten() {
+                        if event["resolution"] == "COMPILER_EXACT"
+                            && (owner_ambiguous
+                                || event["target"].as_str().is_some_and(|target| {
+                                    ambiguous.contains(&(scope.clone(), target.into()))
+                                }))
+                        {
+                            event["reportedTargetIdentity"] = event["target"].clone();
+                            event.as_object_mut().unwrap().remove("target");
+                            event["resolution"] = json!("UNKNOWN");
+                            blocked = true;
+                        }
+                    }
+                    if blocked {
+                        flow["boundaries"]
+                            .as_array_mut()
+                            .ok_or_else(|| invalid("Kotlin documentation flow lacks boundaries"))?
+                            .push(json!("KOTLIN_CALL_DECLARATION_IDENTITY_NOT_UNIQUE"));
+                    }
+                    fact["documentation"] = flow;
+                    digest(&json!([binding, flow_binding]))?
+                } else {
+                    binding
+                };
             output.push((fact, combined_binding));
         } else if schema.contains("boundary/") {
             output.push((json!({"kind":"BOUNDARY", "code":fact["code"].as_str().unwrap_or("KOTLIN_ANALYSIS_BOUNDARY")}), binding));
@@ -566,6 +682,11 @@ pub(super) fn project_facts(
     output.extend(call_boundaries);
     output.extend(projected_local_cfg);
     output.extend(local_cfg_boundaries);
+    if !flows.is_empty() {
+        return Err(invalid(
+            "Kotlin documentation flow owner has no matching compiler declaration",
+        ));
+    }
     if !output.iter().any(|(fact, _)| fact["kind"] == "DECLARATION") {
         return Err(ClewError::new(
             crate::error::ErrorCode::IncompleteSemanticAnalysis,
@@ -663,6 +784,201 @@ mod tests {
             }),
             format!("original-call-binding:{file}:{start}:{end}:{scope}"),
         )
+    }
+
+    fn documented_declaration(
+        callable: &str,
+        file: &str,
+        scope: &str,
+        value: u64,
+    ) -> Vec<(Value, String)> {
+        let text = format!("private fun localHelper(): Int = {value}\n");
+        let (mut descriptor, binding) =
+            function_descriptor(callable, "()I", file, 0, text.len() as u64 - 1, scope);
+        descriptor["startLine"] = json!(1);
+        descriptor["endLine"] = json!(1);
+        descriptor["lineProvenance"] = json!("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE");
+        descriptor["visibility"] = json!("private");
+        descriptor["effectiveVisibility"] = json!("private");
+        let symbol = descriptor["symbolIdentity"].clone();
+        let owner =
+            json!({"file":file,"symbolIdentity":symbol,"byteStart":0,"byteEnd":text.len()-1});
+        let fact = json!({"path":file,"scope":{"compilation":scope},"declarations":[{"file":file,
+            "documentationSymbol":symbol,"documentationOwner":owner,"documentation":{
+                "schema":"codeclew-kotlin-documentation-flow/1.0","authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS",
+                "parameterTypes":[],"events":[{"kind":"RETURN","file":file,"startLine":1,"endLine":1,"value":value}],"boundaries":[]}}]});
+        vec![
+            (descriptor, binding),
+            (fact, format!("flow:{scope}:{file}:{value}")),
+        ]
+    }
+
+    #[test]
+    fn private_declarations_keep_scope_file_body_and_flow_ownership_through_projection() {
+        use super::super::{analysis, model::Service};
+        let symbol = "callable:p/localHelper#jvm:()I";
+        let mut facts = Vec::new();
+        for scope in [":main", ":test"] {
+            facts.extend(documented_declaration("p/localHelper", "One.kt", scope, 1));
+            facts.extend(documented_declaration("p/localHelper", "Two.kt", scope, 2));
+        }
+        let projected = project_facts(facts).unwrap();
+        let declarations = projected
+            .iter()
+            .filter(|(f, _)| f["kind"] == "DECLARATION")
+            .collect::<Vec<_>>();
+        assert_eq!(declarations.len(), 4);
+        assert!(
+            declarations
+                .iter()
+                .all(|(f, _)| f["symbolIdentity"] == symbol
+                    && f["documentationIdentity"].is_string())
+        );
+        let service:Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"private","title":"Private declarations","repositoryId":"private","repository":"https://example.com/owned.git","language":"kotlin","profile":"kotlin-jvm-gradle-analysis","compilations":[":main",":test"],"targetRef":"main"})).unwrap();
+        let files = BTreeMap::from([
+            (
+                "One.kt".into(),
+                "private fun localHelper(): Int = 1\n".into(),
+            ),
+            (
+                "Two.kt".into(),
+                "private fun localHelper(): Int = 2\n".into(),
+            ),
+        ]);
+        let evidence = analysis::project(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            projected,
+            &files,
+            false,
+        )
+        .unwrap();
+        let owners = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 4);
+        assert_eq!(
+            evidence
+                .observations
+                .values()
+                .filter(|o| o.kind == "FLOW")
+                .count(),
+            4
+        );
+        for owner in owners {
+            let flows = evidence
+                .observations
+                .values()
+                .filter(|f| f.kind == "FLOW" && f.belongs_to_declaration(owner))
+                .collect::<Vec<_>>();
+            assert_eq!(flows.len(), 1);
+            let flow = flows[0];
+            assert_eq!(flow.normalized["scope"], owner.normalized["scope"]);
+            let source = &evidence.sources[&owner.source_ids[0]];
+            let event_source = &evidence.sources[&flow.source_ids[0]];
+            assert_eq!(source.file, event_source.file);
+            assert_eq!(source.text, event_source.text);
+            assert!(
+                source
+                    .text
+                    .contains(&format!("= {}", flow.normalized["value"]))
+            );
+        }
+    }
+
+    #[test]
+    fn same_file_local_ranges_and_overloads_bind_exact_owners_and_conflicts_are_rejected() {
+        let mut facts = documented_declaration("p/localHelper", "One.kt", ":main", 1);
+        let mut second = documented_declaration("p/localHelper", "One.kt", ":main", 2);
+        second[0].0["start"] = json!(100);
+        second[0].0["end"] = json!(150);
+        second[1].0["declarations"][0]["documentationOwner"]["byteStart"] = json!(100);
+        second[1].0["declarations"][0]["documentationOwner"]["byteEnd"] = json!(150);
+        facts.extend(second);
+        facts.push(function_descriptor(
+            "p/localHelper",
+            "(I)I",
+            "One.kt",
+            160,
+            190,
+            ":main",
+        ));
+        let projected = project_facts(facts.clone()).unwrap();
+        assert_eq!(
+            projected
+                .iter()
+                .filter(|(f, _)| f["kind"] == "DECLARATION")
+                .count(),
+            3
+        );
+        let mut conflicting = facts.clone();
+        let mut duplicate = conflicting[0].clone();
+        duplicate.0["returnType"] = json!("kotlin/String");
+        conflicting.push(duplicate);
+        assert!(
+            project_facts(conflicting)
+                .unwrap_err()
+                .message
+                .contains("exact compiler declaration occurrence")
+        );
+        let mut wrong = facts;
+        wrong[1].0["declarations"][0]["documentationOwner"]["file"] = json!("Two.kt");
+        assert!(
+            project_facts(wrong)
+                .unwrap_err()
+                .message
+                .contains("exact scope/file/declaration owner")
+        );
+    }
+
+    #[test]
+    fn colliding_callable_families_never_claim_an_arbitrary_exact_call_target() {
+        let mut facts = documented_declaration("p/localHelper", "One.kt", ":main", 1);
+        facts.extend(documented_declaration(
+            "p/localHelper",
+            "Two.kt",
+            ":main",
+            2,
+        ));
+        let (caller, binding) = function_descriptor("p/useOne", "()I", "One.kt", 200, 300, ":main");
+        facts.push((caller, binding));
+        facts.push(call_relation(
+            "p/useOne",
+            "p/localHelper",
+            "()I",
+            "One.kt",
+            210,
+            225,
+            ":main",
+        ));
+        facts.push((json!({"path":"One.kt","scope":{"compilation":":main"},"declarations":[{
+            "documentationSymbol":"callable:p/useOne#jvm:()I","documentationOwner":{"file":"One.kt","symbolIdentity":"callable:p/useOne#jvm:()I","byteStart":200,"byteEnd":300},
+            "documentation":{"events":[{"kind":"CALL","target":"callable:p/localHelper#jvm:()I","resolution":"COMPILER_EXACT"}],"boundaries":[]}}]}),"caller-flow".into()));
+        let projected = project_facts(facts).unwrap();
+        assert!(
+            !projected
+                .iter()
+                .any(|(f, _)| f["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        let caller = &projected
+            .iter()
+            .find(|(f, _)| f["symbolIdentity"] == "callable:p/useOne#jvm:()I")
+            .unwrap()
+            .0;
+        assert_eq!(
+            caller["documentation"]["events"][0]["resolution"],
+            "UNKNOWN"
+        );
+        assert!(caller["documentation"]["events"][0].get("target").is_none());
+        assert_eq!(
+            caller["documentation"]["events"][0]["reportedTargetIdentity"],
+            "callable:p/localHelper#jvm:()I"
+        );
     }
 
     fn local_cfg_fact(

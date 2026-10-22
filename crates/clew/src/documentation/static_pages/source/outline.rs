@@ -150,7 +150,7 @@ pub(super) fn attach(
         .filter(|candidate| {
             candidate.kind == "FLOW"
                 && candidate.service == owner.service
-                && candidate.symbol == owner.symbol
+                && candidate.belongs_to_declaration(owner)
                 && candidate.normalized["scope"] == scope
         })
         .cloned()
@@ -419,6 +419,7 @@ pub(super) fn event_payload(normalized: &Value) -> Value {
         object.remove("ordinal");
         object.remove("scope");
         object.remove("outlineSite");
+        object.remove("ownerDeclarationId");
     }
     payload
 }
