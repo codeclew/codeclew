@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — local 0.13.50 preview
+
+- Render safe Markdown tables in authored reading bodies across native, full
+  Pages and MDX. Keep source/evidence views literal and escape unsafe markup.
+- Present model fields as original spelling, explicit authored readable name
+  and complete comment, with stable evidence/field anchors and technical
+  representations in disclosures. Preserve old plans and original prose.
+
 ## 0.13.49 — 2026-10-23
 
 - Add `docs contract check` for bidirectional route/OpenAPI comparison over an

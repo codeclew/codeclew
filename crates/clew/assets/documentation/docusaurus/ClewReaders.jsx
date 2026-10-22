@@ -5,6 +5,13 @@ import useBrokenLinks from '@docusaurus/useBrokenLinks';
 import {useLocation} from '@docusaurus/router';
 import routes from './clew-routes.json';
 import {language, t} from './clew-locale.js';
+import markdown from './clew-markdown.cjs';
+
+// The same escaping/parser implementation is embedded in native readers.
+export function ClewMarkdown({text}) {
+  useEffect(() => { markdown.enhance(document, {tableLabel:t('Table')}); }, [text]);
+  return <div className="clew-markdown" dangerouslySetInnerHTML={{__html:markdown.render(text,{tableLabel:t('Table')})}} />;
+}
 
 const cache = new Map();
 const packedObjects = new Map();
@@ -72,6 +79,7 @@ export function ClewContextLink({path, fromProcess = '', fromQuestion = '', quer
 }
 export function ClewPageContext() {
   const current = useLocation(), q = new URLSearchParams(current.search);
+  useEffect(() => { markdown.enhance(document, {tableLabel:t('Table')}); }, [current.pathname,current.hash]);
   useEffect(() => {
     const topic = q.get('topic'), direction = q.get('direction');
     if (topic && ['incoming', 'outgoing'].includes(direction)) {

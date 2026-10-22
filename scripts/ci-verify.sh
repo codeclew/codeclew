@@ -121,7 +121,7 @@ ci_run checks python3 -I -S scripts/test_build_macos_release.py
 ci_run checks python3 -I -S scripts/test_prepare_release_candidate.py
 ci_run checks python3 -I -S scripts/test_build_local_release_candidate.py
 ci_run checks python3 -I -S scripts/test_runtime_attach_canary.py
-ci_run checks node --test scripts/test_documentation_visual_reader.cjs scripts/test_working_tree_report_reader.cjs scripts/test_data_model_reader.cjs scripts/test_documentation_packs.cjs
+ci_run checks node --test scripts/test_documentation_markdown.cjs scripts/test_documentation_visual_reader.cjs scripts/test_working_tree_report_reader.cjs scripts/test_data_model_reader.cjs scripts/test_documentation_packs.cjs
 ci_run checks cargo fmt --all --check
 ci_run checks cargo clippy --workspace --all-targets -- -D warnings
 ci_run checks qualify_csharp

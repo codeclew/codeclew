@@ -1,0 +1,31 @@
+.clew-markdown{min-width:0;overflow-wrap:anywhere}
+.clew-markdown>:first-child{margin-top:0}.clew-markdown>:last-child{margin-bottom:0}
+.clew-markdown p{white-space:pre-wrap;overflow-wrap:anywhere}
+.clew-markdown code{white-space:pre-wrap;overflow-wrap:anywhere}
+.clew-markdown pre{max-width:100%;overflow:auto;white-space:pre-wrap}
+.clew-md-table-wrap{max-width:100%;overflow:auto;margin:12px 0;overscroll-behavior:contain}
+.clew-md-table-wrap:focus-visible{outline:2px solid #087b83;outline-offset:3px}
+table.clew-md-table{display:table;width:100%;table-layout:fixed;border-collapse:collapse;margin:0}
+.clew-md-table :is(th,td){padding:9px 11px;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);vertical-align:top;overflow-wrap:anywhere;white-space:normal}
+.clew-md-table th{background:var(--ifm-color-emphasis-100,#edf3f4)}
+.clew-md-table code{white-space:pre-wrap;overflow-wrap:anywhere}
+.pseudocode-text.clew-markdown{display:block;min-width:0}
+.dm-field-details{margin:12px 0;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);border-radius:6px;padding:10px 12px;min-width:0}
+.dm-field-details>summary{cursor:pointer;font-weight:600;overflow-wrap:anywhere}
+.dm-field-details>table{margin-top:12px;width:100%;table-layout:fixed}
+.dm-fields-scroll .dm-fields th:first-child{width:20%}
+.dm-fields-scroll .dm-fields td:nth-child(2){width:24%}
+.dm-fields-scroll .dm-fields td:nth-child(3){width:56%}
+.dm-field-evidence-link{display:inline-block;margin-top:6px;font-size:.9rem}
+@media(max-width:700px){.dm-fields-scroll .dm-fields th:first-child,.dm-fields-scroll .dm-fields td:nth-child(2),.dm-fields-scroll .dm-fields td:nth-child(3){width:100%}}
+@media(max-width:600px){
+ .clew-md-table-wrap{overflow:visible}
+ table.clew-md-table.has-rows,.clew-md-table.has-rows tbody,.clew-md-table.has-rows tr,.clew-md-table.has-rows td{display:block;width:100%;box-sizing:border-box}
+ .clew-md-table.has-rows thead{position:absolute;width:1px;height:1px;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+ .clew-md-table.has-rows tr{margin:10px 0;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);border-radius:6px}
+ .clew-md-table.has-rows td{border:0;border-bottom:1px solid var(--ifm-color-emphasis-300,#cbd5db);text-align:left!important}
+ .clew-md-table.has-rows td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px}
+}
+
+.dm-field-details{scroll-margin-top:6rem}
+.dm-fields-scroll .dm-fields th{background:var(--ifm-color-emphasis-100,#edf3f4);color:inherit}

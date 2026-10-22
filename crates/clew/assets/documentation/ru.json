@@ -1099,5 +1099,14 @@
   "Revision:": "Ревизия:",
   "Field descriptions": "Описание полей",
   "Purpose": "Назначение",
-  "Source text is omitted from this export. Open the exact retained revision in the repository.": "Текст исходного кода не включён в этот экспорт. Откройте точную сохранённую ревизию в репозитории."
+  "Source text is omitted from this export. Open the exact retained revision in the repository.": "Текст исходного кода не включён в этот экспорт. Откройте точную сохранённую ревизию в репозитории.",
+  "Table": "Таблица",
+  "Original field": "Исходное поле",
+  "Readable name": "Понятное название",
+  "Comment": "Комментарий",
+  "Readable name not provided": "Понятное название не указано",
+  "Evidence and representations": "Источники и представления",
+  "Technical representations": "Технические представления",
+  "Field label provenance": "Происхождение названий полей",
+  "Field comment not provided": "Комментарий поля не указан"
 }

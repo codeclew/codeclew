@@ -63,6 +63,11 @@ struct ReferenceRecord {
 struct Field {
     id: String,
     path: String,
+    /// Explicit authored names with exact evidence, separate from the comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    readable_name: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    original_name: Option<Value>,
     meaning: Value,
     representations: Vec<Representation>,
     #[serde(default)]
@@ -391,6 +396,24 @@ pub(super) fn load(
                 return Err(invalid("data-model field identity or bounds are invalid"));
             }
             text(&field.path)?;
+            for name in [&mut field.readable_name, &mut field.original_name]
+                .into_iter()
+                .flatten()
+            {
+                let value = name["text"]
+                    .as_str()
+                    .ok_or_else(|| invalid("field name needs an evidence-bound text claim"))?;
+                if value.trim().is_empty()
+                    || value.len() > 256
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(invalid(
+                        "field name must be nonblank single-line text of at most 256 bytes",
+                    ));
+                }
+                *name =
+                    super::question_reading::bind_block(name.clone(), files, checked, &mut bytes)?;
+            }
             field.meaning = super::question_reading::bind_block(
                 field.meaning.clone(),
                 files,
@@ -702,9 +725,19 @@ fn strv(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 fn evidence(claim: &Value, language: &str) -> String {
+    evidence_content(claim, language, true)
+}
+fn evidence_content(claim: &Value, language: &str, show_text: bool) -> String {
     let mut out = format!(
-        "<p>{}</p><details><summary>{clew_label_0}</summary>",
-        escape(strv(&claim["text"])),
+        "{}<details><summary>{clew_label_0}</summary>",
+        if show_text {
+            format!(
+                "<div class=\"clew-markdown\" data-clew-markdown>{}</div>",
+                escape(strv(&claim["text"]))
+            )
+        } else {
+            String::new()
+        },
         clew_label_0 = escape(label(language, "Evidence and scope"))
     );
     for e in claim["evidence"].as_array().into_iter().flatten() {
@@ -986,21 +1019,33 @@ pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> Stri
     };
     let heading = |key| literal(label(language, key));
     let mut out = format!(
-        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
         heading("Field descriptions"),
         heading("Field descriptions"),
-        heading("Field"),
-        heading("Purpose")
+        heading("Original field"),
+        heading("Readable name"),
+        heading("Comment")
     );
     for field in model["fields"].as_array().into_iter().flatten() {
-        out.push_str(&format!(
-            "<tr><th scope=\"row\"><a href=\"#field-{}\"><code>{}</code></a></th><td data-label=\"{}\">{}</td>",
-            literal(strv(&field["id"])),
-            literal(strv(&field["path"])),
-            heading("Purpose"),
-            literal(strv(&field["meaning"]["text"]))
-        ));
-        out.push_str("</tr>");
+        let original = field["originalName"]["text"]
+            .as_str()
+            .unwrap_or_else(|| strv(&field["path"]));
+        let name = field["readableName"]["text"]
+            .as_str()
+            .unwrap_or_else(|| label(language, "Readable name not provided"));
+        let comment = field["meaning"]["text"]
+            .as_str()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| label(language, "Field comment not provided"));
+        let body = if portable {
+            super::markdown::mdx(comment)
+        } else {
+            format!(
+                "<div class=\"clew-markdown\" data-clew-markdown>{}</div>",
+                literal(comment)
+            )
+        };
+        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"#field-{}\" data-clew-field-details=\"\"><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}<a class{}=\"dm-field-evidence-link\" href=\"#field-{}\" data-clew-field-details=\"\">{}</a></td></tr>",literal(strv(&field["id"])),literal(original),heading("Readable name"),literal(name),heading("Comment"),body,if portable{"Name"}else{""},literal(strv(&field["id"])),heading("Evidence and representations")));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -1117,7 +1162,7 @@ pub(super) fn write_language(
         ));
         body.push_str(&field_table(m, language, false));
         for f in m["fields"].as_array().unwrap() {
-            body.push_str(&format!("<section id=\"field-{}\"><h3><code>{}</code></h3>{}<table><caption>{clew_label_0}</caption><thead><tr><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),evidence(&f["meaning"], language), clew_label_0 = escape(label(language, "Representation-specific constraints and mappings")), clew_label_1 = escape(label(language, "Representation")), clew_label_2 = escape(label(language, "Type / requiredness / nullability")), clew_label_3 = escape(label(language, "Mapping and evidence"))));
+            body.push_str(&format!("<details class=\"dm-field-details\" id=\"field-{}\"><summary><code>{}</code> · {}</summary>{}<table><caption>{clew_label_0}</caption><thead><tr><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),escape(label(language,"Technical representations")),evidence_content(&f["meaning"], language,false), clew_label_0 = escape(label(language, "Representation-specific constraints and mappings")), clew_label_1 = escape(label(language, "Representation")), clew_label_2 = escape(label(language, "Type / requiredness / nullability")), clew_label_3 = escape(label(language, "Mapping and evidence"))));
             for r in f["representations"].as_array().unwrap() {
                 let contract = r["contract"].as_str().and_then(|id| {
                     model["contracts"]
@@ -1177,10 +1222,24 @@ pub(super) fn write_language(
                     evidence(&r["mapping"], language)
                 ));
             }
+            body.push_str("</tbody></table>");
+            for (key, title) in [
+                ("originalName", "Original field"),
+                ("readableName", "Readable name"),
+            ] {
+                if f[key].is_object() {
+                    body.push_str(&format!(
+                        "<details><summary>{}: {}</summary>{}</details>",
+                        escape(label(language, "Field label provenance")),
+                        escape(label(language, title)),
+                        evidence(&f[key], language)
+                    ));
+                }
+            }
             if reference_only(m) {
-                body.push_str("</tbody></table></section>");
+                body.push_str("</details>");
             } else {
-                body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">{clew_label_0}</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"])), clew_label_0 = escape(label(language, "Trace this field"))));
+                body.push_str(&format!("<p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">{clew_label_0}</a></p></details>",escape(strv(&f["id"])),escape(strv(&f["id"])), clew_label_0 = escape(label(language, "Trace this field"))));
             }
         }
         if !reference_only(m) {
@@ -1284,11 +1343,12 @@ fn page_language(title: &str, body: &str, prefix: &str, language: &str) -> Strin
     let html = reader::page_language(title, body, language).replace(
         "</head>",
         &format!(
-            "<style>{}</style></head>",
-            include_str!("../../../assets/documentation/data-model.css")
+            "<style>{}\n{}</style></head>",
+            include_str!("../../../assets/documentation/data-model.css"),
+            include_str!("../../../assets/documentation/markdown.css")
         ),
     );
-    reader::decorate(
+    let html = reader::decorate(
         &html,
         &reader::navigation_language(
             prefix,
@@ -1296,6 +1356,14 @@ fn page_language(title: &str, body: &str, prefix: &str, language: &str) -> Strin
             Some(&format!("{prefix}history.html")),
             &[],
             language,
+        ),
+    );
+    html.replace(
+        "</body>",
+        &format!(
+            "<script>{}\nclewMarkdown.enhance(document,{{tableLabel:{}}});</script></body>",
+            include_str!("../../../assets/documentation/markdown.js"),
+            json!(label(language, "Table"))
         ),
     )
 }
@@ -1433,6 +1501,58 @@ mod tests {
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
     #[test]
+    fn authored_field_names_keep_comments_and_bind_their_own_evidence() {
+        let (mut plan, files, guides, check) = fixture();
+        let baseline = read(&plan, &files, &guides, &check).unwrap();
+        let mut name = plan["models"][0]["fields"][0]["meaning"].clone();
+        name["title"] = json!("Authored readable field name");
+        name["text"] = json!("Stored display value");
+        plan["models"][0]["fields"][0]["readableName"] = name;
+        let mut original = plan["models"][0]["fields"][0]["meaning"].clone();
+        original["title"] = json!("Authored original field binding");
+        original["text"] = json!("row.value");
+        plan["models"][0]["fields"][0]["originalName"] = original;
+        let value = read(&plan, &files, &guides, &check).unwrap();
+        let field = &value["models"][0]["fields"][0];
+        assert_eq!(
+            field["meaning"],
+            baseline["models"][0]["fields"][0]["meaning"]
+        );
+        assert_eq!(field["path"], "value");
+        assert_eq!(
+            field["readableName"]["evidence"],
+            field["meaning"]["evidence"]
+        );
+        for portable in [false, true] {
+            let table = field_table(&value["models"][0], "en", portable);
+            for text in [
+                "Original field",
+                "Readable name",
+                "Comment",
+                "row.value",
+                "Stored display value",
+                "Proposed field meaning",
+                "#field-value",
+            ] {
+                assert!(table.contains(text), "{text}");
+            }
+        }
+        plan["models"][0]["fields"][0]["readableName"]["evidence"][0]["textDigest"] =
+            json!("sha256:changed");
+        assert!(read(&plan, &files, &guides, &check).is_err());
+        plan["models"][0]["fields"][0]["readableName"]["text"] = json!("two\nlines");
+        assert!(read(&plan, &files, &guides, &check).is_err());
+    }
+    #[test]
+    fn field_names_are_not_inferred_from_generic_claim_titles() {
+        let model = json!({"fields":[{"id":"id","path":"id","meaning":{"title":"Source interpretation","text":"Exact complete original comment"}}]});
+        let table = field_table(&model, "en", false);
+        assert!(table.contains("Readable name not provided"));
+        assert!(table.contains("Exact complete original comment"));
+        assert!(!table.contains("Source interpretation"));
+        assert!(field_table(&model, "ru", false).contains("Понятное название не указано"));
+    }
+    #[test]
     fn authored_language_inherits_per_model_without_changing_bound_claims() {
         let (mut plan, files, guides, check) = fixture();
         let unknown = read(&plan, &files, &guides, &check).unwrap();
@@ -1501,7 +1621,7 @@ mod tests {
                     "authored title matches an owned label but remains exact"
                 );
                 assert!(
-                    html.contains("<p>Source and scope</p>"),
+                    html.contains("data-clew-markdown>Source and scope</div>"),
                     "authored field meaning remains exact"
                 );
                 if target == "ru" {
@@ -1608,7 +1728,7 @@ mod tests {
         assert!(html.contains("Agent proposal · Not reviewed"));
         assert!(!html.contains("id=\"field-usage\""));
         assert!(!html.contains("href=\"#field-usage\""));
-        assert!(html.contains("<summary>Source and scope</summary><p>Proposed field meaning</p>"));
+        assert!(html.contains("<summary>Source and scope</summary><div class=\"clew-markdown\" data-clew-markdown>Proposed field meaning</div>"));
         assert!(html.contains("id=\"dm-return\""));
     }
 
@@ -1626,20 +1746,28 @@ mod tests {
             let html = field_table(&model, "en", portable);
             assert!(html.contains("<caption>Field descriptions</caption>"));
             assert_eq!(html.matches("scope=\"row\"").count(), 2);
-            assert_eq!(html.matches("scope=\"col\"").count(), 2);
-            assert!(html.contains("href=\"#field-value\"><code>payload.value</code>"));
-            assert!(html.contains("Keep &lt;source&gt; &#123;value&#125; and | punctuation"));
+            assert_eq!(html.matches("scope=\"col\"").count(), 3);
+            assert!(html.contains(
+                "href=\"#field-value\" data-clew-field-details=\"\"><code>payload.value</code>"
+            ));
+            if portable {
+                assert!(html.contains(
+                    "<ClewMarkdown text={\"Keep <source> {value} and | punctuation\"} />"
+                ));
+            } else {
+                assert!(html.contains("Keep &lt;source&gt; &#123;value&#125; and | punctuation"));
+                assert!(!html.contains("<source>"));
+            }
             for technical in ["Request", "Storage", "int64", "optional", "nullable"] {
                 assert!(
                     !html.contains(technical),
                     "technical representation leaked into overview: {technical}"
                 );
             }
-            assert!(!html.contains("<source>"));
             assert_eq!(model, before);
         }
         let russian = field_table(&model, "ru", false);
-        assert!(russian.contains("Описание полей") && russian.contains("Назначение"));
+        assert!(russian.contains("Описание полей") && russian.contains("Понятное название"));
         assert!(russian.contains("No declared representation"));
     }
 

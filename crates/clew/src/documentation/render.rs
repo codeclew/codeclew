@@ -23,9 +23,15 @@ const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
 pub(super) const STYLE: &str = concat!(
     include_str!("../../assets/documentation/style.css"),
     "\n",
-    include_str!("../../assets/documentation/typography.css")
+    include_str!("../../assets/documentation/typography.css"),
+    "\n",
+    include_str!("../../assets/documentation/markdown.css")
 );
-const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
+const SCRIPT: &str = concat!(
+    include_str!("../../assets/documentation/markdown.js"),
+    "\n",
+    include_str!("../../assets/documentation/app.js")
+);
 const QUESTION_ARROW: &str = include_str!("../../assets/documentation/tabler/arrow-right.svg");
 const QUESTION_DATABASE: &str = include_str!("../../assets/documentation/tabler/database.svg");
 const QUESTION_ICON_LICENSE: &str = include_str!("../../assets/documentation/tabler/LICENSE");
@@ -709,11 +715,8 @@ pub(super) fn validate_with_retained(
                     "{diagnostic_prefix}: explanation text exceeds the 8192-byte limit"
                 )));
             }
-            if paragraph.text.contains(['`', '<']) {
-                return Err(invalid(format!(
-                    "{diagnostic_prefix}: use plain domain prose; less-than signs and backticks are not allowed"
-                )));
-            }
+            // Explanation bodies support safe Markdown. Summaries remain plain
+            // prose; exact source/evidence views never pass through Markdown.
             if paragraph.event_ids.is_empty() {
                 return Err(invalid(format!(
                     "{diagnostic_prefix}: reference at least one diagram step"
@@ -4966,14 +4969,10 @@ mod explanation_diagnostic_tests {
             "explanation text exceeds the 8192-byte limit",
         );
 
-        let mut nonplain_text = narrative.clone();
-        nonplain_text.operations[0].explanation[3].text = "Read get<T>(id)".into();
-        let error = validate(&nonplain_text, &checked).unwrap_err();
-        assert_eq!(
-            error.message,
-            "operation 1, explanation paragraph 4: use plain domain prose; less-than signs and backticks are not allowed"
-        );
-        assert!(!error.message.contains("get<T>(id)"));
+        let mut markdown_text = narrative.clone();
+        markdown_text.operations[0].explanation[3].text =
+            "Read `get<T>(id)`\n\n| Field | Comment |\n| --- | --- |\n| id | Exact key |".into();
+        assert!(validate(&markdown_text, &checked).is_ok());
 
         let mut no_step = narrative.clone();
         no_step.operations[0].explanation[3].event_ids.clear();

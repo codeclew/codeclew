@@ -6,6 +6,7 @@ mod data_state;
 mod docusaurus;
 mod full;
 mod linked;
+mod markdown;
 pub mod model;
 mod project;
 mod prose_language;

@@ -280,7 +280,7 @@ fn evidence_in_language(block: &Value, prefix: &str, language: &str) -> Result<S
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewMarkdown, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -299,11 +299,14 @@ fn archive_link(name: &str) -> String {
     )
 }
 
+fn prose(value: &str) -> String {
+    super::markdown::mdx(value)
+}
 fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError> {
     block_in(block, page, section, "../")
 }
 fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
-    let mut out = format!("{}\n\n", reading::inline(text(&block["text"])));
+    let mut out = format!("{}\n\n", prose(text(&block["text"])));
     let mut links = String::new();
     for link in rows(&block["links"]) {
         let subject = text(&link["subject"]);
@@ -914,7 +917,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             "#### {}. {}\n\n{}\n\n{}",
             i + 1,
             md(text(&event["kind"])),
-            reading::inline(text(&event["text"])),
+            prose(text(&event["text"])),
             details("Source bindings", &citations(page, id, event)?)
         ));
     }
@@ -930,7 +933,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
     for claim in rows(&op["explanation"]) {
         out.push_str(&format!(
             "{}\n\n{}",
-            reading::inline(text(&claim["text"])),
+            prose(text(&claim["text"])),
             details("Source bindings", &citations(page, id, claim)?)
         ));
     }
@@ -1490,7 +1493,7 @@ fn model_page(
 
     out.push_str(&format!(
         "{clew_label_0} · {clew_label_1}.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
-        reading::inline(text(&model["purpose"]["text"])),
+        prose(text(&model["purpose"]["text"])),
         clew_label_0 = contracts::literal(crate::documentation::language::label(
             language,
             "Agent proposal"
@@ -1503,7 +1506,7 @@ fn model_page(
     out.push_str(&evidence_language(&model["purpose"], language)?);
     out.push_str(&format!(
         "## {clew_label_0} {{#identity-and-relationships}}\n\n{}\n\n",
-        reading::inline(text(&model["identity"]["text"])),
+        prose(text(&model["identity"]["text"])),
         clew_label_0 = contracts::literal(crate::documentation::language::label(
             language,
             "Identity and relationships"
@@ -1584,7 +1587,7 @@ fn model_page(
                     ),
                     &format!(
                         "{}\n\n{}",
-                        reading::inline(text(&record["claim"]["text"])),
+                        prose(text(&record["claim"]["text"])),
                         evidence_language(&record["claim"], language)?
                     )
                 )
@@ -1602,11 +1605,31 @@ fn model_page(
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
         out.push_str(&format!(
-            "### {} {{#field-{fid}}}\n\n{}\n\n",
+            "### {} {{#field-{fid}}}\n\n<details className=\"dm-field-details\"><summary>{}</summary>\n\n",
             md(text(&field["path"])),
-            reading::inline(text(&field["meaning"]["text"]))
+            contracts::literal(crate::documentation::language::label(language,"Technical representations"))
         ));
         out.push_str(&evidence_language(&field["meaning"], language)?);
+        for (key, title) in [
+            ("originalName", "Original field"),
+            ("readableName", "Readable name"),
+        ] {
+            if field[key].is_object() {
+                out.push_str(&details(
+                    &format!(
+                        "{}: {}",
+                        crate::documentation::language::label(language, "Field label provenance"),
+                        crate::documentation::language::label(language, title)
+                    ),
+                    &format!(
+                        "{}\n\n{}",
+                        reading::inline(text(&field[key]["text"])),
+                        evidence_language(&field[key], language)?
+                    ),
+                ));
+            }
+        }
+
         out.push_str(&contracts::representations(field, catalog, language));
         for rep in rows(&field["representations"]) {
             let mut body = format!(
@@ -1614,7 +1637,7 @@ fn model_page(
                 md(text(&rep["typeLabel"])),
                 md(text(&rep["requiredness"])),
                 md(text(&rep["nullability"])),
-                reading::inline(text(&rep["mapping"]["text"]))
+                prose(text(&rep["mapping"]["text"]))
             );
             if let Some(contract) = rows(&catalog["contracts"])
                 .find(|c| c["id"] == rep["contract"] && rep["contract"].is_string())
@@ -1650,6 +1673,7 @@ fn model_page(
         if !super::data_model::reference_only(model) {
             out.push_str(&format!("<ClewFieldTrace field={} />\n\n", json!(fid)));
         }
+        out.push_str("</details>\n\n");
     }
     if super::data_model::reference_only(model) {
         out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## {clew_label_0} {{#processes}}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
@@ -2246,6 +2270,14 @@ pub(super) fn project(
     );
     for (path, bytes) in [
         (
+            "src/components/clew-markdown.cjs",
+            include_bytes!("../../../assets/documentation/markdown.js").as_slice(),
+        ),
+        (
+            "src/css/clew-markdown.css",
+            include_bytes!("../../../assets/documentation/markdown.css").as_slice(),
+        ),
+        (
             "package.json",
             include_bytes!("../../../assets/documentation/docusaurus/package.json").as_slice(),
         ),
@@ -2753,8 +2785,8 @@ mod tests {
             .unwrap();
         let details = body.find("### name {#field-name}").unwrap();
         assert!(table < details);
-        assert!(body.contains("<th scope=\"row\"><a href=\"#field-name\"><code>name</code>"));
-        assert!(body.contains("<td data-label=\"Purpose\">Display name</td>"));
+        assert!(body.contains("<th scope=\"row\"><a href=\"#field-name\" data-clew-field-details=\"\"><code>name</code>"));
+        assert!(body.contains("<ClewMarkdown text={\"Display name\"} />"));
         assert!(body[details..].contains("Request") && body[details..].contains("string"));
         assert!(body[details..].contains("optional") && body[details..].contains("unknown"));
         assert!(body.contains("Original mapping"));

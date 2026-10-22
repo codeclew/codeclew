@@ -8,7 +8,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const iconAssets=Object.fromEntries(['arrow-right','database','license'].map(name=>[name,fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/tabler/',name==='license'?'LICENSE':name+'.svg'),'utf8')]));
 const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/ru.json'),'utf8')+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/locale.js'),'utf8')+'\n';
-const script=localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
+const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
 test('shared locale translates owned template chunks without touching matching authored or schema text',()=>{
@@ -174,16 +174,16 @@ test('Kafka boundaries keep local publication separate from linked continuations
 test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
  const data=behaviorFixture(),en=load(data),html=en.e('scenario-content').innerHTML;
  assert.equal((html.match(/class="diagram-card behavior-pseudocode"/g)||[]).length,1);
- assert.match(html,/If<\/code><span class="pseudocode-text">the quantity is positive:/);
- assert.match(html,/Loop<\/code><span class="pseudocode-text">For each supplied reservation:/);
+ assert.match(html,/If<\/code><div class="pseudocode-text clew-markdown"><p>the quantity is positive:/);
+ assert.match(html,/Loop<\/code><div class="pseudocode-text clew-markdown"><p>For each supplied reservation:/);
  assert.match(html,/Reservation service → Reservation store: Apply &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
  assert.doesNotMatch(html,/<script>alert\(1\)<\/script>/);
  assert.match(html,/Otherwise/);
- assert.match(html,/When<\/code><span class="pseudocode-text">an audit note is supplied:/);
- assert.match(html,/Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/When<\/code><div class="pseudocode-text clew-markdown"><p>an audit note is supplied:/);
+ assert.match(html,/Return<\/code><div class="pseudocode-text clew-markdown"><p>Reservation service → Caller: the accepted result/);
  assert.match(html,/style="--indent:40px;--indent-mobile:26px"/);
- assert.match(html,/style="--indent:200px;--indent-mobile:130px"><code class="pseudocode-keyword">Declared interaction<\/code><span class="pseudocode-text">\(Reservation service → Reservation store\) Provider submission remains a declaration/);
- assert.match(html,/<div class="behavior-pseudocode-line" role="listitem" style="--indent:0px;--indent-mobile:0px"><code class="pseudocode-keyword">Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/style="--indent:200px;--indent-mobile:130px"><code class="pseudocode-keyword">Declared interaction<\/code><div class="pseudocode-text clew-markdown"><p>\(Reservation service → Reservation store\) Provider submission remains a declaration/);
+ assert.match(html,/<div class="behavior-pseudocode-line" role="listitem" style="--indent:0px;--indent-mobile:0px"><code class="pseudocode-keyword">Return<\/code><div class="pseudocode-text clew-markdown"><p>Reservation service → Caller: the accepted result/);
  assert.match(html,/data-sources="rejected&amp;guard" data-source-operation="reserve-fixture"/);
  assert.match(html,/<details class="sequence-details"><summary>Sequence diagram<\/summary>/);
  assert.match(html,/class="sequence-svg"/);
@@ -457,11 +457,11 @@ test('sequence preserves an otherwise explanation when only the localized keywor
  event.dependencyIds=['alternative-flow'];
  operation.explanation=[{id:'alternative-explanation',text:event.text,eventIds:[event.id],dependencyIds:[...event.dependencyIds],sourceIds:[...event.sourceIds],detail:false}];
  const canonical=JSON.stringify(operation),en=load(data);
- assert.match(en.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Otherwise<\/code><span class="pseudocode-text"><\/span>/);
+ assert.match(en.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Otherwise<\/code><div class="pseudocode-text clew-markdown"><\/div>/);
  assert.match(en.e('scenario-content').innerHTML,/<p>Otherwise<\/p>/);
  assert.equal(en.run('JSON.stringify(D.operations[0])'),canonical);
  const ru=load({...data,language:'ru'});
- assert.match(ru.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Иначе<\/code><span class="pseudocode-text"><\/span>/);
+ assert.match(ru.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Иначе<\/code><div class="pseudocode-text clew-markdown"><\/div>/);
  assert.match(ru.e('scenario-content').innerHTML,/<p>Otherwise<\/p>/);
 });
 test('redundant-copy filtering preserves distinct evidence, thematic, authored, detail and unresolved context',()=>{

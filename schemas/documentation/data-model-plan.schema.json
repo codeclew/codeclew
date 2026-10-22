@@ -39,6 +39,12 @@
         "$ref": "#/$defs/processView"
       },
       "maxItems": 32
+    },
+    "documentationLanguage": {
+      "enum": [
+        "en",
+        "ru"
+      ]
     }
   },
   "required": [
@@ -388,6 +394,12 @@
             "$ref": "#/$defs/usage"
           },
           "maxItems": 32
+        },
+        "readableName": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "originalName": {
+          "$ref": "#/$defs/fieldName"
         }
       },
       "required": [
@@ -498,6 +510,12 @@
           "items": {
             "$ref": "#/$defs/referenceRecord"
           }
+        },
+        "documentationLanguage": {
+          "enum": [
+            "en",
+            "ru"
+          ]
         }
       },
       "required": [
@@ -731,6 +749,12 @@
               }
             }
           }
+        },
+        "documentationLanguage": {
+          "enum": [
+            "en",
+            "ru"
+          ]
         }
       },
       "required": [
@@ -769,6 +793,21 @@
           "$ref": "#/$defs/block"
         }
       }
+    },
+    "fieldName": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/block"
+        },
+        {
+          "properties": {
+            "text": {
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            }
+          }
+        }
+      ]
     }
   }
 }

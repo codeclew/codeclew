@@ -50,12 +50,12 @@ function questionModelReferences(anchor){
  return chromeHtml`<p class="question-context-links">${links.map(link=>chromeHtml`<a data-dm-context data-dm-return-anchor="${esc(anchor)}" href="${esc(link.href+query)}">${esc(link.title)}</a>`).join(' · ')}</p>`;
 }
 function questionBlock(block,section,index,story=false){
- return chromeHtml`<article class="question-block ${story?'question-story-row':''}">${story?chromeHtml`<span class="question-step-number" aria-hidden="true">${index+1}</span>`:''}<div><h3>${esc(block.title)}</h3><p>${esc(block.text)}</p>${block.links?.length?chromeHtml`<p class="question-context-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</p>`:''}${questionEvidence(block)}</div></article>`;
+ return chromeHtml`<article class="question-block ${story?'question-story-row':''}">${story?chromeHtml`<span class="question-step-number" aria-hidden="true">${index+1}</span>`:''}<div><h3>${esc(block.title)}</h3><div class="clew-markdown">${prose(block.text)}</div>${block.links?.length?chromeHtml`<p class="question-context-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</p>`:''}${questionEvidence(block)}</div></article>`;
 }
 function showQuestionReader(){
  const guide=D.questionReader;if(guide.presentation==='SEQUENTIAL'){showSequentialReader();return;}questionStatus(D.operationStates?.['process-overview']||D.sectionState);
  const selector=chromeHtml`<label class="question-mobile-nav">Read a question<select id="question-select" aria-label="Read a question">${guide.sections.map(s=>chromeHtml`<option value="${esc(questionAnchor(s.id))}">${esc(s.title)}</option>`).join('')}</select></label>`;
- const sections=guide.sections.map((s,index)=>chromeHtml`${s.id==='confidence'?relatedTopicContinuations():''}<section id="${esc(questionAnchor(s.id))}" tabindex="-1" class="question-section"><h2>${esc(s.title)}</h2>${questionOriginalLanguageNotice()}${s.blocks.map((b,n)=>questionBlock(b,s.id,n,index===0)+(n===0?processTopicSection(s.id):'')).join('')}${index===0?chromeHtml`<aside class="question-local-result"><h3>${esc(guide.conclusion.title)}</h3><p>${esc(guide.conclusion.text)}</p>${questionEvidence(guide.conclusion)}</aside>`:''}${s.id==='confidence'?questionOriginals():''}</section>`).join('');
+ const sections=guide.sections.map((s,index)=>chromeHtml`${s.id==='confidence'?relatedTopicContinuations():''}<section id="${esc(questionAnchor(s.id))}" tabindex="-1" class="question-section"><h2>${esc(s.title)}</h2>${questionOriginalLanguageNotice()}${s.blocks.map((b,n)=>questionBlock(b,s.id,n,index===0)+(n===0?processTopicSection(s.id):'')).join('')}${index===0?chromeHtml`<aside class="question-local-result"><h3>${esc(guide.conclusion.title)}</h3><div class="clew-markdown">${prose(guide.conclusion.text)}</div>${questionEvidence(guide.conclusion)}</aside>`:''}${s.id==='confidence'?questionOriginals():''}</section>`).join('');
  $('scenario-content').innerHTML=chromeHtml`<div class="question-reader"><header class="question-heading"><h1>${esc(guide.title)}</h1><p>${esc(guide.purpose)}</p></header>${selector}${sections}<p class="question-end">End of this bounded account. Separate continuation views keep their own evidence and unknowns.</p></div>`;
  $('scenario-content').querySelector?.('#question-select')?.addEventListener('change',event=>{const hash='#'+event.target.value;history.pushState(null,'',hash);revealQuestion(event.target.value);});
  nav();questionObserve();document.title=guide.title+' · Codeclew';
@@ -145,7 +145,7 @@ function sequentialNav(){
 function sequentialText(text){return String(text).split(/(`[^`\n]+`)/g).map(part=>part.startsWith('`')&&part.endsWith('`')?chromeHtml`<code>${esc(part.slice(1,-1))}</code>`:esc(part)).join('');}
 function sequentialBlock(block,section){
  const links=block.links?.length?chromeHtml` <span class="sequential-inline-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</span>`:'';
- const content=chromeHtml`<p>${sequentialText(block.text)}${links}</p>`;
+ const content=chromeHtml`<div class="clew-markdown">${prose(block.text)}</div>${links?chromeHtml`<p class="question-context-links">${links}</p>`:''}`;
  if(block.disclosure)return chromeHtml`<details class="sequential-contract"><summary>${esc(block.disclosure)}${block.preview?chromeHtml`<span>${esc(block.preview)}</span>`:''}</summary>${content}${questionEvidence(block)}</details>`;
  if(block.tone&&block.tone!=='NORMAL')return chromeHtml`<aside${block.id?chromeHtml` id="${esc(questionAnchor(block.id))}" tabindex="-1"`:''} class="sequential-callout sequential-${esc(block.tone.toLowerCase())}"><h3>${esc(block.title)}</h3>${content}</aside>`;
  return content;
