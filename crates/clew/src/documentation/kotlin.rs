@@ -276,28 +276,20 @@ pub(super) fn project_facts(
                             "Kotlin documentation flow has an invalid file/owner binding",
                         ));
                     }
-                    let candidates: Vec<_> = descriptor_occurrences
-                        .iter()
-                        .filter(|key| {
-                            key.0 == scope
-                                && key.2 == symbol
-                                && file.is_none_or(|file| key.1 == file)
-                                && (!owner.is_object()
-                                    || (owner["file"] == key.1
-                                        && owner["symbolIdentity"] == key.2
-                                        && owner["byteStart"] == key.3
-                                        && owner["byteEnd"] == key.4))
-                        })
-                        .collect();
-                    let [key] = candidates.as_slice() else {
-                        return Err(invalid(
-                            "Kotlin documentation flow lacks one exact scope/file/declaration owner",
-                        ));
-                    };
-                    if flows
-                        .insert((**key).clone(), (flow.clone(), binding.clone()))
-                        .is_some()
-                    {
+                    let key = if owner.is_object() {
+                        let file = owner["file"].as_str().filter(|value| file.is_none_or(|file| file==*value));
+                        let exact = file.zip(owner["byteStart"].as_u64()).zip(owner["byteEnd"].as_u64())
+                            .filter(|_|owner["symbolIdentity"]==symbol)
+                            .map(|((file,start),end)|(scope.clone(),file.to_owned(),symbol.to_owned(),start,end));
+                        exact.and_then(|key|descriptor_occurrences.get(&key)).cloned()
+                    } else {
+                        // Legacy producer rows have no explicit owner range. Limit
+                        // uniqueness checks to their indexed callable family.
+                        let candidates: Vec<_> = symbol_occurrences.get(&(scope,symbol.to_owned()))
+                            .into_iter().flatten().filter(|key|file.is_none_or(|file|key.1==file)).take(2).collect();
+                        match candidates.as_slice() { [key]=>Some((**key).clone()), _=>None }
+                    }.ok_or_else(||invalid("Kotlin documentation flow lacks one exact scope/file/declaration owner"))?;
+                    if flows.insert(key, (flow.clone(), binding.clone())).is_some() {
                         return Err(invalid(
                             "Kotlin documentation repeats a compiler declaration flow owner",
                         ));

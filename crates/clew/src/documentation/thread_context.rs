@@ -301,10 +301,13 @@ pub(super) fn context(
             .filter(|event| event.belongs_to_declaration(method))
             .filter(|event| syntax || graph_events.contains(event.id.as_str()))
             .collect();
-        let effects = effects_index
+        let effects: Vec<_> = effects_index
             .get(&(scope(method), method.symbol.as_str()))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|effect| effect.belongs_to_declaration(method))
+            .collect();
         let bytes: usize = method
             .source_ids
             .iter()
