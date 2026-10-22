@@ -2985,6 +2985,39 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
     }
 }
 
+fn contract_source_provenance(source: &Source) -> Result<bool, ClewError> {
+    match &source.occurrence {
+        // Sealed JVM import retains the complete admitted contract text.
+        None => Ok(source.evidence_digest == source.text_digest),
+        // SOURCE capture pins the same text to its immutable scoped snapshot,
+        // Git blob and whole-file byte range instead of using a text-only pin.
+        Some(occurrence) => {
+            let hex = |value: &str, size: usize| {
+                value.len() == size
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            };
+            Ok(occurrence.generated_origin.is_none()
+                && occurrence
+                    .snapshot
+                    .strip_prefix("sha256:")
+                    .is_some_and(|hash| hex(hash, 64))
+                && (hex(&occurrence.blob, 40) || hex(&occurrence.blob, 64))
+                && occurrence.start_byte == 0
+                && occurrence.end_byte == source.text.len()
+                && source.evidence_digest
+                    == digest(&(
+                        SOURCE_EXTRACTOR,
+                        &occurrence.snapshot,
+                        &occurrence.blob,
+                        occurrence.start_byte,
+                        occurrence.end_byte,
+                    ))?)
+        }
+    }
+}
+
 /// Inventory is scoped by immutable captured source membership, never dependency
 /// symbol matching. Its scope digest is already watched by Work influence.
 fn source_inventory_evidence(work: &Work) -> Result<&ServiceEvidence, ClewError> {
@@ -3044,7 +3077,7 @@ fn source_inventory_evidence(work: &Work) -> Result<&ServiceEvidence, ClewError>
             && source.start_line == 1
             && source.end_line == source.text.lines().count() as u64
             && source.text_digest == crate::canonical::hash_bytes(source.text.as_bytes())
-            && source.evidence_digest == source.text_digest
+            && contract_source_provenance(source)?
             && *id == super::analysis::source_id(service, &format!("contract/{}", source.file))?
             && contract_inputs
                 .and_then(|inputs| inputs.get(&source.file))
@@ -4293,6 +4326,136 @@ mod section_context_tests {
                         "source-authority" => source.authority = "EXACT_SNAPSHOT_TEXT".into(),
                         "source-file" => source.file = "outside.json".into(),
                         "source-service" => source.service = "other".into(),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            assert!(
+                rows(&invalid, &source_inventory_selection()).is_err(),
+                "{defect}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_inventory_accepts_real_captured_contract_occurrence_and_rejects_pin_corruption() {
+        use crate::{cas::CasStore, state::StateAuthority};
+        use std::process::Command;
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        fs::create_dir_all(repo.path().join("src/main/java")).unwrap();
+        fs::create_dir_all(repo.path().join("src/main/resources")).unwrap();
+        fs::write(
+            repo.path().join("src/main/java/Entry.java"),
+            "class Entry { void run() {} }\n",
+        )
+        .unwrap();
+        let file = "src/main/resources/openapi.json";
+        fs::write(repo.path().join(file),"{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Owned\",\"version\":\"1\"},\"paths\":{}}\n").unwrap();
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "owned source and contract",
+        ]);
+        let revision = git(&["rev-parse", "HEAD"]);
+        let service:Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/owned","language":"java","profile":"source-syntax","targetRef":"HEAD","source":{"roots":["src/main/java"],"dialect":"declared"},"contractFiles":[file]})).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(home.path().join("v2")).unwrap();
+        let cas = CasStore::open(&authority).unwrap();
+        let mut evidence =
+            super::super::syntax::capture_with_store(&service, repo.path(), &revision, &cas)
+                .unwrap();
+        super::super::contracts::capture_with_store(&service, repo.path(), &mut evidence, &cas)
+            .unwrap();
+        let id = super::super::analysis::source_id("orders", &format!("contract/{file}")).unwrap();
+        let contract = &evidence.sources[&id];
+        assert!(contract.occurrence.is_some());
+        assert_ne!(contract.evidence_digest, contract.text_digest);
+        assert!(contract_source_provenance(contract).unwrap());
+        let mut work = source_inventory_fixture("unused\n".into());
+        work.influence = evidence
+            .observations
+            .iter()
+            .map(|(id, o)| (id.clone(), o.digest.clone()))
+            .collect();
+        work.checked.dependencies = evidence.observations.clone();
+        work.handles = evidence
+            .sources
+            .keys()
+            .enumerate()
+            .map(|(index, id)| {
+                (
+                    format!("s{index}"),
+                    Handle {
+                        kind: "SOURCE".into(),
+                        id: id.clone(),
+                    },
+                )
+            })
+            .collect();
+        work.checked.services = BTreeMap::from([("orders".into(), evidence)]);
+        let selected = rows(&work, &source_inventory_selection()).unwrap();
+        assert_eq!(
+            selected.len(),
+            work.checked.services["orders"].sources.len()
+        );
+        assert!(selected.iter().any(|row| row["record"]["file"] == file));
+        assert!(
+            work.checked
+                .dependencies
+                .values()
+                .filter(|o| o.kind == "SOURCE_SCOPE")
+                .all(|o| o.normalized["inventory"].get(file).is_none())
+        );
+        for defect in [
+            "snapshot",
+            "blob",
+            "start",
+            "end",
+            "generated",
+            "evidence",
+            "missing-occurrence",
+            "text-only-fallback",
+        ] {
+            let mut invalid = work.clone();
+            let source = invalid
+                .checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .get_mut(&id)
+                .unwrap();
+            match defect {
+                "evidence" => source.evidence_digest = "sha256:corrupt".into(),
+                "missing-occurrence" => source.occurrence = None,
+                "text-only-fallback" => source.evidence_digest = source.text_digest.clone(),
+                other => {
+                    let occurrence = source.occurrence.as_mut().unwrap();
+                    match other {
+                        "snapshot" => occurrence.snapshot = format!("sha256:{}", "e".repeat(64)),
+                        "blob" => occurrence.blob = "f".repeat(40),
+                        "start" => occurrence.start_byte = 1,
+                        "end" => occurrence.end_byte -= 1,
+                        "generated" => occurrence.generated_origin = Some("unadmitted".into()),
                         _ => unreachable!(),
                     }
                 }
