@@ -158,6 +158,7 @@ esac
     let record = f.input("orders-service.json", &json!({
         "schema":"codeclew-documentation-service/1.0", "id":"orders", "title":"Orders",
         "repositoryId":"orders", "repository":"https://example.invalid/orders",
+        "sourceWeb":{"provider":"github","webBase":"https://example.invalid/orders"},
         "language":"java", "profile":"java-17plus-maven-read-only", "compilations":[":/main"], "targetRef":"main"
     }));
     add_service(f, &record);
@@ -549,6 +550,15 @@ fn portable_dependency_capture(attached: bool) {
             .iter()
             .any(|source| source.text_origin.is_some() && source.url.is_some())
     );
+    let controller = audits
+        .iter()
+        .find(|source| source.file == "src/main/java/example/OrderController.java")
+        .unwrap();
+    let expected_url = format!(
+        "https://example.invalid/orders/blob/{}/src/main/java/example/OrderController.java#L{}-L{}",
+        controller.revision, controller.start_line, controller.end_line
+    );
+    assert_eq!(controller.url.as_deref(), Some(expected_url.as_str()));
     let expected_sources: std::collections::BTreeMap<_, _> = expected
         .source_ids
         .iter()

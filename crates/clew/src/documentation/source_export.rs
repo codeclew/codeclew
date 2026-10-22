@@ -155,6 +155,15 @@ fn key(v: &Value) -> SourceKey {
         .to_owned();
     (a, b, c, d, e, url)
 }
+type ExactSourceKey = (SourceKey, String, u64, u64);
+fn exact_key(v: &Value) -> ExactSourceKey {
+    (
+        key(v),
+        v["id"].as_str().unwrap_or("").into(),
+        v["startLine"].as_u64().unwrap_or(0),
+        v["endLine"].as_u64().unwrap_or(0),
+    )
+}
 fn is_source(v: &Value) -> bool {
     v["file"].is_string()
         && v["revision"].is_string()
@@ -175,7 +184,7 @@ fn exact_source(v: &Value) -> bool {
 pub(super) struct Projection<'a> {
     policy: &'a Policy,
     current: BTreeMap<SourceKey, RepositoryMapping>,
-    exact: std::collections::BTreeSet<SourceKey>,
+    exact: std::collections::BTreeSet<ExactSourceKey>,
     origins: BTreeMap<String, Vec<RepositoryMapping>>,
 }
 
@@ -219,7 +228,7 @@ impl<'a> Projection<'a> {
                     for source in evidence.sources.values() {
                         let value = serde_json::to_value(source).map_err(io_error)?;
                         if exact_source(&value) {
-                            exact.insert(key(&value));
+                            exact.insert(exact_key(&value));
                         }
                         current.insert(key(&value), mapping.clone());
                     }
@@ -398,15 +407,29 @@ impl<'a> Projection<'a> {
         // against a complete exact record; a SHA-looking summary alone is not
         // evidence that the source was committed or not generated.
         let mapping = if value.get("authority").is_none() && value.get("text").is_none() {
-            let mut candidates = self.exact.iter().filter_map(|k| {
+            let mut candidates = self.exact.iter().filter_map(|(k, id, start, end)| {
                 let mapping = self.current.get(k)?;
                 if value["revision"].as_str() != Some(k.1.as_str())
                     || value["file"].as_str() != Some(k.2.as_str())
                     || value["textDigest"].as_str() != Some(k.3.as_str())
+                    || value["startLine"].as_u64() != Some(*start)
+                    || value["endLine"].as_u64() != Some(*end)
+                    || value["service"]
+                        .as_str()
+                        .is_some_and(|service| service != k.0)
+                    || value["sourceId"]
+                        .as_str()
+                        .is_some_and(|source| source != id)
                 {
                     return None;
                 }
-                let url = value["url"].as_str()?;
+                // A sourceId plus exact immutable revision/file/text/span must
+                // match a complete admitted record. Absence of an old URL is
+                // expected on private hosts and never grants authority alone.
+                let Some(url) = value["url"].as_str() else {
+                    return (value["sourceId"].as_str() == Some(id.as_str()) && !id.is_empty())
+                        .then_some(mapping);
+                };
                 let canonical = links::link(
                     &mapping.provider,
                     &mapping.web_base,
@@ -535,6 +558,9 @@ impl<'a> Projection<'a> {
                 }
             }
         }
+        let fragment_binding = value["subject"].is_string()
+            && value["contentDigest"].is_string()
+            && value["dependencies"].is_object();
         let observation = value["kind"].is_string()
             && !matches!(
                 value["kind"].as_str(),
@@ -560,6 +586,44 @@ impl<'a> Projection<'a> {
                     // source attachments even when their business fields are named
                     // expression, snippet, text or initializer.
                     if matches!(name.as_str(), "example" | "examples") {
+                        continue;
+                    }
+                    if fragment_binding
+                        && name == "sources"
+                        && let Some(sources) = value.as_object_mut()
+                    {
+                        for (id, summary) in sources {
+                            if summary["sourceId"]
+                                .as_str()
+                                .is_some_and(|source| source != id)
+                            {
+                                return Err(invalid(
+                                    "fragment source identity differs from its retained map key",
+                                ));
+                            }
+                            if is_source(summary)
+                                && summary.get("authority").is_none()
+                                && summary.get("text").is_none()
+                                && !summary["sourceId"].is_string()
+                            {
+                                // FragmentBinding.sources is keyed by the admitted source
+                                // identity. Use it only for exact matching and restore the
+                                // legacy summary shape after projecting the browser URL.
+                                let previous = summary
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .insert("sourceId".into(), json!(id));
+                                let result = self.source(summary);
+                                if let Some(previous) = previous {
+                                    summary["sourceId"] = previous;
+                                } else {
+                                    summary.as_object_mut().unwrap().remove("sourceId");
+                                }
+                                result?;
+                            } else {
+                                self.walk(summary, automatic)?;
+                            }
+                        }
                         continue;
                     }
                     let scoped = automatic
@@ -849,7 +913,7 @@ impl Projection<'_> {
         if is_source(value) && value["text"].is_string() && value["id"].is_string() {
             let mapping = self.repository(value)?;
             if exact_source(value) {
-                self.exact.insert(key(value));
+                self.exact.insert(exact_key(value));
             }
             self.current.insert(key(value), mapping);
         }
@@ -921,6 +985,80 @@ mod tests {
     fn checked() -> Check {
         serde_json::from_value(json!({"schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{}})).unwrap()
     }
+    #[test]
+    fn summary_without_url_requires_complete_exact_source_identity_and_span() {
+        let check = checked();
+        let policy = Policy {
+            mode: SourceMode::Remote,
+            ..Default::default()
+        };
+        let mut projection = Projection::new(&policy, &check).unwrap();
+        let source = json!({"id":"svc-source","service":"svc","revision":REV,"file":"src/A.kt","startLine":3,"endLine":5,"text":"EXACT_PRIVATE_SOURCE_BODY","textDigest":"exact-body","evidenceDigest":"receipt","authority":"EXACT_SNAPSHOT_TEXT","url":format!("https://github.com/owned/repo/blob/{REV}/src/A.kt#L3-L5")});
+        projection.register_sources(&source).unwrap();
+        let summary = json!({"sourceId":"svc-source","revision":REV,"file":"src/A.kt","startLine":3,"endLine":5,"textDigest":"exact-body"});
+        let mut valid = summary.clone();
+        projection.value(&mut valid).unwrap();
+        assert_eq!(
+            valid["url"],
+            format!("https://github.com/owned/repo/blob/{REV}/src/A.kt#L3-L5")
+        );
+        for (field, value) in [
+            ("sourceId", json!("forged")),
+            ("revision", json!("b".repeat(40))),
+            ("file", json!("src/Other.kt")),
+            ("textDigest", json!("forged")),
+            ("startLine", json!(4)),
+            ("endLine", json!(6)),
+        ] {
+            let mut invalid = summary.clone();
+            invalid[field] = value;
+            assert!(projection.value(&mut invalid).is_err(), "{field}");
+        }
+        let mut missing = summary.clone();
+        missing.as_object_mut().unwrap().remove("sourceId");
+        assert!(projection.value(&mut missing).is_err());
+        let mut private_source = source.clone();
+        private_source["url"] = Value::Null;
+        let mut mapped = Projection::new(&policy, &check).unwrap();
+        mapped.current.insert(
+            key(&private_source),
+            RepositoryMapping {
+                provider: "github".into(),
+                web_base: "https://github.com/owned/repo".into(),
+                origin: None,
+            },
+        );
+        mapped.register_sources(&private_source).unwrap();
+        let mut without_url = summary.clone();
+        mapped.value(&mut without_url).unwrap();
+        assert_eq!(without_url["url"], valid["url"]);
+        let mut keyed = summary.clone();
+        keyed.as_object_mut().unwrap().remove("sourceId");
+        let mut fragment = json!({"subject":"service:svc","contentDigest":"accepted-fragment","dependencies":{},"sources":{"svc-source":keyed}});
+        mapped.value(&mut fragment).unwrap();
+        assert_eq!(fragment["sources"]["svc-source"]["url"], valid["url"]);
+        assert!(fragment["sources"]["svc-source"].get("sourceId").is_none());
+        let mut conflicting = fragment.clone();
+        conflicting["sources"]["svc-source"]["sourceId"] = json!("forged");
+        assert!(mapped.value(&mut conflicting).is_err());
+        let mut forged = fragment;
+        let original = forged["sources"]
+            .as_object_mut()
+            .unwrap()
+            .remove("svc-source")
+            .unwrap();
+        forged["sources"]["forged"] = original;
+        assert!(mapped.value(&mut forged).is_err());
+        // A complete generated record must not authorize a source summary.
+        let mut unbound = source;
+        unbound["id"] = json!("generated-source");
+        unbound["authority"] = json!("GENERATED");
+        projection.register_sources(&unbound).unwrap();
+        let mut invalid = summary;
+        invalid["sourceId"] = json!("generated-source");
+        assert!(projection.value(&mut invalid).is_err());
+    }
+
     #[test]
     fn remote_markdown_regenerates_exact_source_appendices_and_preserves_authored_quotes() {
         let checked = checked();

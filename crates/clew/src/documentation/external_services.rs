@@ -87,9 +87,14 @@ pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result
             ));
         }
     }
-    let external = inputs.external_services.keys().cloned().collect();
-    for scenario in inputs.scenarios.values() {
-        super::processes::validate_with_external(scenario, &inputs.services, &external)?;
+    // Historical input manifests without the registry keep their existing
+    // declaration-reading contract, including partial source catalogues.
+    // Live process writes always validate captured and external participants.
+    if !inputs.external_services.is_empty() {
+        let external = inputs.external_services.keys().cloned().collect();
+        for scenario in inputs.scenarios.values() {
+            super::processes::validate_with_external(scenario, &inputs.services, &external)?;
+        }
     }
     for interaction in inputs.interactions.values() {
         if let Some(id) = &interaction.external_service
