@@ -536,10 +536,24 @@ fn portable_dependency_capture(attached: bool) {
     let expected = target(&checked.services["orders"], source_digest.as_deref()).clone();
     let expected_type =
         dependency_type(&checked.services["orders"], source_digest.as_deref()).clone();
+    let audits: Vec<_> = checked.services["orders"]
+        .sources
+        .values()
+        .filter(|source| {
+            source.authority == "ADMITTED_COMPILATION_SOURCE_AUDIT_NOT_CALL_RESOLUTION"
+        })
+        .collect();
+    assert!(!audits.is_empty());
+    assert!(
+        audits
+            .iter()
+            .any(|source| source.text_origin.is_some() && source.url.is_some())
+    );
     let expected_sources: std::collections::BTreeMap<_, _> = expected
         .source_ids
         .iter()
         .chain(&expected_type.source_ids)
+        .chain(audits.iter().map(|source| &source.id))
         .map(|id| (id.clone(), checked.services["orders"].sources[id].clone()))
         .collect();
     let jar_bytes = fs::read(checkout.join("libs/gateway.jar")).unwrap();

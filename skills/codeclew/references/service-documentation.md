@@ -87,9 +87,13 @@ names or proof of bean registration. Explicit import conflicts and known local
 shadows block qualification, including same-package types in other selected files.
 An unmatched SOURCE contract route carries `SOURCE_ROUTE_ABSENCE_UNPROVEN`; do not
 report it as proof of a missing implementation. Other unresolved names, dynamic
-paths and unsupported registrations remain unknown. Valid compact Kotlin class
-members retain their original bytes; other parser errors remain explicit partial
-capture. Do not reformat a retained fixture to hide a capture gap.
+paths and unsupported registrations remain unknown. Compact Kotlin class members
+can recover a redundant parser terminator only when an existing space or tab before
+`}` preserves byte offsets. Without that whitespace, or for other parser errors,
+capture remains explicitly partial. A top-level annotated expression that the pinned
+Kotlin grammar cannot enumerate as a declaration also makes capture partial.
+Original bytes are retained. Do not reformat
+a retained fixture to hide a capture gap.
 
 Set `source.roots` and `source.dialect`; omit compiler `compilations`. Include
 configuration and helper files in the roots, or record those omitted inputs as

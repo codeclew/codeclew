@@ -365,6 +365,86 @@ fn changed_scope_membership_and_annotations_match_uncached_capture() {
 }
 
 #[test]
+fn package_annotation_shadows_replay_after_warm_membership_changes() {
+    for (language, extension, route) in [
+        (
+            "java",
+            "java",
+            "package probe.shadow; import org.springframework.web.bind.annotation.*; @RestController class Route { @GetMapping(\"/shadow\") String get(){return \"ok\";} }",
+        ),
+        (
+            "kotlin",
+            "kt",
+            "package probe.shadow\nimport org.springframework.web.bind.annotation.*\n@RestController class Route { @GetMapping(\"/shadow\") fun get() = \"ok\" }",
+        ),
+    ] {
+        for annotation in ["RestController", "GetMapping"] {
+            let fixture = Fixture::new();
+            let service = service(language);
+            fixture.write(&format!("Route.{extension}"), route);
+            let before = fixture.commit();
+            let original = fixture.cached(&service, &before);
+            assert!(
+                original
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+            let shadow_file = format!("{annotation}.{extension}");
+            let declaration = if language == "java" {
+                format!(
+                    "package probe.shadow; public @interface {annotation} {{ String[] value() default {{}}; }}"
+                )
+            } else {
+                format!(
+                    "package probe.shadow\nannotation class {annotation}(val value: String = \"\")"
+                )
+            };
+            fixture.write(&shadow_file, &declaration);
+            let after = fixture.commit();
+            let fresh = fixture.uncached(&service, &after);
+            syntax::take_file_cache_stats();
+            let reused = fixture.cached(&service, &after);
+            let stats = syntax::take_file_cache_stats();
+            assert_eq!((stats.hits, stats.misses, stats.parses), (1, 1, 1));
+            assert_eq!(reused, fresh);
+            assert!(
+                !reused
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT"),
+                "{language}/{annotation}: {reused:#?}"
+            );
+            assert!(
+                reused
+                    .boundaries
+                    .contains(&"PACKAGE_LOCAL_ANNOTATION_SHADOWS_WILDCARD".into())
+            );
+            if annotation == "RestController" {
+                assert!(
+                    reused
+                        .entrypoints
+                        .iter()
+                        .any(|entry| entry.kind == "SOURCE_HTTP_MAPPING"
+                            && entry.trigger["paths"] == json!(["/shadow"])
+                            && entry.trigger["frameworkDeclarations"][0]["controller"] == false)
+                );
+            }
+            assert_eq!(fixture.cached(&service, &before), original);
+            fs::remove_file(fixture.source.path().join(shadow_file)).unwrap();
+            let restored = fixture.commit();
+            assert!(
+                fixture
+                    .cached(&service, &restored)
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.kind == "HTTP_ENDPOINT")
+            );
+        }
+    }
+}
+
+#[test]
 fn partial_parse_is_reparsed_and_never_promoted_to_a_cache_hit() {
     let fixture = Fixture::new();
     let service = service("python");
@@ -394,6 +474,41 @@ fn partial_parse_is_reparsed_and_never_promoted_to_a_cache_hit() {
             .unwrap()
             .exists()
     );
+}
+
+#[test]
+fn kotlin_annotated_expression_gap_stays_partial_on_repeated_capture() {
+    let base = "package demo\nimport org.springframework.web.bind.annotation.*\n@RestController\n@RequestMapping(\"/v1\")\nclass Api { @GetMapping(\"/ok\") fun get() = 1\n}\nfun after() = \"fin\"\n";
+    for text in [base.to_string(), base.replace('\n', "\r\n")] {
+        let fixture = Fixture::new();
+        let service = service("kotlin");
+        fixture.write("Api.kt", &text);
+        let revision = fixture.commit();
+        let fresh = fixture.uncached(&service, &revision);
+        assert_eq!(fresh.coverage, "PARTIAL");
+        assert!(fresh.boundaries.contains(&"PARSE_ERROR:Api.kt".into()));
+        assert!(
+            !fresh
+                .entrypoints
+                .iter()
+                .any(|entry| entry.kind == "HTTP_ENDPOINT")
+        );
+        for _ in 0..2 {
+            syntax::take_file_cache_stats();
+            assert_eq!(fixture.cached(&service, &revision), fresh);
+            let stats = syntax::take_file_cache_stats();
+            assert_eq!((stats.hits, stats.misses, stats.parses), (0, 1, 1));
+            assert_eq!(stats.parse_errors, 1);
+        }
+        let key = syntax_file_cache::producer_key(&service, "Api.kt", &text).unwrap();
+        assert!(
+            !fixture
+                .documentation
+                .path(&syntax_file_cache::manifest_path(&key))
+                .unwrap()
+                .exists()
+        );
+    }
 }
 
 #[test]

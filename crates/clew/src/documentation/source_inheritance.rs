@@ -339,7 +339,7 @@ mod tests {
             .replace(": DealApi", ": DealApi, SecondApi");
         let generic = API.replace("interface DealApi", "interface DealApi<T>");
         let nullable = API.replace("source: String", "source: String?");
-        let partial = API.replace("String\n}", "String }");
+        let partial = API.replace("String\n}", "String\n");
         for files in [
             vec![
                 ("DealApi.kt", API),
@@ -359,5 +359,27 @@ mod tests {
                 e.entrypoints
             );
         }
+    }
+
+    #[test]
+    fn valid_compact_interface_keeps_its_declared_mapping() {
+        let compact = API.replace("String\n}", "String }");
+        let captured = evidence(&[("DealApi.kt", &compact), ("DealController.kt", CONTROLLER)]);
+        let baseline = evidence(&[("DealApi.kt", API), ("DealController.kt", CONTROLLER)]);
+        let routes = |e: &ServiceEvidence| {
+            e.entrypoints
+                .iter()
+                .filter(|entry| super::super::process_candidates::public_boundary(entry))
+                .map(|entry| entry.trigger["paths"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(routes(&captured), routes(&baseline));
+        assert!(!routes(&captured).is_empty());
+        assert!(
+            !captured
+                .boundaries
+                .iter()
+                .any(|b| b.starts_with("PARSE_ERROR:"))
+        );
     }
 }

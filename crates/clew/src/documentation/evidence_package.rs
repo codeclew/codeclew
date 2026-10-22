@@ -22,6 +22,43 @@ const MAX_TOTAL: u64 = 128 * 1024 * 1024;
 const MAX_PARTS: usize = 4096;
 const MAX_RECORDS: usize = 131_072;
 
+fn verify_portable_source(
+    source: &Source,
+    service: &Service,
+    compiler_capture: bool,
+) -> Result<(), ClewError> {
+    super::source_origin::verify(source)?;
+    let audit = source.authority == super::source_origin::AUDIT;
+    if !(matches!(
+        source.authority.as_str(),
+        "EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI" | "EXACT_DEPENDENCY_SOURCE_ARCHIVE"
+    ) || (audit && compiler_capture))
+        || !hash(&source.evidence_digest)
+        || (source.authority == "EXACT_DEPENDENCY_SOURCE_ARCHIVE" && source.url.is_some())
+        || (audit
+            && source.url.is_some()
+            && (source.text_origin.is_none()
+                || source.url
+                    != analysis::source_link(
+                        service,
+                        &source.revision,
+                        &source.file,
+                        source.start_line,
+                        source.end_line,
+                    )))
+        || source.url.as_ref().is_some_and(|url| {
+            let (base, anchor) = url.split_once('#').unwrap_or((url.as_str(), ""));
+            !store::safe_url(base)
+                || !anchor
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || matches!(b, b'L' | b'-'))
+        })
+    {
+        return Err(invalid("invalid portable source authority or URL"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Retain an engine-owned SOURCE evidence set for Q&A without publishing docs.
@@ -482,21 +519,7 @@ impl Package {
         }
         let mut seen = BTreeSet::new();
         for s in e.sources.values() {
-            if !matches!(
-                s.authority.as_str(),
-                "EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI" | "EXACT_DEPENDENCY_SOURCE_ARCHIVE"
-            ) || !hash(&s.evidence_digest)
-                || (s.authority == "EXACT_DEPENDENCY_SOURCE_ARCHIVE" && s.url.is_some())
-                || s.url.as_ref().is_some_and(|s| {
-                    let (base, anchor) = s.split_once('#').unwrap_or((s.as_str(), ""));
-                    !store::safe_url(base)
-                        || !anchor
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || matches!(b, b'L' | b'-'))
-                })
-            {
-                return Err(invalid("invalid portable source authority or URL"));
-            }
+            verify_portable_source(s, &self.manifest.service, e.extractor == EXTRACTOR)?;
         }
         for o in e.observations.values() {
             if o.service != e.service || o.id.is_empty() || o.id.len() > 512 {
@@ -1041,6 +1064,54 @@ mod tests {
             "targetRef":"HEAD"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn portable_audit_keeps_its_boundary_and_requires_committed_origin_for_urls() {
+        let service = fixture_service("Orders");
+        let text = "class Route {}";
+        let mut source: Source = serde_json::from_value(json!({
+            "id":"audit", "service":"orders", "revision":"a".repeat(40),
+            "file":"Route.java", "startLine":1, "endLine":1, "text":text,
+            "textDigest":canonical::hash_bytes(text.as_bytes()),
+            "evidenceDigest":canonical::hash_bytes(b"admitted inputs"),
+            "authority":super::super::source_origin::AUDIT, "url":null
+        }))
+        .unwrap();
+        verify_portable_source(&source, &service, true).unwrap();
+        assert_eq!(source.authority, super::super::source_origin::AUDIT);
+        assert!(verify_portable_source(&source, &service, false).is_err());
+        source.url = analysis::source_link(&service, &source.revision, &source.file, 1, 1);
+        assert!(verify_portable_source(&source, &service, true).is_err());
+        let mut origin = CommittedTextOrigin {
+            schema: "codeclew-committed-source-text/1.0".into(),
+            revision: source.revision.clone(),
+            file: source.file.clone(),
+            git_blob: "b".repeat(40),
+            content_digest: source.text_digest.clone(),
+            snapshot_digest: canonical::hash_bytes(b"snapshot"),
+            start_byte: 0,
+            end_byte: text.len(),
+            line_start: 1,
+            line_end: 1,
+            text_digest: source.text_digest.clone(),
+            evidence_digest: source.evidence_digest.clone(),
+            receipt: String::new(),
+        };
+        origin.receipt = digest(&origin).unwrap();
+        source.text_origin = Some(origin);
+        verify_portable_source(&source, &service, true).unwrap();
+        let valid = source.clone();
+        source.url = Some("https://example.invalid/other/blob/elsewhere#L1-L1".into());
+        assert!(verify_portable_source(&source, &service, true).is_err());
+        source = valid.clone();
+        source.text_origin.as_mut().unwrap().receipt = canonical::hash_bytes(b"wrong receipt");
+        assert!(verify_portable_source(&source, &service, true).is_err());
+        source = valid;
+        source.authority = "UNSUPPORTED_AUTHORITY".into();
+        source.text_origin = None;
+        source.url = None;
+        assert!(verify_portable_source(&source, &service, true).is_err());
     }
 
     #[test]
