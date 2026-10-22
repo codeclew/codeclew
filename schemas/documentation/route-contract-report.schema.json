@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/route-contract-report.schema.json",
+  "title": "Retained bidirectional route and OpenAPI declaration report",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "snapshot",
+    "selection",
+    "services",
+    "counts",
+    "summary",
+    "scopeClosure",
+    "wireConformance",
+    "delivery"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-route-contract-report/1.0"
+    },
+    "status": {
+      "const": "REPORTED"
+    },
+    "snapshot": {
+      "type": "string"
+    },
+    "selection": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "scopeClosure": {
+      "const": "UNPROVEN"
+    },
+    "wireConformance": {
+      "const": "UNVERIFIED"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "required": [
+        "complete",
+        "nextCursor"
+      ],
+      "properties": {
+        "complete": {
+          "const": true
+        },
+        "nextCursor": {
+          "type": "null"
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "revision",
+          "scopeClosure",
+          "findings",
+          "sourceReferences"
+        ],
+        "properties": {
+          "scopeClosure": {
+            "const": "UNPROVEN"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "direction",
+                "status",
+                "method",
+                "path",
+                "service",
+                "snapshot",
+                "revision",
+                "wireConformance"
+              ],
+              "properties": {
+                "direction": {
+                  "enum": [
+                    "SOURCE_TO_CONTRACT",
+                    "CONTRACT_TO_SOURCE"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "DECLARATION_MATCH",
+                    "CANDIDATE_MATCH",
+                    "DECLARED_ROUTE_ONLY",
+                    "CONTRACT_ONLY_UNPROVEN",
+                    "AMBIGUOUS",
+                    "UNSUPPORTED_INCOMPLETE"
+                  ]
+                },
+                "wireConformance": {
+                  "const": "UNVERIFIED"
+                }
+              }
+            }
+          },
+          "sourceReferences": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

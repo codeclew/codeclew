@@ -1233,3 +1233,13 @@ Use `docs recompose` to apply declaration changes to a saved capture without
 acquiring source again. Review `docs external remove --id forecast-provider`
 and apply with the expected input digest only after current references are
 removed explicitly; no cascade or historical rewrite is performed.
+
+## Retained route and OpenAPI comparison
+
+Use `clew docs contract check --root DOCS --snapshot SNAPSHOT --service ID`
+for a read-only bidirectional declaration report. Select services explicitly.
+`REPORTED` means the report was produced, not conformance. Preserve candidate
+authority, legacy sourceMapping, conditions, scope and UNKNOWN boundaries.
+`wireConformance` remains `UNVERIFIED`; a missing captured match never proves a
+missing production endpoint. This command does not recapture or require Work
+preparation. Read the report summary, then the exact finding/source references.

@@ -75,6 +75,7 @@ pub mod render;
 mod retained_contracts;
 pub mod review;
 pub mod reviewed_answers;
+pub mod route_contracts;
 mod section_author;
 pub mod sections;
 mod semantic_overlay;

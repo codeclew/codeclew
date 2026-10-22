@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Compare declared HTTP routes and OpenAPI operations in an explicit saved snapshot.
+    Contract {
+        #[command(subcommand)]
+        command: super::route_contracts::Command,
+    },
     /// Authored external-service information without binding or capturing target source.
     External {
         #[command(subcommand)]
@@ -370,6 +375,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
         Command::Pages { command } => super::static_pages::run(command),
         Command::Dsl { command } => super::flow_dsl::run(command),
         Command::Snapshot { command } => super::snapshot_pins::run(command),
+        Command::Contract { command } => super::route_contracts::run(command),
         Command::View { command } => super::dataflow::run(command),
         Command::Evidence { command } => super::evidence_package::run(command),
         Command::Update { command } => super::updates::run(command),

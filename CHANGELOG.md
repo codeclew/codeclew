@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.49 — 2026-10-23
+
+- Add `docs contract check` for bidirectional route/OpenAPI comparison over an
+  explicitly retained snapshot. Report source-only routes, contract-only
+  obligations, method differences, candidate associations and ambiguity with
+  exact citations. Preserve legacy source mapping and original authority.
+- Keep correlated route pairs and distinct conditions intact; unsupported
+  methods/path semantics remain unknown. Route agreement never establishes
+  production activation or request/response conformance.
+
 ## 0.13.48 — 2026-10-22
 
 - Export selected saved service/process publications in remote mode while retaining
