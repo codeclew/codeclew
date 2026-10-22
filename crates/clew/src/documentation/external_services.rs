@@ -87,6 +87,10 @@ pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result
             ));
         }
     }
+    let external = inputs.external_services.keys().cloned().collect();
+    for scenario in inputs.scenarios.values() {
+        super::processes::validate_with_external(scenario, &inputs.services, &external)?;
+    }
     for interaction in inputs.interactions.values() {
         if let Some(id) = &interaction.external_service
             && (!interaction.external
@@ -176,8 +180,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
+fn declaration_inputs(checked: &Check) -> Option<&super::store::RepositoryInputs> {
+    checked
+        .composition
+        .as_ref()
+        .map(|c| &c.inputs)
+        .or_else(|| checked.source_inputs.as_ref().map(|s| &s.inputs))
+}
+
 pub(super) fn for_page(checked: &Check, subject: &str) -> Value {
-    let inputs = checked.source_inputs.as_ref().map(|s| &s.inputs);
+    let inputs = declaration_inputs(checked);
     let Some(inputs) = inputs else {
         return json!({});
     };
@@ -196,6 +208,19 @@ pub(super) fn for_page(checked: &Check, subject: &str) -> Value {
         })
         .filter_map(|i| i.external_service.as_ref())
         .collect();
+    let mut selected = selected;
+    if let Some(process) = subject
+        .strip_prefix("scenario:")
+        .and_then(|id| inputs.scenarios.get(id))
+        .and_then(|s| s.process.as_ref())
+    {
+        selected.extend(
+            process
+                .participants
+                .iter()
+                .filter(|id| inputs.external_services.contains_key(*id)),
+        );
+    }
     json!(
         inputs
             .external_services
@@ -221,10 +246,10 @@ pub(super) fn publication(
     files: &mut BTreeMap<String, Vec<u8>>,
     cards: &mut String,
 ) -> Result<(), ClewError> {
-    let Some(inputs) = &checked.source_inputs else {
+    let Some(inputs) = declaration_inputs(checked) else {
         return Ok(());
     };
-    for (id, value) in &inputs.inputs.external_services {
+    for (id, value) in &inputs.external_services {
         validate(value)?;
         let mut links = String::new();
         let mut md_links = String::new();
@@ -237,7 +262,7 @@ pub(super) fn publication(
                 md_links += &format!("- [{label}]({url})\n");
             }
         }
-        let related=inputs.inputs.interactions.values().filter(|i|i.external_service.as_deref()==Some(id)).map(|i|format!("<li>{}: <a href=\"../services/{}.html\">{}</a> → {} (declared interaction; runtime unverified)</li>",escape(&i.title),escape(&i.from.service),escape(&i.from.service),escape(&i.to.service))).collect::<String>();
+        let related=inputs.interactions.values().filter(|i|i.external_service.as_deref()==Some(id)).map(|i|format!("<li>{}: <a href=\"../services/{}.html\">{}</a> → {} (declared interaction; runtime unverified)</li>",escape(&i.title),escape(&i.from.service),escape(&i.from.service),escape(&i.to.service))).collect::<String>();
         let limitations = value
             .limitations
             .iter()
@@ -275,6 +300,31 @@ mod tests {
     fn record() -> ExternalService {
         serde_json::from_value(json!({"schema":SCHEMA,"id":"forecast-provider","title":"Forecast Provider","description":"Declared forecast provider","repository":"https://github.com/owned/provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Owned fixture"},"limitations":["Target code not captured"]})).unwrap()
     }
+    #[test]
+    fn process_participants_accept_registered_external_actors_but_never_external_roots() {
+        let service:super::super::model::Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"weather","title":"Weather","repositoryId":"owned","repository":"https://github.com/owned/weather.git","language":"java","profile":"source-syntax","targetRef":"main","source":{"roots":["src"],"dialect":"17"}})).unwrap();
+        let services = BTreeMap::from([("weather".into(), service)]);
+        let external = std::collections::BTreeSet::from(["forecast-provider".into()]);
+        let mut process:super::super::model::Scenario=serde_json::from_value(json!({"schema":"codeclew-documentation-process/1.0","id":"forecast","title":"Forecast","summary":"Owned process","root":{"service":"weather"},"process":{"scope":"Declared boundary","participants":["weather","forecast-provider"],"trigger":"Request","outcomes":["Static forecast"]}})).unwrap();
+        super::super::processes::validate_with_external(&process, &services, &external).unwrap();
+        process
+            .process
+            .as_mut()
+            .unwrap()
+            .participants
+            .push("missing-provider".into());
+        assert!(
+            super::super::processes::validate_with_external(&process, &services, &external)
+                .is_err()
+        );
+        process.process.as_mut().unwrap().participants.pop();
+        process.root.service = "forecast-provider".into();
+        assert!(
+            super::super::processes::validate_with_external(&process, &services, &external)
+                .is_err()
+        );
+    }
+
     #[test]
     fn invalid_links_and_colliding_service_identity_are_refused() {
         for link in [

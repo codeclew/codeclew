@@ -35,6 +35,13 @@ pub struct Details {
     pub extraction: Option<super::process_extract::Query>,
 }
 pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<(), ClewError> {
+    validate_with_external(s, services, &BTreeSet::new())
+}
+pub(super) fn validate_with_external(
+    s: &Scenario,
+    services: &BTreeMap<String, Service>,
+    external: &BTreeSet<String>,
+) -> Result<(), ClewError> {
     let Some(p) = &s.process else {
         return if s.schema == "codeclew-documentation-view/1.0" && s.view.is_some() {
             Ok(())
@@ -63,7 +70,10 @@ pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<()
         || !p.outcomes.iter().all(|s| bounded(s))
         || p.linked_subviews.len() > 32
         || !p.participants.contains(&s.root.service)
-        || p.participants.iter().any(|id| !services.contains_key(id))
+        || !services.contains_key(&s.root.service)
+        || p.participants
+            .iter()
+            .any(|id| !services.contains_key(id) && !external.contains(id))
         || p.objects
             .iter()
             .any(|id| !id.strip_prefix("entity:").is_some_and(store::valid_id))
@@ -81,6 +91,19 @@ pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<()
     }
     if let Some(thread) = &p.thread {
         thread.validate(&p.participants)?;
+        if thread
+            .methods
+            .iter()
+            .any(|m| !services.contains_key(&m.service))
+            || thread
+                .process_pages
+                .iter()
+                .any(|p| !services.contains_key(&p.service))
+        {
+            return Err(invalid(
+                "process thread method and retained-page bindings require captured service declarations; external participants are declared actors only",
+            ));
+        }
     }
     Ok(())
 }
@@ -363,12 +386,14 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         } => {
             let definition = load_definition(&repo, &input)?;
             let scenarios = BTreeMap::from([(definition.id.clone(), definition.clone())]);
+            let captured_services = repo.services()?;
             let mut selected: BTreeSet<_> = definition
                 .process
                 .as_ref()
                 .unwrap()
                 .participants
                 .iter()
+                .filter(|id| captured_services.contains_key(*id))
                 .cloned()
                 .collect();
             selected.insert(definition.root.service.clone());
@@ -476,7 +501,13 @@ fn load_definition(repo: &Repository, path: &std::path::Path) -> Result<Scenario
     {
         return Err(invalid("invalid process identity or traversal bounds"));
     }
-    validate(&s, &repo.services()?)?;
+    validate_with_external(
+        &s,
+        &repo.services()?,
+        &super::external_services::records(repo)?
+            .into_keys()
+            .collect(),
+    )?;
     store::endpoint(&s.root, &repo.services()?)?;
     let interactions = repo.interactions()?;
     if s.interactions.iter().collect::<BTreeSet<_>>().len() != s.interactions.len()
@@ -613,7 +644,18 @@ pub(super) fn attach_versions_from_inputs(
             json!({"definition":s,"dependencyIds":deps,"missingObjects":missing_objects,"authority":"EXPLICIT_SAVED_REQUEST_NOT_RUNTIME_PROOF"}),
             vec![],
         )?;
-        let deps: Vec<_> = checked
+        let external_participants: Vec<_> = p
+            .participants
+            .iter()
+            .filter(|id| {
+                checked
+                    .dependencies
+                    .get(&format!("external-service:{id}"))
+                    .is_some_and(|d| d.kind == "EXTERNAL_SERVICE")
+            })
+            .cloned()
+            .collect();
+        let mut deps: Vec<_> = checked
             .dependencies
             .values()
             .filter(|d| {
@@ -629,17 +671,28 @@ pub(super) fn attach_versions_from_inputs(
             })
             .map(|d| d.id.clone())
             .collect();
+        deps.extend(
+            external_participants
+                .iter()
+                .map(|id| format!("external-service:{id}")),
+        );
         let unavailable: Vec<_> = p
             .participants
             .iter()
-            .filter(|id| !checked.services.contains_key(*id))
+            .filter(|id| !checked.services.contains_key(*id) && !external_participants.contains(id))
             .cloned()
             .collect();
         observation(
             checked,
             format!("process-scope:{id}"),
             "PROCESS_SCOPE",
-            json!({"interactionMembership":membership,"participants":p.participants,"unavailableParticipants":unavailable,"dependencyIds":deps,"runtime":"UNKNOWN"}),
+            {
+                let mut scope = json!({"interactionMembership":membership,"participants":p.participants,"unavailableParticipants":unavailable,"dependencyIds":deps,"runtime":"UNKNOWN"});
+                if !external_participants.is_empty() {
+                    scope["externalParticipants"] = json!({"ids":external_participants,"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED"});
+                }
+                scope
+            },
             vec![],
         )?;
         if let Some(context) = checked.scenarios.get_mut(id) {

@@ -494,6 +494,9 @@ impl Repository {
         let rows: BTreeMap<String, Scenario> = self.records("scenarios", "yaml")?;
         let services = self.services()?;
         let interactions = self.interactions()?;
+        let external_services = super::external_services::records(self)?
+            .into_keys()
+            .collect();
         for (id, value) in &rows {
             if !matches!(
                 value.schema.as_str(),
@@ -506,7 +509,7 @@ impl Repository {
             {
                 return Err(invalid("invalid scenario identity or traversal bounds"));
             }
-            super::processes::validate(value, &services)?;
+            super::processes::validate_with_external(value, &services, &external_services)?;
             super::dataflow::validate_definition(value, &services)?;
             endpoint(&value.root, &services)?;
             let mut seen = std::collections::BTreeSet::new();

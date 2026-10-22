@@ -1218,7 +1218,10 @@ An interaction targeting it must set `external: true`,
 `externalService: "forecast-provider"` and `to.service: "forecast-provider"`.
 The explicit registry reference rejects a missing destination; old interactions
 with only `external: true` retain their legacy identity-only behavior.
-Captured and external service identities cannot collide.
+Captured and external service identities cannot collide. Saved process
+`participants` may include registered external IDs, but the process root and any
+method/source/page bindings must remain captured-service declarations. External
+actors stay declared and are excluded from compiler/SOURCE capture selection.
 
 The next Check freezes this registry with the same captured inputs. Normal
 publication and remote standalone/Docusaurus exports include its information

@@ -50,37 +50,15 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
 }
 
 fn locator(value: &str) -> Option<String> {
-    if store::safe_url(value) {
-        return Some(value.trim_end_matches('/').trim_end_matches(".git").into());
-    }
-    if let Some(rest) = value.strip_prefix("ssh://git@") {
-        let (authority, path) = rest.split_once('/')?;
-        let host = if let Some((host, port)) = authority.split_once(':') {
-            let _ = port.parse::<u16>().ok().filter(|port| *port > 0)?;
-            host
-        } else {
-            authority
-        };
-        // The registered identity is a web locator; an SSH transport port is not a web port.
-        let candidate = format!("https://{host}/{path}");
-        if store::safe_url(&candidate) {
-            return Some(candidate.trim_end_matches(".git").into());
-        }
-        return None;
-    }
-    if let Some(rest) = value.strip_prefix("git@") {
-        let (host, path) = rest.split_once(':')?;
-        let candidate = format!("https://{host}/{path}");
-        if store::safe_url(&candidate) {
-            return Some(candidate.trim_end_matches(".git").into());
-        }
-    }
-    None
+    super::source_links::repository(value)
+        .ok()
+        .map(|(base, _)| base)
 }
 
 pub fn verify_repository(service: &Service, repo: &Path) -> Result<(), ClewError> {
     let remote = git(repo, &["remote", "get-url", "origin"])?;
-    if locator(&remote) != locator(&service.repository) {
+    if !matches!((locator(&remote),locator(&service.repository)),(Some(actual),Some(expected)) if actual==expected)
+    {
         return Err(ClewError::new(
             ErrorCode::BindingChanged,
             "local checkout origin does not match the registered credential-free repository identity",
@@ -2955,6 +2933,18 @@ mod tests {
             locator("https://example.invalid/team/service")
         );
         assert!(locator("ssh://git@example.invalid:invalid/team/service.git").is_none());
+        assert_eq!(
+            locator("ssh://deploy@example.invalid:2222/team/service.git"),
+            locator("https://example.invalid/team/service")
+        );
+        assert_eq!(
+            locator("https://example.invalid/team/service.git.git").unwrap(),
+            "https://example.invalid/team/service.git"
+        );
+        assert_ne!(
+            locator("https://example.invalid/team/service.git.git"),
+            locator("https://example.invalid/team/service.git")
+        );
 
         assert_eq!(
             locator("git@example.invalid:team/service.git"),

@@ -26,3 +26,7 @@
 - Add a separate declared external-service registry with safe authored links,
   explicit interaction references, frozen provenance and linked information
   pages in local, remote and Docusaurus documentation.
+
+- Preserve composed external-service declarations when rendering a retained
+  capture, and admit registered external process actors without requesting
+  source capture or allowing them as captured process roots.

@@ -1828,7 +1828,7 @@ fn repeated_pinned_render_keeps_both_snapshot_reasons_and_publication_identity()
 #[test]
 fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_pages() {
     use crate::documentation::{cli::InputArgs, external_services, model::Interaction};
-    let (temporary, repo, _old) = repository_snapshot();
+    let (temporary, repo, old) = repository_snapshot();
     let external = json!({"schema":"codeclew-documentation-external-service/1.0","id":"forecast-provider","title":"Forecast Provider","description":"Owned provider information. No source acquisition.","repository":"https://github.com/owned/forecast-provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Owned acceptance declaration"},"limitations":["No runtime verification"]});
     let input = temporary.path().join("external-input.json");
     fs::write(&input, serde_json::to_vec(&external).unwrap()).unwrap();
@@ -1841,24 +1841,53 @@ fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_page
     let interaction:Interaction=serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"fetch-forecast","title":"Fetch forecast","from":{"service":"sample"},"to":{"service":"forecast-provider"},"transport":{"kind":"http","method":"GET","path":"/forecast"},"declaration":{"origin":"human","rationale":"Declared only"},"external":true,"externalService":"forecast-provider"})).unwrap();
     repo.interaction_put(interaction, Some(&repo.input_digest().unwrap()))
         .unwrap();
-    let mut checked = checked();
-    checked.input_digest = repo.input_digest().unwrap();
-    let inputs = repo.inputs().unwrap();
-    external_services::attach(&inputs, &mut checked).unwrap();
-    for (id, service) in &inputs.services {
-        checked.services.get_mut(id).unwrap().service_digest =
-            crate::documentation::digest(service).unwrap();
-    }
-    checked.source_inputs = Some(SourceInputs {
-        schema: SOURCE_INPUTS_SCHEMA.into(),
-        input_digest: checked.input_digest.clone(),
-        inputs,
-        selected_services: BTreeSet::from(["sample".into(), "sibling".into()]),
-        retained_services: BTreeSet::new(),
-    });
-    checked.refresh_digest().unwrap();
-    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let process = json!({"schema":"codeclew-documentation-process/1.0","id":"forecast-process","title":"Forecast request","summary":"Captured caller and declared provider","root":{"service":"sample","selector":{"language":"java","scope":"A","owner":"class:Fixture","name":"submit"}},"interactions":["fetch-forecast"],"process":{"scope":"Owned scope","participants":["sample","forecast-provider"],"trigger":"Declared request","outcomes":["Static caller result; target runtime unknown"]}});
+    let process_input = temporary.path().join("process-input.json");
+    fs::write(&process_input, serde_json::to_vec(&process).unwrap()).unwrap();
+    crate::documentation::processes::run(crate::documentation::processes::Command::Put {
+        root: repo.root.clone(),
+        input: process_input,
+        expected_input_digest: repo.input_digest().unwrap(),
+    })
+    .unwrap();
+    let (checked, snapshot) = crate::documentation::composition::recompose(&repo, &old).unwrap();
+    assert!(
+        checked
+            .source_inputs
+            .as_ref()
+            .unwrap()
+            .inputs
+            .external_services
+            .is_empty()
+    );
+    assert!(
+        checked
+            .composition
+            .as_ref()
+            .unwrap()
+            .inputs
+            .external_services
+            .contains_key("forecast-provider")
+    );
+    let scope = &checked.dependencies["process-scope:forecast-process"].normalized;
+    assert_eq!(
+        scope["externalParticipants"]["ids"],
+        json!(["forecast-provider"])
+    );
+    assert_eq!(scope["unavailableParticipants"], json!([]));
+    let page =
+        crate::documentation::external_services::for_page(&checked, "scenario:forecast-process");
+    assert!(page.get("forecast-provider").is_some());
     let loaded = Check::load_snapshot(&repo, &snapshot).unwrap();
+    assert!(
+        loaded
+            .composition
+            .as_ref()
+            .unwrap()
+            .inputs
+            .external_services
+            .contains_key("forecast-provider")
+    );
     assert!(
         loaded
             .source_inputs
@@ -1866,7 +1895,7 @@ fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_page
             .unwrap()
             .inputs
             .external_services
-            .contains_key("forecast-provider")
+            .is_empty()
     );
     assert!(!loaded.services.contains_key("forecast-provider"));
     let published = crate::documentation::render::publish_from_snapshot(

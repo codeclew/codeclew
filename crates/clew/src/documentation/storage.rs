@@ -190,18 +190,18 @@ fn scan(repo: &Repository) -> Result<Plan, ClewError> {
             continue;
         }
         let checked_path = repo.path(&relative)?; // Reject all symlinks and traversal.
+        files += 1;
+        if files > FILES {
+            return Err(ClewError::new(
+                ErrorCode::SliceBudgetExceeded,
+                "documentation storage exceeds 100000 entries; no cleanup performed",
+            ));
+        }
         if !entry.file_type().is_file() {
             if !entry.file_type().is_dir() {
                 return Err(invalid("unsupported documentation storage entry"));
             }
             continue;
-        }
-        files += 1;
-        if files > FILES {
-            return Err(ClewError::new(
-                ErrorCode::SliceBudgetExceeded,
-                "documentation storage exceeds 100000 files; no cleanup performed",
-            ));
         }
         let size = entry.metadata().map_err(io_error)?.len();
         if relative.starts_with(".codeclew/cache/objects-")

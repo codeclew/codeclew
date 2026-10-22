@@ -79,6 +79,7 @@ fn composer() -> Result<String, ClewError> {
             include_str!("retained_contracts.rs"),
             include_str!("check.rs"),
             include_str!("entities.rs"),
+            include_str!("external_services.rs"),
             include_str!("notes.rs"),
             include_str!("dataflow.rs"),
             include_str!("processes.rs"),
