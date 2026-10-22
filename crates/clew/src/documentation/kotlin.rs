@@ -2130,6 +2130,7 @@ mod tests {
                 compilations: vec![":/main".into()],
                 target_ref: "main".into(),
                 source_link_template: None,
+                source_web: None,
                 contract_files: vec![],
                 annotation_processor_paths: vec![],
             };

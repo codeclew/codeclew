@@ -36,6 +36,9 @@ pub struct Service {
     pub target_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_link_template: Option<String>,
+    /// Browser policy is separate from the retained clone/binding identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_web: Option<SourceWeb>,
     #[serde(default)]
     pub contract_files: Vec<String>,
     /// Extra annotation-processor Maven coordinates (`group:artifact:version`)
@@ -45,6 +48,22 @@ pub struct Service {
     /// without editing its pom.xml. Optional and skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation_processor_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceWeb {
+    pub provider: String,
+    pub web_base: String,
+}
+
+impl SourceWeb {
+    pub(super) fn validate(&self) -> Result<(), String> {
+        if !matches!(self.provider.as_str(), "github" | "gitlab") {
+            return Err("sourceWeb provider must be github or gitlab".into());
+        }
+        super::source_links::web_base(&self.web_base).map(|_| ())
+    }
 }
 
 impl Service {
@@ -171,6 +190,9 @@ pub struct Interaction {
     /// Destination identity only; no receiver checkout or source selector.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub external: bool,
+    /// Explicit registry-backed external identity; absent preserves legacy external destinations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_service: Option<String>,
 }
 
 fn depth() -> usize {

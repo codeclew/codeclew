@@ -587,17 +587,24 @@ pub fn source_link(
             })
             .collect()
     }
-    let template = service
-        .source_link_template
-        .as_deref()
-        .unwrap_or("{repository}/blob/{revision}/{file}");
-    Some(format!(
-        "{}#L{start}-L{end}",
-        template
-            .replace("{repository}", &service.repository)
-            .replace("{revision}", revision)
-            .replace("{file}", &encode(file))
-    ))
+    if let Some(template) = &service.source_link_template {
+        // Frozen explicit templates keep their original expansion contract.
+        return Some(format!(
+            "{}#L{start}-L{end}",
+            template
+                .replace("{repository}", &service.repository)
+                .replace("{revision}", revision)
+                .replace("{file}", &encode(file))
+        ));
+    }
+    let (base, provider) = if let Some(web) = &service.source_web {
+        web.validate().ok()?;
+        (web.web_base.clone(), web.provider.clone())
+    } else {
+        let (base, provider) = super::source_links::repository(&service.repository).ok()?;
+        (base, provider?.to_owned())
+    };
+    super::source_links::link(&provider, &base, revision, file, start, end).ok()
 }
 
 /// Per-compilation source text and transformed authority keyed by the canonical

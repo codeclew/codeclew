@@ -124,6 +124,7 @@ fn inputs() -> RepositoryInputs {
             title: "Architecture".into(),
         },
         services,
+        external_services: BTreeMap::new(),
         interactions: BTreeMap::new(),
         scenarios: BTreeMap::from([
             ("parent".into(), process("parent", vec!["child"])),

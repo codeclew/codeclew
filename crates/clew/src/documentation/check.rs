@@ -224,6 +224,7 @@ pub(super) fn attach_catalogue_from_inputs(
     inputs: &super::store::RepositoryInputs,
     checked: &mut Check,
 ) -> Result<(), ClewError> {
+    super::external_services::attach(inputs, checked)?;
     super::entities::attach_from_records(&inputs.entities, checked)?;
     super::notes::attach_from_inputs(inputs, checked)?;
     super::dataflow::attach_from_inputs(&inputs.scenarios, &inputs.interactions, checked)
@@ -975,7 +976,7 @@ impl Check {
             .collect()
     }
     pub fn summary(&self) -> Value {
-        json!({"schema":self.schema,"inputDigest":self.input_digest,"contextDigest":self.context_digest,"status":if self.unresolved.is_empty(){"CHECKED"}else{"UNRESOLVED"},"services":self.services.iter().map(|(id,e)|(id,json!({"revision":e.revision,"coverage":e.coverage,"entrypoints":e.entrypoints.len(),"publicBoundaries":e.entrypoints.iter().filter(|entry|super::process_candidates::public_boundary(entry)).count(),"sourceCallableCandidates":e.entrypoints.iter().filter(|entry|!super::process_candidates::public_boundary(entry)).count(),"coverageMeaning":if e.coverage=="SYNTAX"{"SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF"}else{"RETAINED_PROVIDER_EVIDENCE_RUNTIME_UNVERIFIED"},"contractOperations":e.observations.values().filter(|o|o.kind=="CONTRACT_OPERATION").count(),"contractProjectionNextAction":if e.observations.values().any(|o|o.kind=="CONTRACT_OPERATION"){None}else{Some("If contractFiles are registered and full contract files are retained, inspect contract diagnostics and use docs refresh-contracts with this snapshot; changing the source profile is not a contract recovery action.")},"boundaries":e.boundaries,"sourceAuthority":if self.source_inputs.as_ref().is_some_and(|s|s.retained_services.contains(id)){"RETAINED_SOURCE_NOT_REVERIFIED"}else{"CAPTURED_SOURCE"}}))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved,"interactions":self.interactions,"scenarios":self.scenarios.iter().map(|(id,s)|(id,json!({"steps":s.steps.len(),"truncated":s.truncated,"boundaries":s.boundaries}))).collect::<BTreeMap<_,_>>()})
+        json!({"schema":self.schema,"inputDigest":self.input_digest,"contextDigest":self.context_digest,"status":if self.unresolved.is_empty(){"CHECKED"}else{"UNRESOLVED"},"services":self.services.iter().map(|(id,e)|(id,json!({"revision":e.revision,"coverage":e.coverage,"entrypoints":e.entrypoints.len(),"publicBoundaries":e.entrypoints.iter().filter(|entry|super::process_candidates::public_boundary(entry)).count(),"sourceCallableCandidates":e.entrypoints.iter().filter(|entry|!super::process_candidates::public_boundary(entry)).count(),"sourceLinkNextAction":self.source_inputs.as_ref().and_then(|i|i.inputs.services.get(id)).filter(|s|s.source_link_template.is_none() && s.source_web.is_none() && super::source_links::repository(&s.repository).ok().is_none_or(|(_,p)|p.is_none())).map(|_|"Configure service.sourceWeb.provider and sourceWeb.webBase for browser links, or use an explicit remote --source-map. Captured source authority is unchanged."),"coverageMeaning":if e.coverage=="SYNTAX"{"SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF"}else{"RETAINED_PROVIDER_EVIDENCE_RUNTIME_UNVERIFIED"},"contractOperations":e.observations.values().filter(|o|o.kind=="CONTRACT_OPERATION").count(),"contractProjectionNextAction":if e.observations.values().any(|o|o.kind=="CONTRACT_OPERATION"){None}else{Some("If contractFiles are registered and full contract files are retained, inspect contract diagnostics and use docs refresh-contracts with this snapshot; changing the source profile is not a contract recovery action.")},"boundaries":e.boundaries,"sourceAuthority":if self.source_inputs.as_ref().is_some_and(|s|s.retained_services.contains(id)){"RETAINED_SOURCE_NOT_REVERIFIED"}else{"CAPTURED_SOURCE"}}))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved,"interactions":self.interactions,"scenarios":self.scenarios.iter().map(|(id,s)|(id,json!({"steps":s.steps.len(),"truncated":s.truncated,"boundaries":s.boundaries}))).collect::<BTreeMap<_,_>>()})
     }
     pub fn save(&self, repo: &Repository) -> Result<(), ClewError> {
         self.save_snapshot(repo).map(|_| ())
@@ -2322,6 +2323,7 @@ mod tests {
                 compilations: vec![":/main".into()],
                 target_ref: "main".into(),
                 source_link_template: None,
+                source_web: None,
                 contract_files: vec![contract.into()],
                 annotation_processor_paths: vec![],
             };
@@ -2423,6 +2425,7 @@ mod tests {
             contract_reference: None,
             addresses: vec![],
             external: false,
+            external_service: None,
         };
         let scenario = Scenario {
             process: Some(super::super::processes::Details {

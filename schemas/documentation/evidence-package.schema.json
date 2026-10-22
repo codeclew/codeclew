@@ -108,6 +108,26 @@
           "items": {
             "type": "string"
           }
+        },
+        "sourceWeb": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "webBase"
+          ],
+          "properties": {
+            "provider": {
+              "enum": [
+                "github",
+                "gitlab"
+              ]
+            },
+            "webBase": {
+              "type": "string",
+              "pattern": "^https://"
+            }
+          }
         }
       },
       "required": [

@@ -12,6 +12,7 @@ pub(super) const MANIFEST_SCHEMA: &str = "codeclew-documentation-source-inputs-m
 pub(super) const DECLARATION_MANIFEST_SCHEMA: &str =
     "codeclew-documentation-declaration-inputs-manifest/1.0";
 
+const EXTERNAL_SCHEMA: &str = "codeclew-documentation-source-input-external-service/1.0";
 const SERVICE_SCHEMA: &str = "codeclew-documentation-source-input-service/1.0";
 const INTERACTION_SCHEMA: &str = "codeclew-documentation-source-input-interaction/1.0";
 const SCENARIO_SCHEMA: &str = "codeclew-documentation-source-input-scenario/1.0";
@@ -49,6 +50,8 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     retained_services: BTreeSet<String>,
     services: BTreeMap<String, cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    external_services: BTreeMap<String, cache::ObjectRef>,
     interactions: BTreeMap<String, cache::ObjectRef>,
     scenarios: BTreeMap<String, cache::ObjectRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -219,6 +222,7 @@ fn load_notes(
 }
 
 fn validate_keyed_inputs(inputs: &RepositoryInputs) -> Result<(), ClewError> {
+    super::external_services::validate_inputs(inputs)?;
     for (id, service) in &inputs.services {
         if id != &service.id {
             return Err(invalid("source input service key does not match its ID"));
@@ -326,6 +330,7 @@ fn store_manifest(
         selected_services,
         retained_services,
         services: store_map(repo, SERVICE_SCHEMA, &inputs.services)?,
+        external_services: store_map(repo, EXTERNAL_SCHEMA, &inputs.external_services)?,
         interactions: store_map(repo, INTERACTION_SCHEMA, &inputs.interactions)?,
         scenarios: store_map(repo, SCENARIO_SCHEMA, &inputs.scenarios)?,
         process_states: store_map(repo, PROCESS_STATE_SCHEMA, &inputs.process_states)?,
@@ -481,6 +486,7 @@ fn hydrate_manifest(repo: &Repository, manifest: &Manifest) -> Result<Repository
     Ok(RepositoryInputs {
         manifest: manifest.manifest.clone(),
         services: load_map(repo, SERVICE_SCHEMA, &manifest.services)?,
+        external_services: load_map(repo, EXTERNAL_SCHEMA, &manifest.external_services)?,
         interactions: load_map(repo, INTERACTION_SCHEMA, &manifest.interactions)?,
         scenarios: load_map(repo, SCENARIO_SCHEMA, &manifest.scenarios)?,
         process_states: load_map(repo, PROCESS_STATE_SCHEMA, &manifest.process_states)?,
@@ -630,6 +636,7 @@ mod tests {
                 title: "Architecture".into(),
             },
             services: BTreeMap::new(),
+            external_services: BTreeMap::new(),
             interactions: BTreeMap::new(),
             scenarios: BTreeMap::new(),
             process_states: BTreeMap::new(),

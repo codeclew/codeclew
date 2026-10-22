@@ -139,7 +139,11 @@ pub(super) fn repository(value: &str) -> Result<(String, Option<&'static str>), 
         if port.is_some_and(|p| p.parse::<u16>().ok().is_none_or(|n| n == 0)) {
             return Err("invalid SSH port".into());
         }
-        format!("https://{}/{}", host(name, false)?, path(relative, false)?)
+        format!(
+            "https://{}/{}",
+            host(name, false)?,
+            path(relative, ssh.is_some())?
+        )
     };
     let base = base.strip_suffix(".git").unwrap_or(&base).to_owned();
     let authority = base
@@ -224,6 +228,60 @@ pub(super) fn file_matches(tail: &str, file: &str) -> bool {
 mod tests {
     use super::*;
     const REV: &str = "0123456789abcdef0123456789abcdef01234567";
+    #[test]
+    fn capture_policy_separates_clone_origin_and_browser_base() {
+        use super::super::{
+            analysis::source_link,
+            model::{Service, SourceWeb},
+        };
+        let mut service: Service = serde_json::from_value(serde_json::json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"weather", "title":"Weather",
+            "repositoryId":"owned", "repository":"https://github.com/team/weather.git",
+            "language":"java", "profile":"source-syntax", "targetRef":"main"
+        }))
+        .unwrap();
+        let file = "src/space café/Weather.java";
+        let expected = format!(
+            "https://github.com/team/weather/blob/{REV}/src/space%20caf%C3%A9/Weather.java#L3-L5"
+        );
+        assert_eq!(source_link(&service, REV, file, 3, 5).unwrap(), expected);
+        service.repository = ["git", "@", "github.com:team/weather.git"].concat();
+        assert_eq!(source_link(&service, REV, file, 3, 5).unwrap(), expected);
+        service.repository = "ssh://git@git.example.invalid:2222/team/weather.git".into();
+        assert!(source_link(&service, REV, file, 3, 5).is_none());
+        service.source_web = Some(SourceWeb {
+            provider: "gitlab".into(),
+            web_base: "https://git.example.invalid:8443/team/weather.git".into(),
+        });
+        assert_eq!(
+            source_link(&service, REV, file, 3, 5).unwrap(),
+            format!(
+                "https://git.example.invalid:8443/team/weather.git/-/blob/{REV}/src/space%20caf%C3%A9/Weather.java#L3-5"
+            )
+        );
+        service.source_link_template =
+            Some("https://legacy.example.invalid/custom/{revision}/{file}".into());
+        assert_eq!(
+            source_link(&service, REV, file, 3, 5).unwrap(),
+            format!(
+                "https://legacy.example.invalid/custom/{REV}/src/space%20caf%C3%A9/Weather.java#L3-L5"
+            )
+        );
+        service.source_web = None;
+        assert!(
+            serde_json::to_value(service)
+                .unwrap()
+                .get("sourceWeb")
+                .is_none()
+        );
+        assert_eq!(
+            repository(&["ssh://git", "@", "github.com:2222/team/A%20repo.git"].concat())
+                .unwrap()
+                .0,
+            "https://github.com/team/A%20repo"
+        );
+    }
+
     #[test]
     fn github_special_file_components_and_ranges_are_exact() {
         let (base, provider) =

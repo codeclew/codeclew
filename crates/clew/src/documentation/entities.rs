@@ -212,6 +212,7 @@ pub fn attach_from_records(
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    Remove(super::removal::Request),
     List(ListArgs),
     Put {
         #[command(flatten)]
@@ -222,6 +223,7 @@ pub enum Command {
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Remove(args) => super::removal::run("entity", args),
         Command::List(page) => {
             let repo = Repository::open(&page.root)?;
             let rows = records(&repo)?;

@@ -1853,6 +1853,56 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "qualification launches the JDK compiler analyzer"]
+    fn compiler_protocol_preserves_unicode_paths_in_c_locale() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let relative = "src/space café/Weather.java";
+        fs::create_dir_all(root.join("src/space café")).unwrap();
+        fs::write(
+            root.join(relative),
+            "class Weather { int forecast() { return 8; } }",
+        )
+        .unwrap();
+        let analyzer = root.join("CodeclewJavaAnalyzer.java");
+        fs::write(&analyzer, JAVA_ANALYZER_SOURCE).unwrap();
+        fs::write(root.join("sources.txt"), format!("{relative}\n")).unwrap();
+        fs::write(root.join("classpath.txt"), "").unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        let java = std::env::var_os("JAVA_HOME")
+            .map(|h| std::path::PathBuf::from(h).join("bin/java"))
+            .unwrap_or_else(|| "java".into());
+        let output = Command::new(java)
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .arg("-Dfile.encoding=UTF-8")
+            .args(["--source", "17"])
+            .arg(analyzer)
+            .arg(&root)
+            .arg(root.join("sources.txt"))
+            .arg(root.join("classpath.txt"))
+            .args(["17", "", "", "", "", "CLOSED_NO_AP"])
+            .arg(root.join("empty"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_ascii());
+        let facts = parse_java_compiler_reader(std::io::Cursor::new(output.stdout)).unwrap();
+        assert!(facts.iter().any(|fact| fact.path() == Some(relative)));
+        assert!(
+            facts
+                .iter()
+                .filter_map(JavaCompilerFact::path)
+                .all(|path| path == relative)
+        );
+    }
+
     use super::*;
     use crate::java_project_model::extract_java_model;
 

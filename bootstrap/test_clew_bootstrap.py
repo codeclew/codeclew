@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import contextlib
+import errno
 import fcntl
 import io
 import json
@@ -53,6 +54,18 @@ def write_minimal_registry(
 
 
 class BootstrapAuthorityTest(unittest.TestCase):
+    def test_unexpected_os_diagnostics_keep_errno_without_caller_paths_or_messages(self) -> None:
+        error = OSError(errno.ENOSPC, "unshared-owned-message", "/unshared-owned-location")
+        payload = bootstrap.unexpected_failure_diagnostic(error)
+        self.assertEqual(payload["osErrorNumber"], errno.ENOSPC)
+        self.assertEqual(payload["osErrorName"], "ENOSPC")
+        self.assertEqual(payload["osErrorMessage"], os.strerror(errno.ENOSPC))
+        self.assertNotIn("unshared-owned", json.dumps(payload))
+        other = bootstrap.unexpected_failure_diagnostic(ValueError("unshared-owned-message"))
+        self.assertEqual(other["errorType"], "ValueError")
+        self.assertNotIn("osErrorNumber", other)
+        self.assertNotIn("unshared-owned", json.dumps(other))
+
     def test_product_options_never_abbreviate_bootstrap_authority(self) -> None:
         known, command = bootstrap.parse_bootstrap_arguments([
             "--source-root",

@@ -402,3 +402,188 @@ fn real_structured_overbudget_publication_preserves_last_good_pointer() {
         id
     );
 }
+
+#[test]
+fn selected_owners_preserve_shared_and_historical_records_without_reading_omitted_partitions() {
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Selected closure").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let mut original = logical("SOURCE_SYNTAX");
+    original["retainedSources"]["unrelated"] = json!({
+        "service":"unrelated", "text":"omitted-source-body".repeat(131072)
+    });
+    original["revisions"]["unrelated"] = json!("unrelated-revision");
+    original["narratives"]["service:unrelated"] = json!({"subject":"service:unrelated"});
+    original["influenceScopes"]["shared"] = json!({"dependencies":{}});
+    let encoded = encode(&repo, original.clone(), None, false).unwrap();
+    let m = manifest(&encoded.manifest, false).unwrap().unwrap();
+    let owners = BTreeSet::from([
+        Owner {
+            kind: "subject".into(),
+            id: "service:orders".into(),
+        },
+        Owner {
+            kind: "service".into(),
+            id: "orders".into(),
+        },
+    ]);
+    let omitted_indexes: BTreeSet<_> = m
+        .partitions
+        .iter()
+        .filter(|p| p.owner.id == "unrelated" || p.owner.id == "service:unrelated")
+        .map(|p| p.index.digest.clone())
+        .collect();
+    assert!(!omitted_indexes.is_empty());
+    let mut reads = BTreeSet::new();
+    let (selected, stats) =
+        resolve_owners_with(&encoded.manifest, false, MAX, Some(&owners), |r| {
+            assert!(!omitted_indexes.contains(&r.digest));
+            reads.insert(r.digest.clone());
+            Ok(encoded.new_objects[&r.digest].clone())
+        })
+        .unwrap();
+    assert_eq!(
+        selected["retainedSources"]["source"],
+        original["retainedSources"]["source"]
+    );
+    assert_eq!(selected["fragments"], original["fragments"]);
+    assert_eq!(selected["influenceScopes"], original["influenceScopes"]);
+    assert!(selected["retainedSources"].get("unrelated").is_none());
+    assert!(selected["revisions"].get("unrelated").is_none());
+    assert!(selected["narratives"].get("service:unrelated").is_none());
+    assert!(
+        stats.bytes < 65536,
+        "unselected source must not be hydrated: {stats:?}"
+    );
+    assert_eq!(stats.objects, reads.len());
+    // An unread damaged/missing owner does not become selected evidence.
+    let mut available = encoded.new_objects.clone();
+    for id in &omitted_indexes {
+        available.remove(id);
+    }
+    let (again, _) = resolve_owners_with(&encoded.manifest, false, MAX, Some(&owners), |r| {
+        available
+            .get(&r.digest)
+            .cloned()
+            .ok_or_else(|| corrupt("missing selected object"))
+    })
+    .unwrap();
+    assert_eq!(selected, again);
+    assert!(
+        resolve_with(&encoded.manifest, false, |r| {
+            available
+                .get(&r.digest)
+                .cloned()
+                .ok_or_else(|| corrupt("missing selected object"))
+        })
+        .is_err()
+    );
+    let corrupted = reads.iter().next().unwrap();
+    assert!(
+        resolve_owners_with(&encoded.manifest, false, MAX, Some(&owners), |r| {
+            let mut raw = encoded.new_objects[&r.digest].clone();
+            if &r.digest == corrupted {
+                raw[0] ^= 1;
+            }
+            Ok(raw)
+        })
+        .is_err()
+    );
+    assert!(
+        resolve_owners_with(&encoded.manifest, false, 8, Some(&owners), |r| {
+            Ok(encoded.new_objects[&r.digest].clone())
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn selected_subject_closure_discovers_historical_service_owners_and_preserves_legacy_semantics() {
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Historical selection").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let mut original = logical("SOURCE_SYNTAX");
+    let mut source = original["retainedSources"]["source"].clone();
+    source["id"] = json!("history-source");
+    source["service"] = json!("history");
+    source["revision"] = json!("old");
+    original["retainedSources"]["history-source"] = source;
+    original["revisions"]["history"] = json!("old");
+    original["fragments"]["service:orders/original"]["evidence"]["revisions"]["history"] =
+        json!("old");
+    original["fragments"]["service:orders/original"]["evidence"]["sharedSources"] =
+        json!(["history-source"]);
+    original["revisions"]["unrelated"] = json!("omitted");
+    let encoded = encode(&repo, original.clone(), None, false).unwrap();
+    encoded.persist(&repo).unwrap();
+    let subjects = BTreeSet::from(["service:orders".into()]);
+    let (selected, stats) = resolve_subjects(&repo, &encoded.manifest, &subjects, MAX * 2).unwrap();
+    assert_eq!(
+        selected["retainedSources"]["history-source"],
+        original["retainedSources"]["history-source"]
+    );
+    assert_eq!(selected["revisions"]["history"], "old");
+    assert!(selected["revisions"].get("unrelated").is_none());
+    assert!(stats.bytes > 0);
+    let retained =
+        super::super::bindings::validate_retained_bindings(&repo, &bytes(&selected).unwrap())
+            .unwrap();
+    assert_eq!(
+        retained.fragments["service:orders/original"]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .sources["history-source"]
+            .service,
+        "history"
+    );
+    let (legacy, legacy_stats) =
+        resolve_subjects(&repo, &bytes(&original).unwrap(), &subjects, MAX * 2).unwrap();
+    assert_eq!(legacy, selected);
+    assert_eq!(legacy_stats.objects, 0);
+    assert!(resolve_subjects(&repo, &encoded.manifest, &subjects, 1).is_err());
+}
+
+#[test]
+fn reading_validation_checks_many_shared_occurrences_without_retaining_their_copies() {
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Bounded expansion").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let mut original = logical("SOURCE_SYNTAX");
+    let text = "x".repeat(1024 * 1024);
+    original["retainedSources"]["source"]["text"] = json!(text);
+    original["retainedSources"]["source"]["textDigest"] =
+        json!(canonical::hash_bytes(text.as_bytes()));
+    let mut fragment = original["fragments"]["service:orders/original"].clone();
+    fragment["evidence"]["sources"] = json!({});
+    fragment["evidence"]["sharedSources"] = json!(["source"]);
+    original["fragments"] = json!({});
+    for index in 0..200 {
+        original["fragments"][format!("service:orders/op-{index}")] = fragment.clone();
+    }
+    let (binding, stats) = super::super::bindings::validate_retained_reading_bindings(
+        &repo,
+        &bytes(&original).unwrap(),
+        &mut BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(stats["compactLogicalBytes"].as_u64().unwrap() < 2 * 1024 * 1024);
+    println!("Shared source reading control: {}", stats);
+    assert!(stats["chargedExpansionBytes"].as_u64().unwrap() > MAX);
+    assert!(stats["maximumExpandedFragmentBytes"].as_u64().unwrap() < 2 * 1024 * 1024);
+    assert!(binding.fragments.values().all(|fragment| {
+        fragment.evidence.as_ref().unwrap().sources.is_empty()
+            && fragment.evidence.as_ref().unwrap().shared_sources == ["source"]
+    }));
+    // More occurrences exceed cumulative work, while individual frames still fit.
+    for index in 200..600 {
+        original["fragments"][format!("service:orders/op-{index}")] = fragment.clone();
+    }
+    let error = super::super::bindings::validate_retained_reading_bindings(
+        &repo,
+        &bytes(&original).unwrap(),
+        &mut BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SliceBudgetExceeded);
+}

@@ -1011,6 +1011,7 @@ fn assert_full_source_exports(repo: &Repository, w: &work::Work) {
                 source_export: source_export::Args {
                     source_mode: mode,
                     source_map: Some(mapping.clone()),
+                    export_subjects: Vec::new(),
                 },
                 language: None,
                 root: repo.root.clone(),

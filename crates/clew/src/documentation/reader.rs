@@ -431,6 +431,8 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
             "Service"
         } else if path.starts_with("scenarios/") {
             "Process"
+        } else if path.starts_with("external-services/") {
+            "External service"
         } else {
             continue;
         };
@@ -1025,6 +1027,10 @@ pub(super) fn connect_starters_language(
             .replace(
                 "\"href\":\"services/",
                 &format!("\"href\":\"generated/{bundle}/services/"),
+            )
+            .replace(
+                "\"href\":\"external-services/",
+                &format!("\"href\":\"generated/{bundle}/external-services/"),
             )
             .replace(
                 "\"href\":\"answers/",

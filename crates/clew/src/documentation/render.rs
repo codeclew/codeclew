@@ -46,6 +46,13 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
+    let template = template.replace(
+        "<div id=\"scenario-content\"></div>",
+        &format!(
+            "<div id=\"scenario-content\"></div>{}",
+            super::external_services::page_links(data)
+        ),
+    );
     let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
     let extra = data.get("processDataFlow").is_some();
     let styles = if extra {
@@ -3886,6 +3893,7 @@ fn publish_internal_phases(
         // source/contract versions even after an excluded endpoint disappears.
         endpoint_selection.retain(subject, &data, &hidden);
         super::endpoint_display::filter_page(&mut data, &hidden);
+        data["externalServices"] = super::external_services::for_page(&checked, subject);
         let n = &published_narratives[subject];
         pending_pages.push((folder.to_owned(), id.to_owned(), data.clone()));
         let state = &binding.section_states[subject];
@@ -4041,6 +4049,7 @@ fn publish_internal_phases(
             super::reader::text(ui_language,"Revisions, status and update gaps","Версии, состояние и пробелы обновления"),
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
+    super::external_services::publication(&checked, &mut files, &mut cards)?;
     // Pre-render every auto-generated diagram to SVG in one renderer process
     // (avoid spawning a JVM per diagram), then commit the bundle.
     let mut svg_availability =

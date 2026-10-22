@@ -88,7 +88,7 @@ fn path(id: &str) -> Result<String, ClewError> {
     }
     Ok(format!("docs/generated/{id}/publication.json"))
 }
-fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
+pub(super) fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
     let p: Publication = store::read(
         &repo.path(&path(id)?)?,
         super::check::PORTABLE_CACHE_MAX_BYTES,
@@ -276,6 +276,25 @@ pub(super) fn validate_frozen_bindings(
     contexts: &mut BTreeMap<String, super::check::Check>,
 ) -> Result<(Publication, Bindings), ClewError> {
     let binding = bindings::validate_retained_bindings_with_contexts(repo, raw, contexts)?;
+    validate_publication_binding(&publication, &binding)?;
+    Ok((publication, binding))
+}
+
+pub(super) fn validate_frozen_reading_bindings(
+    repo: &Repository,
+    publication: &Publication,
+    raw: &[u8],
+    contexts: &mut BTreeMap<String, super::check::Check>,
+) -> Result<(Bindings, Value), ClewError> {
+    let (binding, stats) = bindings::validate_retained_reading_bindings(repo, raw, contexts)?;
+    validate_publication_binding(publication, &binding)?;
+    Ok((binding, stats))
+}
+
+fn validate_publication_binding(
+    publication: &Publication,
+    binding: &Bindings,
+) -> Result<(), ClewError> {
     if publication.input_digest != binding.input_digest
         || publication.documentation_language != binding.documentation_language
     {
@@ -307,7 +326,7 @@ pub(super) fn validate_frozen_bindings(
             }
         }
     }
-    Ok((publication, binding))
+    Ok(())
 }
 fn missing_packages(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewError> {
     p.evidence_packages

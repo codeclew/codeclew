@@ -255,6 +255,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             output,
         } => {
             let policy = source_export.policy()?;
+            if !policy.subjects.is_empty() {
+                return Err(super::invalid(
+                    "export-subject requires a saved publication export, not a DSL render",
+                ));
+            }
             let repo = Repository::open(&root)?;
             // Preserve the original loader's integrity/admission errors without translation.
             let checked = Check::load_snapshot(&repo, &snapshot)?;

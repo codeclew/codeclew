@@ -14,6 +14,9 @@ mod question_reading;
 mod selected_language;
 mod source;
 
+#[path = "static_pages/frozen_export.rs"]
+mod frozen_export;
+
 use super::{
     check::Check,
     invalid,
@@ -41,6 +44,10 @@ fn full_pages_saved_publication_replay() {
                 super::source_export::SourceMode::Embedded
             },
             source_map: std::env::var_os("CODECLEW_FULL_PAGES_SOURCE_MAP").map(PathBuf::from),
+            export_subjects: std::env::var("CODECLEW_FULL_PAGES_SUBJECT")
+                .ok()
+                .into_iter()
+                .collect(),
         },
         language: None,
         format: PageFormat::Standalone,
@@ -272,6 +279,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     },
                     &output,
                 );
+            }
+            if !source_policy.subjects.is_empty() {
+                return Err(invalid(
+                    "export-subject requires --publication; declaration selections do not export authored publications",
+                ));
             }
             if format != PageFormat::Standalone {
                 return Err(invalid(

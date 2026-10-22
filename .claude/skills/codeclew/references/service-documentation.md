@@ -1115,6 +1115,29 @@ sharing. Export into a new directory and share that directory, not the local roo
 and refuses input, refresh, publish and require-complete flags. Perform local
 publication first, or use pages render with an explicit publication.
 
+To share selected service/process documentation, repeat `--export-subject
+service:orders` or `--export-subject scenario:checkout` on remote `docs render`,
+or on `docs pages render --publication "$PUBLICATION"`. Use the original exact
+`--snapshot`; this exports accepted authored sections and retained historical
+citations, without capture, reinitialization or proposal replacement. The manifest
+reports requested/effective subjects, omitted pages and input accounting. Shared
+overview, status and answer context remains global; omitted service/process links
+are inert. Ambiguous diagram-owner prefixes require selecting both subjects or
+exporting the full publication.
+
+A full remote export verifies frozen files as streams, then projects each
+service/process HTML/Markdown group before retaining it. A selected export loads
+only its indexed bindings owners and shared dependencies. Unreferenced cache
+objects are not inputs. Limits remain explicit: 64 MiB per frozen file, 128 MiB
+per compact bindings hydration, expanded fragment or retained reading buffer,
+512 MiB of verification and reserved rendering reads, and a separate 512 MiB
+semantic expansion-work limit. Shared evidence is expanded and checked one
+fragment at a time, then restored to compact references; at most eight original
+authoring contexts are admitted. A legacy bindings record has no partition index;
+its bounded original record is read before filtering. If a selected record or
+closure fails validation, preserve the error and original publication. Narrow
+subjects when appropriate; deleting caches is not an export workaround.
+
 For a self-managed host, pass `--source-map repos.json` with schema
 `codeclew-source-repositories/1.0` and a `repositories` object keyed by immutable
 repository IDs. Each mapping has `provider` (`github` or `gitlab`) and HTTPS
@@ -1127,3 +1150,83 @@ No authentication or provider availability request occurs; committed does not
 mean pushed or accessible. The manifest records mode, mapping policy and export
 identity. Source digests still identify original local evidence; remote exports
 are reading artifacts and cannot replace local evidence for authoring or reimport.
+
+
+### Clone origins and browser links
+
+Keep `repository` as the exact clone/binding origin. For public GitHub and
+GitLab, capture derives a clean browser base from HTTPS `.git`, SSH URI or
+scp-style origins. For a self-managed host, configure the service explicitly:
+
+```json
+{"sourceWeb":{"provider":"gitlab","webBase":"https://git.example.invalid/team/weather"}}
+```
+
+`sourceWeb` changes browser links, not repository identity or compilation
+coverage. Its base must be HTTPS without credentials, query or fragment. Unknown
+hosts have no guessed browser links; the Check summary gives the configuration
+next action. Explicit `sourceLinkTemplate` keeps its legacy expansion behavior
+and takes precedence during capture. Existing frozen sources are never rewritten.
+Remote export uses an explicit `--source-map` first, then captured `sourceWeb`,
+then recognized public providers. Historical citations retain their own origin
+and revision. No provider requests or commit-availability checks are performed.
+
+
+### Account for and prune documentation storage
+
+Run `clew docs storage plan --root "$DOCS_ROOT"` first and save the returned
+plan outside that root. Review `planDigest`, `plan.removeSqlite`,
+`plan.removePortable` and retained reference reasons. Apply only an explicitly
+requested cleanup with `clew docs storage prune --root "$DOCS_ROOT"
+--expected-plan "$PLAN_DIGEST" --apply`. Without `--apply` it remains a dry run.
+Pin any saved snapshot you need that is not already referenced by a publication,
+Work or another retained root before pruning; a handle saved only outside the
+documentation root is not a discoverable retention root.
+A changed root, new reference, active reader/writer, missing retained closure,
+symlink or traversal refuses cleanup; review a new plan instead of bypassing it.
+The traversal is bounded to 100,000 files/objects and 512 MiB of root and closure
+reads. All current/historical publications, snapshots, pins, proposals and Work
+remain roots; cleanup does not expire them automatically.
+
+SQLite payload rows and portable publication objects are separate categories.
+Portable object files are partition/index/record chunks and shared source text,
+not one file per original source file. Their count is not reclaimable bytes.
+SQLite row removal releases reusable database space; its file may stay the same
+size. Private runtime/CAS storage is separate: use `clew storage gc` there and
+never delete CODECLEW_HOME paths manually. Cleanup does not fix export admission.
+
+For a live declaration, inspect `clew docs service remove --root "$DOCS_ROOT"
+--id weather` or `clew docs entity remove --root "$DOCS_ROOT" --id city`.
+Only an unreferenced record can be removed with `--expected-input-digest` and
+`--apply`. Current references block removal and must be changed explicitly.
+Frozen publications, proposals, snapshots and Work retain their old declarations;
+logical removal neither rewrites history nor implicitly cascades or frees storage.
+
+
+### Describe an external service without capturing its code
+
+Register authored information with `clew docs external put --root "$DOCS_ROOT"
+--input provider.json --expected-input-digest "$INPUT_DIGEST"`:
+
+```json
+{"schema":"codeclew-documentation-external-service/1.0","id":"forecast-provider","title":"Forecast Provider","description":"Provides forecast information to Weather.","repository":"https://github.com/owned/forecast-provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Explicit provider registry"},"limitations":["Target code and runtime behavior have not been verified."]}
+```
+
+Use `docs external list` or `show --id forecast-provider` to inspect it. No
+binding, source acquisition, compiler profile or provider request is needed.
+An interaction targeting it must set `external: true`,
+`externalService: "forecast-provider"` and `to.service: "forecast-provider"`.
+The explicit registry reference rejects a missing destination; old interactions
+with only `external: true` retain their legacy identity-only behavior.
+Captured and external service identities cannot collide.
+
+The next Check freezes this registry with the same captured inputs. Normal
+publication and remote standalone/Docusaurus exports include its information
+page, provenance and safe repository/wiki links. Related service/process pages
+link to that stable identity. The page is declared information, not compiler,
+SOURCE or runtime proof; adding it does not expand capture coverage. Changes to
+the registry do not rewrite old publications or automatically refresh snapshots.
+Use `docs recompose` to apply declaration changes to a saved capture without
+acquiring source again. Review `docs external remove --id forecast-provider`
+and apply with the expected input digest only after current references are
+removed explicitly; no cascade or historical rewrite is performed.

@@ -1787,7 +1787,9 @@ final class CodeclewJavaAnalyzer {
                 case '\r' -> result.append("\\r");
                 case '\t' -> result.append("\\t");
                 default -> {
-                    if (character < 0x20) {
+                    // System.out may use the host locale even with file.encoding=UTF-8.
+                    // Keep the protocol ASCII so exact Unicode identities survive LANG=C.
+                    if (character < 0x20 || character >= 0x7f) {
                         result.append(String.format("\\u%04x", (int) character));
                     } else {
                         result.append(character);

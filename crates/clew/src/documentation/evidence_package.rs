@@ -22,6 +22,34 @@ const MAX_TOTAL: u64 = 128 * 1024 * 1024;
 const MAX_PARTS: usize = 4096;
 const MAX_RECORDS: usize = 131_072;
 
+// Preserve the exact legacy URL expansion on already frozen audit evidence.
+// This is admission compatibility, not a new capture/provider inference policy.
+fn retained_source_url_matches(source: &Source, service: &Service) -> bool {
+    let expected = analysis::source_link(
+        service,
+        &source.revision,
+        &source.file,
+        source.start_line,
+        source.end_line,
+    );
+    if source.url == expected {
+        return true;
+    }
+    if service.source_web.is_some() || service.source_link_template.is_some() {
+        return false;
+    }
+    let mut legacy = service.clone();
+    legacy.source_link_template = Some("{repository}/blob/{revision}/{file}".into());
+    source.url
+        == analysis::source_link(
+            &legacy,
+            &source.revision,
+            &source.file,
+            source.start_line,
+            source.end_line,
+        )
+}
+
 fn verify_portable_source(
     source: &Source,
     service: &Service,
@@ -37,15 +65,7 @@ fn verify_portable_source(
         || (source.authority == "EXACT_DEPENDENCY_SOURCE_ARCHIVE" && source.url.is_some())
         || (audit
             && source.url.is_some()
-            && (source.text_origin.is_none()
-                || source.url
-                    != analysis::source_link(
-                        service,
-                        &source.revision,
-                        &source.file,
-                        source.start_line,
-                        source.end_line,
-                    )))
+            && (source.text_origin.is_none() || !retained_source_url_matches(source, service)))
         || source.url.as_ref().is_some_and(|url| {
             let (base, anchor) = url.split_once('#').unwrap_or((url.as_str(), ""));
             !store::safe_url(base)
@@ -1081,7 +1101,12 @@ mod tests {
         verify_portable_source(&source, &service, true).unwrap();
         assert_eq!(source.authority, super::super::source_origin::AUDIT);
         assert!(verify_portable_source(&source, &service, false).is_err());
-        source.url = analysis::source_link(&service, &source.revision, &source.file, 1, 1);
+        // A released pre-sourceWeb package has the old exact URL, even for an
+        // unknown host. Admission preserves it, but still requires committed origin.
+        source.url = Some(format!(
+            "https://example.invalid/orders/blob/{}/Route.java#L1-L1",
+            source.revision
+        ));
         assert!(verify_portable_source(&source, &service, true).is_err());
         let mut origin = CommittedTextOrigin {
             schema: "codeclew-committed-source-text/1.0".into(),
@@ -1118,6 +1143,7 @@ mod tests {
     fn selection_without_expectation_does_not_consult_repository_policies() {
         let temporary = tempfile::tempdir().unwrap();
         let repo = Repository {
+            storage_lease: None,
             object_database: Default::default(),
             portable_read_only: false,
             root: temporary.path().to_path_buf(),

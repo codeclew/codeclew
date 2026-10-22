@@ -19,6 +19,7 @@ pub use narrative_input::read_narrative;
 
 #[derive(Debug)]
 pub struct Repository {
+    pub(crate) storage_lease: Option<std::sync::Arc<File>>,
     pub root: PathBuf,
     pub manifest: Manifest,
     pub(crate) portable_read_only: bool,
@@ -34,6 +35,8 @@ pub struct Repository {
 pub struct RepositoryInputs {
     pub manifest: Manifest,
     pub services: BTreeMap<String, Service>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub external_services: BTreeMap<String, super::external_services::ExternalService>,
     pub interactions: BTreeMap<String, Interaction>,
     pub scenarios: BTreeMap<String, Scenario>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -116,11 +119,12 @@ impl Repository {
             schema: format!("codeclew-documentation/{VERSION}"),
             title: title.into(),
         };
-        let repo = Self {
+        let mut repo = Self {
             root,
             manifest,
             portable_read_only: false,
             object_database: Default::default(),
+            storage_lease: None,
         };
         let path = repo.path("codeclew-docs.yaml")?;
         let new_root = !path.exists();
@@ -136,6 +140,7 @@ impl Repository {
         // Only an entirely absent private root can denote a fresh Git clone.
         // A partial cache is damaged local state, never an implicit reset.
         let private_state_absent = !repo.path(".codeclew")?.try_exists().map_err(io_error)?;
+        repo.storage_lease = Some(super::storage::lease(&repo, false)?);
         let _lock = repo.lock()?;
         if new_root || private_state_absent {
             // Publish the SQLite layout before the new root manifest. If this
@@ -239,11 +244,16 @@ impl Repository {
     }
 
     pub fn open(root: &Path) -> Result<Self, ClewError> {
+        Self::open_storage(root, false)
+    }
+
+    pub(super) fn open_storage(root: &Path, exclusive: bool) -> Result<Self, ClewError> {
         let root = root.canonicalize().map_err(io_error)?;
-        let provisional = Self {
+        let mut provisional = Self {
             root,
             portable_read_only: false,
             object_database: Default::default(),
+            storage_lease: None,
             manifest: Manifest {
                 schema: String::new(),
                 title: String::new(),
@@ -260,6 +270,7 @@ impl Repository {
                 "documentation checkout has no local state; run docs init with the existing title, then bind sources and run docs check explicitly",
             ));
         }
+        provisional.storage_lease = Some(super::storage::lease(&provisional, exclusive)?);
         super::object_layout::ensure_current(&provisional)?;
         Ok(Self {
             manifest,
@@ -298,6 +309,7 @@ impl Repository {
             },
             portable_read_only: true,
             object_database: Default::default(),
+            storage_lease: None,
         };
         if repo.path(".codeclew/cache/object-layout.json")?.exists() {
             return Self::open(root);
@@ -456,6 +468,14 @@ impl Repository {
                 return Err(invalid("service ID and filename disagree"));
             }
         }
+        if super::external_services::records(self)?
+            .keys()
+            .any(|id| rows.contains_key(id))
+        {
+            return Err(invalid(
+                "external-service identity collides with a captured service",
+            ));
+        }
         Ok(rows)
     }
     pub fn interactions(&self) -> Result<BTreeMap<String, Interaction>, ClewError> {
@@ -463,6 +483,7 @@ impl Repository {
         let services = self.services()?;
         for (id, value) in &rows {
             validate_interaction(value, &services)?;
+            self.validate_external_interaction(value)?;
             if id != &value.id {
                 return Err(invalid("interaction ID and filename disagree"));
             }
@@ -509,6 +530,7 @@ impl Repository {
         Ok(RepositoryInputs {
             manifest: self.manifest.clone(),
             services: self.services()?,
+            external_services: super::external_services::records(self)?,
             interactions: self.interactions()?,
             process_states: super::process_states::records(self, &scenarios)?,
             scenarios,
@@ -564,6 +586,11 @@ impl Repository {
 
     pub fn service_add(&self, value: Service, expected: Option<&str>) -> Result<Value, ClewError> {
         validate_service(&value)?;
+        if super::external_services::records(self)?.contains_key(&value.id) {
+            return Err(invalid(
+                "service identity already belongs to the external registry",
+            ));
+        }
         let services = self.services()?;
         if let Some(old) = services.get(&value.id)
             && old.repository_id != value.repository_id
@@ -580,12 +607,25 @@ impl Repository {
         result["sections"] = json!(super::sections::records(&value.id, None));
         Ok(result)
     }
+    fn validate_external_interaction(&self, value: &Interaction) -> Result<(), ClewError> {
+        if let Some(id) = &value.external_service
+            && (!value.external
+                || &value.to.service != id
+                || !super::external_services::records(self)?.contains_key(id))
+        {
+            return Err(invalid(
+                "interaction externalService must name a registered external destination matching to.service",
+            ));
+        }
+        Ok(())
+    }
     pub fn interaction_put(
         &self,
         value: Interaction,
         expected: Option<&str>,
     ) -> Result<Value, ClewError> {
         validate_interaction(&value, &self.services()?)?;
+        self.validate_external_interaction(&value)?;
         self.put(
             &format!("catalog/interactions/{}.json", value.id),
             &value,
@@ -760,6 +800,9 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
             ));
         }
     }
+    if let Some(web) = &s.source_web {
+        web.validate().map_err(invalid)?;
+    }
     if let Some(template) = &s.source_link_template
         && (!safe_url(template)
             || !["{revision}", "{file}"]
@@ -919,6 +962,7 @@ mod tests {
             compilations: vec![":/main".into()],
             target_ref: "main".into(),
             source_link_template: None,
+            source_web: None,
             contract_files: vec![],
             annotation_processor_paths: vec![],
         }

@@ -110,44 +110,51 @@ pub(super) fn prune_influence_scopes(binding: &mut Bindings) {
 
 fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
     for fragment in binding.fragments.values_mut() {
-        if fragment.dependencies_from_evidence && fragment.evidence.is_none() {
+        expand_fragment(fragment, &binding.observations, &binding.retained_sources)?;
+    }
+    Ok(())
+}
+
+fn expand_fragment(
+    fragment: &mut FragmentBinding,
+    observations: &BTreeMap<String, Observation>,
+    retained_sources: &BTreeMap<String, Source>,
+) -> Result<(), ClewError> {
+    if fragment.dependencies_from_evidence && fragment.evidence.is_none() {
+        return Err(invalid(
+            "derived fragment dependencies require retained evidence",
+        ));
+    }
+    let Some(evidence) = fragment.evidence.as_mut() else {
+        return Ok(());
+    };
+    for id in std::mem::take(&mut evidence.shared_observations) {
+        let value = observations
+            .get(&id)
+            .ok_or_else(|| invalid("shared fragment observation is missing"))?;
+        if evidence.observations.insert(id, value.clone()).is_some() {
+            return Err(invalid("duplicate shared fragment observation"));
+        }
+    }
+    for id in std::mem::take(&mut evidence.shared_sources) {
+        let value = retained_sources
+            .get(&id)
+            .ok_or_else(|| invalid("shared fragment source is missing"))?;
+        if evidence.sources.insert(id, value.clone()).is_some() {
+            return Err(invalid("duplicate shared fragment source"));
+        }
+    }
+    if std::mem::take(&mut fragment.dependencies_from_evidence) {
+        if !fragment.dependencies.is_empty() {
             return Err(invalid(
-                "derived fragment dependencies require retained evidence",
+                "derived fragment dependencies cannot also be inline",
             ));
         }
-        let Some(evidence) = fragment.evidence.as_mut() else {
-            continue;
-        };
-        for id in std::mem::take(&mut evidence.shared_observations) {
-            let value = binding
-                .observations
-                .get(&id)
-                .ok_or_else(|| invalid("shared fragment observation is missing"))?;
-            if evidence.observations.insert(id, value.clone()).is_some() {
-                return Err(invalid("duplicate shared fragment observation"));
-            }
-        }
-        for id in std::mem::take(&mut evidence.shared_sources) {
-            let value = binding
-                .retained_sources
-                .get(&id)
-                .ok_or_else(|| invalid("shared fragment source is missing"))?;
-            if evidence.sources.insert(id, value.clone()).is_some() {
-                return Err(invalid("duplicate shared fragment source"));
-            }
-        }
-        if std::mem::take(&mut fragment.dependencies_from_evidence) {
-            if !fragment.dependencies.is_empty() {
-                return Err(invalid(
-                    "derived fragment dependencies cannot also be inline",
-                ));
-            }
-            fragment.dependencies = evidence
-                .observations
-                .iter()
-                .map(|(id, o)| (id.clone(), o.digest.clone()))
-                .collect();
-        }
+        fragment.dependencies = evidence
+            .observations
+            .iter()
+            .map(|(id, o)| (id.clone(), o.digest.clone()))
+            .collect();
     }
     Ok(())
 }
@@ -365,11 +372,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
     Ok(capture_baseline(repo)?.map(|(receipt, binding)| (receipt.bundle, binding)))
 }
 
-/// Bind provenance to the exact bytes parsed and validated below, never to a
-/// second read of the mutable pointer or its selected bindings file.
-pub(super) fn capture_baseline(
-    repo: &Repository,
-) -> Result<Option<(BaselineReceipt, Bindings)>, ClewError> {
+fn read_baseline_index(repo: &Repository) -> Result<Option<(String, String)>, ClewError> {
     let index = repo.path("docs/index.html")?;
     let metadata = match fs::symlink_metadata(&index) {
         Ok(metadata) => metadata,
@@ -397,6 +400,35 @@ pub(super) fn capture_baseline(
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid("invalid documentation bundle pointer"));
     }
+    Ok(Some((id.to_owned(), index_text)))
+}
+
+/// Select the working publication without hydrating its bindings or closure.
+/// Its immutable manifest pins the exact generated overview bytes; selected
+/// records are validated later by the publication export reader.
+pub(super) fn working_publication(repo: &Repository) -> Result<Option<String>, ClewError> {
+    let Some((id, index)) = read_baseline_index(repo)? else {
+        return Ok(None);
+    };
+    let publication = super::history::load(repo, &id)?;
+    if publication.files.get("root-overview.html") != Some(&canonical::hash_bytes(index.as_bytes()))
+    {
+        return Err(ClewError::new(
+            ErrorCode::WwConflict,
+            "generated overview was edited; preserve the edit as manual prose before regeneration",
+        ));
+    }
+    Ok(Some(id))
+}
+
+/// Bind provenance to the exact bytes parsed and validated below, never to a
+/// second read of the mutable pointer or its selected bindings file.
+pub(super) fn capture_baseline(
+    repo: &Repository,
+) -> Result<Option<(BaselineReceipt, Bindings)>, ClewError> {
+    let Some((id, index_text)) = read_baseline_index(repo)? else {
+        return Ok(None);
+    };
     let relative = format!("docs/generated/{id}/bindings.json");
     let path = repo.path(&relative)?;
     let missing_bindings = || {
@@ -430,7 +462,7 @@ pub(super) fn capture_baseline(
     }
     let binding = validate_retained_bindings(repo, &raw)?;
     let receipt = BaselineReceipt {
-        bundle: id.into(),
+        bundle: id,
         index_digest: canonical::hash_bytes(index_text.as_bytes()),
         bindings_digest: canonical::hash_bytes(&raw),
     };
@@ -491,35 +523,15 @@ pub(super) fn decode_retained_bindings(
     Ok(binding)
 }
 
-fn validate_decoded_binding(
-    repo: &Repository,
-    binding: &mut Bindings,
-    authored_contexts: &mut BTreeMap<String, Check>,
-) -> Result<(), ClewError> {
+fn prepare_binding(binding: &mut Bindings) -> Result<(), ClewError> {
     super::reviewed_answers::validate_entries(&binding.reviewed_answers)?;
     super::review::resolve_influence_scopes(
         &mut binding.accepted_versions,
         &binding.influence_scopes,
-    )?;
-    expand_shared(binding)?;
-    for (id, fragment) in &binding.fragments {
-        let operation = id.split('/').take(2).collect::<Vec<_>>().join("/");
-        if let Some(version) = binding.accepted_versions.get(&operation)
-            && fragment.influence_scope.as_ref() != Some(&version.influence.scope)
-            && !super::explanation_authorship::retained_scope(binding, id)?
-        {
-            return Err(invalid(
-                "accepted fragment does not match its influence scope",
-            ));
-        }
-        if fragment
-            .influence_scope
-            .as_ref()
-            .is_some_and(|scope| !binding.influence_scopes.contains_key(scope))
-        {
-            return Err(invalid("fragment influence scope is missing"));
-        }
-    }
+    )
+}
+
+fn validate_global_records(binding: &Bindings) -> Result<(), ClewError> {
     for (id, observation) in &binding.observations {
         if id != &observation.id || digest(&observation.normalized)? != observation.digest {
             return Err(invalid("portable baseline observation digest is invalid"));
@@ -531,63 +543,6 @@ fn validate_decoded_binding(
             return Err(invalid("retained source digest is invalid"));
         }
     }
-    for key in binding.fragments.keys() {
-        if super::explanation_authorship::authored_binding(binding, key)? {
-            let snapshot = binding.fragments[key].content["authorship"]["sourceSnapshot"]
-                .as_str()
-                .ok_or_else(|| invalid("authored source snapshot is unavailable"))?;
-            if !authored_contexts.contains_key(snapshot) {
-                if repo.portable_read_only {
-                    return Err(invalid(format!(
-                        "DOCS_AUTHORING_CONTEXT_REQUIRED: protected fragment needs original source snapshot {snapshot}; restore its original .codeclew authoring/snapshot closure; a portable publication does not replace that state and a new capture cannot substitute it"
-                    )));
-                }
-                authored_contexts
-                    .insert(snapshot.to_owned(), Check::load_snapshot(repo, snapshot)?);
-            }
-            super::explanation_authorship::validate_binding_pin(
-                binding,
-                key,
-                &authored_contexts[snapshot],
-            )?;
-        }
-    }
-    for fragment in binding.fragments.values() {
-        if !fragment.content.is_null() && digest(&fragment.content)? != fragment.content_digest {
-            return Err(invalid("retained fragment content digest is invalid"));
-        }
-        if let Some(evidence) = &fragment.evidence {
-            for (id, observation) in &evidence.observations {
-                if id != &observation.id || digest(&observation.normalized)? != observation.digest {
-                    return Err(invalid("retained section observation digest is invalid"));
-                }
-            }
-            for source in evidence.sources.values() {
-                super::source_origin::verify(source)?;
-                if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
-                    return Err(invalid("retained section source digest is invalid"));
-                }
-            }
-        }
-        let observations = fragment
-            .evidence
-            .as_ref()
-            .map(|e| &e.observations)
-            .unwrap_or(&binding.observations);
-        if fragment
-            .dependencies
-            .iter()
-            .any(|(id, value)| observations.get(id).is_none_or(|o| &o.digest != value))
-        {
-            return Err(invalid(
-                "portable baseline is missing a normalized dependency observation",
-            ));
-        }
-    }
-    // Renderer identity records how the previous presentation was produced.
-    // Evidence compatibility is governed by the bindings schema and validated
-    // evidence below it, not by a presentation-only version change. Preserve
-    // this identity verbatim; newly rendered bundles use the current renderer.
     if binding.renderer.is_empty()
         || binding.renderer.len() > 128
         || !binding
@@ -600,6 +555,200 @@ fn validate_decoded_binding(
         ));
     }
     Ok(())
+}
+
+fn validate_fragment(
+    repo: &Repository,
+    binding: &Bindings,
+    id: &str,
+    authored_contexts: &mut BTreeMap<String, Check>,
+    context_limit: Option<usize>,
+) -> Result<(), ClewError> {
+    let fragment = &binding.fragments[id];
+    let operation = id.split('/').take(2).collect::<Vec<_>>().join("/");
+    if let Some(version) = binding.accepted_versions.get(&operation)
+        && fragment.influence_scope.as_ref() != Some(&version.influence.scope)
+        && !super::explanation_authorship::retained_scope(binding, id)?
+    {
+        return Err(invalid(
+            "accepted fragment does not match its influence scope",
+        ));
+    }
+    if fragment
+        .influence_scope
+        .as_ref()
+        .is_some_and(|scope| !binding.influence_scopes.contains_key(scope))
+    {
+        return Err(invalid("fragment influence scope is missing"));
+    }
+    if super::explanation_authorship::authored_binding(binding, id)? {
+        let snapshot = fragment.content["authorship"]["sourceSnapshot"]
+            .as_str()
+            .ok_or_else(|| invalid("authored source snapshot is unavailable"))?;
+        if !authored_contexts.contains_key(snapshot) {
+            if repo.portable_read_only {
+                return Err(invalid(format!(
+                    "DOCS_AUTHORING_CONTEXT_REQUIRED: protected fragment needs original source snapshot {snapshot}; restore its original .codeclew authoring/snapshot closure; a portable publication does not replace that state and a new capture cannot substitute it"
+                )));
+            }
+            if context_limit.is_some_and(|limit| authored_contexts.len() >= limit) {
+                return Err(ClewError::new(
+                    ErrorCode::SliceBudgetExceeded,
+                    "remote export exceeds eight original authoring contexts; select fewer subjects",
+                ));
+            }
+            authored_contexts.insert(snapshot.to_owned(), Check::load_snapshot(repo, snapshot)?);
+        }
+        super::explanation_authorship::validate_binding_pin(
+            binding,
+            id,
+            &authored_contexts[snapshot],
+        )?;
+    }
+    if !fragment.content.is_null() && digest(&fragment.content)? != fragment.content_digest {
+        return Err(invalid("retained fragment content digest is invalid"));
+    }
+    if let Some(evidence) = &fragment.evidence {
+        for (id, observation) in &evidence.observations {
+            if id != &observation.id || digest(&observation.normalized)? != observation.digest {
+                return Err(invalid("retained section observation digest is invalid"));
+            }
+        }
+        for source in evidence.sources.values() {
+            super::source_origin::verify(source)?;
+            if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
+                return Err(invalid("retained section source digest is invalid"));
+            }
+        }
+    }
+    let observations = fragment
+        .evidence
+        .as_ref()
+        .map(|e| &e.observations)
+        .unwrap_or(&binding.observations);
+    if fragment
+        .dependencies
+        .iter()
+        .any(|(id, value)| observations.get(id).is_none_or(|o| &o.digest != value))
+    {
+        return Err(invalid(
+            "portable baseline is missing a normalized dependency observation",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_decoded_binding(
+    repo: &Repository,
+    binding: &mut Bindings,
+    authored_contexts: &mut BTreeMap<String, Check>,
+) -> Result<(), ClewError> {
+    prepare_binding(binding)?;
+    expand_shared(binding)?;
+    validate_global_records(binding)?;
+    for id in binding.fragments.keys() {
+        validate_fragment(repo, binding, id, authored_contexts, None)?;
+    }
+    Ok(())
+}
+
+/// A reading export validates each expanded occurrence, then restores its compact
+/// references. It never retains all copies of the same source simultaneously.
+pub(super) fn validate_retained_reading_bindings(
+    repo: &Repository,
+    raw: &[u8],
+    authored_contexts: &mut BTreeMap<String, Check>,
+) -> Result<(Bindings, Value), ClewError> {
+    const WORK_LIMIT: u64 = 512 * 1024 * 1024;
+    let mut binding = decode_retained_bindings(repo, raw)?;
+    prepare_binding(&mut binding)?;
+    validate_global_records(&binding)?;
+    let compact_bytes = super::bindings_storage::serialized_size(&binding)?;
+    let mut work = compact_bytes;
+    let mut maximum = 0;
+    let mut sizes = BTreeMap::new();
+    let keys: Vec<_> = binding.fragments.keys().cloned().collect();
+    for id in keys {
+        let fragment = &binding.fragments[&id];
+        let (shared_sources, shared_observations) = fragment
+            .evidence
+            .as_ref()
+            .map(|e| (e.shared_sources.clone(), e.shared_observations.clone()))
+            .unwrap_or_default();
+        let derived = fragment.dependencies_from_evidence;
+        let mut expanded = super::bindings_storage::serialized_size(fragment)?;
+        for (kind, ids) in [
+            ("source", &shared_sources),
+            ("observation", &shared_observations),
+        ] {
+            for key in ids {
+                let index = (kind, key.clone());
+                let size = if let Some(size) = sizes.get(&index) {
+                    *size
+                } else {
+                    let size = if kind == "source" {
+                        super::bindings_storage::serialized_size(
+                            binding
+                                .retained_sources
+                                .get(key)
+                                .ok_or_else(|| invalid("shared fragment source is missing"))?,
+                        )?
+                    } else {
+                        super::bindings_storage::serialized_size(
+                            binding
+                                .observations
+                                .get(key)
+                                .ok_or_else(|| invalid("shared fragment observation is missing"))?,
+                        )?
+                        .saturating_mul(2)
+                    };
+                    sizes.insert(index, size);
+                    size
+                };
+                expanded = expanded
+                    .saturating_add(size)
+                    .saturating_add(key.len() as u64 + 16);
+            }
+        }
+        maximum = maximum.max(expanded);
+        work = work.saturating_add(expanded);
+        if expanded > super::check::PORTABLE_CACHE_MAX_BYTES || work > WORK_LIMIT {
+            return Err(ClewError::new(
+                ErrorCode::SliceBudgetExceeded,
+                "remote retained validation exceeds 128 MiB per fragment or 512 MiB total expansion work; select fewer subjects",
+            ));
+        }
+        let mut fragment = binding.fragments.remove(&id).unwrap();
+        expand_fragment(
+            &mut fragment,
+            &binding.observations,
+            &binding.retained_sources,
+        )?;
+        binding.fragments.insert(id.clone(), fragment);
+        validate_fragment(repo, &binding, &id, authored_contexts, Some(8))?;
+        let fragment = binding.fragments.get_mut(&id).unwrap();
+        if let Some(evidence) = fragment.evidence.as_mut() {
+            for key in &shared_sources {
+                evidence.sources.remove(key);
+            }
+            for key in &shared_observations {
+                evidence.observations.remove(key);
+            }
+            evidence.shared_sources = shared_sources;
+            evidence.shared_observations = shared_observations;
+        }
+        if derived {
+            fragment.dependencies.clear();
+            fragment.dependencies_from_evidence = true;
+        }
+    }
+    Ok((
+        binding,
+        json!({"bindingsForm":"COMPACT_VALIDATED_READING","inputRecordBytes":raw.len(),"compactLogicalBytes":compact_bytes,"chargedExpansionBytes":work,
+        "maximumExpandedFragmentBytes":maximum,"expansionWorkLimitBytes":WORK_LIMIT,
+        "expandedFragmentLimitBytes":super::check::PORTABLE_CACHE_MAX_BYTES,
+        "originalAuthoringContexts":authored_contexts.len(),"originalAuthoringContextLimit":8}),
+    ))
 }
 
 pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result<(), ClewError> {

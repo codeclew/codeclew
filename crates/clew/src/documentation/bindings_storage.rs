@@ -764,6 +764,10 @@ impl Write for Count {
     }
 }
 fn value_size(value: &Value) -> Result<u64, ClewError> {
+    serialized_size(value)
+}
+
+pub(super) fn serialized_size(value: &impl Serialize) -> Result<u64, ClewError> {
     let mut count = Count(0);
     serde_json::to_writer(&mut count, value).map_err(io_error)?;
     Ok(count.0)
@@ -826,6 +830,18 @@ fn resolve_limited_with(
     raw: &[u8],
     reading: bool,
     logical_limit: u64,
+    get: impl FnMut(&ObjectRef) -> Result<Vec<u8>, ClewError>,
+) -> Result<(Value, ReadStats), ClewError> {
+    resolve_owners_with(raw, reading, logical_limit, None, get)
+}
+
+/// Owner selection verifies only the reachable immutable closure. Shared tables
+/// remain included; omitted owners are never advertised as validated evidence.
+fn resolve_owners_with(
+    raw: &[u8],
+    reading: bool,
+    logical_limit: u64,
+    owners: Option<&BTreeSet<Owner>>,
     mut get: impl FnMut(&ObjectRef) -> Result<Vec<u8>, ClewError>,
 ) -> Result<(Value, ReadStats), ClewError> {
     let Some(m) = manifest(raw, reading)? else {
@@ -834,35 +850,63 @@ fn resolve_limited_with(
             ReadStats::default(),
         ));
     };
-    if m.logical_bytes > logical_limit {
+    if owners.is_none() && m.logical_bytes > logical_limit {
         return Err(budget(
             "compact logical bindings exceed the selected input budget",
         ));
     }
+    let partitions: Vec<_> = m
+        .partitions
+        .iter()
+        .filter(|p| {
+            owners.is_none_or(|owners| p.owner.kind == "shared" || owners.contains(&p.owner))
+        })
+        .collect();
+    let declared: BTreeMap<_, _> = m.objects.iter().map(|r| (r.digest.clone(), r)).collect();
     let mut stats = ReadStats::default();
     let mut chunks = BTreeMap::new();
     let mut indexes = BTreeMap::new();
     let mut member_count = 0usize;
-    for r in &m.objects {
+    let mut needed = BTreeMap::new();
+    for partition in &partitions {
+        add_ref(&mut needed, &partition.index)?;
+    }
+    // Read indexes first. They pin every reachable payload/text object, including
+    // historical occurrences. No filesystem enumeration or unrelated hydration.
+    let indexes_to_read: Vec<_> = needed.values().cloned().collect();
+    let mut read = |r: &ObjectRef| -> Result<Vec<u8>, ClewError> {
+        if declared.get(&r.digest).copied() != Some(r) {
+            return Err(corrupt("selected object is absent from declared closure"));
+        }
+        if stats.bytes.saturating_add(r.size) > MAX {
+            return Err(budget("selected physical closure exceeds 128 MiB"));
+        }
         let raw = get(r)?;
         if raw.len() as u64 != r.size || canonical::hash_bytes(&raw) != r.digest {
             return Err(corrupt("object identity or size differs"));
         }
         stats.objects += 1;
         stats.bytes += raw.len() as u64;
-        if r.schema == LEAF {
-            chunks.insert(r.digest.clone(), checked_chunk(&raw)?);
-        } else {
-            let index: Index = parse(&raw)?;
-            if index.schema != PARTITION || index.members.is_empty() || index.members.len() > 1024 {
-                return Err(corrupt("invalid partition membership"));
-            }
-            member_count = member_count.saturating_add(index.members.len());
-            if member_count > 262144 {
-                return Err(budget("binding membership count exceeds 262144"));
-            }
-            indexes.insert(r.digest.clone(), index);
+        Ok(raw)
+    };
+    for r in &indexes_to_read {
+        let index: Index = parse(&read(r)?)?;
+        if index.schema != PARTITION || index.members.is_empty() || index.members.len() > 1024 {
+            return Err(corrupt("invalid partition membership"));
         }
+        member_count = member_count.saturating_add(index.members.len());
+        if member_count > 262144 {
+            return Err(budget("binding membership count exceeds 262144"));
+        }
+        for member in &index.members {
+            for reference in member_refs(member) {
+                add_ref(&mut needed, reference)?;
+            }
+        }
+        indexes.insert(r.digest.clone(), index);
+    }
+    for r in needed.values().filter(|r| r.schema == LEAF) {
+        chunks.insert(r.digest.clone(), checked_chunk(&read(r)?)?);
     }
     let mut used = BTreeMap::new();
     let mut selected = BTreeSet::new();
@@ -875,7 +919,7 @@ fn resolve_limited_with(
             .insert(table.clone(), Value::Object(Map::new()));
     }
     let mut parents = BTreeMap::new();
-    for partition in &m.partitions {
+    for partition in &partitions {
         let index = indexes
             .get(&partition.index.digest)
             .ok_or_else(|| corrupt("partition missing"))?;
@@ -895,7 +939,7 @@ fn resolve_limited_with(
     // memberships are independently sharded; a large historical scope is not a
     // single unbounded fragment index. The graph has only index -> leaf edges.
     let mut charge = value_size(&logical)?;
-    for partition in &m.partitions {
+    for partition in &partitions {
         add_ref(&mut used, &partition.index)?;
         let index = indexes
             .get(&partition.index.digest)
@@ -979,7 +1023,11 @@ fn resolve_limited_with(
             members.push(member);
         }
     }
-    if used.len() != m.objects.len() || m.objects.iter().any(|r| used.get(&r.digest) != Some(r)) {
+    if used != needed
+        || (owners.is_none()
+            && (used.len() != m.objects.len()
+                || m.objects.iter().any(|r| used.get(&r.digest) != Some(r))))
+    {
         return Err(corrupt("closure is incomplete or contains unowned objects"));
     }
     let reconstruct = |member: &Member| -> Result<Value, ClewError> {
@@ -1018,8 +1066,9 @@ fn resolve_limited_with(
     if encoded.len() as u64 > logical_limit {
         return Err(budget("reconstructed compact bindings exceed 128 MiB"));
     }
-    if encoded.len() as u64 != m.logical_bytes
-        || canonical::hash_bytes(&encoded) != m.logical_digest
+    if owners.is_none()
+        && (encoded.len() as u64 != m.logical_bytes
+            || canonical::hash_bytes(&encoded) != m.logical_digest)
     {
         return Err(corrupt(
             "logical binding identity or historical occurrence differs",
@@ -1031,6 +1080,108 @@ fn resolve_limited_with(
 
 pub(super) fn resolve(repo: &Repository, raw: &[u8]) -> Result<(Value, ReadStats), ClewError> {
     resolve_with(raw, false, |r| read_object(repo, r))
+}
+
+/// Scoped reading material, not a replacement evidence envelope. The caller pins
+/// the original manifest hash and validates the resulting selected Bindings.
+pub(super) fn resolve_subjects(
+    repo: &Repository,
+    raw: &[u8],
+    subjects: &BTreeSet<String>,
+    mut remaining: u64,
+) -> Result<(Value, ReadStats), ClewError> {
+    let mut read = |r: &ObjectRef| {
+        if r.size > remaining {
+            return Err(budget(
+                "selected closure exceeds remaining export work budget",
+            ));
+        }
+        remaining -= r.size;
+        read_object(repo, r)
+    };
+    if subjects.is_empty() {
+        return resolve_with(raw, false, &mut read);
+    }
+    let mut owners: BTreeSet<_> = subjects
+        .iter()
+        .map(|id| Owner {
+            kind: "subject".into(),
+            id: id.clone(),
+        })
+        .collect();
+    for subject in subjects {
+        if let Some(id) = subject.strip_prefix("service:") {
+            owners.insert(Owner {
+                kind: "service".into(),
+                id: id.into(),
+            });
+        }
+    }
+    if manifest(raw, false)?.is_none() {
+        // Legacy bindings have no partition index. Their one bounded original
+        // record is read, then filtered; this fallback is disclosed in stats.
+        let (mut value, mut stats) = resolve_with(raw, false, &mut read)?;
+        for (key, fragment) in value["fragments"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.iter())
+        {
+            if owners.contains(&owner("fragments", key, fragment)) {
+                for service in fragment["evidence"]["revisions"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|m| m.keys())
+                {
+                    owners.insert(Owner {
+                        kind: "service".into(),
+                        id: service.clone(),
+                    });
+                }
+            }
+        }
+        for (table, values) in value
+            .as_object_mut()
+            .ok_or_else(|| corrupt("legacy object missing"))?
+        {
+            if table != "outputHashes"
+                && let Some(values) = values.as_object_mut()
+            {
+                values.retain(|key, value| {
+                    let owner = owner(table, key, value);
+                    owner.kind == "shared" || owners.contains(&owner)
+                });
+            }
+        }
+        stats.bytes = 0;
+        stats.logical_bytes = value_size(&value)?;
+        return Ok((value, stats));
+    }
+    let (initial, stats) = resolve_owners_with(raw, false, MAX, Some(&owners), &mut read)?;
+    let before = owners.len();
+    for fragment in initial["fragments"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+    {
+        for service in fragment["evidence"]["revisions"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.keys())
+        {
+            owners.insert(Owner {
+                kind: "service".into(),
+                id: service.clone(),
+            });
+        }
+    }
+    if owners.len() == before {
+        return Ok((initial, stats));
+    }
+    drop(initial);
+    let (value, mut complete) = resolve_owners_with(raw, false, MAX, Some(&owners), &mut read)?;
+    complete.objects += stats.objects;
+    complete.bytes += stats.bytes;
+    Ok((value, complete))
 }
 
 pub(super) fn preflight_frozen(

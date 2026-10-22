@@ -64,6 +64,7 @@ pub(super) fn producer_identity() -> &'static str {
             include_str!("source_inheritance.rs"),
             include_str!("thread_inventory.rs"),
             include_str!("analysis.rs"),
+            include_str!("source_links.rs"),
             include_str!("model.rs"),
             include_str!("../canonical.rs"),
             include_str!("../spring_entrypoints.rs"),

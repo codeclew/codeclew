@@ -33,6 +33,16 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Authored external-service information without binding or capturing target source.
+    External {
+        #[command(subcommand)]
+        command: super::external_services::Command,
+    },
+    /// Account for retained documentation objects and safely apply a reviewed pruning plan.
+    Storage {
+        #[command(subcommand)]
+        command: super::storage::Command,
+    },
     /// Select which exact endpoint callables appear in published documentation.
     Endpoint {
         #[command(subcommand)]
@@ -227,6 +237,8 @@ pub struct ListArgs {
 }
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommand {
+    /// Inspect removal impact, then explicitly remove an unreferenced service.
+    Remove(super::removal::Request),
     Add(InputArgs),
     List(ListArgs),
     Show {
@@ -352,6 +364,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::External { command } => super::external_services::run(command),
+        Command::Storage { command } => super::storage::run(command),
         Command::Endpoint { command } => super::endpoint_publication::run(command),
         Command::Pages { command } => super::static_pages::run(command),
         Command::Dsl { command } => super::flow_dsl::run(command),
@@ -378,6 +392,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             repo,
         } => analysis::bind(&Repository::open(&root)?, &service, &repo),
         Command::Service { command } => match command {
+            ServiceCommand::Remove(args) => super::removal::run("service", args),
             ServiceCommand::Add(args) => Repository::open(&args.root)?.service_add(
                 store::read(&args.input, store::MAX_RECORD)?,
                 args.expected_input_digest.as_deref(),
@@ -545,7 +560,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                     ));
                 }
                 let repo = Repository::open(&root)?;
-                let (publication, _) = super::bindings::baseline(&repo)?.ok_or_else(||invalid(
+                let publication = super::bindings::working_publication(&repo)?.ok_or_else(||invalid(
                     "remote docs render requires an existing local publication; run docs render locally first or select --publication with docs pages render"))?;
                 let (checked, snapshot) =
                     super::check::Check::retained(&repo, snapshot.as_deref(), &Default::default())?;

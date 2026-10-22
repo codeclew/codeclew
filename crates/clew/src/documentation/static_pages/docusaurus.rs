@@ -1916,6 +1916,19 @@ pub(super) fn project(
             }
             body
         };
+        let mut body = body;
+        if let Some(externals) = page["externalServices"]
+            .as_object()
+            .filter(|m| !m.is_empty())
+        {
+            body.push_str("\n## External services\n\nDeclared information; target source is not captured and runtime behavior is unverified.\n\n");
+            for (id, entry) in externals {
+                body.push_str(&format!(
+                    "- [{}](../external-services/{id}.mdx)\n",
+                    md(text(&entry["title"]))
+                ));
+            }
+        }
         put(&mut files, format!("docs/{directory}/{id}.mdx"), body);
         if !process {
             for note in rows(&page["notes"]) {
@@ -2016,6 +2029,47 @@ pub(super) fn project(
     }
     if !service_items.is_empty() {
         sidebars.push(json!({"type":"category","label":crate::documentation::language::label(language, "Service context"),"items":service_items}));
+    }
+    let mut external_items = Vec::new();
+    for (name, record) in &documents {
+        if let Some(id) = name
+            .strip_prefix("native/external-services/")
+            .and_then(|s| s.strip_suffix(".json"))
+        {
+            let entry = &record["externalService"];
+            if !crate::documentation::store::valid_id(id) || !entry.is_object() {
+                return Err(invalid("invalid frozen external-service page"));
+            }
+            let mut body = header(text(&entry["title"]), &format!("/external-services/{id}"));
+            body.push_str(&format!("# {}\n\nDeclared external service. Source not captured; runtime unverified.\n\n{}\n\n",md(text(&entry["title"])),md(text(&entry["description"]))));
+            for (label, key) in [("Repository", "repository"), ("Wiki", "wiki")] {
+                if let Some(url) = entry[key].as_str() {
+                    body.push_str(&format!(
+                        "- [{label}]({})\n",
+                        url.replace('(', "%28").replace(')', "%29")
+                    ));
+                }
+            }
+            body.push_str("\n## Limitations\n\n");
+            for limit in rows(&entry["limitations"]) {
+                body.push_str(&format!("- {}\n", md(text(limit))));
+            }
+            body.push_str(&format!(
+                "\n## Declaration provenance\n\nOrigin: {}\n\n{}\n",
+                md(text(&entry["declaration"]["origin"])),
+                md(text(&entry["declaration"]["rationale"]))
+            ));
+            put(&mut files, format!("docs/external-services/{id}.mdx"), body);
+            external_items.push(json!(format!("external-services/{id}")));
+            overview.push_str(&format!(
+                "\n- [External service: {}](external-services/{id}.mdx)\n",
+                md(text(&entry["title"]))
+            ));
+        }
+    }
+    if !external_items.is_empty() {
+        sidebars
+            .push(json!({"type":"category","label":"External services","items":external_items}));
     }
     if let Some(guide) = documents.get("native/system-reading-guide.json") {
         let mut story = if manifest["readingGuideTranslationGaps"]["system:overview"].is_object() {

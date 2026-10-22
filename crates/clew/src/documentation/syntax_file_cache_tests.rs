@@ -88,6 +88,7 @@ fn service(language: &str) -> Service {
     serde_json::from_value(json!({
         "schema":"codeclew-documentation-service/1.0", "id":"orders", "title":"Orders",
         "repositoryId":"orders", "repository":"https://example.invalid/orders",
+        "sourceWeb":{"provider":"github","webBase":"https://example.invalid/orders"},
         "language":language, "profile":"source-syntax", "targetRef":"HEAD",
         "source":{"roots":["."],"dialect":"declared"}
     }))

@@ -289,6 +289,31 @@ impl SqliteObjects {
         Ok((count as u64, bytes as u64))
     }
 
+    pub(super) fn remove_exact(
+        &self,
+        objects: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), ClewError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| sql_error("starting object pruning", e))?;
+        for (digest, size) in objects {
+            validate_digest(digest)?;
+            let removed = transaction
+                .execute(
+                    "DELETE FROM objects WHERE digest = ?1 AND byte_len = ?2",
+                    params![digest, *size as i64],
+                )
+                .map_err(|e| sql_error("pruning unreferenced object", e))?;
+            if removed != 1 {
+                return Err(corrupt("pruning plan object changed; recompute the plan"));
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|e| sql_error("committing object pruning", e))
+    }
+
     pub(crate) fn enumerate(&self, limit: usize) -> Result<Vec<(String, u64)>, ClewError> {
         let requested = if limit == usize::MAX {
             i64::MAX

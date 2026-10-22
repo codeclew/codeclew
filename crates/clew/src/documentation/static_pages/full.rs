@@ -44,12 +44,42 @@ pub(super) fn render(
             "full Pages cannot export a frozen publication under endpoint exclusions; use declaration selections or remove the exclusions explicitly",
         ));
     }
-    let mut budget = history::FrozenInputBudget {
-        remaining_bytes: MAX_BYTES,
+    let (manifest, original_manifest, raw, mut accounting) = if inputs.source_policy.remote() {
+        let admitted =
+            super::frozen_export::read(repo, publication, &inputs.source_policy.subjects)?;
+        (
+            admitted.selected,
+            admitted.original,
+            admitted.bindings,
+            Some(admitted.accounting),
+        )
+    } else {
+        let mut budget = history::FrozenInputBudget {
+            remaining_bytes: MAX_BYTES,
+        };
+        let (manifest, raw) = history::read_frozen_bindings(repo, publication, &mut budget)?;
+        (manifest.clone(), manifest, raw, None)
     };
-    let (manifest, raw) = history::read_frozen_bindings(repo, publication, &mut budget)?;
-    let (_, bindings) =
-        history::validate_frozen_bindings(repo, manifest.clone(), &raw, &mut BTreeMap::new())?;
+    let bindings = if inputs.source_policy.remote() {
+        let (bindings, stats) = history::validate_frozen_reading_bindings(
+            repo,
+            &original_manifest,
+            &raw,
+            &mut BTreeMap::new(),
+        )?;
+        if let Some(accounting) = accounting.as_mut() {
+            accounting["semanticValidation"] = stats;
+        }
+        bindings
+    } else {
+        history::validate_frozen_bindings(
+            repo,
+            original_manifest.clone(),
+            &raw,
+            &mut BTreeMap::new(),
+        )?
+        .1
+    };
     let requested_language = inputs
         .language
         .or(bindings.documentation_language.as_deref());
@@ -58,23 +88,71 @@ pub(super) fn render(
     let mut files = BTreeMap::new();
     let mut remaining = MAX_BYTES;
     let mut pages = Vec::new();
-    for (name, expected) in &manifest.files {
-        store::relative(name)?;
-        let path = repo.path(&format!("docs/generated/{publication}/{name}"))?;
-        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > remaining {
-            return Err(invalid(
-                "full pages frozen input is unsafe or exceeds its byte budget",
+    let mut groups = BTreeMap::<String, Vec<String>>::new();
+    for name in manifest.files.keys() {
+        let owner = if inputs.source_policy.remote() {
+            super::frozen_export::subject(name).unwrap_or_else(|| "__shared".into())
+        } else {
+            "__embedded".into()
+        };
+        groups.entry(owner).or_default().push(name.clone());
+    }
+    let mut retained_bytes = 0u64;
+    for (owner, names) in groups {
+        let mut group = BTreeMap::new();
+        for name in names {
+            store::relative(&name)?;
+            let path = repo.path(&format!("docs/generated/{publication}/{name}"))?;
+            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+            let limit = if inputs.source_policy.remote() {
+                MAX_BYTES
+            } else {
+                remaining
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > limit {
+                return Err(invalid(
+                    "full pages frozen record is unsafe or exceeds its byte budget",
+                ));
+            }
+            let bytes = fs::read(&path).map_err(io_error)?;
+            if bytes.len() as u64 > limit
+                || crate::canonical::hash_bytes(&bytes) != manifest.files[&name]
+            {
+                return Err(invalid("full pages frozen input changed after validation"));
+            }
+            if !inputs.source_policy.remote() {
+                remaining -= bytes.len() as u64;
+            }
+            group.insert(name, bytes);
+        }
+        if inputs.source_policy.remote() {
+            source_projection.register_frozen_files(&group)?;
+            if owner != "__shared" {
+                // Project one service/process HTML/Markdown group before retaining
+                // it. Original JSON remains available for narrative comparison and
+                // exact generated-appendix replacement in the final projection.
+                let originals: Vec<_> = group
+                    .iter()
+                    .filter(|(name, _)| name.ends_with(".json"))
+                    .map(|(name, bytes)| (name.clone(), bytes.clone()))
+                    .collect();
+                source_projection.files(&mut group)?;
+                group.extend(originals);
+            }
+        }
+        retained_bytes =
+            retained_bytes.saturating_add(group.values().map(|b| b.len() as u64).sum::<u64>());
+        if inputs.source_policy.remote()
+            && retained_bytes > crate::documentation::check::PORTABLE_CACHE_MAX_BYTES
+        {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::SliceBudgetExceeded,
+                "remote reading inputs exceed 128 MiB retained buffer; select fewer export-subjects",
             ));
         }
-        let bytes = fs::read(&path).map_err(io_error)?;
-        if bytes.len() as u64 > remaining || crate::canonical::hash_bytes(&bytes) != *expected {
-            return Err(invalid("full pages frozen input changed after validation"));
-        }
-        remaining -= bytes.len() as u64;
-        files.insert(name.clone(), bytes);
+        files.extend(group);
     }
-    let original_bindings = raw.clone();
+    let original_bindings = raw;
     // Publication metadata is outside its own file inventory. Read the exact
     // admitted file separately; including its own hash would be recursive.
     let publication_path = repo.path(&format!("docs/generated/{publication}/publication.json"))?;
@@ -88,7 +166,7 @@ pub(super) fn render(
         || digest(
             &serde_json::from_slice::<history::Publication>(&publication_bytes)
                 .map_err(io_error)?,
-        )? != digest(&manifest)?
+        )? != digest(&original_manifest)?
     {
         return Err(invalid("publication metadata changed after validation"));
     }
@@ -97,7 +175,11 @@ pub(super) fn render(
     if inputs.source_policy.remote() {
         // Projection must see selected logical source records, not opaque text
         // chunks (which can also contain unused records from an older packing).
-        let logical = crate::documentation::bindings_storage::resolve(repo, &raw)?.0;
+        source_projection.register_frozen_files(&files)?;
+        let mut logical =
+            crate::documentation::bindings_storage::resolve(repo, &original_bindings)?.0;
+        source_projection.register_sources(&logical)?;
+        source_projection.value(&mut logical)?;
         files.insert(
             "bindings.json".into(),
             crate::documentation::bytes(&logical)?,
@@ -232,6 +314,10 @@ pub(super) fn render(
                 html_name.clone(),
                 payload["questionReaderTranslationGap"].clone(),
             );
+        }
+        if inputs.source_policy.remote() {
+            source_projection.register_sources(&payload)?;
+            source_projection.value(&mut payload)?;
         }
         let html = render::html(&payload)?;
         let prefix = "../";
@@ -438,9 +524,30 @@ pub(super) fn render(
         &result["files"],
     ))?
     .into();
+    if let Some(accounting) = &accounting {
+        result["exportSelection"] = accounting.clone();
+        if !inputs.source_policy.subjects.is_empty() {
+            for (name, raw) in &mut files {
+                if !name.ends_with(".html") {
+                    continue;
+                }
+                let html = std::str::from_utf8(raw).map_err(io_error)?;
+                *raw = super::frozen_export::annotate(
+                    html,
+                    name,
+                    &inputs.source_policy.subjects,
+                    &accounting["omittedSubjects"],
+                )
+                .into_bytes();
+            }
+        }
+    }
     let portable = inputs.format == super::PageFormat::Docusaurus;
     if portable {
         (files, result) = super::docusaurus::project(&files, &result, &inputs)?;
+    }
+    if let Some(accounting) = &accounting {
+        result["exportSelection"] = accounting.clone();
     }
     // The portable closure was projected before hashing. Its source-text leaf
     // units are immutable export data, not an independent projection input.
@@ -484,6 +591,13 @@ pub(super) fn render(
         crate::documentation::bytes(&reading_publication)?,
     );
     result["originalFrozenBindingsDigest"] = result["frozenBindingsDigest"].clone();
+    result["originalBindingsRecordDigest"] = json!(original_manifest.files.get("bindings.json"));
+    if !inputs.source_policy.subjects.is_empty() {
+        result["selectedFrozenBindingsDigest"] = result["frozenBindingsDigest"].clone();
+        // Selection does not validate the omitted logical records. Preserve the
+        // exact original root-record pin without claiming an exhaustive digest.
+        result["originalFrozenBindingsDigest"] = Value::Null;
+    }
     result["bindingsClosure"] = json!({"manifest":binding_manifest_path,"digest":crate::canonical::hash_bytes(&files[&binding_manifest_path]),
         "schema":binding_manifest["schema"],"objectRoot":format!("{prefix}{}",crate::documentation::bindings_storage::OBJECT_ROOT),
         "copyRequirement":"Copy the manifest and every object in its declared closure; source publication and authoring backups remain separate."});

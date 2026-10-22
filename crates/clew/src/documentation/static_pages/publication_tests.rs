@@ -1418,6 +1418,7 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
                 source_export: ExportArgs {
                     source_mode: mode,
                     source_map: Some(mapping.clone()),
+                    export_subjects: Vec::new(),
                 },
                 output: directory.clone(),
             })
@@ -1477,6 +1478,81 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
             cases.push(json!({"id":format!("full-{format_name}-{mode_name}"),"directory":directory,"mode":mode_name,"sourceOnlyMarkers":[old_marker,new_marker],"authoredProse":[authored],"expectedUrls":if mode==SourceMode::Remote{expected.to_vec()}else{vec![]}}));
         }
     }
+    for (format_name, format) in formats.iter().copied() {
+        let directory = output.join(format!("selected-{format_name}"));
+        let result = run(Command::Render {
+            root: repo.root.clone(),
+            snapshot: snapshot.clone(),
+            input: None,
+            publication: Some(publication.clone()),
+            reading_plan: None,
+            contract_comparison: None,
+            data_model: None,
+            format,
+            language: Some("en".into()),
+            source_export: ExportArgs {
+                source_mode: SourceMode::Remote,
+                source_map: Some(mapping.clone()),
+                export_subjects: vec!["service:sample".into()],
+            },
+            output: directory.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            result["originalBindingsRecordDigest"],
+            crate::canonical::hash_bytes(&original_bindings)
+        );
+        assert!(result["originalFrozenBindingsDigest"].is_null());
+        assert!(result["selectedFrozenBindingsDigest"].is_string());
+        assert_eq!(
+            result["exportSelection"]["effectiveSubjects"],
+            json!(["service:sample"])
+        );
+        assert_eq!(
+            result["exportSelection"]["omittedSubjects"],
+            json!(["service:sibling"])
+        );
+        assert_eq!(result["exportSelection"]["unrelatedCacheScanned"], false);
+        assert!(
+            result["exportSelection"]["bindingObjectsRead"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let mut files = Vec::new();
+        fn all_files(path: &Path, files: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    all_files(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        all_files(&directory, &mut files);
+        assert!(
+            !files.iter().any(|p| p.file_name().is_some_and(|n| matches!(
+                n.to_str(),
+                Some("sibling.html" | "sibling.json" | "sibling.md" | "sibling.mdx")
+            )))
+        );
+        let texts: Vec<_> = files
+            .iter()
+            .map(|p| fs::read_to_string(p).unwrap_or_default())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains(authored)));
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains(old_marker) || t.contains(new_marker))
+        );
+        if format == PageFormat::Standalone {
+            let page = fs::read_to_string(directory.join("services/sample.html")).unwrap();
+            assert!(page.contains("Selected saved publication"));
+            assert!(!page.contains("href=\"sibling.html\""));
+        }
+    }
     let cli_output = output.join("cli-remote");
     let cli = crate::documentation::cli::run(crate::documentation::cli::Command::Render {
         root: repo.root.clone(),
@@ -1489,6 +1565,7 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
         source_export: ExportArgs {
             source_mode: SourceMode::Remote,
             source_map: Some(mapping.clone()),
+            export_subjects: Vec::new(),
         },
         output: Some(cli_output.clone()),
     })
@@ -1513,7 +1590,8 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
                 publish,
                 source_export: ExportArgs {
                     source_mode: SourceMode::Remote,
-                    source_map: Some(mapping.clone())
+                    source_map: Some(mapping.clone()),
+                    export_subjects: Vec::new(),
                 },
                 output: Some(forbidden.clone())
             })
@@ -1521,6 +1599,122 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
         );
         assert!(!forbidden.exists());
     }
+    let selected_export = |name: &str| {
+        let mut policy = remote.clone();
+        policy.subjects = vec!["service:sample".into()];
+        export_publication(
+            &repo,
+            &check,
+            &snapshot,
+            &publication,
+            Some("en"),
+            &policy,
+            &output.join(name),
+        )
+    };
+    let cli_selected_export = |name: &str| {
+        crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+            root: repo.root.clone(),
+            language: Some("en".into()),
+            input: vec![],
+            require_complete: false,
+            refresh: false,
+            snapshot: Some(snapshot.clone()),
+            publish: false,
+            source_export: ExportArgs {
+                source_mode: SourceMode::Remote,
+                source_map: Some(mapping.clone()),
+                export_subjects: vec!["service:sample".into()],
+            },
+            output: Some(output.join(name)),
+        })
+    };
+    let before = selected_export("selected-before-orphan").unwrap();
+    let orphan = repo
+        .path("docs/evidence/objects/unreferenced-owned-input.json")
+        .unwrap();
+    fs::write(
+        &orphan,
+        b"unreferenced owned bytes must not be read by export",
+    )
+    .unwrap();
+    let after = selected_export("selected-after-orphan").unwrap();
+    assert_eq!(before["exportIdentity"], after["exportIdentity"]);
+    assert_eq!(before["exportSelection"], after["exportSelection"]);
+    let manifest: Value = serde_json::from_slice(&original_bindings).unwrap();
+    let partition = |service: &str| {
+        manifest["partitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["owner"]["kind"] == "service" && p["owner"]["id"] == service)
+            .unwrap()["index"]["digest"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap()
+            .to_owned()
+    };
+    let omitted_index = repo
+        .path(&format!(
+            "docs/evidence/objects/{}.json",
+            partition("sibling")
+        ))
+        .unwrap();
+    let omitted_raw = fs::read(&omitted_index).unwrap();
+    fs::remove_file(&omitted_index).unwrap();
+    let scoped = selected_export("selected-omitted-damaged").unwrap();
+    assert_eq!(before["exportIdentity"], scoped["exportIdentity"]);
+    let cli_scoped = cli_selected_export("cli-selected-omitted-damaged").unwrap();
+    assert_eq!(
+        cli_scoped["exportSelection"]["effectiveSubjects"],
+        json!(["service:sample"])
+    );
+    assert_eq!(
+        cli_scoped["exportSelection"]["omittedSubjects"],
+        json!(["service:sibling"])
+    );
+
+    assert!(
+        export_publication(
+            &repo,
+            &check,
+            &snapshot,
+            &publication,
+            None,
+            &remote,
+            &output.join("full-damaged-closure")
+        )
+        .is_err()
+    );
+    assert!(!output.join("full-damaged-closure").exists());
+    fs::write(&omitted_index, omitted_raw).unwrap();
+    let selected_index = repo
+        .path(&format!(
+            "docs/evidence/objects/{}.json",
+            partition("sample")
+        ))
+        .unwrap();
+    let selected_raw = fs::read(&selected_index).unwrap();
+    fs::write(&selected_index, b"{}").unwrap();
+    assert!(selected_export("selected-damaged-closure").is_err());
+    assert!(!output.join("selected-damaged-closure").exists());
+    assert!(cli_selected_export("cli-selected-damaged-closure").is_err());
+    assert!(!output.join("cli-selected-damaged-closure").exists());
+    fs::write(&selected_index, selected_raw).unwrap();
+    fs::remove_file(orphan).unwrap();
+    let index = repo.path("docs/index.html").unwrap();
+    let original_index = fs::read(&index).unwrap();
+    let mut edited = original_index.clone();
+    edited.extend_from_slice(b"\n<p>Owned manual edit</p>");
+    fs::write(&index, edited).unwrap();
+    assert!(cli_selected_export("cli-selected-manually-edited-overview").is_err());
+    assert!(
+        !output
+            .join("cli-selected-manually-edited-overview")
+            .exists()
+    );
+    fs::write(index, original_index).unwrap();
     assert_eq!(
         identities.len(),
         formats.len() * 2,
@@ -1629,4 +1823,129 @@ fn repeated_pinned_render_keeps_both_snapshot_reasons_and_publication_identity()
     )
     .unwrap();
     assert_eq!(before, after);
+}
+
+#[test]
+fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_pages() {
+    use crate::documentation::{cli::InputArgs, external_services, model::Interaction};
+    let (temporary, repo, _old) = repository_snapshot();
+    let external = json!({"schema":"codeclew-documentation-external-service/1.0","id":"forecast-provider","title":"Forecast Provider","description":"Owned provider information. No source acquisition.","repository":"https://github.com/owned/forecast-provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Owned acceptance declaration"},"limitations":["No runtime verification"]});
+    let input = temporary.path().join("external-input.json");
+    fs::write(&input, serde_json::to_vec(&external).unwrap()).unwrap();
+    external_services::run(external_services::Command::Put(InputArgs {
+        root: repo.root.clone(),
+        input,
+        expected_input_digest: Some(repo.input_digest().unwrap()),
+    }))
+    .unwrap();
+    let interaction:Interaction=serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"fetch-forecast","title":"Fetch forecast","from":{"service":"sample"},"to":{"service":"forecast-provider"},"transport":{"kind":"http","method":"GET","path":"/forecast"},"declaration":{"origin":"human","rationale":"Declared only"},"external":true,"externalService":"forecast-provider"})).unwrap();
+    repo.interaction_put(interaction, Some(&repo.input_digest().unwrap()))
+        .unwrap();
+    let mut checked = checked();
+    checked.input_digest = repo.input_digest().unwrap();
+    let inputs = repo.inputs().unwrap();
+    external_services::attach(&inputs, &mut checked).unwrap();
+    for (id, service) in &inputs.services {
+        checked.services.get_mut(id).unwrap().service_digest =
+            crate::documentation::digest(service).unwrap();
+    }
+    checked.source_inputs = Some(SourceInputs {
+        schema: SOURCE_INPUTS_SCHEMA.into(),
+        input_digest: checked.input_digest.clone(),
+        inputs,
+        selected_services: BTreeSet::from(["sample".into(), "sibling".into()]),
+        retained_services: BTreeSet::new(),
+    });
+    checked.refresh_digest().unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let loaded = Check::load_snapshot(&repo, &snapshot).unwrap();
+    assert!(
+        loaded
+            .source_inputs
+            .as_ref()
+            .unwrap()
+            .inputs
+            .external_services
+            .contains_key("forecast-provider")
+    );
+    assert!(!loaded.services.contains_key("forecast-provider"));
+    let published = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &snapshot,
+    )
+    .unwrap();
+    let bundle = published["bundle"].as_str().unwrap();
+    let html = fs::read_to_string(
+        repo.path(&format!(
+            "docs/generated/{bundle}/external-services/forecast-provider.html"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(html.contains("SOURCE NOT CAPTURED") && html.contains("Owned provider information"));
+    assert!(html.contains("../overview.html"));
+    let service = fs::read_to_string(
+        repo.path(&format!("docs/generated/{bundle}/services/sample.html"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(service.contains("../external-services/forecast-provider.html"));
+    let catalog = fs::read_to_string(repo.path("docs/catalog.html").unwrap()).unwrap();
+    assert!(
+        catalog.contains(&format!(
+            "generated/{bundle}/external-services/forecast-provider.html"
+        )) && catalog.contains("Forecast Provider")
+    );
+
+    let mut policy = crate::documentation::source_export::Policy {
+        mode: crate::documentation::source_export::SourceMode::Remote,
+        ..Default::default()
+    };
+    policy.repositories.insert(
+        "sample".into(),
+        crate::documentation::source_export::RepositoryMapping {
+            provider: "github".into(),
+            web_base: "https://github.com/owned/sample".into(),
+            origin: None,
+        },
+    );
+    policy.repositories.insert(
+        "sibling".into(),
+        crate::documentation::source_export::RepositoryMapping {
+            provider: "github".into(),
+            web_base: "https://github.com/owned/sibling".into(),
+            origin: None,
+        },
+    );
+    for format in [PageFormat::Standalone, PageFormat::Docusaurus] {
+        let out = temporary.path().join(format!("external-{format:?}"));
+        let result = full::render(
+            &repo,
+            &loaded,
+            &snapshot,
+            bundle,
+            full::ReadingInputs {
+                reading_plan: None,
+                contract_comparison: None,
+                data_model: None,
+                format,
+                language: None,
+                source_policy: &policy,
+            },
+            &out,
+        )
+        .unwrap();
+        assert_eq!(result["status"], "RENDERED");
+        let path = if format == PageFormat::Docusaurus {
+            "docs/external-services/forecast-provider.mdx"
+        } else {
+            "external-services/forecast-provider.html"
+        };
+        let body = fs::read_to_string(out.join(path)).unwrap();
+        assert!(body.contains("Owned provider information"));
+        assert!(!body.contains("void submit()"));
+    }
 }

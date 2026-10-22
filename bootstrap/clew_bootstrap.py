@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
@@ -3631,6 +3632,23 @@ def main() -> int:
     return 1
 
 
+def unexpected_failure_diagnostic(error: Exception) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": "codeclew-bootstrap-error/2.0",
+        "error": "unexpected bootstrap failure",
+        "errorType": type(error).__name__,
+    }
+    if isinstance(error, OSError) and isinstance(error.errno, int) and 0 < error.errno < 4096:
+        payload.update({
+            "osErrorNumber": error.errno,
+            "osErrorName": errno.errorcode.get(error.errno, "UNKNOWN"),
+            # The system message is public; exception.strerror/filename may
+            # contain caller paths or native private build output.
+            "osErrorMessage": os.strerror(error.errno),
+        })
+    return payload
+
+
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
@@ -3644,9 +3662,5 @@ if __name__ == "__main__":
         print(canonical({"schema": "codeclew-bootstrap-error/1.0", "error": str(error)}).decode(), file=sys.stderr)
         raise SystemExit(7)
     except Exception as error:
-        print(canonical({
-            "schema": "codeclew-bootstrap-error/2.0",
-            "error": "unexpected bootstrap failure",
-            "errorType": type(error).__name__,
-        }).decode(), file=sys.stderr)
+        print(canonical(unexpected_failure_diagnostic(error)).decode(), file=sys.stderr)
         raise SystemExit(7)

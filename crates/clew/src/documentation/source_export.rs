@@ -1,6 +1,6 @@
 //! Source-free export projection over validated retained evidence. The local
 //! records remain untouched; remote output is not an evidence reimport format.
-mod links;
+use super::source_links as links;
 
 use super::{check::Check, digest, invalid, io_error, store};
 use crate::error::ClewError;
@@ -24,6 +24,9 @@ pub struct Args {
     /// JSON provider/web-base mappings keyed by immutable repository ID; required for private hosts.
     #[arg(long)]
     pub source_map: Option<PathBuf>,
+    /// Saved publication subject to export (service:ID or scenario:ID); repeat to select several.
+    #[arg(long = "export-subject")]
+    pub export_subjects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +45,8 @@ pub struct Policy {
     pub mode: SourceMode,
     #[serde(default)]
     pub repositories: BTreeMap<String, RepositoryMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subjects: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +61,26 @@ impl Args {
         let mut policy = Policy {
             mode: self.source_mode,
             repositories: BTreeMap::new(),
+            subjects: self.export_subjects.clone(),
         };
+        policy.subjects.sort();
+        policy.subjects.dedup();
+        if policy.subjects.len() > 64
+            || policy.subjects.iter().any(|subject| {
+                subject.split_once(':').is_none_or(|(kind, id)| {
+                    !matches!(kind, "service" | "scenario") || !store::valid_id(id)
+                })
+            })
+        {
+            return Err(invalid(
+                "export-subject requires at most 64 saved service:ID or scenario:ID subjects",
+            ));
+        }
+        if !policy.subjects.is_empty() && !policy.remote() {
+            return Err(invalid(
+                "export-subject requires remote mode and a saved publication",
+            ));
+        }
         if let Some(path) = &self.source_map {
             let mapping: MappingFile = store::read(path, 1024 * 1024)?;
             if mapping.schema != "codeclew-source-repositories/1.0" {
@@ -101,7 +125,7 @@ impl Policy {
     }
     pub fn manifest(&self) -> Result<Value, ClewError> {
         Ok(
-            json!({"schema":"codeclew-source-export/1.0","mode":self.mode,"repositories":self.repositories,"policyDigest":digest(self)?,"localEvidence":"UNCHANGED","authoredQuotations":"PRESERVED; this option removes automatic source attachments, not authored quotations or semantic identities"}),
+            json!({"schema":"codeclew-source-export/1.0","mode":self.mode,"repositories":self.repositories,"subjects":self.subjects,"policyDigest":digest(self)?,"localEvidence":"UNCHANGED","authoredQuotations":"PRESERVED; this option removes automatic source attachments, not authored quotations or semantic identities"}),
         )
     }
 }
@@ -173,6 +197,13 @@ impl<'a> Projection<'a> {
                 let mapping = if let Some(mapping) = policy.repositories.get(&binding.repository_id)
                 {
                     Some(mapping.clone())
+                } else if let Some(web) = &binding.source_web {
+                    web.validate().map_err(invalid)?;
+                    Some(RepositoryMapping {
+                        provider: web.provider.clone(),
+                        web_base: links::web_base(&web.web_base).map_err(invalid)?,
+                        origin: None,
+                    })
                 } else {
                     links::repository(&binding.repository)
                         .ok()
@@ -231,11 +262,34 @@ impl<'a> Projection<'a> {
             let Ok(origin) = links::remote_identity(repository) else {
                 continue;
             };
-            if let Some(mapping) = self.policy.repositories.get(id) {
-                self.origins
-                    .entry(origin)
-                    .or_default()
-                    .push(mapping.clone());
+            let mapping = self.policy.repositories.get(id).cloned().or_else(|| {
+                let web = service.get("sourceWeb").and_then(|v| {
+                    serde_json::from_value::<super::model::SourceWeb>(v.clone()).ok()
+                });
+                if let Some(web) = web {
+                    web.validate().ok()?;
+                    Some(RepositoryMapping {
+                        provider: web.provider,
+                        web_base: links::web_base(&web.web_base).ok()?,
+                        origin: None,
+                    })
+                } else {
+                    let (base, provider) = links::repository(repository).ok()?;
+                    Some(RepositoryMapping {
+                        provider: provider?.into(),
+                        web_base: base,
+                        origin: None,
+                    })
+                }
+            });
+            if let Some(mapping) = mapping {
+                if mapping.web_base != origin {
+                    self.origins
+                        .entry(mapping.web_base.clone())
+                        .or_default()
+                        .push(mapping.clone());
+                }
+                self.origins.entry(origin).or_default().push(mapping);
             }
         }
     }
@@ -279,13 +333,21 @@ impl<'a> Projection<'a> {
         for marker in [format!("/-/blob/{revision}/"), format!("/blob/{revision}/")] {
             if let Some((base, tail)) = url.split_once(&marker) {
                 let origin = links::remote_identity(base).map_err(invalid)?;
-                let (base, inferred) = links::repository(base).map_err(invalid)?;
+                let browser_base = if base.starts_with("https://") {
+                    links::web_base(base)
+                } else {
+                    links::repository(base).map(|(base, _)| base)
+                }
+                .map_err(invalid)?;
+                let (_, inferred) = links::repository(base).map_err(invalid)?;
+                let base = browser_base;
                 let mapped = self
                     .policy
                     .repositories
                     .values()
                     .filter(|m| m.web_base == base)
                     .chain(self.origins.get(&origin).into_iter().flatten())
+                    .chain(self.origins.get(&base).into_iter().flatten())
                     .collect::<Vec<_>>();
                 let mapping = if let Some(first) = mapped.first() {
                     if !mapped
@@ -780,7 +842,7 @@ impl Projection<'_> {
         }
     }
 
-    fn register_sources(&mut self, value: &Value) -> Result<(), ClewError> {
+    pub(super) fn register_sources(&mut self, value: &Value) -> Result<(), ClewError> {
         if !self.policy.remote() {
             return Ok(());
         }
@@ -1087,6 +1149,23 @@ mod tests {
         assert_ne!(before, digest(&remote).unwrap());
     }
     #[test]
+    fn historical_private_browser_base_keeps_literal_git_suffix_and_captured_policy() {
+        let check = checked();
+        let policy = Policy {
+            mode: SourceMode::Remote,
+            ..Default::default()
+        };
+        let mut projection = Projection::new(&policy, &check).unwrap();
+        projection.register_inputs(&json!({"services":{"old":{"repositoryId":"old","repository":"https://git.example.invalid/team/repo.git.git","sourceWeb":{"provider":"gitlab","webBase":"https://git.example.invalid/team/repo.git"}}}}));
+        let mut source = json!({"id":"old","service":"old","revision":REV,"file":"src/A.kt","startLine":3,"endLine":9,"text":"OLD_SOURCE_BODY","textDigest":"old-digest","evidenceDigest":"old-evidence","authority":"EXACT_SNAPSHOT_TEXT","url":format!("https://git.example.invalid/team/repo.git/-/blob/{REV}/src/A.kt#L3-9")});
+        projection.value(&mut source).unwrap();
+        assert_eq!(
+            source["url"],
+            format!("https://git.example.invalid/team/repo.git/-/blob/{REV}/src/A.kt#L3-9")
+        );
+    }
+
+    #[test]
     fn old_ssh_origin_uses_its_web_override_without_selecting_a_new_repository() {
         let check = checked();
         let mut policy = Policy {
@@ -1136,5 +1215,43 @@ mod tests {
         let before = contract.clone();
         projection.value(&mut contract).unwrap();
         assert_eq!(contract, before);
+    }
+    #[test]
+    fn publication_selection_args_require_remote_and_canonical_named_subjects() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            export: Args,
+        }
+        let parsed = Cli::try_parse_from([
+            "export",
+            "--source-mode",
+            "remote",
+            "--export-subject",
+            "service:orders",
+            "--export-subject",
+            "scenario:checkout",
+            "--export-subject",
+            "service:orders",
+        ])
+        .unwrap();
+        let policy = parsed.export.policy().unwrap();
+        assert_eq!(policy.subjects, vec!["scenario:checkout", "service:orders"]);
+        for (mode, subject) in [
+            (SourceMode::Embedded, "service:orders"),
+            (SourceMode::Remote, "service:../orders"),
+            (SourceMode::Remote, "unknown:orders"),
+        ] {
+            assert!(
+                Args {
+                    source_mode: mode,
+                    source_map: None,
+                    export_subjects: vec![subject.into()]
+                }
+                .policy()
+                .is_err()
+            );
+        }
     }
 }
