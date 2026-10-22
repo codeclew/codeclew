@@ -136,8 +136,8 @@ ci_run kotlin cargo test --locked -p clew --lib documentation::kotlin::tests::na
 ci_run java cargo test --locked -p clew --lib documentation::thread_context_tests::owned_fixture_real_compiler_and_source_capture -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --lib java_project_model::tests::native_maven_effective_parent_profile_release_without_convenience_property -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --lib documentation::thread_context_tests::native_java_spring_registration_preserves_distinct_beans_and_overrides -- --exact --ignored --test-threads=1
-ci_run kotlin ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest \
-  :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest
+ci_run kotlin ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest --tests dev.semanticthread.worker.JavaAnalysisSourcesTest \
+  :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.JavaAnalysisSourcesTest
 ci_run java cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
 ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_documentation_cli_recovers_and_reports_route_fragments -- --exact --test-threads=1
 ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_source_documentation_without_build_tools_rebinds_and_preserves_publication -- --exact --test-threads=1
