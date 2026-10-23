@@ -13,11 +13,7 @@ table.clew-md-table{display:table;width:100%;table-layout:fixed;border-collapse:
 .dm-field-details{margin:12px 0;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);border-radius:6px;padding:10px 12px;min-width:0}
 .dm-field-details>summary{cursor:pointer;font-weight:600;overflow-wrap:anywhere}
 .dm-field-details>table{margin-top:12px;width:100%;table-layout:fixed}
-.dm-fields-scroll .dm-fields th:first-child{width:20%}
-.dm-fields-scroll .dm-fields td:nth-child(2){width:24%}
-.dm-fields-scroll .dm-fields td:nth-child(3){width:56%}
 .dm-field-evidence-link{display:inline-block;margin-top:6px;font-size:.9rem}
-@media(max-width:700px){.dm-fields-scroll .dm-fields th:first-child,.dm-fields-scroll .dm-fields td:nth-child(2),.dm-fields-scroll .dm-fields td:nth-child(3){width:100%}}
 @media(max-width:600px){
  .clew-md-table-wrap{overflow:visible}
  table.clew-md-table.has-rows,.clew-md-table.has-rows tbody,.clew-md-table.has-rows tr,.clew-md-table.has-rows td{display:block;width:100%;box-sizing:border-box}

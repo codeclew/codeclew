@@ -1605,7 +1605,7 @@ fn model_page(
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
         out.push_str(&format!(
-            "### {} {{#field-{fid}}}\n\n<details className=\"dm-field-details\"><summary>{}</summary>\n\n",
+            "### {} {{#field-{fid}}}\n\n<details className=\"dm-field-details\">\n<summary>{}</summary>\n\n",
             md(text(&field["path"])),
             contracts::literal(crate::documentation::language::label(language,"Technical representations"))
         ));
