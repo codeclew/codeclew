@@ -1112,5 +1112,6 @@
   "Declared boundary; runtime unverified": "Заявленная граница; поведение в работе не проверено",
   "Source not captured": "Исходники не захвачены",
   "Declared service relationships": "Заявленные связи сервисов",
-  "Declared architecture, not an observed execution trace. Source checks remain separate; external source is not captured. Agent proposals are unverified. Position does not establish execution order.": "Заявленная архитектура, а не наблюдаемое выполнение. Проверки по исходникам учитываются отдельно; внешние исходники не захвачены. Предложения агента не проверены. Расположение не задаёт порядок выполнения."
+  "Declared architecture, not an observed execution trace. Source checks remain separate; external source is not captured. Agent proposals are unverified. Position does not establish execution order.": "Заявленная архитектура, а не наблюдаемое выполнение. Проверки по исходникам учитываются отдельно; внешние исходники не захвачены. Предложения агента не проверены. Расположение не задаёт порядок выполнения.",
+  "Declared relationship evidence": "Доказательства заявленной связи"
 }

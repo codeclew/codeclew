@@ -1766,5 +1766,20 @@ test('declared external boundary stays visible without source calls and links it
  assert.doesNotMatch(svg,/<script>/);
  assert.equal((svg.match(/class="event-arrow event-return"/g)||[]).length,2);
  assert.equal(JSON.stringify(data.operations[0]),retained);
+ assert.match(svg,/data-boundary-declaration="boundary-evidence-reserve-fixture-declared-request"/);
+ assert.match(reader.e('scenario-content').innerHTML,/Declared relationship evidence/);
+ reader.click({boundaryDeclaration:'boundary-evidence-reserve-fixture-declared-request'});
+ assert.equal(reader.e('boundary-evidence-reserve-fixture-declared-request').open,true);
+ assert.equal(reader.e('boundary-evidence-reserve-fixture-declared-request').scrolled,true);
+ assert.equal(reader.e('source-panel').hidden,true);
  assert.match(reader.run('pseudocodeEvent(D.operations[0],D.operations[0].events[0]).keyword'),/runtime unverified/);
+});
+
+
+test('Kafka external destination uses its registered page and never a fabricated service ingress',()=>{
+ const data=fixture();data.externalServices={provider:{title:'External <provider>'}};const reader=load(data);
+ const i={id:'event',origin:'human',runtime:'UNKNOWN',declaration:{external:true,externalService:'provider',from:{service:'sample'},to:{service:'provider'},transport:{kind:'kafka',topic:'requests'}}};
+ const expression='topicBoundaryCard('+JSON.stringify([i])+',{direction:"outgoing"})';
+ const html=reader.run(expression);assert.match(html,/href="\.\.\/external-services\/provider\.html"/);assert.doesNotMatch(html,/href="\.\.\/services\/provider\.html/);assert.match(html,/External &lt;provider&gt;/);assert.match(html,/Source not captured/);
+ reader.run('D.externalServices={}');const absent=reader.run(expression);assert.doesNotMatch(absent,/href="\.\.\/services\/provider\.html/);assert.doesNotMatch(absent,/href="\.\.\/external-services/);assert.match(absent,/Source not captured/);
 });

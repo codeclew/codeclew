@@ -131,6 +131,16 @@ proposal acceptance and isolated reviewer authority remain separate tasks.
 
 Author manually builds Narrative records; reference checks do not verify arbitrary prose. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+### 0.13.51 declared-boundary increment
+
+The same Work/proposal route can add a registered `externalService` actor and a
+`declared-boundary` step using a delivered interaction handle. Its meaning cites
+the declaration without fabricated source bytes; source summary and FLOW coverage
+remain separate. Materialized boundary content uses Narrative 1.4; ordinary 1.3
+and resolved `declared` retain their contract. See the
+[bounded authoring route](../../operations/declared-boundary-diagrams.md).
+
+
 ## S03 — Describe a declared cross-service scenario
 
 - **Status:** current
@@ -182,6 +192,14 @@ negative interaction membership, sandboxed definition protection, child/parent
 reviews and same-publication parent invalidation after a child version changes.
 Final shared regression and desktop/mobile source-inspection evidence is in T10
 of the implementation plan. Existing graph edges are unchanged.
+
+### 0.13.51 declared-boundary increment
+
+A saved process explicitly selects catalogue interactions and registered external
+participants. Authored outgoing HTTP/Kafka boundaries retain direction and origin;
+an HTTP response is a separate authored step. Kafka synchronous return is refused.
+This extends S03 -> S02 -> S04 without external discovery or receiver capture.
+
 
 ## S04 — Read a consistent generated publication
 
@@ -246,6 +264,16 @@ are unchanged.
 
 Reader navigation now exposes immutable snapshots and keeps each snapshot’s Overview links local. Publication manifests bind targets, section state, canonical explanation digests, input records, files and observed tags. T13 history fixtures preserve old source pages after a tag move and offline cache recovery. Existing S04 graph transitions remain unchanged.
 
+### 0.13.51 declared-boundary increment
+
+The overview and scoped service/process pages show a directed catalogue graph.
+Graph nodes, sequence participants and Kafka handoff recipients navigate to the
+same bundle's registered external page. Text links remain available for keyboard,
+narrow-screen and diagram-host fallback. External source and runtime gaps stay
+visible; graph layout is not execution order. Declaration provenance is available
+on demand. No new top-level navigation scenario is introduced.
+
+
 ## S05 — Detect changes and review affected explanations
 
 - **Status:** current
@@ -308,6 +336,14 @@ remain regression inputs; strict refusals use `--require-complete`.
 ### T13 implementation evidence
 
 Coordinator events select exact targets before evidence arrives and republish conservative status. Per-service sequences, immutable event IDs and target-bound package admission reject late results. Bounded configured refresh rechecks target, note and definition versions; T13 fixtures cover two-service reconciliation and conflicting in-flight work. Existing S05 graph transitions remain unchanged.
+
+### 0.13.51 declared-boundary increment
+
+Catalogue title, Wiki, topic, origin or relationship changes require recomposition
+and a fresh Work when authoring changes. Regenerated graphs use the new selection;
+removed or unselected relationships do not linger. Old Work/publications and
+protected note bytes/associations remain retained. S04 -> S05 -> S02 is unchanged.
+
 
 ## S06 — Preserve manual files and recover a publication
 

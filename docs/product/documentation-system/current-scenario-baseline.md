@@ -179,3 +179,22 @@ snapshot as if growth behavior existed at the base revision.
 - User prioritization, 2026-09-12: T14 and actual GitLab qualification are deferred.
   Existing CI tooling is a draft for later; local launcher, durable accounting,
   authoring, publication, recovery and qualification work continue independently.
+
+## 0.13.51 declared external diagram delta
+
+This source increment extends existing S02-S05 journeys; the scenario graph and
+top-level transitions are unchanged. It does not rewrite the historical baseline
+above or establish runtime execution.
+
+| Scenario | Added behavior | Preserved boundary |
+| --- | --- | --- |
+| S02 | Delivered Work declaration references author explicit external boundary steps | Ordinary source/FLOW evidence and old resolved arrows remain strict |
+| S03 | Explicit selected external participants and HTTP/Kafka directions | No automatic response, Kafka synchronous return or external discovery |
+| S04 | Linked catalogue graph, sequence actors and Kafka external recipients; text navigation | Same-bundle identity, declared origin, source/runtime gaps and on-demand provenance |
+| S05 | Recompose changed catalogue and regenerate selected relationships | Retained Work/publication and protected notes remain immutable |
+
+See [scenario cards](scenario-cards.md) and the
+[operations contract](../../operations/declared-boundary-diagrams.md). The authoring
+path was independently exercised in Java/Kotlin with compiler and SOURCE_SYNTAX
+authority kept distinct. Publication still requires qualification of the exact
+accepted package; source tests alone do not establish a public release.

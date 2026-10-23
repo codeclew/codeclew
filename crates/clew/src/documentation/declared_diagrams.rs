@@ -162,7 +162,7 @@ pub(super) fn graph(checked: &Check, subject: Option<&str>) -> Value {
             .or_else(|| inputs.services.get(&i.to.service).map(|s| s.title.as_str()))
             .unwrap_or(&i.to.service);
         nodes.insert(to.clone(), json!({"id":to,"service":i.to.service,"label":b,"href":format!("../{}/{}.html",if external.is_some(){"external-services"}else{"services"},i.to.service),"sourceCapture":if external.is_some(){"NOT_CAPTURED"}else{"CAPTURED"}}));
-        edges.push(json!({"id":id,"from":from,"to":to,"title":i.title,"transport":i.transport,"origin":i.declaration.origin,"authority":"DECLARED_RELATIONSHIP","runtime":"UNVERIFIED","sourceChecks":checked.interactions.get(id)}));
+        edges.push(json!({"id":id,"from":from,"to":to,"title":i.title,"transport":i.transport,"origin":i.declaration.origin,"declaration":i.declaration,"authority":"DECLARED_RELATIONSHIP","runtime":"UNVERIFIED","sourceChecks":checked.interactions.get(id)}));
     }
     json!({"schema":"codeclew-declared-relationship-graph/1.0","authority":"DECLARED_RELATIONSHIP","runtime":"UNVERIFIED","scope":subject,"nodes":nodes.into_values().collect::<Vec<_>>(),"edges":edges,"executionOrder":"NOT_ESTABLISHED"})
 }
@@ -197,7 +197,9 @@ pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
         );
         columns[col] += 1;
     }
-    let height = (columns.into_iter().max().unwrap_or(1) * 145 + 60).max(edges.len() * 62 + 110);
+    let first_edge_y = positions.values().map(|(_, y)| *y).max().unwrap_or(0) / 4 + 60;
+    let height = (columns.into_iter().max().unwrap_or(1) * 145 + 60)
+        .max(first_edge_y + edges.len() * 62 + 110);
     let mut svg = format!(
         "<div style=\"overflow-x:auto\"><svg class=\"declared-graph\" style=\"min-width:1000px;width:100%\" viewBox=\"0 0 1000 {height}\" role=\"group\" aria-label=\"Declared service relationships\"><title>Declared relationships; execution order is not established</title><defs><marker id=\"declared-arrow\" viewBox=\"0 0 8 8\" refX=\"7\" refY=\"4\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\"><path d=\"M0 0 L8 4 L0 8Z\" fill=\"#526879\"/></marker></defs>"
     );
@@ -208,9 +210,11 @@ pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
         ) else {
             continue;
         };
-        let y = 60 + index * 62;
+        let y = first_edge_y + index * 62;
+        // A cubic midpoint is (ay + 6*control_y + by)/8. Put its label there.
+        let control_y = (8.0 * y as f64 - ay as f64 - by as f64) / 6.0;
         svg += &format!(
-            "<g data-interaction=\"{}\"><title>{}</title><path d=\"M{} {ay} C460 {y} 540 {y} {} {by}\" fill=\"none\" stroke=\"#526879\" stroke-dasharray=\"6 4\" marker-end=\"url(#declared-arrow)\"/><rect x=\"340\" y=\"{}\" width=\"320\" height=\"40\" rx=\"4\" fill=\"#fffdf8\"/><text x=\"500\" y=\"{y}\" text-anchor=\"middle\" font-size=\"13\">{} · {}</text><text x=\"500\" y=\"{}\" text-anchor=\"middle\" font-size=\"11\">{} · runtime unverified</text></g>",
+            "<g data-interaction=\"{}\"><title>{}</title><path d=\"M{} {ay} C460 {control_y:.2} 540 {control_y:.2} {} {by}\" fill=\"none\" stroke=\"#526879\" stroke-dasharray=\"6 4\" marker-end=\"url(#declared-arrow)\"/><rect x=\"340\" y=\"{}\" width=\"320\" height=\"40\" rx=\"4\" fill=\"#fffdf8\"/><text x=\"500\" y=\"{y}\" text-anchor=\"middle\" font-size=\"13\">{} · {}</text><text x=\"500\" y=\"{}\" text-anchor=\"middle\" font-size=\"11\">{} · runtime unverified</text></g>",
             escape(e["id"].as_str().unwrap_or("")),
             escape(e["title"].as_str().unwrap_or("")),
             ax + 130,
@@ -261,7 +265,7 @@ pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
         );
     }
     svg += "</svg></div>";
-    let rows=edges.iter().map(|e|format!("<li><code>{}</code>: {} → {} · {} · origin {} · declared only; runtime unverified</li>",escape(e["id"].as_str().unwrap_or("")),escape(e["from"].as_str().unwrap_or("")),escape(e["to"].as_str().unwrap_or("")),escape(e["transport"]["kind"].as_str().unwrap_or("")),escape(e["origin"].as_str().unwrap_or("")))).collect::<String>();
+    let rows=edges.iter().map(|e|format!("<li><code>{}</code>: {} → {} · {} · origin {} · declared only; runtime unverified<details><summary>Original declaration and source checks</summary><p>{}</p><pre>{}</pre></details></li>",escape(e["id"].as_str().unwrap_or("")),escape(e["from"].as_str().unwrap_or("")),escape(e["to"].as_str().unwrap_or("")),escape(e["transport"]["kind"].as_str().unwrap_or("")),escape(e["origin"].as_str().unwrap_or("")),escape(e["declaration"]["rationale"].as_str().unwrap_or("")),escape(&serde_json::to_string_pretty(e).unwrap_or_default()))).collect::<String>();
     let heading = super::language::label(language, "Declared service relationships");
     let note = super::language::label(
         language,
@@ -386,6 +390,8 @@ mod tests {
         assert!(page.contains("href=\"../external-services/provider.html\""));
         assert!(!page.contains("Same <title>"));
         assert!(page.contains("agent-proposal"));
+        assert!(page.contains("Original declaration and source checks"));
+        assert!(page.contains("Not observed"));
         assert!(mermaid(&g).contains("click n0"));
         assert!(markdown(&g).contains("../external-services/provider.html"));
         assert_eq!(graph(&checked, Some("scenario:empty"))["nodes"], json!([]));
