@@ -623,7 +623,11 @@ fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
                     .1
                     .push(SequenceNode::Group(frame));
             }
-            "message" | "return" | "declared" => stack
+            "message"
+            | "return"
+            | "declared"
+            | "declared-boundary"
+            | "declared-boundary-return" => stack
                 .last_mut()
                 .unwrap()
                 .arms
@@ -709,25 +713,38 @@ fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
 
 fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
     let events = sequence_events(op)?;
-    if !events
-        .iter()
-        .any(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
-    {
+    if !events.iter().any(|e| {
+        matches!(
+            text(&e["kind"]),
+            "message" | "return" | "declared" | "declared-boundary" | "declared-boundary-return"
+        )
+    }) {
         return Ok(None);
     }
     let referenced = events
         .iter()
-        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
+        .filter(|e| {
+            matches!(
+                text(&e["kind"]),
+                "message"
+                    | "return"
+                    | "declared"
+                    | "declared-boundary"
+                    | "declared-boundary-return"
+            )
+        })
         .flat_map(|e| [text(&e["from"]), text(&e["to"])])
         .collect::<std::collections::BTreeSet<_>>();
     let mut participants = Vec::new();
     for p in rows(&op["participants"]).filter(|p| referenced.contains(text(&p["id"]))) {
         participants.push((text(&p["id"]).to_owned(), text(&p["label"]).to_owned()));
     }
-    for e in events
-        .iter()
-        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
-    {
+    for e in events.iter().filter(|e| {
+        matches!(
+            text(&e["kind"]),
+            "message" | "return" | "declared" | "declared-boundary" | "declared-boundary-return"
+        )
+    }) {
         for key in ["from", "to"] {
             let id = text(&e[key]);
             if !id.is_empty() && !participants.iter().any(|(p, _)| p == id) {
@@ -753,7 +770,11 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
         let kind = text(&event["kind"]);
         let label = diagram_text(text(&event["text"]));
         match kind {
-            "message" | "return" | "declared" => {
+            "message"
+            | "return"
+            | "declared"
+            | "declared-boundary"
+            | "declared-boundary-return" => {
                 let (Some(from), Some(to)) = (
                     names.get(text(&event["from"])),
                     names.get(text(&event["to"])),
@@ -763,7 +784,9 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
                 out.push_str(&format!(
                     "{from}{}{to}: {}{label}\n",
                     if kind == "message" { "->>" } else { "-->>" },
-                    if kind == "declared" {
+                    if super::super::declared_diagrams::boundary(kind) {
+                        "[declared boundary; runtime unverified] "
+                    } else if kind == "declared" {
                         "[declared] "
                     } else {
                         ""
@@ -908,6 +931,27 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             "{heading} Declared interface schemas\n\n{declared}\n"
         ));
     }
+    for participant in rows(&op["participants"]) {
+        let external = text(&participant["externalService"]);
+        let service = text(&participant["service"]);
+        let (folder, actor) = if !external.is_empty() {
+            ("external-services", external)
+        } else {
+            ("services", service)
+        };
+        if !actor.is_empty() {
+            out.push_str(&format!(
+                "- [{}](../{folder}/{actor}.mdx){}\n",
+                md(text(&participant["label"])),
+                if !external.is_empty() {
+                    " · source not captured; runtime unverified"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    out.push('\n');
     if let Some(diagram) = sequence(op)? {
         out.push_str(&format!("{heading} Interaction diagram\n\nActors and nested branches from the retained account; not a runtime trace. Labels are shortened for readability. Full messages and notes follow.\n\n{}",fence(&diagram,"mermaid")));
     }
@@ -1944,6 +1988,29 @@ pub(super) fn project(
             body
         };
         let mut body = body;
+        if page["declaredRelationships"]["edges"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+        {
+            let graph = &page["declaredRelationships"];
+            body.push_str("\n## Declared service relationships\n\nDeclared architecture; runtime unverified. External source is not captured. Position does not establish execution order. Use the participant links below when the diagram host disables embedded links.\n\n");
+            // Mermaid link behavior depends on the host; normal Markdown links are always retained.
+            let source = super::super::declared_diagrams::mermaid(graph)
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("click "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push_str(&fence(&source, "mermaid"));
+            for node in rows(&graph["nodes"]) {
+                body.push_str(&format!(
+                    "- [{}]({}) · `{}` · {}\n",
+                    md(text(&node["label"])),
+                    text(&node["href"]).replace(".html", ".mdx"),
+                    md(text(&node["id"])),
+                    md(text(&node["sourceCapture"]))
+                ));
+            }
+        }
         if let Some(externals) = page["externalServices"]
             .as_object()
             .filter(|m| !m.is_empty())

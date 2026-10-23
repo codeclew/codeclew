@@ -20,6 +20,7 @@ pub mod contracts;
 mod csharp;
 pub mod dataflow;
 mod declaration_migration;
+mod declared_diagrams;
 mod endpoint_context;
 mod endpoint_display;
 pub mod endpoint_publication;

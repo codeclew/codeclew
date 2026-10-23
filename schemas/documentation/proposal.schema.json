@@ -118,7 +118,9 @@
             "alt",
             "loop",
             "opt",
-            "declared"
+            "declared",
+            "declared-boundary",
+            "declared-boundary-return"
           ]
         },
         "meaning": {
@@ -365,6 +367,13 @@
           ],
           "maxLength": 100,
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "externalService": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Registered external identity. Mutually exclusive with service. Source not captured; runtime unverified."
         }
       },
       "required": [

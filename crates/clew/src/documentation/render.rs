@@ -55,8 +55,13 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     let template = template.replace(
         "<div id=\"scenario-content\"></div>",
         &format!(
-            "<div id=\"scenario-content\"></div>{}",
-            super::external_services::page_links(data)
+            "<div id=\"scenario-content\"></div>{}{}",
+            super::external_services::page_links(data),
+            super::declared_diagrams::html(
+                &data["declaredRelationships"],
+                "../",
+                data["language"].as_str().unwrap_or("en")
+            )
         ),
     );
     let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
@@ -266,11 +271,14 @@ fn missing_sequence_flow(dependency: &Observation) -> ClewError {
 }
 
 pub(super) fn sequence_step_requires_endpoints(step_kind: &str) -> bool {
-    matches!(step_kind, "message" | "return" | "declared")
+    matches!(
+        step_kind,
+        "message" | "return" | "declared" | "declared-boundary" | "declared-boundary-return"
+    )
 }
 
 pub(super) fn sequence_step_requires_interaction(step_kind: &str) -> bool {
-    step_kind == "declared"
+    step_kind == "declared" || super::declared_diagrams::boundary(step_kind)
 }
 
 fn validate_declared_arrow(event: &Event, checked: &Check, subject: &str) -> Result<(), ClewError> {
@@ -394,9 +402,12 @@ pub(super) fn validate_with_retained(
     checked: &Check,
     retained: Option<&Narrative>,
 ) -> Result<(), ClewError> {
-    if n.schema != "codeclew-documentation-narrative/1.3" {
+    if !matches!(
+        n.schema.as_str(),
+        "codeclew-documentation-narrative/1.3" | "codeclew-documentation-narrative/1.4"
+    ) {
         return Err(invalid(
-            "only codeclew-documentation-narrative/1.3 is supported; author the current contract",
+            "only codeclew-documentation-narrative/1.3 or codeclew-documentation-narrative/1.4 is supported; author the current contract",
         ));
     }
     if n.context_digest != checked.context_digest {
@@ -528,16 +539,38 @@ pub(super) fn validate_with_retained(
             if sequence_step_requires_interaction(&event.kind)
                 || (event.kind == "return" && event.interaction.is_some())
             {
-                validate_declared_arrow(event, checked, &n.subject)?;
+                if super::declared_diagrams::boundary(&event.kind) {
+                    super::declared_diagrams::validate_arrow(event, checked, &n.subject)?;
+                } else {
+                    validate_declared_arrow(event, checked, &n.subject)?;
+                }
             }
+        }
+        let external = super::external_services::for_page(checked, &n.subject);
+        if n.schema.ends_with("/1.3")
+            && (o.participants.iter().any(|p| p.external_service.is_some())
+                || o.events
+                    .iter()
+                    .any(|e| super::declared_diagrams::boundary(&e.kind)))
+        {
+            return Err(invalid(
+                "external participants and declared boundary steps require narrative/1.4",
+            ));
         }
         let mut participants = BTreeMap::new();
         for p in &o.participants {
             if !store::valid_id(&p.id)
                 || participants
-                    .insert(p.id.clone(), p.service.clone())
+                    .insert(
+                        p.id.clone(),
+                        p.service.clone().or_else(|| p.external_service.clone()),
+                    )
                     .is_some()
                 || p.label.trim().is_empty()
+                || (p.service.is_some() && p.external_service.is_some())
+                || p.external_service
+                    .as_ref()
+                    .is_some_and(|id| !external.as_object().is_some_and(|map| map.contains_key(id)))
                 || p.service.as_ref().is_some_and(|s| !allowed.contains(s))
             {
                 return Err(invalid(
@@ -555,7 +588,16 @@ pub(super) fn validate_with_retained(
             if !store::valid_id(&e.id) || !ids.insert(e.id.clone()) || e.text.len() > 1024 {
                 return Err(invalid("unsafe or duplicate sequence fragment ID"));
             }
-            supported_refs(&e.dependency_ids, &e.source_ids, checked, &allowed)?;
+            if super::declared_diagrams::boundary(&e.kind) {
+                super::declared_diagrams::supported_refs(
+                    &e.dependency_ids,
+                    &e.source_ids,
+                    checked,
+                    &n.subject,
+                )?;
+            } else {
+                supported_refs(&e.dependency_ids, &e.source_ids, checked, &allowed)?;
+            }
             if !matches!(
                 e.kind.as_str(),
                 "message"
@@ -567,6 +609,8 @@ pub(super) fn validate_with_retained(
                     | "opt"
                     | "end"
                     | "declared"
+                    | "declared-boundary"
+                    | "declared-boundary-return"
             ) {
                 return Err(invalid("unsupported sequence event kind"));
             }
@@ -592,6 +636,16 @@ pub(super) fn validate_with_retained(
                 return Err(invalid("note references an unknown participant"));
             }
             if sequence_step_requires_endpoints(&e.kind) {
+                if !super::declared_diagrams::boundary(&e.kind)
+                    && o.participants.iter().any(|p| {
+                        p.external_service.is_some()
+                            && (e.from.as_ref() == Some(&p.id) || e.to.as_ref() == Some(&p.id))
+                    })
+                {
+                    return Err(invalid(
+                        "external participant arrows require declared-boundary or declared-boundary-return; source-derived messages cannot claim an external call",
+                    ));
+                }
                 let from = e
                     .from
                     .as_ref()
@@ -604,6 +658,7 @@ pub(super) fn validate_with_retained(
                 let crosses = from.is_some() && to.is_some() && from != to;
                 if crosses
                     && e.kind != "declared"
+                    && !super::declared_diagrams::boundary(&e.kind)
                     && !(e.kind == "return" && e.interaction.is_some())
                 {
                     return Err(invalid(
@@ -621,17 +676,18 @@ pub(super) fn validate_with_retained(
                         .dependencies
                         .get(&format!("interaction:{id}"))
                         .ok_or_else(|| invalid("interaction declaration missing"))?;
-                    let (expected_from, expected_to) = if e.kind == "return" {
-                        (
-                            &dependency.normalized["to"]["service"],
-                            &dependency.normalized["from"]["service"],
-                        )
-                    } else {
-                        (
-                            &dependency.normalized["from"]["service"],
-                            &dependency.normalized["to"]["service"],
-                        )
-                    };
+                    let (expected_from, expected_to) =
+                        if matches!(e.kind.as_str(), "return" | "declared-boundary-return") {
+                            (
+                                &dependency.normalized["to"]["service"],
+                                &dependency.normalized["from"]["service"],
+                            )
+                        } else {
+                            (
+                                &dependency.normalized["from"]["service"],
+                                &dependency.normalized["to"]["service"],
+                            )
+                        };
                     if !e.dependency_ids.contains(&format!("interaction:{id}"))
                         || &json!(from) != expected_from
                         || &json!(to) != expected_to
@@ -732,12 +788,27 @@ pub(super) fn validate_with_retained(
                 )));
             }
             if !historical_context {
-                supported_refs(
-                    &paragraph.dependency_ids,
-                    &paragraph.source_ids,
-                    checked,
-                    &allowed,
-                )?;
+                if paragraph.source_ids.is_empty()
+                    && paragraph.event_ids.iter().all(|id| {
+                        o.events
+                            .iter()
+                            .any(|e| &e.id == id && super::declared_diagrams::boundary(&e.kind))
+                    })
+                {
+                    super::declared_diagrams::supported_refs(
+                        &paragraph.dependency_ids,
+                        &paragraph.source_ids,
+                        checked,
+                        &n.subject,
+                    )?;
+                } else {
+                    supported_refs(
+                        &paragraph.dependency_ids,
+                        &paragraph.source_ids,
+                        checked,
+                        &allowed,
+                    )?;
+                }
                 for event in o
                     .events
                     .iter()
@@ -2510,6 +2581,11 @@ pub fn mermaid(o: &Operation) -> String {
             label(&p.label)
         ));
     }
+    for p in &o.participants {
+        if let Some(href) = super::declared_diagrams::participant_href(p) {
+            out.push_str(&format!("    link {}: Documentation@{}\n", p.id, href));
+        }
+    }
     for e in &o.events {
         out.push_str(&format!(
             "    %% {}: dependencies {}\n",
@@ -2517,12 +2593,18 @@ pub fn mermaid(o: &Operation) -> String {
             e.dependency_ids.join(", ")
         ));
         match e.kind.as_str() {
-            "message" | "return" | "declared" => out.push_str(&format!(
+            "message"
+            | "return"
+            | "declared"
+            | "declared-boundary"
+            | "declared-boundary-return" => out.push_str(&format!(
                 "    {}{}{}: {}{}\n",
                 e.from.as_deref().unwrap_or(""),
                 if e.kind == "message" { "->>" } else { "-->>" },
                 e.to.as_deref().unwrap_or(""),
-                if e.kind == "declared" {
+                if super::declared_diagrams::boundary(&e.kind) {
+                    "[declared boundary; runtime unverified] "
+                } else if e.kind == "declared" {
                     "[declared] "
                 } else {
                     ""
@@ -3897,6 +3979,7 @@ fn publish_internal_phases(
         endpoint_selection.retain(subject, &data, &hidden);
         super::endpoint_display::filter_page(&mut data, &hidden);
         data["externalServices"] = super::external_services::for_page(&checked, subject);
+        data["declaredRelationships"] = super::declared_diagrams::graph(&checked, Some(subject));
         let n = &published_narratives[subject];
         pending_pages.push((folder.to_owned(), id.to_owned(), data.clone()));
         let state = &binding.section_states[subject];
@@ -3904,6 +3987,14 @@ fn publish_internal_phases(
         let mut prose =
             super::language::markdown(title, &displayed, &binding.section_states, ui_language);
         prose += &super::explanation_authorship::markdown(&data);
+        prose += &super::declared_diagrams::markdown(&data["declaredRelationships"]);
+        files.insert(
+            format!(
+                "diagrams/{}-declared-relationships.mmd",
+                subject.replace(':', "-")
+            ),
+            super::declared_diagrams::mermaid(&data["declaredRelationships"]).into_bytes(),
+        );
         if ui_language == "en" {
             prose += &super::notes::markdown(&data["notes"]);
             prose += &super::processes::markdown(&data["process"]);
@@ -4053,6 +4144,15 @@ fn publish_internal_phases(
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
     super::external_services::publication(&checked, &mut files, &mut cards)?;
+    let declared_graph = super::declared_diagrams::graph(&checked, None);
+    files.insert(
+        "diagrams/declared-relationships.json".into(),
+        bytes(&declared_graph)?,
+    );
+    files.insert(
+        "diagrams/declared-relationships.mmd".into(),
+        super::declared_diagrams::mermaid(&declared_graph).into_bytes(),
+    );
     // Pre-render every auto-generated diagram to SVG in one renderer process
     // (avoid spawning a JVM per diagram), then commit the bundle.
     let mut svg_availability =
@@ -4131,7 +4231,11 @@ fn publish_internal_phases(
     }))?[7..]
         .to_owned();
     let cards = cards.replace("__BUNDLE__", &bundle);
-    let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><details><summary>{}</summary><p>{}</p><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),super::reader::text(ui_language,"Original declaration and source checks","Исходная декларация и проверки по коду"),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
+    let relationships = super::declared_diagrams::html(
+        &declared_graph,
+        &format!("generated/{bundle}/"),
+        ui_language,
+    );
     let mut reader_failures = failures.clone();
     reader_failures.retain(|key, value| {
         let Some((subject, _)) = key.split_once('/') else {
@@ -4153,7 +4257,7 @@ fn publish_internal_phases(
         )
     };
     let overview = format!(
-        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"{ui_language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><main style=\"margin:auto;max-width:1180px;padding:32px\"><div class=\"eyebrow\">{}</div><h1>{}</h1><p>{}</p><div class=\"coverage-grid\">{cards}</div><h2>{}</h2>{relationships}{update_gaps}</main></body></html>\n",
+        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"{ui_language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><main style=\"margin:auto;max-width:1180px;padding:32px\"><div class=\"eyebrow\">{}</div><h1>{}</h1><p>{}</p><div class=\"coverage-grid\">{cards}</div>{relationships}{update_gaps}</main></body></html>\n",
         escape(&repo.manifest.title),
         super::reader::text(
             ui_language,
@@ -4165,11 +4269,6 @@ fn publish_internal_phases(
             ui_language,
             "Each explanation retains its source revisions. Missing translations are separate from analysis gaps.",
             "Каждое описание сохраняет версии исходников. Отсутствие перевода учитывается отдельно от пробелов анализа."
-        ),
-        super::reader::text(
-            ui_language,
-            "Declared service relationships",
-            "Заявленные связи сервисов"
         ),
     );
     let gap_count: usize = published_narratives.values().map(|n| n.gaps.len()).sum();
@@ -4482,6 +4581,7 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         include_str!("../../assets/documentation/data-model.css"),
         include_str!("../../assets/documentation/data-model.js"),
         include_str!("history.rs"),
+        include_str!("declared_diagrams.rs"),
         include_str!("process_candidates.rs"),
         include_str!("process_thread.rs"),
         include_str!("process_extract.rs"),
@@ -4895,11 +4995,13 @@ mod explanation_diagnostic_tests {
                     id: "caller".into(),
                     label: "Caller".into(),
                     service: Some("svc".into()),
+                    external_service: None,
                 },
                 Participant {
                     id: "worker".into(),
                     label: "Worker".into(),
                     service: Some("svc".into()),
+                    external_service: None,
                 },
             ],
             events: vec![Event {

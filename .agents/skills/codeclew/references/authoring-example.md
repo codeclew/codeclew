@@ -47,7 +47,7 @@ structure and coverage, not whether the business explanation is true.
 
 ## Materialized Narrative output, not proposal input
 
-The host assigns stable IDs and materializes Narrative 1.3. Do not construct
+The host assigns stable IDs and materializes Narrative 1.3 (1.4 for explicit external boundaries). Do not construct
 this output by renaming proposal fields or submit it as proposal input:
 
 | Proposal input | Materialized Narrative |
@@ -94,13 +94,34 @@ because the named scenario focuses on success.
 
 ## External HTTP and Kafka boundaries
 
-An `external: true` interaction has no captured receiver. Keep its request or
-publish behavior on the caller's lifeline using a source-bound `note`, and
-describe the available contract and receiver limitation. Do not add the external
-service as a captured participant or disguise a service transition as an actor
-without a service. Do not claim receiver execution, delivery, retries, failure
-handling, or a synchronous reply unless the selected source establishes that
-specific caller behavior. Runtime remains `UNKNOWN`.
+An `external: true` interaction has no captured receiver. Source-observed caller
+behavior stays in source-bound steps; it never proves receiver execution or
+runtime delivery. For an explicit declared arrow, register the destination using
+`docs external put`, set the interaction's `externalService` and `to.service` to
+that registered ID, select it in the process, and recompose. Prepare a fresh Work
+and read its `DECLARED_INTERACTION` evidence. Declare an additional participant
+with `externalService` instead of `service`:
+
+```json
+{"participants":[{"id":"provider","label":"External provider","externalService":"REGISTERED_EXTERNAL_ID"}],"steps":[{"kind":"declared-boundary","from":"SERVICE_ID","to":"provider","interaction":"INTERACTION_REF","meaning":{"text":"Declared request; receiver execution is not captured.","evidence":["INTERACTION_REF"]}}]}
+```
+
+This is an operation fragment, not a complete proposal. Both reference fields use
+the same delivered Work handle, never a raw catalogue ID. Boundary meanings may
+cite that declaration without source bytes; ordinary source-derived messages,
+summary and mandatory FLOW branches keep their existing evidence requirements.
+The host materializes Narrative 1.4 and labels boundary arrows as declared with
+runtime unverified; endpoint status and origin remain unchanged. A service Work
+can declare only its outgoing boundaries; a scenario must explicitly select them.
+Unknown destinations, mismatched direction and foreign/undelivered handles fail.
+
+Use `declared-boundary-return` only for a separately authored HTTP response, with
+reversed participants and the same interaction. No response is automatic. Kafka
+synchronous return is rejected; a separately declared outgoing reply event needs
+its own interaction. Inbound external discovery is outside this model. A plain
+`declared` step still requires the older resolved composed-transition contract.
+The graph and sequence participants link to the same bundle's external pages;
+use the adjacent text links if a diagram host disables embedded navigation.
 
 For a small body that delegates to an HTTP client, the proposal shape is:
 

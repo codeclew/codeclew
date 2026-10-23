@@ -4287,6 +4287,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             id: id.into(),
             label: label.into(),
             service: service.map(str::to_owned),
+            external_service: None,
         };
         let summary = Fragment {
             id: "summary".into(),
@@ -4634,11 +4635,13 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                     id: "orders".into(),
                     label: "Orders".into(),
                     service: Some("orders".into()),
+                    external_service: None,
                 },
                 Participant {
                     id: "inventory".into(),
                     label: "Inventory".into(),
                     service: Some("inventory".into()),
+                    external_service: None,
                 },
             ],
             explanation: explain(&scenario_events),

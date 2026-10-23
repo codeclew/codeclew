@@ -1751,3 +1751,20 @@ test('remote single source opens the repository and multiple sources show links 
  r.click({sources:'same-source other'});assert.equal(r.e('source-panel').hidden,false);assert.equal(r.e('source-code').hidden,true);assert.equal(r.e('source-toolbar').hidden,true);
  assert.match(r.e('source-meta').innerHTML,/B.kt#L4-9/);assert.match(r.e('source-foot').textContent,/Source text is omitted/);
 });
+
+test('declared external boundary stays visible without source calls and links its participant page',()=>{
+ const data=behaviorFixture(),op=data.operations[0];
+ op.participants=[{id:'service',label:'Owned',service:'sample'},{id:'provider',label:'Provider <script>',service:null,externalService:'provider'}];
+ op.events=[{id:'declared-request',kind:'declared-boundary',text:'Declared HTTP request',from:'service',to:'provider',interaction:'request',sourceIds:[],dependencyIds:['interaction:request']},{id:'declared-response',kind:'declared-boundary-return',text:'Explicit declared response',from:'provider',to:'service',interaction:'request',sourceIds:[],dependencyIds:['interaction:request']}];
+ data.declaredRelationships={edges:[{id:'request',origin:'agent-proposal'}]};
+ const retained=JSON.stringify(op),reader=load(data),svg=reader.run('diagram(D.operations[0],375)');
+ assert.match(svg,/href="\.\.\/external-services\/provider\.html"/);
+ assert.match(svg,/href="\.\.\/services\/sample\.html"/);
+ assert.match(svg.replace(/<[^>]*>/g,' ').replace(/\s+/g,' '),/Declared boundary; runtime unverified/);
+ assert.match(svg,/agent-proposal/);
+ assert.match(svg,/Provider &lt;script&gt;/);
+ assert.doesNotMatch(svg,/<script>/);
+ assert.equal((svg.match(/class="event-arrow event-return"/g)||[]).length,2);
+ assert.equal(JSON.stringify(data.operations[0]),retained);
+ assert.match(reader.run('pseudocodeEvent(D.operations[0],D.operations[0].events[0]).keyword'),/runtime unverified/);
+});

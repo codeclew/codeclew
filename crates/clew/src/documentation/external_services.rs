@@ -185,7 +185,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
-fn declaration_inputs(checked: &Check) -> Option<&super::store::RepositoryInputs> {
+pub(super) fn declaration_inputs(checked: &Check) -> Option<&super::store::RepositoryInputs> {
     checked
         .composition
         .as_ref()

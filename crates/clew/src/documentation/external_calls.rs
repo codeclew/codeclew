@@ -62,16 +62,17 @@ fn contract<'a>(
 
 pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
     let mut rows = Vec::new();
-    for event in operation
-        .events
-        .iter()
-        .filter(|e| matches!(e.kind.as_str(), "message" | "declared"))
-    {
+    for event in operation.events.iter().filter(|e| {
+        matches!(
+            e.kind.as_str(),
+            "message" | "declared" | "declared-boundary"
+        )
+    }) {
         let links: Vec<_> = checked
             .interactions
             .values()
             .filter(|link| {
-                if event.kind == "declared" {
+                if event.kind == "declared" || event.kind == "declared-boundary" {
                     event.interaction.as_deref() == Some(&link.id)
                 } else {
                     link.call_site.status == "RESOLVED"
@@ -106,7 +107,7 @@ pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
                 "declarationDigest":declaration.digest, "callSiteCandidates":link.call_site.candidates,
                 "receiverCandidates":link.to.candidates,
                 "bindingStatus":if links.len() == 1 { "EXPLICIT_INTERACTION" } else { "MULTIPLE_DECLARED_INTERACTIONS" },
-                "bindingMode":if event.kind == "declared" { "DECLARED_EVENT" } else { "EXACT_CALL_SITE" },
+                "bindingMode":if event.kind == "declared" || event.kind == "declared-boundary" { "DECLARED_EVENT" } else { "EXACT_CALL_SITE" },
                 "contractReference":reference,
                 "contractStatus":contract_status,
                 "contract":contract, "snapshotContextDigest":checked.context_digest,
