@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — local 0.13.50 preview
+## 0.13.50 — 2026-10-23
 
 - Render safe Markdown tables in authored reading bodies across native, full
   Pages and MDX. Keep source/evidence views literal and escape unsafe markup.
