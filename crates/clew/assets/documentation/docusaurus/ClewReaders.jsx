@@ -139,7 +139,7 @@ export function ClewCatalog({entries}) {
   const selected = entries.filter(e => (!kind || e.kind === kind) && JSON.stringify(e.searchText || [e.title, e.id, e.context]).toLowerCase().includes(query.toLowerCase()));
   return <section className="clew-catalog">
     <div className="clew-catalog-controls"><label>{t("Search docs")}<input type="search" value={query} onChange={e => setQuery(e.target.value)} /></label>
-      <label>{t("Document type")}<select value={kind} onChange={e => setKind(e.target.value)}><option value="">{t("All types")}</option>{[...new Set(entries.map(e => e.kind))].sort().map(k => <option key={k} value={k}>{t(k)}</option>)}</select></label></div>
+      <label>{t("Document type")}<select value={kind} onChange={e => setKind(e.target.value)}><option value="">{t("All types")}</option>{Array.from(new Set(entries.map(e => e.kind))).sort().map(k => <option key={k} value={k}>{t(k)}</option>)}</select></label></div>
     <p role="status">{t("Results")}: {selected.length}</p><ul>{selected.map((e, i) => <li key={e.href + ':' + i}><a href={portableHref(e.href, 'catalog.html', base)}>{e.title || e.id}</a><p>{e.context} · {t(e.kind)}</p></li>)}</ul>
   </section>;
 }
