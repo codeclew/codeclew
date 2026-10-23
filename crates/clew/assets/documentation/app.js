@@ -299,8 +299,18 @@ function sequenceWrap(text,max){
 // intact for readable behavior, source inspection and diagram exports.
 function isDeclaredBoundary(e){return e.kind==='declared-boundary'||e.kind==='declared-boundary-return';}
 function boundaryEvidenceId(o,e){return 'boundary-evidence-'+o.id+'-'+e.id;}
-function boundaryEvidence(o,e){const edge=D.declaredRelationships?.edges?.find(i=>i.id===e.interaction);return chromeHtml`<details id="${esc(boundaryEvidenceId(o,e))}" class="boundary-evidence"><summary>${esc(t('Declared relationship evidence'))}</summary><p>${esc(boundaryCaption(e))}</p><pre class="note-original">${pretty(edge||{interaction:e.interaction,authority:'DECLARED_RELATIONSHIP',runtime:'UNVERIFIED',dependencyIds:e.dependencyIds})}</pre></details>`;}
-function boundaryCaption(e){const edge=D.declaredRelationships?.edges?.find(i=>i.id===e.interaction);return `${t('Declared boundary; runtime unverified')} · ${edge?.origin||'declared'}`;}
+function boundaryBinding(o,e){
+ const rows=(D.operationExternalCalls?.[o.id]||[]).filter(row=>row.interactionId===e.interaction),exact=rows.filter(row=>row.eventId===e.id),candidates=exact.length?exact:rows;
+ if(!candidates.length||candidates.some(row=>!row.declarationDigest||!row.snapshotContextDigest))return null;
+ const identities=new Set(candidates.map(row=>JSON.stringify([row.declarationDigest,row.snapshotContextDigest,row.declaration,row.transport])));
+ return identities.size===1?{row:candidates[0],mode:exact.length?'EXACT_EVENT':'SAME_OPERATION_INTERACTION'}:null;
+}
+function boundaryEvidence(o,e){
+ const binding=boundaryBinding(o,e),row=binding?.row,warning=!row?t('No declaration binding was retained for this event. The current catalogue cannot replace its provenance.'):row.targetChanged?t('The catalogue changed. These details belong to the saved operation.'):t('These details belong to the saved operation.');
+ const evidence=row?{event:{id:e.id,kind:e.kind,from:e.from,to:e.to},bindingMode:binding.mode,bindingEventId:row.eventId,interactionId:row.interactionId,from:row.from,to:row.to,declaration:row.declaration,transport:row.transport,declarationDigest:row.declarationDigest,snapshotContextDigest:row.snapshotContextDigest,interactionSourceChecks:row.sourceChecks||{status:'NOT_RETAINED'},authority:row.authority,retained:row.retained,targetChanged:row.targetChanged}:null;
+ return chromeHtml`<details id="${esc(boundaryEvidenceId(o,e))}" class="boundary-evidence"><summary>${esc(t('Declared relationship evidence'))}</summary><p>${esc(boundaryCaption(o,e))}</p><p class="schema-description">${esc(warning)}</p>${binding?.mode==='SAME_OPERATION_INTERACTION'?chromeHtml`<p>${esc(t("The event uses the same operation's saved interaction binding; no event-specific binding was retained."))}</p>`:''}${evidence?chromeHtml`<pre class="note-original">${pretty(evidence)}</pre>`:''}</details>`;
+}
+function boundaryCaption(o,e){const binding=boundaryBinding(o,e);return `${t('Declared boundary; runtime unverified')} · ${binding?.row.declaration?.origin||t('Provenance unavailable')}`;}
 function participantHref(p){return p.externalService?'../external-services/'+encodeURIComponent(p.externalService)+'.html':p.service?'../services/'+encodeURIComponent(p.service)+'.html':'';}
 function sequenceEvents(o){
  const root=[],stack=[{nodes:root}];
@@ -358,7 +368,7 @@ function sequenceLayout(o,availableWidth=800){
   const labelWidth=self?selfWidth:Math.max(12,Math.abs(a-b)-16),mid=self?a+direction*selfWidth/2:(a+b)/2;
   const lines=e.kind==='end'?[]:sequenceLines(branch?`${t(e.kind)} · ${e.text}`:e.text,branch?W-left*2-12:labelWidth,branch?'650 9px':'650 11px');
   const arrowOffset=Math.max(39,(lines.length-1)*14+20),arrowBottom=arrowOffset+(a===b?17:0),captionOffset=arrowBottom+18;
-  const captionLines=(e.kind==='declared'||isDeclaredBoundary(e))?sequenceLines(isDeclaredBoundary(e)?boundaryCaption(e):t('Declared service interaction'),labelWidth,'650 9px'):[];
+  const captionLines=(e.kind==='declared'||isDeclaredBoundary(e))?sequenceLines(isDeclaredBoundary(e)?boundaryCaption(o,e):t('Declared service interaction'),labelWidth,'650 9px'):[];
   const h=e.kind==='end'?18:branch?Math.max(40,lines.length*14+14):Math.max(72,((e.kind==='declared'||isDeclaredBoundary(e))?captionOffset+Math.max(0,captionLines.length-1)*14:arrowBottom)+28);
   rows.push({e,y,h,depth,left,lines,arrowOffset,captionOffset,captionLines,mid,labelWidth,direction,loopWidth});
   if(['alt','loop','opt'].includes(e.kind))stack.push({y,depth});
@@ -384,7 +394,7 @@ function diagram(o,availableWidth){
   inside+=a===b?chromeHtml`<path class="event-arrow ${dash}" d="M${a} ${arrowY} h${direction*loopWidth} v17 h${-direction*loopWidth}" marker-end="url(#arrow)"/>`:chromeHtml`<line class="event-arrow ${dash}" x1="${a}" y1="${arrowY}" x2="${b}" y2="${arrowY}" marker-end="url(#arrow)"/>`;
   if((e.kind==='declared'||isDeclaredBoundary(e)))inside+=captionLines.map((line,i)=>chromeHtml`<text class="branch-title" text-anchor="middle" x="${mid}" y="${y+captionOffset+i*14}">${esc(line)}</text>`).join('');
  }
- svg+=isDeclaredBoundary(e)?chromeHtml`<a href="#${esc(boundaryEvidenceId(o,e))}" data-boundary-declaration="${esc(boundaryEvidenceId(o,e))}" aria-label="${esc(e.text)}: ${esc(t('Declared relationship evidence'))}"><title>${esc(boundaryCaption(e))}</title>${inside}</a>`:chromeHtml`<a href="#${esc(o.id)}" data-event="${esc(e.id)}" data-sequence-event="true" aria-label="${esc(e.text)}: inspect source"><title>${esc(e.text)}</title>${inside}</a>`;
+ svg+=isDeclaredBoundary(e)?chromeHtml`<a href="#${esc(boundaryEvidenceId(o,e))}" data-boundary-declaration="${esc(boundaryEvidenceId(o,e))}" aria-label="${esc(e.text)}: ${esc(t('Declared relationship evidence'))}"><title>${esc(boundaryCaption(o,e))}</title>${inside}</a>`:chromeHtml`<a href="#${esc(o.id)}" data-event="${esc(e.id)}" data-sequence-event="true" aria-label="${esc(e.text)}: inspect source"><title>${esc(e.text)}</title>${inside}</a>`;
  }return svg+chromeHtml`</svg>`;
 }
 let sequenceReflowPending=false,sequenceContainers=[];
@@ -420,7 +430,7 @@ function pseudocodeEvent(o,event){
   case 'opt':return {keyword:t('When'),text:text?text+':':''};
   case 'return':return {keyword:t('Return'),text:route+text};
   case 'message':return {keyword:t('Message'),text:route+text};
-  case 'declared-boundary':case 'declared-boundary-return':return {keyword:boundaryCaption(event),text:route+text};
+  case 'declared-boundary':case 'declared-boundary-return':return {keyword:boundaryCaption(o,event),text:route+text};
   case 'declared':return {keyword:t('Declared interaction'),text:(event.from&&event.to?`(${participant(event.from)} → ${participant(event.to)}) `:'')+text};
   case 'note':return {keyword:t('Note'),text};
   default:return {keyword:'',text};

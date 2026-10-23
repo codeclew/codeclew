@@ -60,3 +60,11 @@ new retained declarations; old publications and Work are not rewritten. Removing
 a relationship removes it from a newly projected graph. Endpoint/source statuses
 remain independent: `SOURCE_MATCH` is never promoted to `RESOLVED`, and an
 `agent-proposal` remains visibly unverified.
+
+Sequence origin, transport and declaration evidence come from that operation's
+saved event binding, including after a catalogue mutation or relationship removal.
+They never fall back to the publication's catalogue graph. New explicit HTTP
+responses retain their own event binding. A legacy response may use an unambiguous
+same-operation interaction binding, visibly labelled as such; without one, its
+provenance is explicitly unavailable. A changed catalogue is shown separately
+from retained sequence evidence and does not upgrade its original declaration.

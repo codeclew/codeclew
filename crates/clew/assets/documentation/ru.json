@@ -1113,5 +1113,10 @@
   "Source not captured": "Исходники не захвачены",
   "Declared service relationships": "Заявленные связи сервисов",
   "Declared architecture, not an observed execution trace. Source checks remain separate; external source is not captured. Agent proposals are unverified. Position does not establish execution order.": "Заявленная архитектура, а не наблюдаемое выполнение. Проверки по исходникам учитываются отдельно; внешние исходники не захвачены. Предложения агента не проверены. Расположение не задаёт порядок выполнения.",
-  "Declared relationship evidence": "Доказательства заявленной связи"
+  "Declared relationship evidence": "Доказательства заявленной связи",
+  "Provenance unavailable": "Происхождение недоступно",
+  "No declaration binding was retained for this event. The current catalogue cannot replace its provenance.": "Для этого события не сохранена привязка к декларации. Текущий каталог не может заменить её происхождение.",
+  "The catalogue changed. These details belong to the saved operation.": "Каталог изменился. Эти сведения относятся к сохранённой операции.",
+  "These details belong to the saved operation.": "Эти сведения относятся к сохранённой операции.",
+  "The event uses the same operation's saved interaction binding; no event-specific binding was retained.": "Событие использует сохранённую привязку взаимодействия этой же операции; отдельная привязка события не сохранена."
 }
