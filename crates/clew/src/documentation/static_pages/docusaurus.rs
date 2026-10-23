@@ -280,7 +280,7 @@ fn evidence_in_language(block: &Value, prefix: &str, language: &str) -> Result<S
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewMarkdown, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewMarkdown, ClewFieldDetails, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -1605,9 +1605,12 @@ fn model_page(
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
         out.push_str(&format!(
-            "### {} {{#field-{fid}}}\n\n<details className=\"dm-field-details\">\n<summary>{}</summary>\n\n",
+            "### {} {{#field-{fid}}}\n\n<ClewFieldDetails>\n<summary>{}</summary>\n\n",
             md(text(&field["path"])),
-            contracts::literal(crate::documentation::language::label(language,"Technical representations"))
+            contracts::literal(crate::documentation::language::label(
+                language,
+                "Technical representations"
+            ))
         ));
         out.push_str(&evidence_language(&field["meaning"], language)?);
         for (key, title) in [
@@ -1673,7 +1676,7 @@ fn model_page(
         if !super::data_model::reference_only(model) {
             out.push_str(&format!("<ClewFieldTrace field={} />\n\n", json!(fid)));
         }
-        out.push_str("</details>\n\n");
+        out.push_str("</ClewFieldDetails>\n\n");
     }
     if super::data_model::reference_only(model) {
         out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## {clew_label_0} {{#processes}}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Processes"))));

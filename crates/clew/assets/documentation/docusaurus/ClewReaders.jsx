@@ -13,6 +13,12 @@ export function ClewMarkdown({text}) {
   return <div className="clew-markdown" dangerouslySetInnerHTML={{__html:markdown.render(text,{tableLabel:t('Table')})}} />;
 }
 
+// Native details allow the shared anchor handler to reveal the field body.
+// The theme's animated MDX details keeps separate React collapsed state.
+export function ClewFieldDetails({children}) {
+  return <details className="dm-field-details">{children}</details>;
+}
+
 const cache = new Map();
 const packedObjects = new Map();
 async function jsonAt(url) {
