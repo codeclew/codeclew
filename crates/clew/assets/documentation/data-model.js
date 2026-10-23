@@ -140,12 +140,15 @@
   return {selectField(id){const found=rows.find(r=>r.field.id===id||r.key===id);if(found){selected=found;detailStage='';update(true);container.querySelector('.dm-drilldown').scrollIntoView({block:'start'});}}};
  }
  function contextLinks(root,data){
-  const q=new URLSearchParams(location.search||''),process=q.get('fromProcess')||data.request?.subject?.slice(9),anchor=data.request?(data.returnAnchor||data.request.anchor):q.get('fromAnchor');
+  const q=new URLSearchParams(location.search||''),process=data.request?.subject?.slice(9)||q.get('fromProcess'),anchor=data.request?(data.returnAnchor||data.request.anchor):q.get('fromAnchor');
   if(!/^[a-zA-Z0-9_-]{1,160}$/.test(process||'')||!/^[a-zA-Z0-9_-]{1,160}$/.test(anchor||''))return;
-  root.querySelectorAll('[data-dm-context]').forEach(link=>{const url=new URL(link.getAttribute('href'),location.href);url.searchParams.set('fromProcess',process);url.searchParams.set('fromAnchor',link.getAttribute('data-dm-return-anchor')||anchor);const fromField=q.get('fromField')||(data.request?q.get('field'):null);if(fromField)url.searchParams.set('fromField',fromField);for(const name of ['stage','contract','cellStage']){const key='from'+name[0].toUpperCase()+name.slice(1),value=data.request?q.get(name):q.get(key);if(value)url.searchParams.set(key,value);else url.searchParams.delete(key);}link.setAttribute('href',url.pathname+url.search+url.hash);});
-  const processPath=data.processHrefs?.[process]||'../scenarios/'+process+'.html';
+  root.querySelectorAll('[data-dm-context]').forEach(link=>{const url=new URL(link.getAttribute('href'),location.href);url.searchParams.set('fromProcess',process);url.searchParams.set('fromAnchor',link.getAttribute('data-dm-return-anchor')||anchor);const fromField=data.request?q.get('field'):q.get('fromField');if(fromField)url.searchParams.set('fromField',fromField);else url.searchParams.delete('fromField');for(const name of ['stage','contract','cellStage']){const key='from'+name[0].toUpperCase()+name.slice(1),value=data.request?q.get(name):q.get(key);if(value)url.searchParams.set(key,value);else url.searchParams.delete(key);}link.setAttribute('href',url.pathname+url.search+url.hash);});
+  const caller=q.get('fromProcess'),callerAnchor=q.get('fromAnchor')||q.get('fromQuestion');
+  const callerValid=/^[a-zA-Z0-9_-]{1,160}$/.test(caller||'')&&/^[a-zA-Z0-9_-]{1,160}$/.test(callerAnchor||'');
+  const returnProcess=callerValid?caller:process,returnAnchor=callerValid?callerAnchor:anchor;
+  const processPath=data.processHrefs?.[returnProcess]||'../scenarios/'+returnProcess+'.html';
   const returnQuery=new URLSearchParams({view:'process'});for(const name of ['field','stage','contract','cellStage']){const value=q.get('from'+name[0].toUpperCase()+name.slice(1));if(value)returnQuery.set(name,value);}
-  const target=document.getElementById('dm-return');if(target)target.innerHTML=chromeHtml`<a href="${esc(processPath)}?${esc(returnQuery.toString())}#${esc(anchor)}">Return to the same process step</a>`;
+  const target=document.getElementById('dm-return');if(target)target.innerHTML=chromeHtml`<a href="${esc(processPath)}?${esc(returnQuery.toString())}#${esc(returnAnchor)}">Return to the same process step</a>`;
  }
  function processMount(){
   if(typeof D==='undefined'||!D.processDataFlow)return;

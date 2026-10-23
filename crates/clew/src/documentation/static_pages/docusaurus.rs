@@ -3,7 +3,7 @@
 use crate::documentation::{digest, invalid, io_error};
 use crate::error::ClewError;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 mod contracts;
 mod reading;
 
@@ -207,6 +207,14 @@ fn source_link_in_language(
     prefix: &str,
     language: &str,
 ) -> Result<String, ClewError> {
+    source_link_with_caption(source, prefix, language, None)
+}
+fn source_link_with_caption(
+    source: &Value,
+    prefix: &str,
+    language: &str,
+    caption: Option<&str>,
+) -> Result<String, ClewError> {
     if !is_source(source) {
         return Ok(crate::documentation::language::label(
             language,
@@ -214,26 +222,32 @@ fn source_link_in_language(
         )
         .into());
     }
-    if text(&source["text"]).is_empty() && text(&source["url"]).starts_with("https://") {
-        return Ok(format!(
-            "[{}:{}–{} · {}]({})",
-            md(text(&source["file"])),
-            source["startLine"],
-            source["endLine"],
-            md(text(&source["revision"])),
-            text(&source["url"])
-        ));
+    let remote = text(&source["text"]).is_empty() && text(&source["url"]).starts_with("https://");
+    let label = caption.map(md).unwrap_or_else(|| {
+        if remote {
+            format!(
+                "{}:{}–{} · {}",
+                md(text(&source["file"])),
+                source["startLine"],
+                source["endLine"],
+                md(text(&source["revision"]))
+            )
+        } else {
+            format!(
+                "{}:{}–{} · {} {}",
+                md(text(&source["file"])),
+                source["startLine"],
+                source["endLine"],
+                md(crate::documentation::language::label(language, "revision")),
+                md(text(&source["revision"]))
+            )
+        }
+    });
+    if remote {
+        return Ok(format!("[{label}]({})", text(&source["url"])));
     }
     let id = digest(source)?;
-    Ok(format!(
-        "[{}:{}–{} · {} {}]({prefix}sources/{}.mdx)",
-        md(text(&source["file"])),
-        source["startLine"],
-        source["endLine"],
-        md(crate::documentation::language::label(language, "revision")),
-        md(text(&source["revision"])),
-        &id[7..]
-    ))
+    Ok(format!("[{label}]({prefix}sources/{}.mdx)", &id[7..]))
 }
 
 fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
@@ -280,6 +294,22 @@ fn evidence_in_language(block: &Value, prefix: &str, language: &str) -> Result<S
     Ok(out)
 }
 
+/// A coherent reading step has one optional evidence panel. Distinct retained
+/// claims keep their states and source destinations; exact duplicates occur once.
+fn section_evidence(section: &Value, prefix: &str, language: &str) -> Result<String, ClewError> {
+    let mut seen = BTreeSet::new();
+    let mut evidence = Vec::new();
+    for reference in rows(&section["blocks"]).flat_map(|b| rows(&b["evidence"])) {
+        if seen.insert(digest(reference)?) {
+            evidence.push(reference.clone());
+        }
+    }
+    if evidence.is_empty() {
+        return Ok(String::new());
+    }
+    evidence_in_language(&json!({"evidence":evidence}), prefix, language)
+}
+
 const IMPORTS: &str = "import {ClewMarkdown, ClewFieldDetails, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
@@ -306,6 +336,15 @@ fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError
     block_in(block, page, section, "../")
 }
 fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
+    block_body_in(block, page, section, prefix, true)
+}
+fn block_body_in(
+    block: &Value,
+    page: &Value,
+    section: &str,
+    prefix: &str,
+    show_evidence: bool,
+) -> Result<String, ClewError> {
     let mut out = format!("{}\n\n", prose(text(&block["text"])));
     let mut links = String::new();
     for link in rows(&block["links"]) {
@@ -363,7 +402,9 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
             "<div className=\"clew-context-links\">\n\n{links}</div>\n\n"
         ));
     }
-    out.push_str(&evidence_in(block, prefix)?);
+    if show_evidence {
+        out.push_str(&evidence_in(block, prefix)?);
+    }
     if block["disclosure"] == true || block["disclosure"].is_string() {
         let title = block["disclosure"]
             .as_str()
@@ -487,7 +528,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             ));
         }
         for (index, b) in rows(&section["blocks"]).enumerate() {
-            out.push_str(&block(b, page, sid)?);
+            out.push_str(&block_body_in(b, page, sid, "../", false)?);
             if index == 0 {
                 out.push_str(&reading::step_models(page, &anchor));
                 out.push_str(&reading::process_topics(page, context, Some(sid))?);
@@ -502,6 +543,11 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                 }
             }
         }
+        out.push_str(&section_evidence(
+            section,
+            "../",
+            page["language"].as_str().unwrap_or("en"),
+        )?);
         if exception {
             out.push_str("</aside>\n\n");
         }
@@ -887,10 +933,10 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         let declared = &page["interfaceContractDeclarations"][id][text(&contract["id"])];
         out.push_str(&format!("{heading} {}\n\n", md(text(&contract["title"]))));
         if declared["declaration"].is_object() {
-            out.push_str(&format!("**{}: {}**\n\n{}\n\n**{}** · {}\n\n{}: `{}`. {}\n\n",
-                md(t("Declared contract")),md(text(&declared["title"])),md(t("Retained declaration; validator behavior and runtime conformance are separate.")),
-                md(t("Contract declaration")),source_link_in_language(&declared["source"],"../",language)?,
-                md(t("Exact pointer")),md(text(&declared["branchPointer"])),md(t("Presence is relative to the parent. Child requirements apply when their parent and the selected branch are present."))));
+            out.push_str(&format!("**{}: {}**\n\n{}\n\n{}\n\n",
+                md(t("Declared contract")),md(text(&declared["title"])),
+                source_link_with_caption(&declared["source"],"../",language,Some(t("Contract declaration")))?,
+                md(t("Presence is relative to the parent. Child requirements apply when their parent and the selected branch are present."))));
             out.push_str(&super::inline_contract::table(
                 &declared["declaration"],
                 language,
@@ -900,10 +946,10 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             }
             out.push_str(&details(
                 t("Exact schema and declaration provenance"),
-                &fence(
+                &format!("{}\n\n{}", md(t("Retained declaration; validator behavior and runtime conformance are separate.")), fence(
                     &serde_json::to_string_pretty(declared).map_err(io_error)?,
                     "json",
-                ),
+                )),
             ));
         } else {
             out.push_str(&format!("{}\n\n",md(t("No declaration is bound to this card. The description below is source-derived behavior, not a declared schema."))));
@@ -1256,8 +1302,11 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         if sid == "section-entities" {
             for model in rows(&page["serviceModelLinks"]) {
                 if model["fieldSummary"].is_object() {
-                    out.push_str(&format!("### [{}](../data-model/{}.mdx#fields-and-representations)\n\nDocumented field model · {} · {} · {}. These explicit documentation mappings do not establish domain ownership.\n\n",
-                        md(text(&model["title"])),text(&model["id"]),md(text(&model["kind"])),md(text(&model["authority"])),md(text(&model["review"]))));
+                    out.push_str(&format!(
+                        "### [{}](../data-model/{}.mdx#fields-and-representations)\n\n",
+                        md(text(&model["title"])),
+                        text(&model["id"])
+                    ));
                     out.push_str(&super::data_model::service_field_table(
                         &model["fieldSummary"],
                         language,
@@ -1266,7 +1315,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                     out.push_str(&details(
                         "Field descriptions and provenance",
                         &fence(
-                            &serde_json::to_string_pretty(&model["provenance"])
+                            &serde_json::to_string_pretty(&json!({"kind":model["kind"],"authority":model["authority"],"review":model["review"],"documentationLanguage":model["documentationLanguage"],"scope":"These explicit documentation mappings do not establish domain ownership.","provenance":model["provenance"]}))
                                 .map_err(io_error)?,
                             "json",
                         ),
@@ -2433,6 +2482,37 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coherent_step_groups_evidence_without_hiding_failure_caveats_or_distinct_sources() {
+        let source = |file: &str| json!({"file":file,"revision":"r1","startLine":1,"endLine":2,"text":"exact retained source","textDigest":crate::canonical::hash_bytes(b"exact retained source")});
+        let first = source("save.ts");
+        let second = source("forecast.ts");
+        let one = json!({"kind":"SOURCE","source":first});
+        let two = json!({"kind":"SOURCE","source":second});
+        let section = json!({"blocks":[
+            {"text":"A 503 can happen after the city was saved.","evidence":[one,two]},
+            {"text":"Save success does not mean a forecast is ready.","evidence":[one]}
+        ]});
+        let original = section.clone();
+        let mut output = String::new();
+        for block in rows(&section["blocks"]) {
+            output.push_str(&block_body_in(block, &Value::Null, "save", "../", false).unwrap());
+        }
+        output.push_str(&section_evidence(&section, "../", "en").unwrap());
+        assert_eq!(
+            output
+                .matches("<summary>Evidence and scope</summary>")
+                .count(),
+            1
+        );
+        let disclosure = output.find("<details>").unwrap();
+        assert!(output.find("503").unwrap() < disclosure);
+        assert!(output.find("forecast is ready").unwrap() < disclosure);
+        for retained in [&first, &second] {
+            assert_eq!(output.matches(&source_link(retained).unwrap()).count(), 1);
+        }
+        assert_eq!(section, original);
+    }
     #[test]
     fn http_locale_preserves_contract_values_and_legacy_heading_anchors_without_an_owner() {
         let binding = json!({"record":{"normalized":{"method":"POST","path":"/Field", "authority":"DECLARED_OPENAPI_CONTRACT",

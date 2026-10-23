@@ -1171,7 +1171,7 @@ fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<
         } else {
             ""
         };
-        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}<a class{}=\"dm-field-evidence-link\" href=\"{}\"{disclosure}>{}</a></td></tr>",literal(&href),literal(original),heading("Readable name"),literal(name),heading("Comment"),body,if portable{"Name"}else{""},literal(&href),heading("Evidence and representations")));
+        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}</td></tr>",literal(&href),literal(original),heading("Readable name"),literal(name),heading("Comment"),body));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -1909,6 +1909,11 @@ mod tests {
             assert!(html.contains("<caption>Field descriptions</caption>"));
             assert_eq!(html.matches("scope=\"row\"").count(), 2);
             assert_eq!(html.matches("scope=\"col\"").count(), 3);
+            assert_eq!(
+                html.matches("<a href=").count(),
+                2,
+                "each field has one evidence entry point"
+            );
             assert!(html.contains(
                 "href=\"#field-value\" data-clew-field-details=\"\"><code>payload.value</code>"
             ));

@@ -178,3 +178,19 @@ test('owned revision label is translated explicitly while static technical attri
  assert.match(html,/data-revision="revision"/);
  assert.match(html,/>версия: revision<\/span>/);
 });
+
+
+test('child model context belongs to the current consumer while the caller return stays explicit',()=>{
+ const location={href:'http://localhost/scenarios/consumer.html?fromProcess=publisher&fromQuestion=question-send&fromField=publisher.event&field=weather.card&stage=Apply',search:'?fromProcess=publisher&fromQuestion=question-send&fromField=publisher.event&field=weather.card&stage=Apply'};
+ const attrs={href:'../data-model/weather.html?fromProcess=publisher&fromAnchor=question-apply','data-dm-return-anchor':'question-apply'};
+ const link={getAttribute:name=>attrs[name],setAttribute:(name,value)=>attrs[name]=value},back={innerHTML:''};
+ const document={getElementById:id=>id==='dm-return'?back:null,querySelectorAll:()=>[link]};
+ const context={window:{},document,location,URL,URLSearchParams};vm.runInNewContext(script,context);
+ const data={request:{subject:'scenario:consumer',anchor:'question-apply'}},before=JSON.stringify(data);
+ context.window.CodeclewDataModel.contextLinks(document,data);
+ const child=new URL(attrs.href,location.href);
+ assert.equal(child.searchParams.get('fromProcess'),'consumer');assert.equal(child.searchParams.get('fromAnchor'),'question-apply');
+ assert.equal(child.searchParams.get('fromField'),'weather.card');assert.equal(child.searchParams.get('fromStage'),'Apply');
+ assert.match(back.innerHTML,/publisher\.html/);assert.match(back.innerHTML,/#question-send/);assert.match(back.innerHTML,/field=publisher.event/);
+ assert.equal(JSON.stringify(data),before);
+});

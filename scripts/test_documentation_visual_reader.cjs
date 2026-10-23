@@ -1083,13 +1083,13 @@ test('pinned-only freshness presents a saved snapshot without hiding the origina
  const data=fixture();data.sectionState={freshness:'UNVERIFIED',verification:'VERIFIED_WITH_LIMITATIONS',contentRevisions:{sample:'abc'},targetRevisions:{sample:'abc'},reasons:[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED',snapshot:'saved'}]};
  const original=JSON.stringify(data.sectionState),r=load(data),html=r.e('freshness-status').innerHTML;
  assert.match(html,/freshness-snapshot/);assert.match(html,/Saved source snapshot/);assert.match(html,/Current checkout freshness was not rechecked/);
- assert.match(html,/<details class="freshness-details"><summary>Source and review details<\/summary>/);
+ assert.match(html,/^<details[^>]+><summary>Source and review details<\/summary>/);assert.doesNotMatch(html,/^<details[^>]*\bopen(?:\s|=|>)/);
  assert.match(html,/Source freshness: <b>UNVERIFIED<\/b>/);assert.match(html,/PINNED_SNAPSHOT_NOT_REVERIFIED/);assert.match(html,/Model approved with limitations/);
  assert.doesNotMatch(html,/freshness-unverified|retained with a gap/);assert.equal(JSON.stringify(r.data.sectionState),original);
  const ru=load({...data,language:'ru'}).e('freshness-status').innerHTML;assert.match(ru,/Сохранённая версия исходного кода/);assert.match(ru,/Не проверено/);
  for(const reasons of [[],[{reason:'SOURCE_MISSING'}],[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED'},{reason:'SOURCE_MISSING'}]]){
   const actual=load({...data,sectionState:{...data.sectionState,reasons}}).e('freshness-status').innerHTML;
-  assert.match(actual,/freshness-unverified/);assert.doesNotMatch(actual,/freshness-snapshot/);
+  assert.match(actual,/freshness-unverified/);assert.doesNotMatch(actual,/freshness-snapshot/);assert.match(actual,/^<div /,"actual unknown source state remains prominent");
  }
  assert.match(load({...data,sectionState:{...data.sectionState,freshness:'STALE'}}).e('freshness-status').innerHTML,/freshness-stale/);
 });
