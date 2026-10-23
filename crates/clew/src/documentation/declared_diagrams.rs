@@ -307,9 +307,7 @@ pub(super) fn mermaid(g: &Value) -> String {
         let alias = format!("n{index}");
         ids.insert(node["id"].as_str().unwrap_or(""), alias.clone());
         // JSON string quoting is not enough for Mermaid: encode directive characters.
-        let label = escape(node["label"].as_str().unwrap_or(""))
-            .replace(';', "&#59;")
-            .replace(['\n', '\r'], " ");
+        let label = super::render::mermaid_label(node["label"].as_str().unwrap_or(""));
         out += &format!(
             "    {alias}[\"{label}\"]\n    click {alias} \"{}\" \"Documentation\"\n",
             node["href"].as_str().unwrap_or("")
@@ -321,9 +319,12 @@ pub(super) fn mermaid(g: &Value) -> String {
             ids.get(edge["to"].as_str().unwrap_or("")),
         ) {
             out += &format!(
-                "    {a} -.\"{} · {} · declared; runtime unverified\".-> {b}\n",
-                escape(edge["id"].as_str().unwrap_or("")).replace(';', "&#59;"),
-                edge["transport"]["kind"].as_str().unwrap_or("")
+                "    {a} -.\"{}\".-> {b}\n",
+                super::render::mermaid_label(&format!(
+                    "{} · {} · declared; runtime unverified",
+                    edge["id"].as_str().unwrap_or(""),
+                    edge["transport"]["kind"].as_str().unwrap_or("")
+                ))
             );
         }
     }

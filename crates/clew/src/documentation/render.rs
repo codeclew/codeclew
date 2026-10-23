@@ -2535,17 +2535,32 @@ fn process_outline_gap(reason: &str, root: Value) -> Value {
     })
 }
 
+/// Mermaid entity codes protect grammar delimiters and are decoded by the
+/// bundled runtime. Encode original characters once, not HTML entities twice.
+pub(super) fn mermaid_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '#' => "#35;".into(),
+            '&' => "#38;".into(),
+            '<' => "#60;".into(),
+            '>' => "#62;".into(),
+            ';' => "#59;".into(),
+            '"' => "#quot;".into(),
+            '\'' => "#39;".into(),
+            '`' => "#96;".into(),
+            '\n' | '\r' => " ".into(),
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
 pub fn mermaid(o: &Operation) -> String {
     if let Some(g) = &o.dataflow {
         return super::dataflow::mermaid(g);
     }
     fn label(s: &str) -> String {
-        s.replace('&', "&amp;")
-            .replace(';', "&#59;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace(['\n', '\r'], " ")
+        mermaid_label(s)
     }
     if let Some(d) = &o.overview_diagram {
         let mut out = "flowchart LR\n    %% Source-bound overview; conditional and declared links are not a runtime trace.\n".to_owned();
@@ -2602,13 +2617,13 @@ pub fn mermaid(o: &Operation) -> String {
                 e.from.as_deref().unwrap_or(""),
                 if e.kind == "message" { "->>" } else { "-->>" },
                 e.to.as_deref().unwrap_or(""),
-                if super::declared_diagrams::boundary(&e.kind) {
+                mermaid_label(if super::declared_diagrams::boundary(&e.kind) {
                     "[declared boundary; runtime unverified] "
                 } else if e.kind == "declared" {
                     "[declared] "
                 } else {
                     ""
-                },
+                }),
                 label(&e.text)
             )),
             "note" => out.push_str(&format!(

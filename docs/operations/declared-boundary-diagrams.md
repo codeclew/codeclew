@@ -68,3 +68,9 @@ responses retain their own event binding. A legacy response may use an unambiguo
 same-operation interaction binding, visibly labelled as such; without one, its
 provenance is explicitly unavailable. A changed catalogue is shown separately
 from retained sequence evidence and does not upgrade its original declaration.
+
+Validate exported Mermaid fences and native `.mmd` files with the actual bundled
+Mermaid runtime, including boundary captions and authored punctuation. A successful
+MDX build does not establish client-side diagram parsing. The release gate opens
+the real sequence and relationship graph, checks literal labels and navigation,
+and treats a runtime parse error as a publication blocker.
