@@ -213,8 +213,9 @@ pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
         let y = first_edge_y + index * 62;
         // A cubic midpoint is (ay + 6*control_y + by)/8. Put its label there.
         let control_y = (8.0 * y as f64 - ay as f64 - by as f64) / 6.0;
+        let control_x = (8.0 * 500.0 - (ax + 130) as f64 - (bx - 130) as f64) / 6.0;
         svg += &format!(
-            "<g data-interaction=\"{}\"><title>{}</title><path d=\"M{} {ay} C460 {control_y:.2} 540 {control_y:.2} {} {by}\" fill=\"none\" stroke=\"#526879\" stroke-dasharray=\"6 4\" marker-end=\"url(#declared-arrow)\"/><rect x=\"340\" y=\"{}\" width=\"320\" height=\"40\" rx=\"4\" fill=\"#fffdf8\"/><text x=\"500\" y=\"{y}\" text-anchor=\"middle\" font-size=\"13\">{} · {}</text><text x=\"500\" y=\"{}\" text-anchor=\"middle\" font-size=\"11\">{} · runtime unverified</text></g>",
+            "<g data-interaction=\"{}\"><title>{}</title><path d=\"M{} {ay} C{control_x:.2} {control_y:.2} {control_x:.2} {control_y:.2} {} {by}\" fill=\"none\" stroke=\"#526879\" stroke-dasharray=\"6 4\" marker-end=\"url(#declared-arrow)\"/><rect x=\"340\" y=\"{}\" width=\"320\" height=\"40\" rx=\"4\" fill=\"#fffdf8\"/><text x=\"500\" y=\"{y}\" text-anchor=\"middle\" font-size=\"13\">{} · {}</text><text x=\"500\" y=\"{}\" text-anchor=\"middle\" font-size=\"11\">{} · runtime unverified</text></g>",
             escape(e["id"].as_str().unwrap_or("")),
             escape(e["title"].as_str().unwrap_or("")),
             ax + 130,
