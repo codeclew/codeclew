@@ -28,10 +28,20 @@ struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     documentation_language: Option<String>,
     models: Vec<Model>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    interface_bindings: Vec<InterfaceBinding>,
     #[serde(default)]
     contracts: Vec<Contract>,
     #[serde(default)]
     process_views: Vec<ProcessView>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InterfaceBinding {
+    contract: String,
+    subject: String,
+    operation: String,
+    interface_contract: String,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -298,6 +308,40 @@ fn leaves(node: &Value, path: &str, pointer: &str, required: bool, out: &mut Vec
         out.push(json!({"field":path,"pointer":pointer,"requiredWhenBranchMatches":required,"nullable":nullable.map_or(json!("UNKNOWN"), |v|json!(v)),"schema":node}));
     }
 }
+fn validate_interface_bindings(
+    bindings: &[InterfaceBinding],
+    contracts: &[Value],
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), ClewError> {
+    let mut bound_cards = BTreeSet::new();
+    for binding in bindings {
+        if !contracts.iter().any(|c| c["id"] == binding.contract)
+            || !bound_cards.insert((
+                &binding.subject,
+                &binding.operation,
+                &binding.interface_contract,
+            ))
+        {
+            return Err(invalid(
+                "interface declaration binding is absent or repeats a card",
+            ));
+        }
+        let page = page_for(files, &binding.subject)?;
+        let found = page["operations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|op| op["id"] == binding.operation)
+            .flat_map(|op| op["interfaceContracts"].as_array().into_iter().flatten())
+            .any(|card| card["id"] == binding.interface_contract);
+        if !found {
+            return Err(invalid(
+                "interface declaration binding must name an exact retained operation/card",
+            ));
+        }
+    }
+    Ok(())
+}
 pub(super) fn load(
     path: Option<&Path>,
     publication: &str,
@@ -335,6 +379,7 @@ pub(super) fn load(
         || plan.models.len() > 32
         || plan.contracts.len() > 32
         || plan.process_views.len() > 32
+        || plan.interface_bindings.len() > 128
     {
         return Err(invalid("data-model schema, binding or bounds are invalid"));
     }
@@ -359,8 +404,11 @@ pub(super) fn load(
             .ok_or_else(|| invalid("data-model contract branch is unavailable"))?;
         let mut rows = Vec::new();
         leaves(branch, "", &c.branch_pointer, true, &mut rows);
-        contracts.push(json!({"id":c.id,"title":c.title,"documentationLanguage":c.documentation_language.as_ref().or(plan.documentation_language.as_ref()),"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":CONTRACT_REQUIRED_CONDITION}));
+        let declaration =
+            super::inline_contract::project_document(branch, &c.branch_pointer, &schema)?;
+        contracts.push(json!({"declaration":declaration,"id":c.id,"title":c.title,"documentationLanguage":c.documentation_language.as_ref().or(plan.documentation_language.as_ref()),"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":CONTRACT_REQUIRED_CONDITION}));
     }
+    validate_interface_bindings(&plan.interface_bindings, &contracts, files)?;
     ids.clear();
     for model in &mut plan.models {
         if !store::valid_id(&model.id)
@@ -832,6 +880,30 @@ pub(super) fn attach_process(
     let Some(model) = model else {
         return Ok(());
     };
+    for binding in model["interfaceBindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["subject"] == subject)
+    {
+        let contract = model["contracts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["id"] == binding["contract"])
+            .ok_or_else(|| invalid("bound inline contract is unavailable"))?;
+        if !payload["interfaceContractDeclarations"].is_object() {
+            payload["interfaceContractDeclarations"] = json!({});
+        }
+        let operation = strv(&binding["operation"]);
+        if !payload["interfaceContractDeclarations"][operation].is_object() {
+            payload["interfaceContractDeclarations"][operation] = json!({});
+        }
+        let mut declaration = contract.clone();
+        declaration["binding"] = json!({"authority":model["authority"],"review":model["review"],"subject":subject,"operation":binding["operation"],"interfaceContract":binding["interfaceContract"]});
+        payload["interfaceContractDeclarations"][operation][strv(&binding["interfaceContract"])] =
+            declaration;
+    }
     // Canonical navigation is independent of the optional field-flow reader.
     // The author must bind the exact legacy service link and question explicitly.
     let mut navigation = serde_json::Map::new();
@@ -846,7 +918,44 @@ pub(super) fn attach_process(
                     .iter()
                     .any(|entry: &Value| entry["id"] == m["id"])
             {
-                service_links.push(json!({"id":m["id"],"title":m["title"],
+                let fields = m["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|f| {
+                        json!({"id":f["id"],"path":f["path"],
+                        "originalName":f.get("originalName").map(|n|json!({"text":n["text"]})),
+                        "readableName":f.get("readableName").map(|n|json!({"text":n["text"]})),
+                        "meaning":{"text":f["meaning"]["text"]}})
+                    })
+                    .collect::<Vec<_>>();
+                let mut provenance = m.clone();
+                // Full source and representation evidence remains on canonical model pages.
+                // This compact disclosure retains every exact evidence identity without copying source bytes.
+                fn compact(v: &mut Value) {
+                    match v {
+                        Value::Object(map) => {
+                            if map.contains_key("textDigest") && map.contains_key("file") {
+                                map.remove("text");
+                            }
+                            for value in map.values_mut() {
+                                compact(value);
+                            }
+                        }
+                        Value::Array(values) => {
+                            for value in values {
+                                compact(value);
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                compact(&mut provenance);
+                let summary = json!({"id":m["id"],"title":m["title"],"fields":fields});
+                let language = payload["language"].as_str().unwrap_or("en");
+                service_links.push(json!({"id":m["id"],"title":m["title"],"kind":m["kind"],
+                    "documentationLanguage":m["documentationLanguage"],"authority":model["authority"],"review":model["review"],
+                    "fieldSummary":summary,"fieldTableHtml":service_field_table(&summary,language,false),"provenance":provenance,
                     "href":format!("../data-model/{}.html#fields-and-representations",strv(&m["id"]))}));
             }
             if link["subject"] == subject && link["reference"].is_object() {
@@ -1010,6 +1119,17 @@ pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'
 /// Representation-specific types and requiredness are never collapsed into a
 /// made-up domain-wide type or constraint. Existing field anchors hold evidence.
 pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> String {
+    field_table_at(model, language, portable, None)
+}
+pub(super) fn service_field_table(model: &Value, language: &str, portable: bool) -> String {
+    let prefix = format!(
+        "../data-model/{}{}",
+        strv(&model["id"]),
+        if portable { "" } else { ".html" }
+    );
+    field_table_at(model, language, portable, Some(&prefix))
+}
+fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<&str>) -> String {
     let literal = |value: &str| escape(value).replace('{', "&#123;").replace('}', "&#125;");
     let attr = if portable { "className" } else { "class" };
     let focus = if portable {
@@ -1045,7 +1165,13 @@ pub(super) fn field_table(model: &Value, language: &str, portable: bool) -> Stri
                 literal(comment)
             )
         };
-        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"#field-{}\" data-clew-field-details=\"\"><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}<a class{}=\"dm-field-evidence-link\" href=\"#field-{}\" data-clew-field-details=\"\">{}</a></td></tr>",literal(strv(&field["id"])),literal(original),heading("Readable name"),literal(name),heading("Comment"),body,if portable{"Name"}else{""},literal(strv(&field["id"])),heading("Evidence and representations")));
+        let href = format!("{}#field-{}", prefix.unwrap_or(""), strv(&field["id"]));
+        let disclosure = if prefix.is_none() {
+            " data-clew-field-details=\"\""
+        } else {
+            ""
+        };
+        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}<a class{}=\"dm-field-evidence-link\" href=\"{}\"{disclosure}>{}</a></td></tr>",literal(&href),literal(original),heading("Readable name"),literal(name),heading("Comment"),body,if portable{"Name"}else{""},literal(&href),heading("Evidence and representations")));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -1501,6 +1627,42 @@ mod tests {
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
     #[test]
+    fn inline_binding_requires_an_exact_card_and_never_rewrites_the_operation() {
+        let (_, mut files, _, _) = fixture();
+        let mut page: Value = serde_json::from_slice(&files["scenarios/example.json"]).unwrap();
+        page["operations"][0]["interfaceContracts"] = json!([{"id":"checks","rows":[{"value":"Original validator wording","sourceIds":["source"]}]}]);
+        files.insert(
+            "scenarios/example.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        let binding = || InterfaceBinding {
+            contract: "declared".into(),
+            subject: "scenario:example".into(),
+            operation: "saved".into(),
+            interface_contract: "checks".into(),
+        };
+        let contracts = vec![json!({"id":"declared"})];
+        let before = files.clone();
+        validate_interface_bindings(&[binding()], &contracts, &files).unwrap();
+        assert_eq!(files, before);
+        assert!(validate_interface_bindings(&[binding(), binding()], &contracts, &files).is_err());
+        let mut wrong = binding();
+        wrong.interface_contract = "missing".into();
+        assert!(validate_interface_bindings(&[wrong], &contracts, &files).is_err());
+        assert!(validate_interface_bindings(&[binding()], &[], &files).is_err());
+        let model = json!({"models":[],"contracts":[{"id":"declared","source":{"text":"Exact declared schema"}}],"interfaceBindings":[{"contract":"declared","subject":"scenario:example","operation":"saved","interfaceContract":"checks"}],"authority":"AGENT_PROPOSAL","review":"UNASSESSED"});
+        let mut payload = page.clone();
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        assert_eq!(payload["operations"], page["operations"]);
+        assert_eq!(
+            payload["interfaceContractDeclarations"]["saved"]["checks"]["binding"]["authority"],
+            "AGENT_PROPOSAL"
+        );
+        let mut other = page.clone();
+        attach_process(Some(&model), "scenario:other", &mut other).unwrap();
+        assert!(other.get("interfaceContractDeclarations").is_none());
+    }
+    #[test]
     fn authored_field_names_keep_comments_and_bind_their_own_evidence() {
         let (mut plan, files, guides, check) = fixture();
         let baseline = read(&plan, &files, &guides, &check).unwrap();
@@ -1800,6 +1962,18 @@ mod tests {
             json!([]),
             "model navigation does not assert domain ownership"
         );
+        let table = service["serviceModelLinks"][0]["fieldTableHtml"]
+            .as_str()
+            .unwrap();
+        assert!(table.contains("<table class=\"dm-fields\""));
+        assert!(table.contains("Proposed field meaning"));
+        assert!(table.contains("../data-model/record.html#field-value"));
+        assert!(!table.contains("href=\"#field-value\""));
+        assert_eq!(
+            service["serviceModelLinks"][0]["fieldSummary"]["fields"][0]["meaning"]["text"],
+            model["models"][0]["fields"][0]["meaning"]["text"]
+        );
+        assert_eq!(service["original"], "unchanged");
         let mut other = json!({});
         attach_process(Some(&model), "service:other", &mut other).unwrap();
         assert!(other.get("serviceModelLinks").is_none());

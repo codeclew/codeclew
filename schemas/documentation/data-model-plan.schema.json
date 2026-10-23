@@ -45,6 +45,13 @@
         "en",
         "ru"
       ]
+    },
+    "interfaceBindings": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/interfaceBinding"
+      }
     }
   },
   "required": [
@@ -807,6 +814,39 @@
             }
           }
         }
+      ]
+    },
+    "interfaceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Explicit export-time authored mapping of an existing interface card to an admitted retained contract; not validator or runtime conformance.",
+      "properties": {
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "interfaceContract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "contract",
+        "subject",
+        "operation",
+        "interfaceContract"
       ]
     }
   }

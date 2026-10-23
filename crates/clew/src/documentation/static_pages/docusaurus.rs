@@ -866,6 +866,8 @@ fn selected_http_links(page: &Value, input: Option<&str>) -> Result<String, Clew
 
 fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, ClewError> {
     let id = text(&op["id"]);
+    let language = page["language"].as_str().unwrap_or("en");
+    let t = |key| crate::documentation::language::label(language, key);
     let state = page["operationStates"]
         .get(id)
         .or_else(|| page["sectionState"].get(id))
@@ -882,10 +884,31 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         &citations(page, id, &op["summary"])?,
     ));
     for contract in rows(&op["interfaceContracts"]) {
-        out.push_str(&format!(
-            "{heading} {}\n\n| Topic | Retained contract detail |\n| --- | --- |\n",
-            md(text(&contract["title"]))
-        ));
+        let declared = &page["interfaceContractDeclarations"][id][text(&contract["id"])];
+        out.push_str(&format!("{heading} {}\n\n", md(text(&contract["title"]))));
+        if declared["declaration"].is_object() {
+            out.push_str(&format!("**{}: {}**\n\n{}\n\n**{}** · {}\n\n{}: `{}`. {}\n\n",
+                md(t("Declared contract")),md(text(&declared["title"])),md(t("Retained declaration; validator behavior and runtime conformance are separate.")),
+                md(t("Contract declaration")),source_link_in_language(&declared["source"],"../",language)?,
+                md(t("Exact pointer")),md(text(&declared["branchPointer"])),md(t("Presence is relative to the parent. Child requirements apply when their parent and the selected branch are present."))));
+            out.push_str(&super::inline_contract::table(
+                &declared["declaration"],
+                language,
+            ));
+            if rows(&declared["declaration"]["frontier"]).next().is_some() {
+                out.push_str(&format!("{}\n\n",md(t("Some schema rules are retained without expansion; inspect the exact schema below."))));
+            }
+            out.push_str(&details(
+                t("Exact schema and declaration provenance"),
+                &fence(
+                    &serde_json::to_string_pretty(declared).map_err(io_error)?,
+                    "json",
+                ),
+            ));
+        } else {
+            out.push_str(&format!("{}\n\n",md(t("No declaration is bound to this card. The description below is source-derived behavior, not a declared schema."))));
+        }
+        out.push_str(&format!("**{}**\n\n{}\n\n| {} | {} |\n| --- | --- |\n",md(t("Source-derived context and checks")),md(t("The original descriptions are retained separately from the declaration. Their sources do not establish schema enforcement or runtime delivery.")),md(t("Topic")),md(t("Retained contract detail"))));
         let mut bound = String::new();
         for row in rows(&contract["rows"]) {
             out.push_str(&format!(
@@ -1216,12 +1239,40 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             )?);
         }
         if section["content"].is_object() {
-            out.push_str(&operation_body(page, &section["content"], "###")?);
+            let content = operation_body(page, &section["content"], "###")?;
+            if sid == "section-entities"
+                && rows(&page["serviceModelLinks"]).any(|m| m["fieldSummary"].is_object())
+            {
+                out.push_str(&details(
+                    "Original service data description and provenance",
+                    &content,
+                ));
+            } else {
+                out.push_str(&content);
+            }
         } else {
             out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
         }
         if sid == "section-entities" {
             for model in rows(&page["serviceModelLinks"]) {
+                if model["fieldSummary"].is_object() {
+                    out.push_str(&format!("### [{}](../data-model/{}.mdx#fields-and-representations)\n\nDocumented field model · {} · {} · {}. These explicit documentation mappings do not establish domain ownership.\n\n",
+                        md(text(&model["title"])),text(&model["id"]),md(text(&model["kind"])),md(text(&model["authority"])),md(text(&model["review"]))));
+                    out.push_str(&super::data_model::service_field_table(
+                        &model["fieldSummary"],
+                        language,
+                        true,
+                    ));
+                    out.push_str(&details(
+                        "Field descriptions and provenance",
+                        &fence(
+                            &serde_json::to_string_pretty(&model["provenance"])
+                                .map_err(io_error)?,
+                            "json",
+                        ),
+                    ));
+                    continue;
+                }
                 out.push_str(&format!(
                     "- [{} · {}](../data-model/{}.mdx#fields-and-representations)\n\n",
                     md(text(&model["title"])),
@@ -1460,6 +1511,20 @@ fn declared_contract_page(
     body.push_str(&format!("\n\n## {} {{#properties}}\n\n{}\n\n",
         md(label(language, "Properties")),
         md(label(language, "Requiredness follows the selected branch and required parents. Required and nullable are separate."))));
+    if contract["declaration"].is_object() {
+        body.push_str(&super::inline_contract::table(
+            &contract["declaration"],
+            language,
+        ));
+        body.push_str(&details(
+            "Exact schema and declaration provenance",
+            &fence(
+                &serde_json::to_string_pretty(&contract["declaration"]).map_err(io_error)?,
+                "json",
+            ),
+        ));
+        body.push_str("<details>\n<summary>Retained field schemas and pointers</summary>\n\n");
+    }
     for leaf in rows(&contract["leaves"]) {
         body.push_str(&format!(
             "### {}\n\n{}: {} · {}: {}\n\n{}",
@@ -1473,6 +1538,9 @@ fn declared_contract_page(
                 "json"
             )
         ));
+    }
+    if contract["declaration"].is_object() {
+        body.push_str("</details>\n\n");
     }
     Ok(body)
 }

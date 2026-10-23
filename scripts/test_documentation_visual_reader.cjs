@@ -1751,3 +1751,35 @@ test('remote single source opens the repository and multiple sources show links 
  r.click({sources:'same-source other'});assert.equal(r.e('source-panel').hidden,false);assert.equal(r.e('source-code').hidden,true);assert.equal(r.e('source-toolbar').hidden,true);
  assert.match(r.e('source-meta').innerHTML,/B.kt#L4-9/);assert.match(r.e('source-foot').textContent,/Source text is omitted/);
 });
+
+test('bound interface card shows complete declaration apart from unchanged code checks and moves row sources on demand',()=>{
+ const data=fixture(),op=data.operations[0];
+ op.interfaceContracts=[{id:'checks',title:'Message checks',kind:'kafka',boundaries:[],rows:[{id:'row',label:'Validator rule',value:'Code accepts finite latitude; geographic bounds are not established here.',sourceIds:['same-source'],dependencyIds:['dep']}]}];
+ const original=JSON.stringify(op.interfaceContracts);
+ data.interfaceContractDeclarations={[op.id]:{checks:{id:'message',title:'Declared message',branchPointer:'/oneOf/1',source:{file:'events.schema.json',revision:'abc',url:'https://example.test/repo/blob/abc/events.schema.json',text:'EXACT SCHEMA'},declaration:{nodes:[
+  {field:'$',type:'object',presence:'Root schema',nullability:'Excluded',constraints:{additionalProperties:false}},
+  {field:'periods',type:'array',presence:'Required in parent',nullability:'Excluded',constraints:{minItems:1,maxItems:6}},
+  {field:'periods[].rain',type:'["number","null"]',presence:'Required in parent',nullability:'Allowed',description:'Complete <literal> description',constraints:{minimum:0}}
+ ],frontier:[],schema:{type:'object'}}}}};
+ const r=load(data),html=r.run("interfaceContracts({id:'section-responsibilities'})");
+ assert.equal((html.match(/class="contract-declaration-link"/g)||[]).length,1);
+ assert.ok(!html.includes('<th>Evidence</th>'));
+ assert.match(html,/periods\[\]\.rain/);assert.match(html,/Required in parent/);assert.match(html,/Allowed/);
+ assert.match(html,/maxItems<\/code>: 6/);assert.match(html,/Complete &lt;literal&gt; description/);
+ assert.ok(html.indexOf('Declared message')<html.indexOf('Source-derived context and checks'));
+ const visible=html.split('<details class="contract-raw contract-evidence">')[0];assert.ok(!visible.includes('data-sources='));
+ assert.match(html,/Detailed source bindings for the original descriptions/);assert.match(html,/data-sources="same-source"/);
+ assert.equal(JSON.stringify(op.interfaceContracts),original);
+ delete data.interfaceContractDeclarations;const fallback=load(data).run("interfaceContracts({id:'section-responsibilities'})");
+ assert.match(fallback,/No declaration is bound/);assert.ok(!fallback.includes('inline-contract-table'));
+ assert.match(fallback,/Code accepts finite latitude/);
+});
+
+test('new inline declaration chrome localizes while schema values stay literal',()=>{
+ const data=fixture();data.language='ru';const r=load(data);
+ for(const key of ['Presence','Required in parent','Optional in parent','Each array item','Root schema','Excluded','Allowed','Not established'])assert.notEqual(r.run('t('+JSON.stringify(key)+')'),key,key);
+ const c={id:'schema',title:'Authored schema title',branchPointer:'/oneOf/0',source:{file:'schema.json',revision:'r1',url:'https://example.test/schema'},declaration:{nodes:[{field:'mode',type:'string',presence:'Required in parent',nullability:'Excluded',constraints:{enum:['Allowed','Excluded']}}],frontier:[],schema:{}}};
+ const html=r.run('inlineContractDeclaration('+JSON.stringify(c)+',"saved")');
+ assert.match(html,/Обязательно в родительском объекте/);assert.match(html,/Не допускается/);
+ assert.match(html,/\[&quot;Allowed&quot;,&quot;Excluded&quot;\]/);assert.match(html,/Authored schema title/);
+});

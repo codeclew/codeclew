@@ -92,3 +92,28 @@ a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;
 .ingress-http{grid-column:1/-1;min-width:0;font-size:14px;line-height:1.55}.ingress-http-coverage{margin:5px 0}.ingress-http-finding{padding:10px 14px;margin:8px 0;border-left:3px solid #c18a28;background:#fff9ec;border-radius:0 4px 4px 0}.ingress-http h5{font-size:15px;margin:0 0 4px}.ingress-http-finding p{margin:3px 0}.ingress-http-details>summary,.ingress-http-provenance summary{cursor:pointer;padding:7px 0;overflow-wrap:anywhere}.ingress-http-details{margin-top:7px}.ingress-http pre,.ingress-http-provenance pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;background:#f4f6fa;max-height:480px;overflow:auto}.ingress-http code,.ingress-http-provenance code{overflow-wrap:anywhere}.ingress-http th,.ingress-http td{font-size:13px;white-space:normal;overflow-wrap:anywhere;min-width:100px}.ingress-http-provenance{margin:14px 0;font-size:14px;line-height:1.6;min-width:0}.ingress-http-provenance li{margin:5px 0}
 
 .question-model-links{display:inline;overflow-wrap:anywhere}.question-technical-link{font-size:.88em;margin-left:.5em}.question-technical-link:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+
+/* Bound declarations stay readable without opening each nested field. */
+.contract-declaration{margin:16px 0 24px;min-width:0;overflow-wrap:anywhere}
+.contract-declaration>h4,.contract-checks>h4{font-size:17px;margin:18px 0 8px}
+.contract-declaration>p,.contract-checks>p{font-size:14px;line-height:1.6}
+.contract-declaration-link{font-size:15px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.inline-contract-table{table-layout:fixed;width:100%}
+.inline-contract-table :is(th,td){overflow-wrap:anywhere;white-space:normal;font-size:13px;line-height:1.5;padding:10px;text-transform:none;letter-spacing:normal}
+.inline-contract-table th{font-weight:650;color:#42516a}
+.inline-contract-table td code{font-size:12px;white-space:normal;overflow-wrap:anywhere}
+.inline-contract-table td p{margin:0 0 5px}.inline-contract-table td p:last-child{margin-bottom:0}
+.contract-evidence{margin-top:16px}.contract-raw[id^="contract-source-"]{scroll-margin-top:90px}
+@media(max-width:760px){
+ .contract-declaration .table-wrap{overflow:visible}
+ .contract-declaration .inline-contract-table,.contract-declaration .inline-contract-table tbody,.contract-declaration .inline-contract-table tr,.contract-declaration .inline-contract-table td{display:block;width:100%;box-sizing:border-box;min-width:0}
+ .contract-declaration .inline-contract-table thead{position:absolute;width:1px;height:1px;margin:-1px;clip-path:inset(50%);overflow:hidden}
+ .contract-declaration .inline-contract-table tr{border:1px solid #cbd5db;border-radius:6px;margin:12px 0}
+ .contract-declaration .inline-contract-table td{border:0;border-bottom:1px solid #e2e9ec}
+ .contract-declaration .inline-contract-table td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px}
+}
+.service-field-models{margin:20px 0;min-width:0}.service-field-models>p,.service-field-model>p{font-size:14px;line-height:1.6}
+.service-field-model{margin:24px 0 32px;min-width:0}.service-field-model h4{font-size:18px;margin:12px 0}
+.service-field-model .dm-fields :is(th,td){font-size:14px;text-transform:none;letter-spacing:normal;line-height:1.6}
+.service-field-model .dm-fields code{font-size:13px}
+.original-service-description{margin:12px 0}.original-service-description>summary{cursor:pointer;font-size:14px}

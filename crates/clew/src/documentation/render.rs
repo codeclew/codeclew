@@ -61,7 +61,11 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     );
     let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
     let extra = data.get("processDataFlow").is_some();
-    let styles = if extra {
+    let model_styles = extra
+        || data["serviceModelLinks"]
+            .as_array()
+            .is_some_and(|links| links.iter().any(|m| m["fieldSummary"].is_object()));
+    let styles = if model_styles {
         format!(
             "{STYLE}\n{}",
             include_str!("../../assets/documentation/data-model.css")
