@@ -6,7 +6,7 @@
 .clew-md-table-wrap{max-width:100%;overflow:auto;margin:12px 0;overscroll-behavior:contain}
 .clew-md-table-wrap:focus-visible{outline:2px solid #087b83;outline-offset:3px}
 table.clew-md-table{display:table;width:100%;table-layout:auto;border-collapse:collapse;margin:0}
-.clew-md-table :is(th,td){padding:9px 11px;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);vertical-align:top;overflow-wrap:anywhere;white-space:normal}
+.clew-md-table :is(th,td){min-width:8rem;padding:9px 11px;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);vertical-align:top;overflow-wrap:anywhere;white-space:normal}
 .clew-md-table th{background:var(--ifm-color-emphasis-100,#edf3f4)}
 .clew-md-table code{white-space:pre-wrap;overflow-wrap:anywhere}
 .pseudocode-text.clew-markdown{display:block;min-width:0}
@@ -19,7 +19,7 @@ table.clew-md-table{display:table;width:100%;table-layout:auto;border-collapse:c
  table.clew-md-table.has-rows,.clew-md-table.has-rows tbody,.clew-md-table.has-rows tr,.clew-md-table.has-rows td{display:block;width:100%;box-sizing:border-box}
  .clew-md-table.has-rows thead{position:absolute;width:1px;height:1px;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
  .clew-md-table.has-rows tr{margin:10px 0;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);border-radius:6px}
- .clew-md-table.has-rows td{border:0;border-bottom:1px solid var(--ifm-color-emphasis-300,#cbd5db);text-align:left!important}
+ .clew-md-table.has-rows td{min-width:0;border:0;border-bottom:1px solid var(--ifm-color-emphasis-300,#cbd5db);text-align:left!important}
  .clew-md-table.has-rows td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px}
 }
 
