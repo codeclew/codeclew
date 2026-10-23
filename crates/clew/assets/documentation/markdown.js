@@ -113,7 +113,7 @@
    let id;try{id=decodeURIComponent(hash.replace(/^#/,''));}catch{return;}
    const target=document.getElementById(id);if(!target)return;
    if(target.tagName==='DETAILS')target.open=true;
-   if(target.nextElementSibling?.tagName==='DETAILS')target.nextElementSibling.open=true;
+   else if(target.nextElementSibling?.tagName==='DETAILS')target.nextElementSibling.open=true;
    for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
    if(moveFocus){const detail=target.tagName==='DETAILS'?target:target.nextElementSibling?.tagName==='DETAILS'?target.nextElementSibling:null;detail?.querySelector?.('summary')?.focus?.({preventScroll:true});}
   };

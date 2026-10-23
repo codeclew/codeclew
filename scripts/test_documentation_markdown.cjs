@@ -48,3 +48,15 @@ test('field links and initial hashes reveal technical disclosures without duplic
  events.click({ctrlKey:true,target:{closest:()=>({hash:'#field-name'})}});assert.equal(focused,2);
  md.enhance(document);document.defaultView.location.hash='#%invalid';assert.doesNotThrow(()=>windowEvents.hashchange());
 });
+test('native field anchors reveal only the selected disclosure, preserving adjacent fields',()=>{
+ let focused=0;
+ const sibling={tagName:'DETAILS',open:false};
+ const details={tagName:'DETAILS',open:false,parentElement:null,nextElementSibling:sibling,querySelector:()=>({focus:()=>focused++})};
+ const events={};
+ const document={querySelectorAll:()=>[],getElementById:id=>id==='field-latitude'?details:null,
+  addEventListener:(kind,handler)=>{events[kind]=handler;},
+  defaultView:{location:{hash:'#field-latitude'},addEventListener:()=>{}}};
+ md.enhance(document);assert.equal(details.open,true);assert.equal(sibling.open,false);
+ details.open=false;events.click({target:{closest:()=>({hash:'#field-latitude'})}});
+ assert.equal(details.open,true);assert.equal(sibling.open,false);assert.equal(focused,1);
+});
