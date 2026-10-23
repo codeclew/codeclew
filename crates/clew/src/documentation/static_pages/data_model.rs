@@ -1752,7 +1752,7 @@ mod tests {
             ));
             if portable {
                 assert!(html.contains(
-                    "<ClewMarkdown text={\"Keep <source> {value} and | punctuation\"} />"
+                    r#"<ClewMarkdown text={"Keep \u003csource\u003e {value} and | punctuation"} />"#
                 ));
             } else {
                 assert!(html.contains("Keep &lt;source&gt; &#123;value&#125; and | punctuation"));
