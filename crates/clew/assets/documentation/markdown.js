@@ -117,8 +117,15 @@
    for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
    if(moveFocus){const detail=target.tagName==='DETAILS'?target:target.nextElementSibling?.tagName==='DETAILS'?target.nextElementSibling:null;detail?.querySelector?.('summary')?.focus?.({preventScroll:true});}
   };
-  document.addEventListener('click',event=>{const link=event.target.closest?.('a[data-clew-field-details]');if(link)open(link.hash,true);});
-  document.defaultView?.addEventListener('hashchange',()=>open(document.defaultView.location.hash));
+  let pendingFocus=null;
+  document.addEventListener('click',event=>{
+   if(event.button>0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+   const link=event.target.closest?.('a[data-clew-field-details]');
+   if(link){pendingFocus=link.hash;open(link.hash,true);}
+  });
+  document.defaultView?.addEventListener('hashchange',()=>{
+   const hash=document.defaultView.location.hash;open(hash,hash===pendingFocus);pendingFocus=null;
+  });
   open(document.defaultView?.location.hash||'');
  }
  return {inline,render,enhance};

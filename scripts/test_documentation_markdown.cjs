@@ -44,5 +44,7 @@ test('field links and initial hashes reveal technical disclosures without duplic
   defaultView:{location:{hash:'#field-name'},addEventListener:(kind,handler)=>{assert.ok(!windowEvents[kind]);windowEvents[kind]=handler;}}};
  md.enhance(document);assert.equal(details.open,true);assert.equal(focused,0);
  details.open=false;events.click({target:{closest:()=>({hash:'#field-name'})}});assert.equal(details.open,true);assert.equal(focused,1);
+ windowEvents.hashchange();assert.equal(focused,2);
+ events.click({ctrlKey:true,target:{closest:()=>({hash:'#field-name'})}});assert.equal(focused,2);
  md.enhance(document);document.defaultView.location.hash='#%invalid';assert.doesNotThrow(()=>windowEvents.hashchange());
 });
