@@ -5,7 +5,7 @@
 .clew-markdown pre{max-width:100%;overflow:auto;white-space:pre-wrap}
 .clew-md-table-wrap{max-width:100%;overflow:auto;margin:12px 0;overscroll-behavior:contain}
 .clew-md-table-wrap:focus-visible{outline:2px solid #087b83;outline-offset:3px}
-table.clew-md-table{display:table;width:100%;table-layout:fixed;border-collapse:collapse;margin:0}
+table.clew-md-table{display:table;width:100%;table-layout:auto;border-collapse:collapse;margin:0}
 .clew-md-table :is(th,td){padding:9px 11px;border:1px solid var(--ifm-color-emphasis-300,#cbd5db);vertical-align:top;overflow-wrap:anywhere;white-space:normal}
 .clew-md-table th{background:var(--ifm-color-emphasis-100,#edf3f4)}
 .clew-md-table code{white-space:pre-wrap;overflow-wrap:anywhere}
