@@ -236,6 +236,13 @@ fn expected_import_failure(export: &Path, source_snapshot: &str, captures: &[Str
 }
 
 fn source_export(root: &Path, export: &Path) -> (String, Vec<String>, BTreeMap<String, String>) {
+    source_export_with_policy(root, export, false)
+}
+fn source_export_with_policy(
+    root: &Path,
+    export: &Path,
+    non_cacheable: bool,
+) -> (String, Vec<String>, BTreeMap<String, String>) {
     Repository::init(root, "Historical retained-capture fixture").unwrap();
     let repo = Repository::open(root).unwrap();
     for (id, _) in SERVICES {
@@ -306,7 +313,12 @@ fn source_export(root: &Path, export: &Path) -> (String, Vec<String>, BTreeMap<S
         selected_services: SERVICES.iter().map(|(id, _)| (*id).to_owned()).collect(),
         retained_services: BTreeSet::new(),
     });
-    let source_manifest = checked.store_manifest(&repo).unwrap();
+    let mut source_manifest = checked.store_manifest(&repo).unwrap();
+    if non_cacheable {
+        for manifest in source_manifest.service_manifests.values_mut() {
+            cache::mark_non_cacheable(manifest, NON_CACHEABLE_REASON);
+        }
+    }
     assert_eq!(source_manifest.service_manifests.len(), SERVICES.len());
 
     let captures: Vec<String> = SERVICES
@@ -315,7 +327,14 @@ fn source_export(root: &Path, export: &Path) -> (String, Vec<String>, BTreeMap<S
         .collect();
     for ((service_id, _), name) in SERVICES.iter().zip(&captures) {
         let source_capture = &source_manifest.service_manifests[*service_id];
-        assert_eq!(source_capture.cacheability, "REUSABLE");
+        assert_eq!(
+            source_capture.cacheability,
+            if non_cacheable {
+                NON_CACHEABLE
+            } else {
+                "REUSABLE"
+            }
+        );
         assert_eq!(source_capture.coverage, "PARTIAL");
         let mut retained = source_capture.clone();
         cache::mark_non_cacheable(&mut retained, NON_CACHEABLE_REASON);
@@ -928,4 +947,184 @@ fn docsys_t17_export_recovery_rejects_unsafe_sqlite_and_capture_inputs() {
             "{kind} input was modified"
         );
     }
+}
+
+fn snapshot_service_args(
+    destination: &Path,
+    export: &Path,
+    snapshot: &str,
+    services: &[&str],
+) -> Vec<String> {
+    let mut args = recovery_args(destination, Some(export), Some(snapshot), &[]);
+    for service in services {
+        args.extend(["--service".into(), (*service).into()]);
+    }
+    args
+}
+
+#[test]
+fn docsys_t17_snapshot_services_recover_exact_historical_capture_when_keyed_files_are_stale() {
+    for non_cacheable in [false, true] {
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path().canonicalize().unwrap();
+        let source_root = base.join("source-docs");
+        let export = base.join("export");
+        let (snapshot, captures, revisions) =
+            source_export_with_policy(&source_root, &export, non_cacheable);
+        let capture_path = export.join("cache").join(&captures[0]);
+        let mut stale: CaptureManifest =
+            serde_json::from_slice(&fs::read(&capture_path).unwrap()).unwrap();
+        stale.revision = "0".repeat(40);
+        fs::write(&capture_path, clew::canonical::bytes(&stale).unwrap()).unwrap();
+        let before = tree_bytes(&export);
+        expected_import_failure(&export, &snapshot, &captures);
+        let destination = canonical_destination();
+        let args = snapshot_service_args(
+            &destination.docs,
+            &export,
+            &snapshot,
+            &["billing", "inventory", "orders"],
+        );
+        let recovered = success(&destination, &args);
+        assert_eq!(
+            recovered["sourceAuthority"],
+            "RETAINED_SOURCE_NOT_REVERIFIED"
+        );
+        let repo = Repository::open(&destination.docs).unwrap();
+        let handle = recovered["recoveredSnapshot"].as_str().unwrap();
+        let checked = Check::load_snapshot(&repo, handle).unwrap();
+        let (snapshot_digest, snapshot_size) = handle.rsplit_once('/').unwrap();
+        let manifest: Value = cache::get_json(
+            &repo,
+            &cache::ObjectRef::new(
+                check::CHECK_MANIFEST_SCHEMA.into(),
+                snapshot_digest.into(),
+                snapshot_size.parse().unwrap(),
+            ),
+            check::PORTABLE_CACHE_MAX_BYTES,
+        )
+        .unwrap()
+        .unwrap();
+        for (id, _) in SERVICES {
+            assert_eq!(checked.services[id].revision, revisions[id]);
+            assert_eq!(
+                manifest["serviceManifests"][id]["cacheability"],
+                if non_cacheable {
+                    NON_CACHEABLE
+                } else {
+                    "REUSABLE"
+                }
+            );
+            if non_cacheable {
+                assert_eq!(
+                    manifest["serviceManifests"][id]["reason"].as_str(),
+                    Some(NON_CACHEABLE_REASON)
+                );
+            }
+        }
+        let inputs = repo.inputs().unwrap();
+        assert_eq!(inputs.services.len(), 3);
+        assert!(inputs.scenarios.is_empty());
+        assert!(inputs.entities.is_empty());
+        assert!(inputs.interactions.is_empty());
+        assert!(
+            !destination
+                .docs
+                .join(".codeclew/cache/latest-check.json")
+                .exists()
+        );
+        assert_eq!(
+            success(&destination, &args)["recoveredSnapshot"],
+            recovered["recoveredSnapshot"]
+        );
+        assert_eq!(tree_bytes(&export), before);
+    }
+}
+
+#[test]
+fn docsys_t17_snapshot_services_preserve_selector_and_source_closure_guards() {
+    for case in ["unknown", "duplicate", "missing-source"] {
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path().canonicalize().unwrap();
+        let source_root = base.join("source-docs");
+        let export = base.join("export");
+        let (snapshot, captures, _) = source_export(&source_root, &export);
+        if case == "missing-source" {
+            let manifest: CaptureManifest =
+                serde_json::from_slice(&fs::read(export.join("cache").join(&captures[0])).unwrap())
+                    .unwrap();
+            remove_sqlite_object(&export.join("cache"), &manifest.sources.digest);
+        }
+        let before = tree_bytes(&export);
+        let destination = canonical_destination();
+        let services: &[&str] = match case {
+            "unknown" => &["not-captured"],
+            "duplicate" => &["billing", "billing"],
+            _ => &["billing"],
+        };
+        assert!(
+            !run_cli(
+                &destination,
+                &snapshot_service_args(&destination.docs, &export, &snapshot, services)
+            )
+            .status
+            .success(),
+            "{case}"
+        );
+        assert!(
+            Repository::open(&destination.docs)
+                .unwrap()
+                .services()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !destination
+                .docs
+                .join(".codeclew/cache/latest-check.json")
+                .exists()
+        );
+        assert_eq!(tree_bytes(&export), before);
+    }
+}
+
+#[test]
+fn docsys_t17_snapshot_service_cli_requires_export_and_snapshot_and_excludes_capture_files() {
+    let destination = canonical_destination();
+    for args in [
+        vec![
+            "docs",
+            "snapshot",
+            "recover",
+            "--root",
+            destination.docs.to_str().unwrap(),
+            "--service",
+            "billing",
+        ],
+        vec![
+            "docs",
+            "snapshot",
+            "recover",
+            "--root",
+            destination.docs.to_str().unwrap(),
+            "--from-export",
+            "/not-opened",
+            "--source-snapshot",
+            "not-opened",
+            "--service",
+            "billing",
+            "--capture",
+            "billing.json",
+        ],
+    ] {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert!(!run_cli(&destination, &args).status.success());
+    }
+    assert!(
+        Repository::open(&destination.docs)
+            .unwrap()
+            .services()
+            .unwrap()
+            .is_empty()
+    );
 }

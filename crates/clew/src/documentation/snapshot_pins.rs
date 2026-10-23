@@ -44,8 +44,15 @@ pub enum Command {
         #[arg(long)]
         root: PathBuf,
         /// Basename of a current-format manifest in .codeclew/cache; repeat per service.
-        #[arg(long = "capture", required = true)]
+        #[arg(
+            long = "capture",
+            required_unless_present = "source_services",
+            conflicts_with = "source_services"
+        )]
         captures: Vec<String>,
+        /// Select an exact capture embedded in the source snapshot; repeat per service.
+        #[arg(long = "service", requires_all = ["from_export", "source_snapshot"], conflicts_with = "captures")]
+        source_services: Vec<String>,
         /// Read selected captures from a stopped immutable portable export.
         #[arg(long, requires = "source_snapshot")]
         from_export: Option<PathBuf>,
@@ -84,12 +91,23 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Recover {
             root,
             captures,
+            source_services,
             from_export,
             source_snapshot,
         } => match (from_export, source_snapshot) {
-            (None, None) => super::capture_recovery::run(&root, &captures),
+            (None, None) if source_services.is_empty() => {
+                super::capture_recovery::run(&root, &captures)
+            }
             (Some(export), Some(snapshot)) => {
-                super::capture_export::run(&root, &export, &snapshot, &captures)
+                if source_services.is_empty() {
+                    super::capture_export::run(&root, &export, &snapshot, &captures)
+                } else if captures.is_empty() {
+                    super::capture_export::run_services(&root, &export, &snapshot, &source_services)
+                } else {
+                    Err(invalid(
+                        "select capture basenames or source-snapshot services, not both",
+                    ))
+                }
             }
             _ => Err(invalid(
                 "--from-export and --source-snapshot must be supplied together",

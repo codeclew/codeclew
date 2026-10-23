@@ -240,9 +240,25 @@ selected service). Basenames are explicit files from this root's `.codeclew/cach
 do not guess by modification time. Recovery reads saved evidence without source
 access and returns a snapshot; it does not update latest-check or claim current
 freshness. Keep its `RETAINED_SOURCE_NOT_REVERIFIED` authority and pass the returned
-snapshot to context/Work/render. Unsupported policy authority or mismatched
-catalogue input must fail, not trigger an automatic recapture. Old formats remain
-unsupported.
+snapshot to context/Work/render.
+
+For a stopped export with an immutable snapshot but no matching current cache
+manifest, select the exact captures embedded in that snapshot explicitly:
+
+```sh
+clew docs snapshot recover --root FRESH_ROOT --from-export STOPPED_EXPORT --source-snapshot SNAPSHOT --service orders --service billing
+```
+
+This mode imports only selected service definitions and their verified source
+closures, without old scenarios, notes, Work or authored narratives. It preserves
+the snapshot's capture/cacheability metadata and historical authority. It neither
+recaptures sources nor updates latest-check. `--service` and `--capture` are
+exclusive; the existing `--capture` mode still rejects a mismatched keyed file.
+Do not rewrite a stale cache manifest to make it match. A missing or corrupt
+immutable source object remains a blocking error.
+
+Unsupported policy authority or mismatched catalogue input must fail, not trigger
+an automatic recapture. Old formats remain unsupported.
 
 After a successful capture, keep its `snapshot` handle. `context`, `work prepare`,
 and `render` consume saved evidence by default; pass `--snapshot` for an exact

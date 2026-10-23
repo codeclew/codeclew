@@ -164,7 +164,43 @@ pub(super) fn run(
     source_snapshot: &str,
     capture_names: &[String],
 ) -> Result<Value, ClewError> {
-    if capture_names.is_empty() || capture_names.len() > store::MAX_RECORDS {
+    run_selected(
+        destination,
+        export,
+        source_snapshot,
+        CaptureSelection::Files(capture_names),
+    )
+}
+
+pub(super) fn run_services(
+    destination: &Path,
+    export: &Path,
+    source_snapshot: &str,
+    services: &[String],
+) -> Result<Value, ClewError> {
+    run_selected(
+        destination,
+        export,
+        source_snapshot,
+        CaptureSelection::SnapshotServices(services),
+    )
+}
+
+enum CaptureSelection<'a> {
+    Files(&'a [String]),
+    SnapshotServices(&'a [String]),
+}
+
+fn run_selected(
+    destination: &Path,
+    export: &Path,
+    source_snapshot: &str,
+    selection: CaptureSelection<'_>,
+) -> Result<Value, ClewError> {
+    let count = match selection {
+        CaptureSelection::Files(names) | CaptureSelection::SnapshotServices(names) => names.len(),
+    };
+    if count == 0 || count > store::MAX_RECORDS {
         return Err(invalid(
             "export recovery requires a bounded explicit capture list",
         ));
@@ -181,7 +217,14 @@ pub(super) fn run(
     let mut budget = ImportBudget::default();
     let (_snapshot_ref, snapshot_manifest) =
         read_source_snapshot(&reader, source_snapshot, &mut budget)?;
-    let selected = read_selected_captures(&reader, capture_names, &snapshot_manifest, &mut budget)?;
+    let selected = match selection {
+        CaptureSelection::Files(names) => {
+            read_selected_captures(&reader, names, &snapshot_manifest, &mut budget)?
+        }
+        CaptureSelection::SnapshotServices(services) => {
+            read_snapshot_captures(services, &snapshot_manifest, &mut budget)?
+        }
+    };
     let selected_services = selected
         .iter()
         .map(|capture| capture.manifest.service.clone())
@@ -482,6 +525,63 @@ fn read_selected_captures(
             raw,
             receipt: CaptureReceipt {
                 service: manifest.service.clone(),
+                manifest_digest,
+                cacheability: manifest.cacheability.clone(),
+                reason: manifest.reason.clone(),
+            },
+            manifest,
+        });
+    }
+    selected.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(selected)
+}
+
+/// The immutable Check is the authority in this explicit mode. A mutable keyed
+/// cache file may have been replaced since it was saved. Materialize only the
+/// selected embedded captures, then use the same closure and policy validation.
+fn read_snapshot_captures(
+    services: &[String],
+    snapshot: &CheckManifest,
+    budget: &mut ImportBudget,
+) -> Result<Vec<SelectedCapture>, ClewError> {
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for service in services {
+        if !store::valid_id(service) || !seen.insert(service) {
+            return Err(invalid(
+                "source-snapshot services must be valid and distinct",
+            ));
+        }
+        let manifest = snapshot
+            .service_manifests
+            .get(service)
+            .ok_or_else(|| invalid("selected service is not in the source snapshot"))?
+            .clone();
+        cache::validate_capture(&manifest)?;
+        if manifest.service != *service {
+            return Err(invalid(
+                "embedded capture service differs from its snapshot key",
+            ));
+        }
+        let raw = bytes(&manifest)?;
+        if raw.len() as u64 > store::MAX_RECORD {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "embedded capture exceeds the portable record budget",
+            ));
+        }
+        let manifest_digest = cache::content_digest(&raw);
+        let name = format!(
+            "snapshot-{service}-{}.json",
+            manifest_digest.trim_start_matches("sha256:")
+        );
+        validate_capture_name(&name)?;
+        budget.observe_file(&manifest_digest, raw.len() as u64)?;
+        selected.push(SelectedCapture {
+            name,
+            raw,
+            receipt: CaptureReceipt {
+                service: service.clone(),
                 manifest_digest,
                 cacheability: manifest.cacheability.clone(),
                 reason: manifest.reason.clone(),
