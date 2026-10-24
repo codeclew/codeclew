@@ -2093,6 +2093,7 @@ pub(super) fn project(
     let mut http_documents = BTreeMap::new();
     let mut process_items = Vec::new();
     let mut service_items = Vec::new();
+    let mut protected_items = Vec::new();
     let system_title = documents
         .get("native/system-reading-guide.json")
         .and_then(|g| g["title"].as_str())
@@ -2189,6 +2190,20 @@ pub(super) fn project(
                     format!("docs/notes/{id}--{}.mdx", text(&note["id"])),
                     reading::note_page(page, id, note)?,
                 );
+                let page_id = text(&note["association"]["id"]);
+                put(
+                    &mut files,
+                    format!("static/pages/{page_id}.original.md"),
+                    text(&note["original"]["text"]),
+                );
+                if note["association"]["service"] == id {
+                    put(
+                        &mut files,
+                        format!("docs/pages/{page_id}.mdx"),
+                        reading::protected_note_page(page, id, note)?,
+                    );
+                    protected_items.push(json!(format!("pages/{page_id}")));
+                }
             }
         }
         if process {
@@ -2237,6 +2252,9 @@ pub(super) fn project(
     }
     if !process_items.is_empty() {
         sidebars.push(json!({"type":"category","label":crate::documentation::language::label(language, "Processes"),"items":process_items}));
+    }
+    if !protected_items.is_empty() {
+        sidebars.push(json!({"type":"category","label":"Human pages","items":protected_items}));
     }
     if rows(&catalog["models"]).next().is_some() {
         overview.push_str("\n## Data model\n\n");

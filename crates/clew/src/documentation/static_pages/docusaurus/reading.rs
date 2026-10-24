@@ -164,10 +164,32 @@ fn observation(note: &Value) -> Option<Value> {
     None
 }
 pub(super) fn note_page(page: &Value, service: &str, note: &Value) -> Result<String, ClewError> {
-    let mut out = header(
-        note_title(note),
+    note_page_at(
+        page,
+        service,
+        note,
         &format!("/notes/{service}--{}", text(&note["id"])),
-    );
+    )
+}
+pub(super) fn protected_note_page(
+    page: &Value,
+    service: &str,
+    note: &Value,
+) -> Result<String, ClewError> {
+    note_page_at(
+        page,
+        service,
+        note,
+        &format!("/pages/{}", text(&note["association"]["id"])),
+    )
+}
+fn note_page_at(
+    page: &Value,
+    service: &str,
+    note: &Value,
+    slug: &str,
+) -> Result<String, ClewError> {
+    let mut out = header(note_title(note), slug);
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n", md(note_title(note))));
     out.push_str("<ClewPageContext />\n\n");
@@ -180,6 +202,14 @@ pub(super) fn note_page(page: &Value, service: &str, note: &Value) -> Result<Str
         md(text(&note["association"]["title"])),
         md(text(&note["association"]["classification"]))
     ));
+    let page_id = text(&note["association"]["id"]);
+    out.push_str(&super::super::markdown::mdx(
+        &crate::documentation::notes::protected_pages::body(text(&note["original"]["text"])),
+    ));
+    out.push_str(&format!("\n\n<ClewDownload path=\"/pages/{page_id}.original.md\">Download exact original Markdown</ClewDownload>\n\nPage digest: `{}`\n\n",md(text(&note["original"]["digest"]))));
+    for binding in rows(note.get("currentBindings").unwrap_or(&note["bindings"])) {
+        out.push_str(&format!("### Source binding: {}\n\nState: **{}** · Prose remains unverified.\n\nSelected lines: {}–{}\n\n{}\n\n",md(text(&binding["id"])),md(text(&binding["state"])),binding["selection"]["startLine"],binding["selection"]["endLine"],source_link(&binding["selectedSource"])?));
+    }
     if let Some(observed) = observation(note) {
         let v = &observed["record"];
         out.push_str(&format!("## Historical runtime observation\n\n**Reported result: {}** · Repository revision `{}`\n\n", md(text(&v["status"])), text(&observed["revision"])));
@@ -779,6 +809,29 @@ pub(super) fn linked_downloads(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protected_page_has_stable_route_safe_markdown_and_exact_original_download() {
+        let original = "---\r\ntitle: Policy\r\n---\r\n\r\nField | Meaning\r\n--- | ---\r\ncity | [Source](../services/orders.html)\r\n<script>{unsafe()}</script>";
+        let page = serde_json::json!({"subject":"service:orders"});
+        let note = serde_json::json!({"id":"assessment-policy","association":{"id":"policy","service":"orders","title":"Policy","classification":"mixed"},"original":{"text":original,"digest":"saved"},"assessment":null});
+        let before = note.clone();
+        let output = super::protected_note_page(&page, "orders", &note).unwrap();
+        assert!(output.contains("/pages/policy") && output.contains("<ClewMarkdown text="));
+        assert!(output.contains("/pages/policy.original.md"));
+        let original_fence = super::fence(original, "text");
+        assert!(output.contains(&original_fence));
+        assert!(
+            !output
+                .replacen(&original_fence, "", 1)
+                .contains("<script>{unsafe()}")
+        );
+        assert_eq!(note, before);
+        assert!(
+            super::note_page(&page, "orders", &note)
+                .unwrap()
+                .contains("/notes/orders--assessment-policy")
+        );
+    }
     use super::*;
     #[test]
     fn step_data_links_follow_the_explicit_anchor_and_existing_model_selection() {

@@ -329,6 +329,7 @@ pub(super) fn render(
                 object.remove("processDataFlow");
             }
         }
+        crate::documentation::notes::protected_pages::write(&payload, &mut files)?;
         let html = render::html(&payload)?;
         let prefix = "../";
         let navigation = reader::navigation_language(

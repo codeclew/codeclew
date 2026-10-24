@@ -13,6 +13,8 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
+pub(super) mod protected_pages;
+pub(super) mod source_bindings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -32,6 +34,8 @@ pub struct Association {
     pub tags: Vec<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_bindings: Vec<source_bindings::Binding>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +56,7 @@ pub fn is_root(id: &str) -> bool {
     id.starts_with("assessment-")
 }
 fn validate(a: &Association) -> Result<(), ClewError> {
+    source_bindings::validate(&a.source_bindings, &a.service)?;
     super::language::validate(a.documentation_language.as_deref())?;
     store::relative(&a.path)?;
     if a.schema != "codeclew-documentation-note-association/1.0"
@@ -106,7 +111,11 @@ fn capture(repo: &Repository, path: &str) -> Result<Value, ClewError> {
     }
 }
 pub fn snapshot(repo: &Repository) -> Result<BTreeMap<String, Value>, ClewError> {
-    records(repo)?.into_iter().map(|(id,a)| Ok((id,json!({"association":a,"original":capture(repo,&a.path)?,"associationDigest":digest(&a)?,"authority":"HUMAN_OR_IMPORTED_UNVERIFIED"})))).collect()
+    records(repo)?.into_iter().map(|(id,a)| {
+        let mut row=json!({"association":a,"original":capture(repo,&a.path)?,"associationDigest":digest(&a)?,"authority":"HUMAN_OR_IMPORTED_UNVERIFIED"});
+        if !a.source_bindings.is_empty() { row["bindings"]=json!(source_bindings::admit(repo,&a.source_bindings)?); }
+        Ok((id,row))
+    }).collect()
 }
 fn target_exists(repo: &Repository, target: &str) -> Result<bool, ClewError> {
     if let Some(target) = target.strip_prefix("service:") {
@@ -158,6 +167,23 @@ pub fn attach_from_inputs(
         let a: Association =
             serde_json::from_value(value["association"].clone()).map_err(io_error)?;
         validate(&a)?;
+        if !a.source_bindings.is_empty() {
+            let retained = value["bindings"]
+                .as_array()
+                .ok_or_else(|| invalid("typed note bindings have no retained selection"))?;
+            let resolved = a
+                .source_bindings
+                .iter()
+                .map(|b| {
+                    let original = retained
+                        .iter()
+                        .find(|r| r["id"] == b.id)
+                        .ok_or_else(|| invalid("typed note binding selection is missing"))?;
+                    Ok(source_bindings::resolve(b, original, checked, inputs))
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            value["bindings"] = json!(resolved);
+        }
         let missing: Vec<_> = a
             .targets
             .iter()
@@ -279,6 +305,14 @@ fn conflict(repo: &Repository, expected: Option<&str>) -> Result<(), ClewError> 
 #[derive(Debug, Subcommand)]
 pub enum Command {
     List(ListArgs),
+    Bindings {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        snapshot: String,
+    },
     Inspect {
         #[arg(long)]
         root: PathBuf,
@@ -314,13 +348,50 @@ pub enum Command {
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Bindings {
+            root,
+            id,
+            snapshot: target,
+        } => {
+            let repo = Repository::open(&root)?;
+            let inputs = repo.inputs()?;
+            let row = inputs
+                .notes
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| invalid("unknown note association"))?;
+            let association: Association =
+                serde_json::from_value(row["association"].clone()).map_err(io_error)?;
+            let checked = Check::load_snapshot(&repo, &target)?;
+            let retained = row["bindings"].as_array().cloned().unwrap_or_default();
+            let bindings = association
+                .source_bindings
+                .iter()
+                .map(|b| {
+                    let selected = retained
+                        .iter()
+                        .find(|r| r["id"] == b.id)
+                        .ok_or_else(|| invalid("source binding selection missing"))?;
+                    Ok(source_bindings::resolve(b, selected, &checked, &inputs))
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            Ok(
+                json!({"id":id,"pageDigest":row["original"]["digest"],"associationDigest":row["associationDigest"],"snapshot":target,"bindings":bindings,"assessmentStatus":"NOT_EVALUATED_BY_BINDING_CHECK","rootNamespace":source_bindings::namespace(&repo)?}),
+            )
+        }
         Command::Inspect { root, path } => {
             let repo = Repository::open(&root)?;
             store::relative(&path)?;
             if !path.starts_with("notes/") || !path.ends_with(".md") {
                 return Err(invalid("inspect selects protected notes/*.md only"));
             }
-            Ok(json!({"original":capture(&repo,&path)?,"inputDigest":repo.input_digest()?}))
+            let associations = snapshot(&repo)?
+                .into_values()
+                .filter(|r| r["association"]["path"] == path)
+                .collect::<Vec<_>>();
+            Ok(
+                json!({"original":capture(&repo,&path)?,"inputDigest":repo.input_digest()?,"associations":associations,"rootNamespace":source_bindings::namespace(&repo)?}),
+            )
         }
         Command::List(page) => {
             let repo = Repository::open(&page.root)?;
@@ -330,7 +401,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 rows.into_values().collect(),
                 page.cursor.as_deref(),
                 page.limit as usize,
-                json!({"inputDigest":repo.input_digest()?}),
+                json!({"inputDigest":repo.input_digest()?,"rootNamespace":source_bindings::namespace(&repo)?}),
             )
         }
         Command::Prepare { root: dir, id } => {
@@ -349,9 +420,14 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let repo = Repository::open(&root)?;
             let _lock = repo.lock()?;
             conflict(&repo, Some(&expected_input_digest))?;
-            if !records(&repo)?.contains_key(&id) {
-                return Err(invalid("unknown note association"));
-            }
+            let records = records(&repo)?;
+            let previous = records
+                .get(&id)
+                .ok_or_else(|| invalid("unknown note association"))?;
+            repo.atomic(
+                &format!("catalog/note-history/{id}/{}.json", &digest(previous)?[7..]),
+                &bytes(previous)?,
+            )?;
             fs::remove_file(repo.path(&format!("catalog/notes/{id}.json"))?).map_err(io_error)?;
             Ok(
                 json!({"status":"REMOVED","original":"UNCHANGED","inputDigest":repo.input_digest()?}),
@@ -368,9 +444,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             };
             let repo = Repository::open(&input.root)?;
             let _lock = repo.lock()?;
-            conflict(&repo, input.expected_input_digest.as_deref())?;
             let a: Association = store::read(&input.input, 32768)?;
             validate(&a)?;
+            source_bindings::admit(&repo, &a.source_bindings)?;
             if !repo.services()?.contains_key(&a.service) {
                 return Err(invalid("register the note assessment service first"));
             }
@@ -382,11 +458,6 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 }
             }
             if let Some(source) = source {
-                if records(&repo)?.contains_key(&a.id) {
-                    return Err(invalid(
-                        "note identity already exists; use explicit association update",
-                    ));
-                }
                 let meta = fs::symlink_metadata(&source).map_err(io_error)?;
                 if !meta.is_file() || meta.len() > 256 * 1024 {
                     return Err(invalid("import requires a bounded regular UTF-8 note"));
@@ -395,6 +466,22 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 if data.len() > 256 * 1024 || std::str::from_utf8(&data).is_err() {
                     return Err(invalid("import requires bounded UTF-8 text"));
                 }
+                if let Some(previous) = records(&repo)?.get(&a.id) {
+                    let original = capture(&repo, &a.path)?;
+                    if bytes(previous)? == bytes(&a)?
+                        && original["text"]
+                            .as_str()
+                            .is_some_and(|text| text.as_bytes() == data)
+                    {
+                        return Ok(
+                            json!({"status":"UNCHANGED","original":original,"inputDigest":repo.input_digest()?}),
+                        );
+                    }
+                    return Err(invalid(
+                        "note identity already exists with different inputs; use explicit association update",
+                    ));
+                }
+                conflict(&repo, input.expected_input_digest.as_deref())?;
                 let path = repo.path(&a.path)?;
                 fs::create_dir_all(path.parent().unwrap()).map_err(io_error)?;
                 let mut temp =
@@ -406,6 +493,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     invalid("import destination exists; original notes are never overwritten")
                 })?;
             } else {
+                conflict(&repo, input.expected_input_digest.as_deref())?;
                 let original = capture(&repo, &a.path)?;
                 if original["status"] != "CAPTURED"
                     || original["digest"].as_str() != expected_note.as_deref()
@@ -415,6 +503,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                         "original note changed or is unavailable; reload its digest",
                     ));
                 }
+            }
+            if let Some(previous) = records(&repo)?.get(&a.id) {
+                repo.atomic(
+                    &format!(
+                        "catalog/note-history/{}/{}.json",
+                        a.id,
+                        &digest(previous)?[7..]
+                    ),
+                    &bytes(previous)?,
+                )?;
             }
             repo.atomic(&format!("catalog/notes/{}.json", a.id), &bytes(&a)?)?;
             Ok(
@@ -435,6 +533,11 @@ pub fn mark_targets(data: &mut Value, checked: &Check) {
             row["targetChanged"] = json!(current.is_none_or(|d| d.normalized["associationDigest"]
                 != row["associationDigest"]
                 || d.normalized["original"] != row["original"]));
+            if let Some(current) = current.filter(|d| d.normalized["bindings"].is_array()) {
+                row["currentBindings"] = current.normalized["bindings"].clone();
+                row["bindingTargetChanged"] =
+                    json!(row["bindings"] != current.normalized["bindings"]);
+            }
         }
     }
 }

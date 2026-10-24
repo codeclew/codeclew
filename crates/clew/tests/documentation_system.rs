@@ -6047,6 +6047,113 @@ fn note_fixture(f: &Fixture) -> (serde_json::Value, Vec<u8>) {
     );
     (a, original)
 }
+
+#[test]
+fn protected_page_binding_tracks_exact_source_identity_and_explicit_rebind() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let checked = f.checked();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let rows = f.ok(&["docs", "note", "list"]);
+    let select = |checked: &clew::documentation::check::Check, name: &str, snapshot: &str| {
+        let evidence = &checked.services["orders"];
+        let observation = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.symbol.contains(name) && !o.source_ids.is_empty())
+            .unwrap();
+        let source = &evidence.sources[&observation.source_ids[0]];
+        json!({"schema":"codeclew-note-source-binding/1.0","id":"entry","rootNamespace":rows["rootNamespace"],"repositoryId":"orders","service":"orders","provider":evidence.extractor,"profile":"source-syntax","compilations":[],"snapshot":snapshot,"revision":source.revision,"sourceId":source.id,"observationId":observation.id,"startLine":source.start_line,"endLine":source.end_line,"textDigest":source.text_digest})
+    };
+    let binding = select(&checked, "reserve", &snapshot);
+    let original=b"---\r\ntitle: Fixture page\r\n---\r\n\r\nField | Meaning\r\n--- | ---\r\nquantity | Requested quantity\r\n";
+    let source = f.temp.path().join("page.md");
+    fs::write(&source, original).unwrap();
+    let mut association = json!({"schema":"codeclew-documentation-note-association/1.0","id":"page","title":"Fixture page","service":"orders","path":"notes/page.md","targets":["service:orders"],"classification":"mixed","period":"Fixture only","sourceBindings":[binding]});
+    let input = f.input("page-association.json", &association);
+    f.ok(&[
+        "docs",
+        "note",
+        "import",
+        "--source",
+        source.to_str().unwrap(),
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        rows["inputDigest"].as_str().unwrap(),
+    ]);
+    let original_code = fs::read_to_string(source_repo.join("Orders.java")).unwrap();
+    fs::write(
+        source_repo.join("Orders.java"),
+        format!("\n\n{original_code}"),
+    )
+    .unwrap();
+    commit(&source_repo);
+    let moved = f.checked();
+    let target = moved.save_snapshot(&repo).unwrap();
+    let resolved = f.ok(&[
+        "docs",
+        "note",
+        "bindings",
+        "--id",
+        "page",
+        "--snapshot",
+        &target,
+    ]);
+    assert_eq!(resolved["bindings"][0]["state"], "RELOCATED_ONLY");
+    assert_eq!(
+        resolved["bindings"][0]["selection"],
+        association["sourceBindings"][0]
+    );
+    fs::write(
+        source_repo.join("Orders.java"),
+        original_code.replace("reserve(", "renamed("),
+    )
+    .unwrap();
+    commit(&source_repo);
+    let renamed = f.checked();
+    let target = renamed.save_snapshot(&repo).unwrap();
+    let missing = f.ok(&[
+        "docs",
+        "note",
+        "bindings",
+        "--id",
+        "page",
+        "--snapshot",
+        &target,
+    ]);
+    assert_eq!(missing["bindings"][0]["state"], "MISSING");
+    let old_digest = f.ok(&["docs", "note", "list"])["items"][0]["associationDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    association["sourceBindings"] = json!([select(&renamed, "renamed", &target)]);
+    let input = f.input("rebound.json", &association);
+    let current = f.ok(&["docs", "note", "list"]);
+    f.ok(&[
+        "docs",
+        "note",
+        "associate",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        current["inputDigest"].as_str().unwrap(),
+        "--expected-note-digest",
+        current["items"][0]["original"]["digest"].as_str().unwrap(),
+    ]);
+    assert!(
+        f.docs
+            .join(format!(
+                "catalog/note-history/page/{}.json",
+                &old_digest[7..]
+            ))
+            .is_file()
+    );
+    assert_eq!(fs::read(f.docs.join("notes/page.md")).unwrap(), original);
+}
+
 fn note_work(f: &Fixture) -> (String, serde_json::Value) {
     use serde_json::json;
     // note_fixture mutates admitted documentation inputs before preparing.
@@ -6139,8 +6246,8 @@ fn docsys_t09_import_association_and_export_preserve_original_bytes() {
     let digest = rows["inputDigest"].as_str().unwrap();
     let source = f.temp.path().join("import.md");
     let input = f.input("note.json", &a);
-    assert_ne!(
-        f.run(&[
+    assert_eq!(
+        f.ok(&[
             "docs",
             "note",
             "import",
@@ -6150,9 +6257,8 @@ fn docsys_t09_import_association_and_export_preserve_original_bytes() {
             input.to_str().unwrap(),
             "--expected-input-digest",
             digest
-        ])
-        .0,
-        0
+        ])["status"],
+        "UNCHANGED"
     );
     fs::rename(
         f.docs.join("notes/history.md"),

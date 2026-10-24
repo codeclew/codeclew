@@ -4272,6 +4272,7 @@ fn publish_internal_phases(
         }
         files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
         files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
+        super::notes::protected_pages::write(&data, &mut files)?;
     }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
     // The bundle identity covers every output file (including auto-generated

@@ -456,6 +456,35 @@ HTML and instructions cannot become executable page content. Associations live
 in `catalog/notes`; they never rewrite the original. See the
 [note association schema](../../schemas/documentation/note-association.schema.json).
 
+Protected originals also have a readable `pages/NOTE_ID.html` page and a
+`/pages/NOTE_ID` MDX route. These IDs survive explicit title/path changes;
+legacy service assessment anchors and note routes remain available. Markdown
+uses the shared safe parser, including tables and links. Frontmatter stays in
+the exact original download, separate from the reading body. Arbitrary HTML/MDX
+in the original cannot execute.
+
+An optional `sourceBindings` array contains versioned
+`codeclew-note-source-binding/1.0` records. Each page-local binding ID selects
+an exact retained snapshot, root namespace, repository/service, provider,
+profile/compilation scope, Source ID, revision, inclusive line range and text
+digest. An optional Observation ID must own that Source in the same capture.
+Use `rootNamespace` from `docs note list` and exact IDs from saved context;
+metadata focus hints are not validated bindings. For a subrange, `textDigest`
+is SHA-256 of the selected retained `Source.text` lines joined by newline,
+prefixed with `sha256:`. Import/associate reject missing or foreign evidence
+before changing an accepted association. Omitting bindings preserves existing
+1.0 serialization and identities.
+
+`docs note bindings --root DOCS --id NOTE_ID --snapshot TARGET` compares the
+saved selection with an explicit retained target without running a model.
+Binding state is independent of assessment of human prose. Exact logical IDs
+may relocate; missing IDs are not guessed from names or similar text. The old
+selection stays in the receipt, and explicit association updates/removal retain
+association history. Repeating an identical import returns `UNCHANGED` without
+rewriting the original. This page/binding interface does not itself provide a
+durable semantic assessment queue or qualify a model.
+
+
 ```sh
 ./clew docs note list --root /path/to/docs
 ./clew docs note inspect --root /path/to/docs --path notes/existing.md

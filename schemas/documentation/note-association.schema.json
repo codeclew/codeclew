@@ -61,6 +61,82 @@
         null
       ],
       "description": "Declared language of original note prose; absent or null means unknown. Does not label an assessment or change review authority."
+    },
+    "sourceBindings": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema": {
+            "const": "codeclew-note-source-binding/1.0"
+          },
+          "id": {
+            "type": "string"
+          },
+          "rootNamespace": {
+            "type": "string"
+          },
+          "repositoryId": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "observationId": {
+            "type": "string"
+          },
+          "textDigest": {
+            "type": "string"
+          },
+          "compilations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "startLine": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "endLine": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "schema",
+          "id",
+          "rootNamespace",
+          "repositoryId",
+          "service",
+          "provider",
+          "profile",
+          "compilations",
+          "snapshot",
+          "revision",
+          "sourceId",
+          "startLine",
+          "endLine",
+          "textDigest"
+        ]
+      }
     }
   },
   "required": [
