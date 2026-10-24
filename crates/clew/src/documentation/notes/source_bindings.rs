@@ -321,7 +321,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         Repository::init(dir.path(), "Fixture").unwrap();
         let repo = Repository::open(dir.path()).unwrap();
-        assert!(admit(&repo, &[b.clone()]).is_err());
+        assert!(admit(&repo, std::slice::from_ref(&b)).is_err());
         assert!(scope(&b, &s, &e));
         s.profile = "other".into();
         assert!(!scope(&b, &s, &e));
