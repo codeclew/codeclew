@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.53 — 2026-10-25
+
+- Render Markdown tables and links in service-profile summaries and secondary
+  narrative details using the shared safe renderer. Preserve literal source
+  evidence and canonical links in MDX.
+- Distinguish returning to a whole process from returning to one process step,
+  including Russian reader labels and retained navigation context.
+- Import human-owned Markdown pages with exact retained source bindings, stable
+  standalone HTML/MDX routes, original downloads and shared reader header styles.
+  Binding comparisons and separate assessments do not establish arbitrary prose
+  as true or edit the human original.
+
 ## 0.13.52 — 2026-10-24
 
 - Replay exact saved publications in the historical reader and export the same
