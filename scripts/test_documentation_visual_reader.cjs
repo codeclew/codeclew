@@ -11,6 +11,24 @@ const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'
 const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
+test('overview service profile renders safe Markdown blocks and keeps the section evidence owner',()=>{
+ const data=fixture(),seed=data.operations[0];
+ const text='Original field | Readable name | Comment\n--- | --- | ---\n`id` | Identifier | [Payload](../services/sample.html#section-entities)\n\n<script>unsafe()</script>\n\n[Unsafe](javascript:alert(1))';
+ const entity={...seed,id:'section-entities',title:'Domain entities',summary:fragment(text),visuals:[]};
+ data.operations=[entity];data.sections=[{id:'section-overview',title:'Overview',gap:'Awaiting overview'},{id:entity.id,title:entity.title,content:entity}];
+ data.operationSources={[entity.id]:{'same-source':source('ACCEPTED ENTITY SOURCE')}};
+ data.operationStates={[entity.id]:{freshness:'STALE',verification:'UNASSESSED'}};
+ const before=JSON.stringify(data),reader=load(data),html=reader.e('scenario-content').innerHTML;
+ assert.match(html,/id="profile-section-entities"/);assert.match(html,/class="profile-summary clew-markdown"/);
+ assert.match(html,/<table\b/);assert.match(html,/<th[^>]*>Original field<\/th>/);assert.match(html,/<code>id<\/code>/);
+ assert.match(html,/href="\.\.\/services\/sample\.html#section-entities"/);assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/<script>|href="javascript:/);assert.doesNotMatch(html,/<p class="profile-summary">/);
+ assert.match(html,/data-source-operation="section-entities"/);assert.match(html,/STALE/);assert.match(html,/UNASSESSED/);
+ reader.click({sources:'same-source',sourceOperation:'section-entities'});
+ assert.match(reader.e('source-code').innerHTML,/ACCEPTED ENTITY SOURCE/);assert.doesNotMatch(reader.e('source-code').innerHTML,/CURRENT SOURCE/);
+ assert.equal(JSON.stringify(data),before);
+});
+
 test('shared locale translates owned template chunks without touching matching authored or schema text',()=>{
  const data=fixture();data.language='ru';const reader=load(data);
  const output=reader.run('chromeHtml`<h2>Overview</h2><p>${esc("Overview")}</p><pre>${esc(JSON.stringify({description:"Overview",enum:["required","UNKNOWN"]}))}</pre>`');

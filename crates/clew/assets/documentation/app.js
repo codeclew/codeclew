@@ -87,6 +87,9 @@ function visualPreview(){const rows=visualRows(),first=rows.find(r=>r.visual.kin
 
 function serviceInventory(){return D.selectedBoundaryInventory??D.boundaryInventory??{};}
 const serviceSectionOrder=['section-overview','section-responsibilities','section-entities','section-ingress','section-egress'];
+function profileSummary(owner,accepted){
+ return chromeHtml`<div class="profile-summary clew-markdown">${prose(accepted.text)}</div>${button(accepted.sourceIds,t('Supporting code'),false,owner.id)}`;
+}
 function serviceProfile(){
  if(!D.subject.startsWith('service:'))return '';
  const definitions=[['section-responsibilities',t('Responsibilities')],['section-entities',t('Domain entities')],['section-ingress',t('Entry points')],['section-egress',t('External calls and storage')]];
@@ -103,7 +106,7 @@ function serviceProfile(){
    detail+=chromeHtml`<details class="profile-discovery"><summary>Discovery scope</summary><p>The inventory is bounded by retained analyzer evidence. Per-transport completeness for HTTP, messaging, schedules and CLI is not established here; absent entries are not proof of absence.</p></details>`;
   }
   if(id==='section-egress')detail=chromeHtml`<p class="profile-note">Thread-to-call links and complete outgoing coverage are not inferred from a dependency list.</p>`;
-  return chromeHtml`<article class="profile-section" id="profile-${esc(id)}"><h3>${esc(title)}</h3>${translationGaps[id]?translationNotice(id):accepted?chromeHtml`<p class="profile-summary">${visualFragment(owner,accepted)}</p>${visualStatus(owner)}${owner.boundaries?.length?chromeHtml`<details class="profile-discovery"><summary>Scope and limitations</summary><ul>${owner.boundaries.map(text=>chromeHtml`<li>${esc(text)}</li>`).join('')}</ul></details>`:''}`:chromeHtml`<p class="profile-gap">${esc(section?.gap||t('No source-bound section summary has been accepted in this publication.'))}</p>`}${detail}${section?chromeHtml`<p><button class="source-link" data-entry="${esc(id)}">Open ${esc(title.toLowerCase())} details →</button></p>`:''}</article>`;
+  return chromeHtml`<article class="profile-section" id="profile-${esc(id)}"><h3>${esc(title)}</h3>${translationGaps[id]?translationNotice(id):accepted?chromeHtml`${profileSummary(owner,accepted)}${visualStatus(owner)}${owner.boundaries?.length?chromeHtml`<details class="profile-discovery"><summary>Scope and limitations</summary><ul>${owner.boundaries.map(text=>chromeHtml`<li>${esc(text)}</li>`).join('')}</ul></details>`:''}`:chromeHtml`<p class="profile-gap">${esc(section?.gap||t('No source-bound section summary has been accepted in this publication.'))}</p>`}${detail}${section?chromeHtml`<p><button class="source-link" data-entry="${esc(id)}">Open ${esc(title.toLowerCase())} details →</button></p>`:''}</article>`;
  }).join('')}</section>`;
 }
 
