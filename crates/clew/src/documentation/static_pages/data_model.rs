@@ -375,7 +375,7 @@ pub(super) fn load(
     if plan.schema != "codeclew-data-model-plan/1.0"
         || plan.publication != publication
         || plan.snapshot != snapshot
-        || plan.models.is_empty()
+        || (plan.models.is_empty() && plan.contracts.is_empty())
         || plan.models.len() > 32
         || plan.contracts.len() > 32
         || plan.process_views.len() > 32
@@ -1626,6 +1626,49 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
+    #[test]
+    fn contracts_only_plan_binds_exact_declaration_without_models_or_field_flow() {
+        let (mut plan, mut files, guides, mut checked) = fixture();
+        let schema = json!({"$defs":{"Event":{"type":"object","required":["rain"],"properties":{"rain":{"type":["number","null"],"minimum":0}}}}});
+        let text = schema.to_string();
+        let text_digest = crate::canonical::hash_bytes(text.as_bytes());
+        let source = json!({"id":"decl-source","service":"sample","revision":"r1","file":"events.json","startLine":1,"endLine":1,"text":text,"textDigest":text_digest,"evidenceDigest":"retained","authority":"EXACT_SNAPSHOT_TEXT"});
+        checked.services.insert("sample".into(),serde_json::from_value(json!({"schema":"codeclew-documentation-service-evidence/1.0","service":"sample","revision":"r1","serviceDigest":"definition","extractor":"source-syntax","runtimeMode":"COMMITTED_SOURCE_NO_BUILD","coverage":"SYNTAX","boundaries":[],"entrypoints":[],"observations":{},"sources":{"decl-source":source},"contracts":{}})).unwrap());
+        let mut page: Value = serde_json::from_slice(&files["scenarios/example.json"]).unwrap();
+        page["operations"][0]["interfaceContracts"] = json!([{"id":"checks","rows":[]}]);
+        files.insert(
+            "scenarios/example.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        plan["models"] = json!([]);
+        plan["processViews"] = json!([]);
+        plan["contracts"] = json!([{"id":"event","title":"Event declaration","service":"sample","sourceId":"decl-source","textDigest":text_digest,"branchPointer":"/$defs/Event"}]);
+        plan["interfaceBindings"] = json!([{"contract":"event","subject":"scenario:example","operation":"saved","interfaceContract":"checks"}]);
+        let model = read(&plan, &files, &guides, &checked).unwrap();
+        assert_eq!(model["models"], json!([]));
+        assert_eq!(
+            model["contracts"][0]["declaration"]["nodes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut payload = page.clone();
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        assert_eq!(payload["operations"], page["operations"]);
+        assert_eq!(
+            payload["interfaceContractDeclarations"]["saved"]["checks"]["declaration"]["nodes"][1]
+                ["nullability"],
+            "Allowed"
+        );
+        assert!(payload.get("processDataFlow").is_none());
+        let mut empty = plan.clone();
+        empty["contracts"] = json!([]);
+        assert!(read(&empty, &files, &guides, &checked).is_err());
+        plan["contracts"][0]["textDigest"] = json!("sha256:wrong");
+        assert!(read(&plan, &files, &guides, &checked).is_err());
+    }
+
     #[test]
     fn inline_binding_requires_an_exact_card_and_never_rewrites_the_operation() {
         let (_, mut files, _, _) = fixture();

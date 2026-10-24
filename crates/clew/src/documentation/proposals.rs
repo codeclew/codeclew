@@ -825,7 +825,7 @@ fn validate_specialized_fields(
         ));
     }
     if has_sequence_only_fields
-        && (super::sections::contains(root)
+        && ((super::sections::contains(root) && !proposed.participants.is_empty())
             || super::notes::is_root(root)
             || super::processes::overview(&work.checked, &work.subject, root))
     {
@@ -1035,7 +1035,7 @@ pub(super) fn materialize(
             if !proposed.steps.is_empty()
                 || !proposed.contracts.is_empty()
                 || !proposed.participants.is_empty()
-                || !proposed.explanation.is_empty()
+                || (!super::sections::contains(&op.id) && !proposed.explanation.is_empty())
             {
                 return Err(invalid(
                     "summary-only proposals use a supported summary; operation sequences, participants and explanation paragraphs are separate",
@@ -1047,6 +1047,24 @@ pub(super) fn materialize(
                         .boundaries
                         .clone(),
                 );
+            }
+            if super::sections::contains(&op.id) {
+                if proposed.explanation.len() > 128 {
+                    return Err(invalid("service section body exceeds 128 paragraphs"));
+                }
+                for (index, claim) in proposed.explanation.iter().enumerate() {
+                    let fragment =
+                        builder.claim(&scope, &format!("section-body/{index}"), claim)?;
+                    op.explanation.push(Explanation {
+                        id: fragment.id,
+                        text: fragment.text,
+                        event_ids: vec![],
+                        dependency_ids: fragment.dependency_ids,
+                        source_ids: fragment.source_ids,
+                        detail: false,
+                        authorship: None,
+                    });
+                }
             }
             op.participants.clear();
             n.operations.push(op);

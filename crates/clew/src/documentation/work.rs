@@ -4468,8 +4468,12 @@ mod section_context_tests {
     }
 
     fn exact_retained_file_proposal_fixture(coverage: &str) -> Work {
-        let mut work =
-            source_inventory_fixture("# Fixture documentation\nRetained λ☕ text.\n".into());
+        let mut work = source_inventory_fixture(if coverage == "SYNTAX" {
+            "// Whole retained module\nconst label = 'λ☕';\nfunction create() { return label; }\n"
+                .into()
+        } else {
+            "# Fixture documentation\nRetained λ☕ text.\n".into()
+        });
         work.request.entrypoint = Some("section-responsibilities".into());
         work.request.context_profile = None;
         let evidence = work.checked.services.get_mut("orders").unwrap();
@@ -4501,11 +4505,30 @@ mod section_context_tests {
                 id: "orders:source-scope".into(),
             },
         );
+        let file = if coverage == "SYNTAX" {
+            let mut source = evidence.sources.remove("retained-source").unwrap();
+            source.file = "src/fixture.ts".into();
+            source.id = super::super::analysis::source_id("orders", "file:src/fixture.ts").unwrap();
+            work.handles.get_mut("s1").unwrap().id = source.id.clone();
+            evidence.sources.insert(source.id.clone(), source);
+            "src/fixture.ts"
+        } else {
+            "README.md"
+        };
+        let source = evidence.sources.values().next().unwrap();
+        let inventory_digest = if coverage == "SYNTAX" {
+            super::super::syntax::retained_file_fingerprint("typescript", &source.text).unwrap()
+        } else {
+            source.text_digest.clone()
+        };
         let scope = evidence
             .observations
             .get_mut("orders:source-scope")
             .unwrap();
-        scope.normalized["inventory"]["README.md"]["coverage"] = json!(coverage);
+        scope.normalized["language"] = json!("typescript");
+        scope.normalized["roots"] = json!([file]);
+        scope.normalized["inventory"] =
+            json!({file:{"coverage":coverage,"digest":inventory_digest}});
         scope.digest = digest(&scope.normalized).unwrap();
         work.checked
             .dependencies
@@ -4517,6 +4540,28 @@ mod section_context_tests {
     }
 
     #[test]
+    #[ignore = "explicit read-only Work/proposal replay; requires CODECLEW_CLAIM_REPLAY inputs"]
+    fn retained_file_claim_saved_work_replay() {
+        let root = std::env::var("CODECLEW_CLAIM_REPLAY_ROOT").unwrap();
+        let repo = Repository::open(std::path::Path::new(&root)).unwrap();
+        let work = load(&repo, &std::env::var("CODECLEW_CLAIM_REPLAY_WORK").unwrap()).unwrap();
+        let input: super::super::proposals::Proposal = serde_json::from_slice(
+            &fs::read(std::env::var("CODECLEW_CLAIM_REPLAY_INPUT").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let state = read_state(&repo, &work.id).unwrap();
+        let (_, _, diagnostics) =
+            super::super::proposals::materialize(&work, &input, &state).unwrap();
+        if let Ok(expected) = std::env::var("CODECLEW_CLAIM_REPLAY_EXPECTED_DIAGNOSTIC") {
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+            assert_eq!(diagnostics[0]["nextAction"], expected);
+        } else {
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+        println!("{}", serde_json::to_string(&diagnostics).unwrap());
+    }
+
+    #[test]
     fn retained_file_source_summary_materializes_exact_inventory_pin_without_phantom_facts() {
         check_retained_file_source_summary("FILE_ONLY");
         check_retained_file_source_summary("SYNTAX");
@@ -4524,6 +4569,10 @@ mod section_context_tests {
 
     fn check_retained_file_source_summary(coverage: &str) {
         let work = exact_retained_file_proposal_fixture(coverage);
+        let source_id = work.handles["s1"].id.clone();
+        let file = work.checked.services["orders"].sources[&source_id]
+            .file
+            .clone();
         let captured = bytes(&work.checked).unwrap();
         let temp = tempfile::tempdir().unwrap();
         Repository::init(temp.path(), "FILE_ONLY proposal fixture").unwrap();
@@ -4544,7 +4593,8 @@ mod section_context_tests {
             let input = serde_json::from_value(json!({
                 "schema":"codeclew-documentation-proposal/1.0",
                 "operations":[{"entrypoint":"section2","title":"Responsibilities",
-                    "summary":{"text":"The captured README records fixture documentation.","evidence":references},"steps":[]}]
+                    "summary":{"text":"The captured README records fixture documentation.","evidence":references},
+                    "explanation":[{"text":format!("| Field | Name | Comment |\n| --- | --- | --- |\n{}", "| `label` | Retained label | Whole captured field description. |\n".repeat(70)),"evidence":references}],"steps":[]}]
             })).unwrap();
             let (narrative, _, diagnostics) =
                 super::super::proposals::materialize(&work, &input, &state).unwrap();
@@ -4555,9 +4605,11 @@ mod section_context_tests {
             );
             assert_eq!(
                 narrative.operations[0].summary.source_ids,
-                vec!["retained-source"]
+                vec![source_id.clone()]
             );
             super::super::render::validate(&narrative, &work.checked).unwrap();
+            assert!(narrative.operations[0].explanation[0].text.len() > 2048);
+            assert!(narrative.operations[0].explanation[0].event_ids.is_empty());
             for defect in [
                 "partial",
                 "line",
@@ -4578,7 +4630,7 @@ mod section_context_tests {
                     .get_mut("orders")
                     .unwrap()
                     .sources
-                    .get_mut("retained-source")
+                    .get_mut(&source_id)
                     .unwrap();
                 match defect {
                     "partial" => {
@@ -4620,10 +4672,9 @@ mod section_context_tests {
                             .get_mut("orders:source-scope")
                             .unwrap();
                         if defect == "coverage" {
-                            scope.normalized["inventory"]["README.md"]["coverage"] =
-                                json!("UNSUPPORTED");
+                            scope.normalized["inventory"][&file]["coverage"] = json!("UNSUPPORTED");
                         } else {
-                            scope.normalized["inventory"]["README.md"]["digest"] =
+                            scope.normalized["inventory"][&file]["digest"] =
                                 json!(crate::canonical::hash_bytes(b"different whole file"));
                         }
                         scope.digest = digest(&scope.normalized).unwrap();

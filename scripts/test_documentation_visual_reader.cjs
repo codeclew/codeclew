@@ -1783,3 +1783,13 @@ test('new inline declaration chrome localizes while schema values stay literal',
  assert.match(html,/Обязательно в родительском объекте/);assert.match(html,/Не допускается/);
  assert.match(html,/\[&quot;Allowed&quot;,&quot;Excluded&quot;\]/);assert.match(html,/Authored schema title/);
 });
+
+test('service section body renders complete Markdown tables without sequence events or rewriting evidence',()=>{
+ const data=fixture(),op=data.operations[0];
+ op.explanation=[{id:'section-body',text:'| Field | Readable name | Description |\n| --- | --- | --- |\n| `cityId` | City identifier | Retained supported input. |\n| forecast | Latest forecast | May be absent. |',eventIds:[],dependencyIds:['retained-scope'],sourceIds:['same-source'],detail:false}];
+ const before=JSON.stringify(data),reader=load(data);reader.run("showEntry('section-responsibilities')");
+ const html=reader.e('scenario-content').innerHTML;
+ assert.match(html,/<table class="clew-md-table/);assert.match(html,/<code>cityId<\/code>/);
+ assert.match(html,/City identifier/);assert.match(html,/May be absent\./);
+ assert.equal((html.match(/<td/g)||[]).length,6);assert.equal(JSON.stringify(data),before);
+});

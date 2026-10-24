@@ -179,9 +179,27 @@ pub(super) fn retained_file_scope_binds_source(
         return false;
     }
     let file = &scope.normalized["inventory"][&source.file];
-    if !matches!(file["coverage"].as_str(), Some("FILE_ONLY" | "SYNTAX"))
-        || file["digest"] != source.text_digest
-    {
+    let inventory_matches = match file["coverage"].as_str() {
+        Some("FILE_ONLY") => file["digest"] == source.text_digest,
+        Some("SYNTAX") => {
+            // SYNTAX inventory stores a tree fingerprint, not a text SHA256.
+            // Only the producer's complete file record can use this binding;
+            // an arbitrary declaration or expression span must not widen it.
+            super::analysis::source_id(&source.service, &format!("file:{}", source.file))
+                .ok()
+                .as_ref()
+                == Some(&source.id)
+                && scope.normalized["language"]
+                    .as_str()
+                    .is_some_and(|language| {
+                        super::syntax::retained_file_fingerprint(language, &source.text)
+                            .ok()
+                            .is_some_and(|fingerprint| file["digest"] == fingerprint)
+                    })
+        }
+        _ => false,
+    };
+    if !inventory_matches {
         return false;
     }
     let Some(occurrence) = &source.occurrence else {
@@ -507,7 +525,7 @@ pub(super) fn validate_with_retained(
                 ));
             }
             if !o.events.is_empty()
-                || !o.explanation.is_empty()
+                || (!super::sections::contains(&o.id) && !o.explanation.is_empty())
                 || !o.interface_contracts.is_empty()
                 || !o.findings.is_empty()
                 || !o.participants.is_empty()
@@ -516,6 +534,31 @@ pub(super) fn validate_with_retained(
                 return Err(invalid(
                     "standard sections contain an evidence-bound summary and limitations; sequence content belongs to operations",
                 ));
+            }
+            if super::sections::contains(&o.id) {
+                if o.explanation.len() > 128 {
+                    return Err(invalid("service section body exceeds 128 paragraphs"));
+                }
+                let mut paragraphs = BTreeSet::from([o.summary.id.clone()]);
+                for paragraph in &o.explanation {
+                    if !store::valid_id(&paragraph.id)
+                        || !paragraphs.insert(paragraph.id.clone())
+                        || paragraph.text.trim().is_empty()
+                        || paragraph.text.len() > 8192
+                        || !paragraph.event_ids.is_empty()
+                        || paragraph.authorship.is_some()
+                    {
+                        return Err(invalid(
+                            "service section body needs distinct evidence-bound paragraphs of at most 8192 bytes without sequence anchors or authorship overrides",
+                        ));
+                    }
+                    supported_refs(
+                        &paragraph.dependency_ids,
+                        &paragraph.source_ids,
+                        checked,
+                        &allowed,
+                    )?;
+                }
             }
             continue;
         }
@@ -2578,6 +2621,11 @@ pub(super) fn markdown(
                 escape(title),
                 escape(content.map(|o| o.summary.text.as_str()).unwrap_or(purpose))
             ));
+            if let Some(operation) = content {
+                for paragraph in operation.explanation.iter().filter(|p| !p.detail) {
+                    out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
+                }
+            }
             if let Some(state) = states.get(&format!("{}/{id}", n.subject)) {
                 out.push_str(&format!(
                     "Source freshness: {}. Meaning review: {}.\n\n",

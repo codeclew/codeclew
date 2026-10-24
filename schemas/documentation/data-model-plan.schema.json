@@ -24,7 +24,7 @@
         "$ref": "#/$defs/model"
       },
       "maxItems": 32,
-      "minItems": 1
+      "minItems": 0
     },
     "contracts": {
       "type": "array",
@@ -849,5 +849,24 @@
         "interfaceContract"
       ]
     }
-  }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "models": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "required": [
+        "contracts"
+      ],
+      "properties": {
+        "contracts": {
+          "minItems": 1
+        }
+      }
+    }
+  ]
 }

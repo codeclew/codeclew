@@ -447,6 +447,19 @@ fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
 
 /// Topology and leaf spelling retain Python nesting, comments, strings, and numbers;
 /// coordinates and inter-token whitespace do not make relocation a semantic edit.
+/// Reproduce an immutable SOURCE inventory identity from retained bytes only.
+/// This is syntax verification, without source checkout or name resolution.
+pub(super) fn retained_file_fingerprint(language: &str, text: &str) -> Result<String, ClewError> {
+    if text.len() > MAX_FILE {
+        return Err(budget());
+    }
+    let tree = parse(language, text)?;
+    if has_syntax_error(language, tree.root_node()) {
+        return Err(invalid("retained whole file has syntax errors"));
+    }
+    fingerprint(tree.root_node(), text)
+}
+
 fn fingerprint(root: Node<'_>, text: &str) -> Result<String, ClewError> {
     let mut tokens = Vec::new();
     let mut stack = vec![(root, 0usize)];
