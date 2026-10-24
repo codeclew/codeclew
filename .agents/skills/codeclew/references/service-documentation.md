@@ -56,8 +56,8 @@ clew docs proposal show --root ROOT --proposal PROPOSAL_ID
 Use the returned references from this Work, not IDs from another example or
 Work. Read evidence before writing business claims: a delegation and its 200/404
 outcomes do not establish the downstream algorithm. Preserve that boundary.
-Proposal input is `codeclew-documentation-proposal/1.0`; Narrative 1.3 is the
-materialized output, with different fields and participant identities.
+Proposal input is `codeclew-documentation-proposal/1.0`; Narrative 1.3 (1.4 for
+explicit external boundary arrows) is the materialized output, with different fields and participant identities.
 
 Inspect the native result and all diagnostic pages, including behind a wrapper.
 `NEEDS_REPAIR` or `STRUCTURE_OR_COVERAGE_INVALID` is failure even when the outer

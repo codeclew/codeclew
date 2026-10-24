@@ -1793,3 +1793,54 @@ test('service section body renders complete Markdown tables without sequence eve
  assert.match(html,/City identifier/);assert.match(html,/May be absent\./);
  assert.equal((html.match(/<td/g)||[]).length,6);assert.equal(JSON.stringify(data),before);
 });
+
+test('declared external boundary stays visible without source calls and links its participant page',()=>{
+ const data=behaviorFixture(),op=data.operations[0];
+ op.participants=[{id:'service',label:'Owned',service:'sample'},{id:'provider',label:'Provider <script>',service:null,externalService:'provider'}];
+ op.events=[{id:'declared-request',kind:'declared-boundary',text:'Declared HTTP request',from:'service',to:'provider',interaction:'request',sourceIds:[],dependencyIds:['interaction:request']},{id:'declared-response',kind:'declared-boundary-return',text:'Explicit declared response',from:'provider',to:'service',interaction:'request',sourceIds:[],dependencyIds:['interaction:request']}];
+ data.declaredRelationships={edges:[{id:'request',origin:'agent-proposal'}]};
+ data.operationExternalCalls={[op.id]:op.events.map(e=>({eventId:e.id,interactionId:'request',declaration:{origin:'agent-proposal'},transport:{kind:'http'},declarationDigest:'declared-snapshot',snapshotContextDigest:'snapshot',authority:'USER_DECLARATION_NOT_RUNTIME_PROOF',retained:false,targetChanged:false}))};
+ const retained=JSON.stringify(op),reader=load(data),svg=reader.run('diagram(D.operations[0],375)');
+ assert.match(svg,/href="\.\.\/external-services\/provider\.html"/);
+ assert.match(svg,/href="\.\.\/services\/sample\.html"/);
+ assert.match(svg.replace(/<[^>]*>/g,' ').replace(/\s+/g,' '),/Declared boundary; runtime unverified/);
+ assert.match(svg,/agent-proposal/);
+ assert.match(svg,/Provider &lt;script&gt;/);
+ assert.doesNotMatch(svg,/<script>/);
+ assert.equal((svg.match(/class="event-arrow event-return"/g)||[]).length,2);
+ assert.equal(JSON.stringify(data.operations[0]),retained);
+ assert.match(svg,/data-boundary-declaration="boundary-evidence-reserve-fixture-declared-request"/);
+ assert.match(reader.e('scenario-content').innerHTML,/Declared relationship evidence/);
+ reader.click({boundaryDeclaration:'boundary-evidence-reserve-fixture-declared-request'});
+ assert.equal(reader.e('boundary-evidence-reserve-fixture-declared-request').open,true);
+ assert.equal(reader.e('boundary-evidence-reserve-fixture-declared-request').scrolled,true);
+ assert.equal(reader.e('source-panel').hidden,true);
+ assert.match(reader.run('pseudocodeEvent(D.operations[0],D.operations[0].events[0]).keyword'),/runtime unverified/);
+});
+
+
+test('Kafka external destination uses its registered page and never a fabricated service ingress',()=>{
+ const data=fixture();data.externalServices={provider:{title:'External <provider>'}};const reader=load(data);
+ const i={id:'event',origin:'human',runtime:'UNKNOWN',declaration:{external:true,externalService:'provider',from:{service:'sample'},to:{service:'provider'},transport:{kind:'kafka',topic:'requests'}}};
+ const expression='topicBoundaryCard('+JSON.stringify([i])+',{direction:"outgoing"})';
+ const html=reader.run(expression);assert.match(html,/href="\.\.\/external-services\/provider\.html"/);assert.doesNotMatch(html,/href="\.\.\/services\/provider\.html/);assert.match(html,/External &lt;provider&gt;/);assert.match(html,/Source not captured/);
+ reader.run('D.externalServices={}');const absent=reader.run(expression);assert.doesNotMatch(absent,/href="\.\.\/services\/provider\.html/);assert.doesNotMatch(absent,/href="\.\.\/external-services/);assert.match(absent,/Source not captured/);
+});
+
+
+test('retained boundary origin and topic come from operation bindings after catalogue change or removal',()=>{
+ const data=behaviorFixture(),op=data.operations[0],event={id:'old-event',kind:'declared-boundary',from:'service',to:'provider',interaction:'event',text:'Saved declared event',sourceIds:[],dependencyIds:['interaction:event']};op.events=[event];
+ data.operationExternalCalls={[op.id]:[{eventId:'old-event',interactionId:'event',declaration:{origin:'human',rationale:'Saved declaration'},transport:{kind:'kafka',topic:'request-events'},declarationDigest:'old-digest',snapshotContextDigest:'old-context',retained:true,targetChanged:true}]};
+ data.declaredRelationships={edges:[{id:'event',origin:'agent-proposal',transport:{kind:'kafka',topic:'request-events-v2'}}]};const r=load(data);
+ assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/human/);
+ let evidence=r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])');assert.match(evidence,/old-digest/);assert.match(evidence,/request-events/);assert.match(evidence,/catalogue changed/);assert.doesNotMatch(evidence,/agent-proposal|request-events-v2/);
+ r.run('D.declaredRelationships.edges=[]');assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/human/);assert.match(r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])'),/old-digest/);
+ r.run("D.operationExternalCalls[D.operations[0].id][0].declaration.origin='agent-proposal';D.declaredRelationships.edges=[{id:'event',origin:'human'}]");assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/agent-proposal/);
+});
+
+test('explicit HTTP boundary response reuses only unambiguous same-operation binding and never current graph',()=>{
+ const data=behaviorFixture(),op=data.operations[0];op.events=[{id:'response',kind:'declared-boundary-return',interaction:'request',from:'provider',to:'service',text:'Declared response',sourceIds:[],dependencyIds:['interaction:request']}];
+ data.operationExternalCalls={[op.id]:[{eventId:'old-request',interactionId:'request',declaration:{origin:'agent-proposal'},transport:{kind:'http',path:'/old'},declarationDigest:'old-request-digest',snapshotContextDigest:'old-context',retained:true,targetChanged:true}]};data.declaredRelationships={edges:[{id:'request',origin:'human',transport:{kind:'http',path:'/new'}}]};const r=load(data);
+ let evidence=r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])');assert.match(evidence,/SAME_OPERATION_INTERACTION/);assert.match(evidence,/old-request-digest/);assert.match(evidence,/\/old/);assert.doesNotMatch(evidence,/human|\/new/);assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/agent-proposal/);
+ r.run('D.operationExternalCalls[D.operations[0].id]=[]');evidence=r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])');assert.match(evidence,/No declaration binding was retained/);assert.doesNotMatch(evidence,/human|\/new|old-request-digest/);assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/Provenance unavailable/);
+});

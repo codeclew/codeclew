@@ -62,16 +62,17 @@ fn contract<'a>(
 
 pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
     let mut rows = Vec::new();
-    for event in operation
-        .events
-        .iter()
-        .filter(|e| matches!(e.kind.as_str(), "message" | "declared"))
-    {
+    for event in operation.events.iter().filter(|e| {
+        matches!(
+            e.kind.as_str(),
+            "message" | "declared" | "declared-boundary" | "declared-boundary-return"
+        )
+    }) {
         let links: Vec<_> = checked
             .interactions
             .values()
             .filter(|link| {
-                if event.kind == "declared" {
+                if event.kind == "declared" || super::declared_diagrams::boundary(&event.kind) {
                     event.interaction.as_deref() == Some(&link.id)
                 } else {
                     link.call_site.status == "RESOLVED"
@@ -98,7 +99,7 @@ pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
                 link,
                 checked,
             );
-            rows.push(json!({
+            let mut row = json!({
                 "eventId":event.id, "interactionId":link.id, "title":value["title"],
                 "from":value["from"]["service"], "to":value["to"]["service"],
                 "transport":value["transport"], "addresses":value.get("addresses").cloned().unwrap_or_else(|| json!([])),
@@ -106,12 +107,19 @@ pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
                 "declarationDigest":declaration.digest, "callSiteCandidates":link.call_site.candidates,
                 "receiverCandidates":link.to.candidates,
                 "bindingStatus":if links.len() == 1 { "EXPLICIT_INTERACTION" } else { "MULTIPLE_DECLARED_INTERACTIONS" },
-                "bindingMode":if event.kind == "declared" { "DECLARED_EVENT" } else { "EXACT_CALL_SITE" },
+                "bindingMode":if event.kind == "declared" || super::declared_diagrams::boundary(&event.kind) { "DECLARED_EVENT" } else { "EXACT_CALL_SITE" },
                 "contractReference":reference,
                 "contractStatus":contract_status,
                 "contract":contract, "snapshotContextDigest":checked.context_digest,
                 "authority":"USER_DECLARATION_NOT_RUNTIME_PROOF", "retained":false, "targetChanged":false,
-            }));
+            });
+            if super::declared_diagrams::boundary(&event.kind) {
+                row["eventKind"] = json!(event.kind);
+                row["eventFrom"] = json!(event.from);
+                row["eventTo"] = json!(event.to);
+                row["sourceChecks"] = json!(link);
+            }
+            rows.push(row);
         }
     }
     rows
@@ -259,6 +267,44 @@ mod tests {
         );
         let operation=serde_json::from_value(json!({"id":"operation","title":"Call receiver","summary":{"id":"summary","text":"Call receiver","dependencyIds":[],"sourceIds":[]},"participants":[],"events":[{"id":"message","kind":"message","text":"Call receiver","dependencyIds":["call"],"sourceIds":[]}],"explanation":[],"findings":[],"boundaries":[]})).unwrap();
         (checked, operation)
+    }
+
+    #[test]
+    fn explicit_boundary_response_keeps_its_own_frozen_declaration_when_catalogue_changes() {
+        let (mut checked, mut operation) = fixture();
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .normalized["transport"] = json!({"kind":"http","path":"/old"});
+        operation.events=vec![serde_json::from_value(json!({"id":"response","kind":"declared-boundary-return","interaction":"outgoing","from":"provider","to":"caller","text":"Declared response","dependencyIds":["interaction:outgoing"],"sourceIds":[]})).unwrap()];
+        let projected = project(&operation, &checked);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0]["eventKind"], "declared-boundary-return");
+        assert_eq!(projected[0]["eventFrom"], "provider");
+        assert_eq!(projected[0]["declaration"]["origin"], "human");
+        assert!(projected[0]["sourceChecks"].is_object());
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .digest = "new-digest".into();
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .normalized["declaration"]["origin"] = json!("agent-proposal");
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .normalized["transport"]["path"] = json!("/new");
+        let retained = retain(Some(&json!(projected)), &checked);
+        assert_eq!(retained[0]["declaration"]["origin"], "human");
+        assert_eq!(retained[0]["transport"]["path"], "/old");
+        assert_eq!(retained[0]["retained"], true);
+        assert_eq!(retained[0]["targetChanged"], true);
+        assert_eq!(retained[0]["snapshotContextDigest"], "snapshot");
     }
 
     #[test]

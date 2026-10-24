@@ -622,18 +622,7 @@ fn diagram_text(value: &str) -> String {
     }
     lines
         .iter()
-        .map(|line| {
-            line.chars()
-                .map(|c| match c {
-                    '&' => "#38;".to_owned(),
-                    '<' => "#60;".to_owned(),
-                    '>' => "#62;".to_owned(),
-                    ';' => "#59;".to_owned(),
-                    '"' => "#quot;".to_owned(),
-                    _ => c.to_string(),
-                })
-                .collect::<String>()
-        })
+        .map(|line| super::super::render::mermaid_label(line))
         .collect::<Vec<_>>()
         .join("<br/>")
 }
@@ -686,7 +675,11 @@ fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
                     .1
                     .push(SequenceNode::Group(frame));
             }
-            "message" | "return" | "declared" => stack
+            "message"
+            | "return"
+            | "declared"
+            | "declared-boundary"
+            | "declared-boundary-return" => stack
                 .last_mut()
                 .unwrap()
                 .arms
@@ -772,25 +765,38 @@ fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
 
 fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
     let events = sequence_events(op)?;
-    if !events
-        .iter()
-        .any(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
-    {
+    if !events.iter().any(|e| {
+        matches!(
+            text(&e["kind"]),
+            "message" | "return" | "declared" | "declared-boundary" | "declared-boundary-return"
+        )
+    }) {
         return Ok(None);
     }
     let referenced = events
         .iter()
-        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
+        .filter(|e| {
+            matches!(
+                text(&e["kind"]),
+                "message"
+                    | "return"
+                    | "declared"
+                    | "declared-boundary"
+                    | "declared-boundary-return"
+            )
+        })
         .flat_map(|e| [text(&e["from"]), text(&e["to"])])
         .collect::<std::collections::BTreeSet<_>>();
     let mut participants = Vec::new();
     for p in rows(&op["participants"]).filter(|p| referenced.contains(text(&p["id"]))) {
         participants.push((text(&p["id"]).to_owned(), text(&p["label"]).to_owned()));
     }
-    for e in events
-        .iter()
-        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
-    {
+    for e in events.iter().filter(|e| {
+        matches!(
+            text(&e["kind"]),
+            "message" | "return" | "declared" | "declared-boundary" | "declared-boundary-return"
+        )
+    }) {
         for key in ["from", "to"] {
             let id = text(&e[key]);
             if !id.is_empty() && !participants.iter().any(|(p, _)| p == id) {
@@ -816,7 +822,11 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
         let kind = text(&event["kind"]);
         let label = diagram_text(text(&event["text"]));
         match kind {
-            "message" | "return" | "declared" => {
+            "message"
+            | "return"
+            | "declared"
+            | "declared-boundary"
+            | "declared-boundary-return" => {
                 let (Some(from), Some(to)) = (
                     names.get(text(&event["from"])),
                     names.get(text(&event["to"])),
@@ -826,11 +836,15 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
                 out.push_str(&format!(
                     "{from}{}{to}: {}{label}\n",
                     if kind == "message" { "->>" } else { "-->>" },
-                    if kind == "declared" {
-                        "[declared] "
-                    } else {
-                        ""
-                    }
+                    super::super::render::mermaid_label(
+                        if super::super::declared_diagrams::boundary(kind) {
+                            "[declared boundary; runtime unverified] "
+                        } else if kind == "declared" {
+                            "[declared] "
+                        } else {
+                            ""
+                        }
+                    )
                 ));
             }
             "alt" | "opt" | "loop" => {
@@ -1003,6 +1017,27 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             "{heading} Declared interface schemas\n\n{declared}\n"
         ));
     }
+    for participant in rows(&op["participants"]) {
+        let external = text(&participant["externalService"]);
+        let service = text(&participant["service"]);
+        let (folder, actor) = if !external.is_empty() {
+            ("external-services", external)
+        } else {
+            ("services", service)
+        };
+        if !actor.is_empty() {
+            out.push_str(&format!(
+                "- [{}](../{folder}/{actor}.mdx){}\n",
+                md(text(&participant["label"])),
+                if !external.is_empty() {
+                    " · source not captured; runtime unverified"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    out.push('\n');
     if let Some(diagram) = sequence(op)? {
         out.push_str(&format!("{heading} Interaction diagram\n\nActors and nested branches from the retained account; not a runtime trace. Labels are shortened for readability. Full messages and notes follow.\n\n{}",fence(&diagram,"mermaid")));
     }
@@ -2111,6 +2146,29 @@ pub(super) fn project(
             body
         };
         let mut body = body;
+        if page["declaredRelationships"]["edges"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+        {
+            let graph = &page["declaredRelationships"];
+            body.push_str("\n## Declared service relationships\n\nDeclared architecture; runtime unverified. External source is not captured. Position does not establish execution order. Use the participant links below when the diagram host disables embedded links.\n\n");
+            // Mermaid link behavior depends on the host; normal Markdown links are always retained.
+            let source = super::super::declared_diagrams::mermaid(graph)
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("click "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push_str(&fence(&source, "mermaid"));
+            for node in rows(&graph["nodes"]) {
+                body.push_str(&format!(
+                    "- [{}]({}) · `{}` · {}\n",
+                    md(text(&node["label"])),
+                    text(&node["href"]).replace(".html", ".mdx"),
+                    md(text(&node["id"])),
+                    md(text(&node["sourceCapture"]))
+                ));
+            }
+        }
         if let Some(externals) = page["externalServices"]
             .as_object()
             .filter(|m| !m.is_empty())
@@ -3107,6 +3165,47 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn boundary_diagrams_protect_statement_delimiters_for_the_bundled_runtime() {
+        let title = "Partner <svg onload=\"alert(1)\"> & literal #59; `quoted`";
+        let op = json!({"id":"boundary-runtime","title":"Declared boundaries","summary":{"id":"summary","text":"Formatter regression fixture","dependencyIds":[],"sourceIds":[]},"participants":[{"id":"owned","label":"Owned","service":"owned"},{"id":"provider","label":title,"service":null,"externalService":"provider"}],"events":[
+            {"id":"request","kind":"declared-boundary","from":"owned","to":"provider","interaction":"request","text":"Request; receiver execution is unknown.","dependencyIds":[],"sourceIds":[]},
+            {"id":"response","kind":"declared-boundary-return","from":"provider","to":"owned","interaction":"request","text":"Declared reply; receipt is unverified.","dependencyIds":[],"sourceIds":[]},
+            {"id":"event","kind":"declared-boundary","from":"owned","to":"provider","interaction":"event","text":"Publish; delivery is unverified.","dependencyIds":[],"sourceIds":[]}
+        ]});
+        let native =
+            crate::documentation::render::mermaid(&serde_json::from_value(op.clone()).unwrap());
+        let mdx = sequence(&op).unwrap().unwrap();
+        for source in [&native, &mdx] {
+            let messages = source
+                .lines()
+                .filter(|line| line.contains("-->>"))
+                .collect::<Vec<_>>();
+            assert_eq!(messages.len(), 3);
+            for message in messages {
+                let mut remaining = message;
+                while let Some(end) = remaining.find(';') {
+                    let code = remaining[..end]
+                        .rsplit_once('#')
+                        .map(|(_, code)| code)
+                        .unwrap_or("");
+                    assert!(
+                        !code.is_empty()
+                            && (code == "quot" || code.bytes().all(|c| c.is_ascii_digit())),
+                        "unescaped Mermaid statement delimiter: {message}"
+                    );
+                    remaining = &remaining[end + 1..];
+                }
+            }
+        }
+        // The optional fixture is consumed by the real bundled Mermaid parser
+        // and browser gate; successful MDX compilation alone is insufficient.
+        if let Ok(path) = std::env::var("CODECLEW_MERMAID_FIXTURE_OUT") {
+            let graph = json!({"nodes":[{"id":"service:owned","label":"Owned","href":"../services/owned.html"},{"id":"external-service:provider","label":title,"href":"../external-services/provider.html"}],"edges":[{"id":"request","from":"service:owned","to":"external-service:provider","transport":{"kind":"http"}}]});
+            std::fs::write(path,serde_json::to_vec_pretty(&json!({"nativeSequence":native,"mdxSequence":mdx,"graph":crate::documentation::declared_diagrams::mermaid(&graph),"expectedLabels":["Owned",title]})).unwrap()).unwrap();
+        }
+    }
+
     #[test]
     fn sequence_removes_empty_groups_and_unused_actors_without_losing_else_conditions() {
         let op = json!({"participants":[{"id":"caller","label":"Unused caller"},{"id":"service","label":"Service"},{"id":"db","label":"Database"}],"events":[

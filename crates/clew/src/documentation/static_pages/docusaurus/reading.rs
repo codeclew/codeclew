@@ -376,25 +376,58 @@ fn cards(
                 if !seen.insert((service, name)) {
                     continue;
                 }
-                let flow = if index == 0 { "outgoing" } else { "incoming" };
-                let path = format!(
-                    "/services/{service}#section-{}",
-                    if index == 0 { "egress" } else { "ingress" }
-                );
-                out.push_str(&link(
-                    &path,
+                let external = index == 1 && row["declaration"]["external"] == true;
+                let registered = external
+                    && row["declaration"]["externalService"] == service
+                    && page["externalServices"][service].is_object();
+                let label = if registered {
+                    page["externalServices"][service]["title"]
+                        .as_str()
+                        .unwrap_or(service)
+                } else {
                     context["serviceLabels"][service]
                         .as_str()
-                        .unwrap_or(service),
-                    page,
-                    question,
-                    json!({"topic":topic,"direction":flow}),
-                ));
+                        .unwrap_or(service)
+                };
+                if external {
+                    if registered {
+                        out.push_str(&link(
+                            &format!("/external-services/{service}"),
+                            label,
+                            page,
+                            question,
+                            json!({}),
+                        ));
+                    } else {
+                        out.push_str(&md(label));
+                    }
+                    out.push_str("\n\nSource not captured; external execution is unverified.\n\n");
+                } else {
+                    let flow = if index == 0 { "outgoing" } else { "incoming" };
+                    let path = format!(
+                        "/services/{service}#section-{}",
+                        if index == 0 { "egress" } else { "ingress" }
+                    );
+                    out.push_str(&link(
+                        &path,
+                        label,
+                        page,
+                        question,
+                        json!({"topic":topic,"direction":flow}),
+                    ));
+                }
                 out.push_str(&format!("\n\n{}\n\n", md(name)));
             }
             out.push_str("</div>\n\n");
         }
-        out.push_str("</div>\n\nProposed handoff; runtime delivery has not been verified.\n\n");
+        out.push_str(&format!(
+            "</div>\n\n{}; runtime delivery has not been verified.\n\n",
+            if i["origin"] == "agent-proposal" {
+                "Proposed handoff"
+            } else {
+                "Declared handoff"
+            }
+        ));
         let mut seen = BTreeSet::new();
         for view in rows(&context["processLinks"]) {
             if view["id"] == page["process"]["definition"]["id"] {
@@ -793,6 +826,21 @@ mod tests {
         oversized["original"]["text"] = json!(" ".repeat(65537));
         assert!(observation(&oversized).is_none());
     }
+    #[test]
+    fn external_kafka_recipient_links_to_registry_page_and_never_invents_ingress() {
+        let i = json!({"id":"event","origin":"human","declaration":{"external":true,"externalService":"provider","transport":{"kind":"kafka","topic":"requests"},"from":{"service":"owned"},"to":{"service":"provider"}},"runtime":"UNKNOWN"});
+        let mut page = json!({"subject":"service:owned","externalServices":{"provider":{"title":"External provider"}}});
+        let body = cards(&page, &json!({}), vec![&i], "outgoing", None).unwrap();
+        assert!(body.contains("/external-services/provider"));
+        assert!(!body.contains("/services/provider"));
+        assert!(body.contains("Declared handoff"));
+        page["externalServices"] = json!({});
+        let legacy = cards(&page, &json!({}), vec![&i], "outgoing", None).unwrap();
+        assert!(!legacy.contains("/services/provider"));
+        assert!(!legacy.contains("/external-services/provider"));
+        assert!(legacy.contains("Source not captured"));
+    }
+
     #[test]
     fn local_http_roots_do_not_become_publishers_and_source_bound_wrappers_do() {
         let i = json!({"id":"event","declaration":{"transport":{"kind":"kafka","topic":"weather.requested"},"from":{"service":"places","selector":{"name":"publish","language":"csharp","owner":"Publisher"}},"to":{"service":"dashboard","selector":{"name":"consume"}}},"from":{"sourceIds":["send"]},"topic":{"status":"UNRESOLVED"},"runtime":"UNKNOWN"});

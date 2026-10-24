@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.51 — 2026-10-23
+
+- Show declared service relationships as a linked graph using retained catalogue
+  identities, scoped service/process views and accessible text navigation.
+- Admit explicit registered external boundary arrows and separately authored HTTP
+  responses through delivered Work evidence. Keep source and declaration authority
+  separate; reject Kafka synchronous returns and preserve legacy resolved arrows.
+
 ## 0.13.50 — 2026-10-23
 
 - Render safe Markdown tables in authored reading bodies across native, full

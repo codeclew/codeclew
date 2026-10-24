@@ -139,11 +139,13 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
                 id: "caller".into(),
                 label: "Caller".into(),
                 service: None,
+                external_service: None,
             },
             Participant {
                 id: "service".into(),
                 label: "Orders".into(),
                 service: Some("orders".into()),
+                external_service: None,
             },
         ],
         events: vec![Event {

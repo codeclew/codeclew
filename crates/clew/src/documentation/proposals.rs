@@ -131,6 +131,8 @@ pub struct ParticipantInput {
     pub label: String,
     #[serde(default)]
     pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_service: Option<String>,
 }
 fn provided_visuals<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -576,7 +578,11 @@ impl Builder<'_> {
                 && !deps.iter().all(|id| {
                     matches!(
                         self.work.checked.dependencies[id].kind.as_str(),
-                        "NOTE_ASSOCIATION" | "DOMAIN_ENTITY" | "VIEW_DEFINITION"
+                        "NOTE_ASSOCIATION"
+                            | "DOMAIN_ENTITY"
+                            | "VIEW_DEFINITION"
+                            | "DECLARED_INTERACTION"
+                            | "EXTERNAL_SERVICE"
                     )
                 }))
             || sources.len() > 32
@@ -678,7 +684,15 @@ impl Builder<'_> {
             let grouped = matches!(step.kind.as_str(), "alt" | "loop" | "opt");
             if !matches!(
                 step.kind.as_str(),
-                "message" | "return" | "note" | "alt" | "loop" | "opt" | "declared"
+                "message"
+                    | "return"
+                    | "note"
+                    | "alt"
+                    | "loop"
+                    | "opt"
+                    | "declared"
+                    | "declared-boundary"
+                    | "declared-boundary-return"
             ) || (!grouped && !step.children.is_empty())
                 || (step.kind != "alt" && !step.otherwise.is_empty())
             {
@@ -809,6 +823,11 @@ fn validate_specialized_fields(
         !store::valid_id(&participant.id)
             || participant.label.trim().is_empty()
             || participant.label.len() > 512
+            || (participant.service.is_some() && participant.external_service.is_some())
+            || participant
+                .external_service
+                .as_ref()
+                .is_some_and(|id| !store::valid_id(id))
             || participant
                 .service
                 .as_ref()
@@ -869,7 +888,11 @@ pub(super) fn materialize(
         events: 0,
     };
     let mut n = Narrative {
-        schema: "codeclew-documentation-narrative/1.3".into(),
+        schema: work
+            .retained
+            .as_ref()
+            .map(|n| n.schema.clone())
+            .unwrap_or_else(|| "codeclew-documentation-narrative/1.3".into()),
         subject: work.subject.clone(),
         context_digest: work.checked.context_digest.clone(),
         operations: Vec::new(),
@@ -885,6 +908,7 @@ pub(super) fn materialize(
         )
         .into(),
         service: None,
+        external_service: None,
     }];
     for service in selected_service_ids(work) {
         let id = format!("service-{service}");
@@ -893,6 +917,7 @@ pub(super) fn materialize(
             id,
             label: service.clone(),
             service: Some(service),
+            external_service: None,
         });
     }
     let operation_id = |builder: &Builder, reference: &str| -> Result<String, ClewError> {
@@ -1086,12 +1111,21 @@ pub(super) fn materialize(
                 id: declared.id.clone(),
                 label: declared.label.clone(),
                 service: declared.service.clone(),
+                external_service: declared.external_service.clone(),
             });
         }
         if op.participants.len() > 24 {
             return Err(invalid("sequence exceeds 24 participants"));
         }
         builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &op_actors)?;
+        if op.participants.iter().any(|p| p.external_service.is_some())
+            || op
+                .events
+                .iter()
+                .any(|e| super::declared_diagrams::boundary(&e.kind))
+        {
+            n.schema = "codeclew-documentation-narrative/1.4".into();
+        }
         if !proposed.explanation.is_empty() {
             // Authored narrative is added to the per-step echo so arrows can stay
             // short while "What happens" carries the domain prose. Anchor each
@@ -1816,6 +1850,7 @@ mod operation_input_tests {
                 id: "worker".into(),
                 label: "Worker".into(),
                 service: None,
+                external_service: None,
             }]
         };
         let explanation = || {

@@ -15,8 +15,8 @@ import xml.etree.ElementTree as ET
 SITE = Path(__file__).resolve().parents[1] / 'site'
 GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs',
                         'examples/clew-starter/docs', 'codeclew/source')
-ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html', 'codeclew.html'}
-TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
+ACTIVE = {'index.html', 'nav-query.html', 'working-tree.html', 'evidence.html', 'extend.html', 'codeclew.html'}
+TASKS = {'./nav-query.html', './working-tree.html'}
 
 
 def navigation_module():
@@ -257,13 +257,13 @@ class SiteTests(unittest.TestCase):
             self.assert_destination('index.html', entry['url'])
 
     def test_native_example_wrappers_keep_task_return_and_real_native_targets(self):
-        for name, task in (('first-document', 'documentation'), ('updated-document', 'documentation'),
-                           ('help', 'documentation'), ('runbooks', 'documentation'),
-                           ('saved-edits', 'working-tree')):
+        for name, task in (('first-document', './help.html'), ('updated-document', './help.html'),
+                           ('help', '../../index.html'), ('runbooks', '../../index.html'),
+                           ('saved-edits', '../../working-tree.html')):
             path = SITE / 'examples/current-workflow' / (name + '.html')
             with self.subTest(reader=name):
                 page = Page(path)
-                self.assertIn('../../' + task + '.html', page.navigation['Return to task'])
+                self.assertIn(task, page.navigation['Return to task'])
                 iframe = re.search(r'<iframe\s+src="([^"]+)"\s+title="([^"]+)"', path.read_text())
                 self.assertIsNotNone(iframe)
                 self.assertTrue(iframe[2].strip())
@@ -308,6 +308,10 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(original).hexdigest(), record['originalSha256'])
             self.assertEqual(hashlib.sha256(readable).hexdigest(), record['readableSha256'])
             rebased = re.sub(rb'((?:href|src)=["\'])\./', rb'\1../../', original)
+            # The original evidence stays byte-exact; only the relocated navigation
+            # follows the current reader after removal of the old task page.
+            rebased = re.sub(rb'\.\./\.\./documentation\.html(?:#[^\"\']*)?',
+                             b'../current-workflow/help.html', rebased)
             self.assertEqual(readable, rebased)
             page = Page(root / 'index.html')
             for url in page.references:
