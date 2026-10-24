@@ -1,13 +1,24 @@
 //! An authored body is data for the shared parser, never executable MDX.
-pub(super) fn mdx(text: &str) -> String {
-    let literal = serde_json::to_string(text)
+fn literal(text: &str) -> String {
+    serde_json::to_string(text)
         .expect("text serializes")
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
         .replace('&', "\\u0026")
         .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029");
-    format!("<ClewMarkdown text={{{literal}}} />")
+        .replace('\u{2029}', "\\u2029")
+}
+
+pub(super) fn mdx(text: &str) -> String {
+    format!("<ClewMarkdown text={{{}}} />", literal(text))
+}
+
+pub(super) fn mdx_for_subject(text: &str, subject: &str) -> String {
+    format!(
+        "<ClewMarkdown text={{{}}} subject={{{}}} />",
+        literal(text),
+        literal(subject)
+    )
 }
 
 #[cfg(test)]

@@ -194,3 +194,20 @@ test('child model context belongs to the current consumer while the caller retur
  assert.match(back.innerHTML,/publisher\.html/);assert.match(back.innerHTML,/#question-send/);assert.match(back.innerHTML,/field=publisher.event/);
  assert.equal(JSON.stringify(data),before);
 });
+
+
+test('return captions distinguish whole-process roots from precise steps without changing context',()=>{
+ for(const language of ['en','ru'])for(const anchor of ['save-city','process-overview','question-save','thread-send']){
+  const query=new URLSearchParams({fromProcess:'save-city',fromAnchor:anchor,fromField:'city/id',fromStage:'Store'});
+  const location={href:'http://localhost/contracts/dashboard.html?'+query,search:'?'+query};
+  const back={innerHTML:''},document={documentElement:{lang:language},getElementById:id=>id==='dm-return'?back:null,querySelectorAll:()=>[]};
+  const context={window:{},document,location,URL,URLSearchParams};vm.runInNewContext(script,context);
+  context.window.CodeclewDataModel.contextLinks(document,{});
+  const root=anchor==='save-city'||anchor==='process-overview';
+  const label=language==='ru'?(root?'Вернуться к процессу':'Вернуться к тому же шагу процесса'):(root?'Return to process':'Return to the same process step');
+  assert.ok(back.innerHTML.endsWith('>'+label+'</a>'),back.innerHTML);
+  const href=back.innerHTML.match(/href="([^"]+)"/)[1].replaceAll('&amp;','&'),url=new URL(href,location.href);
+  assert.equal(url.pathname,'/scenarios/save-city.html');assert.equal(url.hash,'#'+anchor);
+  assert.equal(url.searchParams.get('view'),'process');assert.equal(url.searchParams.get('field'),'city/id');assert.equal(url.searchParams.get('stage'),'Store');
+ }
+});

@@ -8,9 +8,13 @@ import {language, t} from './clew-locale.js';
 import markdown from './clew-markdown.cjs';
 
 // The same escaping/parser implementation is embedded in native readers.
-export function ClewMarkdown({text}) {
+export function ClewMarkdown({text, subject}) {
   useEffect(() => { markdown.enhance(document, {tableLabel:t('Table')}); }, [text]);
-  return <div className="clew-markdown" dangerouslySetInnerHTML={{__html:markdown.render(text,{tableLabel:t('Table')})}} />;
+  const base = useBaseUrl('/'), [kind, id] = (subject || '').split(':');
+  const directory = kind === 'service' ? 'services' : kind === 'scenario' ? 'scenarios' : null;
+  const html = markdown.render(text,{tableLabel:t('Table')});
+  const projected = directory ? portableHtml(html, `${directory}/${id}.html`, base) : html;
+  return <div className="clew-markdown" dangerouslySetInnerHTML={{__html:projected}} />;
 }
 
 // Native details allow the shared anchor handler to reveal the field body.
@@ -130,10 +134,13 @@ function portableHref(href, nativePath, base) {
   target.search = url.search;
   return target.pathname + target.search + target.hash;
 }
+function portableHtml(html, nativePath, base) {
+  return html.replace(/href="([^"]*)"/g, (_, href) => `href="${portableHref(href, nativePath, base).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`);
+}
 export function ClewRetainedPage({nativePath, html}) {
   const base = useBaseUrl('/');
   // Input is this generator's escaped native reader markup, with scripts/styles removed.
-  const projected = html.replace(/href="([^"]*)"/g, (_, href) => `href="${portableHref(href, nativePath, base).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`);
+  const projected = portableHtml(html, nativePath, base);
   return <div className={'clew-retained' + (nativePath === 'data-model.html' ? ' dm-page' : '')} dangerouslySetInnerHTML={{__html: projected}} />;
 }
 export function ClewCatalog({entries}) {

@@ -271,7 +271,7 @@ fn evidence_in_language(block: &Value, prefix: &str, language: &str) -> Result<S
                 md(text(&e["title"])),
                 md(text(&e["state"]["freshness"])),
                 md(text(&e["state"]["verification"])),
-                reading::inline(text(&e["fragment"]["text"]))
+                super::markdown::mdx_for_subject(text(&e["fragment"]["text"]), text(&e["subject"]),)
             ));
             for source in e["sources"]
                 .as_object()
@@ -2590,6 +2590,27 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn secondary_evidence_renders_authored_markdown_and_preserves_exact_source() {
+        let narrative = "Field | Meaning\n--- | ---\n`cityId` | [City](../data-model/city.html)\n\n<script>{unsafe()}</script>";
+        let source = json!({"file":"city.ts","revision":"r1","startLine":1,"endLine":4,
+            "text":narrative,"textDigest":crate::canonical::hash_bytes(narrative.as_bytes())});
+        let block = json!({"evidence":[
+            {"kind":"RETAINED_CLAIM","subject":"service:city","title":"City account","fragment":{"text":narrative},
+                "state":{"freshness":"CURRENT","verification":"UNASSESSED"},"sources":{"city":source}},
+            {"kind":"SOURCE","source":source}
+        ]});
+        let original = block.clone();
+        let output = evidence_in(&block, "../").unwrap();
+        assert!(output.contains(&super::super::markdown::mdx_for_subject(
+            narrative,
+            "service:city"
+        )));
+        assert!(!output.contains("<script>"));
+        assert_eq!(output.matches(&source_link(&source).unwrap()).count(), 2);
+        assert_eq!(block, original);
+    }
+
     #[test]
     fn coherent_step_groups_evidence_without_hiding_failure_caveats_or_distinct_sources() {
         let source = |file: &str| json!({"file":file,"revision":"r1","startLine":1,"endLine":2,"text":"exact retained source","textDigest":crate::canonical::hash_bytes(b"exact retained source")});

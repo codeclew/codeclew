@@ -148,7 +148,8 @@
   const returnProcess=callerValid?caller:process,returnAnchor=callerValid?callerAnchor:anchor;
   const processPath=data.processHrefs?.[returnProcess]||'../scenarios/'+returnProcess+'.html';
   const returnQuery=new URLSearchParams({view:'process'});for(const name of ['field','stage','contract','cellStage']){const value=q.get('from'+name[0].toUpperCase()+name.slice(1));if(value)returnQuery.set(name,value);}
-  const target=document.getElementById('dm-return');if(target)target.innerHTML=chromeHtml`<a href="${esc(processPath)}?${esc(returnQuery.toString())}#${esc(returnAnchor)}">Return to the same process step</a>`;
+  const returnLabel=returnAnchor===returnProcess||returnAnchor==='process-overview'?'Return to process':'Return to the same process step';
+  const target=document.getElementById('dm-return');if(target)target.innerHTML=chromeHtml`<a href="${esc(processPath)}?${esc(returnQuery.toString())}#${esc(returnAnchor)}">${esc(t(returnLabel))}</a>`;
  }
  function processMount(){
   if(typeof D==='undefined'||!D.processDataFlow)return;
