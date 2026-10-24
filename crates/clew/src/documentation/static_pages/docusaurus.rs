@@ -450,6 +450,16 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
     out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
+    // Incoming links retain canonical operation IDs even when a reading guide
+    // supplies the primary presentation instead of operation headings.
+    let mut anchors = BTreeSet::from(["process-overview".to_owned()]);
+    anchors.extend(rows(&guide["sections"]).map(|s| format!("question-{}", text(&s["id"]))));
+    for operation in rows(&page["operations"]) {
+        let id = text(&operation["id"]);
+        if !id.is_empty() && anchors.insert(id.to_owned()) {
+            out.push_str(&format!("<ClewAnchor id={} pageStart />\n\n", json!(id)));
+        }
+    }
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
     out.push_str("<ClewPageContext />\n\n");
 
@@ -930,7 +940,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         md(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
         md(state["verification"].as_str().unwrap_or("UNASSESSED"))
     );
-    let mut out = format!("{}\n\n", reading::inline(text(&op["summary"]["text"])));
+    let mut out = format!("{}\n\n", prose(text(&op["summary"]["text"])));
     if state["freshness"]
         .as_str()
         .is_some_and(|s| s.contains("STALE"))
@@ -1289,11 +1299,12 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
     let mut sections = rows(&page["sections"]).collect::<Vec<_>>();
     sections.sort_by_key(|section| match text(&section["id"]) {
-        "section-responsibilities" => 0,
-        "section-entities" => 1,
-        "section-egress" => 2,
+        "section-overview" => 0,
+        "section-responsibilities" => 1,
+        "section-entities" => 2,
         "section-ingress" => 3,
-        _ => 4,
+        "section-egress" => 4,
+        _ => 5,
     });
     for section in sections {
         let sid = text(&section["id"]);
@@ -1315,7 +1326,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             {
                 out.push_str(&format!(
                     "{}\n\n",
-                    md(text(&section["content"]["summary"]["text"]))
+                    prose(text(&section["content"]["summary"]["text"]))
                 ));
                 for claim in rows(&section["content"]["explanation"]) {
                     out.push_str(&prose(text(&claim["text"])));
@@ -2595,7 +2606,7 @@ mod tests {
             {"id":"save","title":"Save place","number":2,"blocks":[block]},
             {"id":"apply","title":"Apply response","number":3,"blocks":[block]},
             {"id":"confidence","title":"Original source and scope","blocks":[block]}],"conclusion":{"title":"Unknown completion","text":"Completion remains unknown.","evidence":[],"links":[]}});
-        let mut page = json!({"subject":"scenario:save","language":"ru","questionReader":guide,"operations":[],"operationSources":{},"sources":{}});
+        let mut page = json!({"subject":"scenario:save","language":"ru","questionReader":guide,"operations":[{"id":"save"},{"id":"process-overview"},{"id":"save"}],"operationSources":{},"sources":{}});
         page["questionReaderTranslationGap"] = super::super::question_reading::translation_gap(
             &page["questionReader"],
             Some("ru"),
@@ -2612,6 +2623,18 @@ mod tests {
             rendered.contains("Требуется перевод") && rendered.contains("Исходный план чтения")
         );
         assert!(rendered.contains("Original retained explanation."));
+        assert_eq!(
+            rendered
+                .matches("<ClewAnchor id=\"save\" pageStart")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rendered
+                .matches("<ClewAnchor id=\"process-overview\" pageStart")
+                .count(),
+            1
+        );
         assert!(rendered.contains("section-entities") && rendered.contains("fromQuestion"));
         assert!(
             rendered.contains("<ClewStatus"),
@@ -2981,6 +3004,44 @@ mod tests {
         assert!(body[details..].contains("optional") && body[details..].contains("unknown"));
         assert!(body.contains("Original mapping"));
         assert_eq!(model, original);
+    }
+
+    #[test]
+    fn service_purpose_precedes_inventory_regardless_of_input_order() {
+        let ids = [
+            "section-egress",
+            "section-ingress",
+            "section-entities",
+            "section-responsibilities",
+            "section-overview",
+        ];
+        let page = json!({"title":"Service","sections":ids.iter().map(|id| json!({"id":id,"title":id,"content":{"id":id,"summary":{"text":format!("Original {id}")}}})).collect::<Vec<_>>(),"operations":[]});
+        let original = page.clone();
+        let body = service_page(&page, "sample").unwrap();
+        let positions = [
+            "section-overview",
+            "section-responsibilities",
+            "section-entities",
+            "section-ingress",
+            "section-egress",
+        ]
+        .map(|id| body.find(&format!("{{#{id}}}")).unwrap());
+        assert!(positions.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(page, original);
+    }
+
+    #[test]
+    fn service_summary_uses_shared_markdown_without_executing_authored_markup() {
+        let summary = "[Storage](../services/places.html#section-entities)\n\n| Field | Meaning |\n| --- | --- |\n| cityId | Selected city |\n<script>{unsafe()}</script>";
+        let operation = json!({"id":"section-entities","summary":{"text":summary}});
+        let original = operation.clone();
+        let body = operation_body(&json!({"language":"en"}), &operation, "###").unwrap();
+        assert!(body.contains(&super::super::markdown::mdx(summary)));
+        assert!(!body.contains("<script>"));
+        assert!(
+            body.find("<ClewMarkdown").unwrap() < body.find("Summary source bindings").unwrap()
+        );
+        assert_eq!(operation, original);
     }
 
     #[test]

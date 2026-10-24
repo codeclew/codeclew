@@ -1,6 +1,6 @@
 # Inline declarations and service field tables
 
-The source preview supports an optional `interfaceBindings` array in the existing
+Codeclew supports an optional `interfaceBindings` array in the existing
 `--data-model` plan for `./clew docs pages render`. A binding names an admitted
 contract and one exact retained interface card:
 
@@ -23,8 +23,13 @@ items, fields, parent-relative presence, nullability, descriptions and constrain
 One primary declaration link leads to its exact source. Original code-derived
 checks remain separate and unchanged, with detailed source bindings on demand.
 An unbound card is explicitly a source-derived account, not a declared schema.
-References, composition and conditional rules are retained without expansion or
-rule merging; any display frontier is visible beside the exact retained schema.
+OpenAPI 3 documents show each declared method/path, effective path/operation
+parameters, request media, response status/media and nested field tables.
+JSON Schema `oneOf`, `anyOf` and `allOf` branches remain separate, with their
+own parent-relative requirements; the reader never merges validation rules.
+References and conditional rules remain explicit without resolution or
+execution. Bounded displays report omitted details beside the exact retained
+schema.
 This is a reading projection, not a validator or evidence of runtime conformance.
 
 Service `section-entities` tables use only the existing explicit model
@@ -37,3 +42,15 @@ Local presentation aliases may route a historical `/generated/<publication>/`
 HTML URL to a current renderer for the same retained publication. Preserve query
 and fragment, label the renderer and provide an explicit historical option.
 Retained JSON/source files and original export artifacts must remain unchanged.
+
+A contracts-only plan may use an empty `models` array when `contracts` is
+nonempty. The declared schema reader does not require an invented domain model.
+
+`clew docs render --root DOCS --snapshot SNAPSHOT --publication PUBLICATION
+--data-model PLAN --reading-plan GUIDES --output DESTINATION` replays the exact
+saved publication in the historical reader. It keeps the original design and
+operation anchors, adds declared contract destinations, and retains original
+guide files even when they do not replace the historical overview. The same
+publication and plans can be exported with `docs pages render --format
+docusaurus` for the sequential MDX presentation. Markdown summaries and body
+claims use the same escaped parser in both formats.

@@ -2002,6 +2002,13 @@ fn historical_docs_render_replays_exact_publication_without_replacing_reader_or_
     let publication = published["bundle"].as_str().unwrap();
     let old_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
     let checked = Check::load_snapshot(&repo, &snapshot).unwrap();
+    let source = &checked.services["sample"].sources["src-endpoint-a"];
+    let reference = json!({"kind":"SOURCE","service":"sample","sourceId":source.id,"textDigest":source.text_digest,"startLine":source.start_line,"endLine":source.end_line});
+    let block = json!({"title":"Original block","text":"Preserved historical guide body.","evidence":[reference]});
+    let plan = json!({"schema":"codeclew-system-reading-plan/1.0","publication":publication,"subject":"system:overview","language":"en","title":"Kept original guide","purpose":"Original source-bound purpose.","sections":[{"id":"start","title":"First original section","blocks":[block]},{"id":"confidence","title":"Original source and scope","blocks":[block]}],"conclusion":block});
+    let input = temporary.path().join("historical-guide.json");
+    let input_bytes = serde_json::to_vec_pretty(&plan).unwrap();
+    fs::write(&input, &input_bytes).unwrap();
     let output = temporary.path().join("historical");
     let result = crate::documentation::cli::run(crate::documentation::cli::Command::Render {
         root: repo.root.clone(),
@@ -2012,13 +2019,27 @@ fn historical_docs_render_replays_exact_publication_without_replacing_reader_or_
         snapshot: Some(snapshot.clone()),
         publication: Some(publication.into()),
         data_model: None,
-        reading_plan: None,
+        reading_plan: Some(input.clone()),
         publish: false,
         source_export: Default::default(),
         output: Some(output.clone()),
     })
     .unwrap();
     assert_eq!(result["status"], "RENDERED");
+    let original_guide: Value = serde_json::from_slice(
+        &fs::read(output.join("system-reading-guide.original.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(original_guide["title"], "Kept original guide");
+    assert_eq!(
+        original_guide["sections"][0]["blocks"][0]["text"],
+        "Preserved historical guide body."
+    );
+    let overview = fs::read_to_string(output.join("overview.html")).unwrap();
+    assert!(!overview.contains("Kept original guide"));
+    assert!(!output.join("system-reading-guide.json").exists());
+    assert!(!output.join("retained-overview.html").exists());
+    assert_eq!(fs::read(input).unwrap(), input_bytes);
     let payload: Value =
         serde_json::from_slice(&fs::read(output.join("services/sample.json")).unwrap()).unwrap();
     assert!(payload.get("questionReader").is_none());

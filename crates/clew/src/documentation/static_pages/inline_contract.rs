@@ -4,6 +4,8 @@ use super::super::{invalid, language::label, render::escape};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 
+mod openapi;
+
 fn nullability(s: &Value, openapi30: bool) -> &'static str {
     if s == &Value::Bool(false) {
         return "Excluded";
@@ -71,6 +73,12 @@ pub(super) fn project_document(
             "inline contract branch must be a schema object or boolean",
         ));
     }
+    if schema["openapi"]
+        .as_str()
+        .is_some_and(|v| v.starts_with("3."))
+    {
+        return openapi::project(schema, pointer);
+    }
     let openapi30 = document["openapi"]
         .as_str()
         .is_some_and(|v| v.starts_with("3.0."));
@@ -122,7 +130,14 @@ fn visit(
         .filter(|(k, _)| {
             !matches!(
                 k.as_str(),
-                "type" | "properties" | "items" | "description" | "title"
+                "type"
+                    | "properties"
+                    | "items"
+                    | "description"
+                    | "title"
+                    | "oneOf"
+                    | "anyOf"
+                    | "allOf"
             )
         })
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -130,9 +145,6 @@ fn visit(
     for key in [
         "$ref",
         "$dynamicRef",
-        "allOf",
-        "oneOf",
-        "anyOf",
         "not",
         "if",
         "then",
@@ -152,6 +164,34 @@ fn visit(
     projection.nodes.push(json!({"field":field,"pointer":pointer,"type":kind,"presence":presence,
         "nullability":nullability(s, projection.openapi30),"description":s["description"].as_str().unwrap_or(""),
         "constraints":constraints}));
+    for composition in ["oneOf", "anyOf", "allOf"] {
+        if let Some(branches) = s[composition].as_array() {
+            for (index, branch) in branches.iter().enumerate() {
+                if projection.nodes.len() >= 512 {
+                    projection.frontier.push(format!(
+                        "{field}: composition display bound reached; exact branches retained below"
+                    ));
+                    break;
+                }
+                let condition = if composition == "allOf" {
+                    format!("allOf branch {} · constraints apply together", index + 1)
+                } else {
+                    format!(
+                        "{composition} alternative {} · requirements apply within this branch",
+                        index + 1
+                    )
+                };
+                visit(
+                    branch,
+                    &format!("{field}.{composition}[{}]", index + 1),
+                    &format!("{pointer}/{composition}/{index}"),
+                    &condition,
+                    depth + 1,
+                    projection,
+                );
+            }
+        }
+    }
     if let Some(properties) = s["properties"].as_object() {
         // Required names first preserves an explicit useful declaration order.
         let required = s["required"].as_array();
@@ -221,6 +261,9 @@ pub(super) fn table_html(declaration: &Value, language: &str) -> String {
     table_at(declaration, language, false)
 }
 fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
+    if declaration["kind"] == "OPENAPI_DOCUMENT" {
+        return openapi::table(declaration, language, portable);
+    }
     let lit = |s: &str| escape(s).replace('{', "&#123;").replace('}', "&#125;");
     let headers = [
         "Field",
@@ -333,11 +376,34 @@ mod tests {
         );
     }
     #[test]
-    fn references_and_composition_are_retained_without_invented_expansion() {
+    fn event_alternatives_expose_fields_without_combining_requiredness() {
+        let schema = json!({"oneOf":[
+            {"type":"object","required":["cityId"],"properties":{"cityId":{"type":"string","enum":["oslo"]}}},
+            {"type":"object","required":["periods"],"properties":{"periods":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"number"}}}}
+        ]});
+        let d = project(&schema, "").unwrap();
+        let rows = d["nodes"].as_array().unwrap();
+        assert!(rows.iter().any(|n| n["field"] == "$.oneOf[1].cityId" && n["presence"] == "Required in parent"));
+        assert!(
+            rows.iter()
+                .any(|n| n["field"] == "$.oneOf[2].periods" && n["constraints"]["maxItems"] == 6)
+        );
+        assert!(rows[0]["constraints"].get("oneOf").is_none());
+        assert!(table(&d, "en").contains("oneOf alternative 2"));
+        assert_eq!(d["schema"], schema);
+    }
+    #[test]
+    fn references_remain_unexpanded_and_composition_branches_stay_separate() {
         let s = json!({"$ref":"#/$defs/Other","allOf":[{"required":["hidden"]}]});
         let d = project(&s, "").unwrap();
-        assert_eq!(d["nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(d["frontier"].as_array().unwrap().len(), 2);
+        assert_eq!(d["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(d["frontier"].as_array().unwrap().len(), 1);
+        assert!(
+            d["nodes"][1]["presence"]
+                .as_str()
+                .unwrap()
+                .starts_with("allOf branch")
+        );
         assert_eq!(d["nodes"][0]["nullability"], "Not established");
         assert_eq!(d["schema"], s);
         assert!(project(&json!("not schema"), "").is_err());

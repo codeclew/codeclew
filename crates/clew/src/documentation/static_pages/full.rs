@@ -359,7 +359,7 @@ pub(super) fn render(
             .into_bytes();
         let _ = name;
     }
-    if let Some(guide) = questions.get("system:overview").filter(|_| !historical) {
+    if let Some(guide) = questions.get("system:overview") {
         let original = files
             .get("overview.html")
             .ok_or_else(|| invalid("system guide has no frozen overview"))?
@@ -376,17 +376,19 @@ pub(super) fn render(
             guide_notice_files.insert("index.html".into(), gap.clone());
             guide_gaps.insert("system:overview".into(), gap);
         }
-        let html = super::question_reading::overview_html_in_language(
-            std::str::from_utf8(&original).map_err(io_error)?,
-            guide,
-            language,
-        )?;
-        files.insert("retained-overview.html".into(), original);
-        files.insert("overview.html".into(), html.into_bytes());
-        files.insert(
-            "system-reading-guide.json".into(),
-            serde_json::to_vec_pretty(guide).map_err(io_error)?,
-        );
+        if !historical {
+            let html = super::question_reading::overview_html_in_language(
+                std::str::from_utf8(&original).map_err(io_error)?,
+                guide,
+                language,
+            )?;
+            files.insert("retained-overview.html".into(), original);
+            files.insert("overview.html".into(), html.into_bytes());
+            files.insert(
+                "system-reading-guide.json".into(),
+                serde_json::to_vec_pretty(guide).map_err(io_error)?,
+            );
+        }
     }
     let model = if inputs.source_policy.remote() {
         model
