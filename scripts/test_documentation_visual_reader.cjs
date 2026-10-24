@@ -1844,3 +1844,14 @@ test('explicit HTTP boundary response reuses only unambiguous same-operation bin
  let evidence=r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])');assert.match(evidence,/SAME_OPERATION_INTERACTION/);assert.match(evidence,/old-request-digest/);assert.match(evidence,/\/old/);assert.doesNotMatch(evidence,/human|\/new/);assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/agent-proposal/);
  r.run('D.operationExternalCalls[D.operations[0].id]=[]');evidence=r.run('boundaryEvidence(D.operations[0],D.operations[0].events[0])');assert.match(evidence,/No declaration binding was retained/);assert.doesNotMatch(evidence,/human|\/new|old-request-digest/);assert.match(r.run('boundaryCaption(D.operations[0],D.operations[0].events[0])'),/Provenance unavailable/);
 });
+
+
+test('bound OpenAPI interface card renders operations and nested schema fields without assuming root nodes',()=>{
+ const data=fixture(),op=data.operations[0];
+ op.interfaceContracts=[{id:'http',title:'HTTP',kind:'http',boundaries:[],rows:[]}];
+ const declaration={kind:'OPENAPI_DOCUMENT',operations:[{method:'POST',path:'/cities/{id}',operationId:'save',parts:[{title:'Request body',required:true,declaration:{nodes:[{field:'cityId',type:'string',presence:'Required in parent',nullability:'Excluded',constraints:{enum:['oslo']}}]}},{title:'Response · 503',description:'Unavailable <script>'}]}],frontier:[],schema:{openapi:'3.1.0'}};
+ data.interfaceContractDeclarations={[op.id]:{http:{id:'http',title:'HTTP declaration',source:{file:'openapi.json',revision:'r1'},declaration}}};
+ const original=JSON.stringify(data),r=load(data),body=r.run('interfaceContracts({id:"section-responsibilities"})');
+ assert.match(body,/POST \/cities\/\{id\}/);assert.match(body,/<code>cityId<\/code>/);assert.match(body,/Response · 503/);assert.match(body,/Unavailable &lt;script&gt;/);assert.doesNotMatch(body,/<script>/);
+ assert.equal(JSON.stringify(data),original);
+});
