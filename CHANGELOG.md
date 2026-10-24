@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.52 — 2026-10-24
+
+- Replay exact saved publications in the historical reader and export the same
+  source-bound content as sequential MDX. Preserve original guides, operation
+  anchors and direct contract navigation. Render Markdown summaries and complete
+  service bodies consistently, with purpose before technical inventories.
+- Present OpenAPI operations, parameters, request/response fields and independent
+  JSON Schema composition branches as readable declared contracts. Keep exact
+  originals, constraints and provenance; runtime conformance remains unverified.
+- Recover exact service captures from retained snapshot exports, admit complete
+  retained syntax-file claims and support contracts-only presentation plans.
+
 ## 0.13.51 — 2026-10-23
 
 - Show declared service relationships as a linked graph using retained catalogue
