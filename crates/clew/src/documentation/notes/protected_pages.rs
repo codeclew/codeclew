@@ -25,7 +25,7 @@ pub fn write(payload: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(
         let original = note["original"]["text"].as_str().unwrap_or("");
         let escape = super::super::render::escape;
         let mut html = format!(
-            "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>body{{max-width:960px;margin:32px auto;padding:0 24px;font:17px/1.6 system-ui}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{border-collapse:collapse}}th,td{{padding:8px;border:1px solid #ddd;text-align:left}}details{{margin:20px 0}}a{{color:#245aac}}</style><body><nav><a href=\"../overview.html\">Overview</a> · <a href=\"../services/{}.html#{}\">Service and separate assessment</a></nav><main><h1>{}</h1><p>Human-owned page · {} · Original text remains unverified.</p><article data-clew-markdown>{}</article><p>Page digest: <code>{}</code> · <a download href=\"{}.original.md\">Download exact original Markdown</a></p>",
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>body{{max-width:960px;margin:32px auto;padding:0 24px;font:17px/1.6 system-ui}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{border-collapse:collapse}}th,td{{padding:8px;border:1px solid #ddd;text-align:left}}details{{margin:20px 0}}a{{color:#245aac}}</style></head><body><nav><a href=\"../overview.html\">Overview</a> · <a href=\"../services/{}.html#{}\">Service and separate assessment</a></nav><main><h1>{}</h1><p>Human-owned page · {} · Original text remains unverified.</p><article data-clew-markdown>{}</article><p>Page digest: <code>{}</code> · <a download href=\"{}.original.md\">Download exact original Markdown</a></p>",
             escape(a["title"].as_str().unwrap_or(id)),
             escape(a["service"].as_str().unwrap_or("")),
             escape(note["id"].as_str().unwrap_or("")),
@@ -78,6 +78,7 @@ mod tests {
         write(&page, &mut files).unwrap();
         assert_eq!(files["pages/policy.original.md"], original.as_bytes());
         let html = String::from_utf8(files["pages/policy.html"].clone()).unwrap();
+        assert!(html.contains("<head>") && html.contains("</head>"));
         assert!(html.contains("data-clew-markdown") && html.contains("Field | Meaning"));
         assert!(!html.contains("<script>{unsafe()}"));
         assert!(html.contains("&lt;script&gt;{unsafe()}&lt;/script&gt;"));
@@ -88,5 +89,27 @@ mod tests {
         write(&renamed, &mut later).unwrap();
         assert!(later.contains_key("pages/policy.html"));
         assert_eq!(later["pages/policy.original.md"], original.as_bytes());
+    }
+
+    #[test]
+    fn protected_page_uses_the_shared_reader_header_styles_after_bundle_decoration() {
+        let page = json!({"subject":"service:sample","notes":[{"id":"assessment-policy","association":{"id":"policy","service":"sample","title":"Local policy","classification":"mixed"},"original":{"text":"Field | Meaning\n--- | ---\nid | Identifier","digest":"original-digest"},"assessment":null}]});
+        let mut files = BTreeMap::new();
+        write(&page, &mut files).unwrap();
+        let original = files["pages/policy.original.md"].clone();
+        super::super::super::reader::decorate_bundle(&mut files, "synthetic").unwrap();
+        let html = String::from_utf8(files["pages/policy.html"].clone()).unwrap();
+        let head = html
+            .split_once("<head>")
+            .unwrap()
+            .1
+            .split_once("</head>")
+            .unwrap()
+            .0;
+        assert!(head.contains(super::super::super::reader::STYLE));
+        assert!(head.contains(".reader-brand svg"));
+        assert_eq!(html.matches("<nav class=\"reader-nav\"").count(), 1);
+        assert!(html.contains("data-clew-markdown"));
+        assert_eq!(files["pages/policy.original.md"], original);
     }
 }
