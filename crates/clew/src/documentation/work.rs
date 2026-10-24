@@ -4467,7 +4467,7 @@ mod section_context_tests {
         }
     }
 
-    fn exact_file_only_proposal_fixture() -> Work {
+    fn exact_retained_file_proposal_fixture(coverage: &str) -> Work {
         let mut work =
             source_inventory_fixture("# Fixture documentation\nRetained λ☕ text.\n".into());
         work.request.entrypoint = Some("section-responsibilities".into());
@@ -4501,13 +4501,29 @@ mod section_context_tests {
                 id: "orders:source-scope".into(),
             },
         );
+        let scope = evidence
+            .observations
+            .get_mut("orders:source-scope")
+            .unwrap();
+        scope.normalized["inventory"]["README.md"]["coverage"] = json!(coverage);
+        scope.digest = digest(&scope.normalized).unwrap();
+        work.checked
+            .dependencies
+            .insert(scope.id.clone(), scope.clone());
+        work.influence
+            .insert(scope.id.clone(), scope.digest.clone());
         super::super::analysis::verify_evidence(evidence).unwrap();
         work
     }
 
     #[test]
-    fn file_only_source_summary_materializes_exact_inventory_pin_without_phantom_facts() {
-        let work = exact_file_only_proposal_fixture();
+    fn retained_file_source_summary_materializes_exact_inventory_pin_without_phantom_facts() {
+        check_retained_file_source_summary("FILE_ONLY");
+        check_retained_file_source_summary("SYNTAX");
+    }
+
+    fn check_retained_file_source_summary(coverage: &str) {
+        let work = exact_retained_file_proposal_fixture(coverage);
         let captured = bytes(&work.checked).unwrap();
         let temp = tempfile::tempdir().unwrap();
         Repository::init(temp.path(), "FILE_ONLY proposal fixture").unwrap();
@@ -4605,7 +4621,7 @@ mod section_context_tests {
                             .unwrap();
                         if defect == "coverage" {
                             scope.normalized["inventory"]["README.md"]["coverage"] =
-                                json!("SYNTAX");
+                                json!("UNSUPPORTED");
                         } else {
                             scope.normalized["inventory"]["README.md"]["digest"] =
                                 json!(crate::canonical::hash_bytes(b"different whole file"));

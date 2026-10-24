@@ -556,7 +556,7 @@ impl Builder<'_> {
                                 .values()
                                 .filter(|d| {
                                     self.work.influence.get(&d.id) == Some(&d.digest)
-                                        && render::file_only_scope_binds_source(
+                                        && render::retained_file_scope_binds_source(
                                             d,
                                             source,
                                             &self.work.checked,

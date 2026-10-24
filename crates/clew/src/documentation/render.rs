@@ -126,7 +126,7 @@ fn supported_refs(
                 .find_map(|e| e.sources.get(id))
                 .is_some_and(|source| {
                     deps.iter().any(|dependency| {
-                        file_only_scope_binds_source(
+                        retained_file_scope_binds_source(
                             &checked.dependencies[dependency],
                             source,
                             checked,
@@ -141,9 +141,9 @@ fn supported_refs(
     Ok(())
 }
 
-/// A captured whole FILE_ONLY file can be cited through its exact inventory
-/// scope. This establishes retained bytes, never parsed or compiler semantics.
-pub(super) fn file_only_scope_binds_source(
+/// A captured whole FILE_ONLY or SYNTAX file can be cited through its exact
+/// inventory scope. This binds retained bytes, never compiler or runtime facts.
+pub(super) fn retained_file_scope_binds_source(
     scope: &Observation,
     source: &Source,
     checked: &Check,
@@ -179,7 +179,9 @@ pub(super) fn file_only_scope_binds_source(
         return false;
     }
     let file = &scope.normalized["inventory"][&source.file];
-    if file["coverage"] != "FILE_ONLY" || file["digest"] != source.text_digest {
+    if !matches!(file["coverage"].as_str(), Some("FILE_ONLY" | "SYNTAX"))
+        || file["digest"] != source.text_digest
+    {
         return false;
     }
     let Some(occurrence) = &source.occurrence else {
