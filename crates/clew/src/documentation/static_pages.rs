@@ -155,6 +155,38 @@ pub(super) fn export_publication(
     )
 }
 
+pub(super) struct HistoricalInputs<'a> {
+    pub language: Option<&'a str>,
+    pub data_model: Option<&'a Path>,
+    pub reading_plan: Option<&'a Path>,
+}
+
+pub(super) fn export_historical_publication(
+    repo: &Repository,
+    checked: &Check,
+    snapshot: &str,
+    publication: &str,
+    inputs: HistoricalInputs<'_>,
+    source_policy: &super::source_export::Policy,
+    output: &Path,
+) -> Result<Value, ClewError> {
+    full::render(
+        repo,
+        checked,
+        snapshot,
+        publication,
+        full::ReadingInputs {
+            reading_plan: inputs.reading_plan,
+            contract_comparison: None,
+            data_model: inputs.data_model,
+            format: PageFormat::Historical,
+            language: inputs.language,
+            source_policy,
+        },
+        output,
+    )
+}
+
 pub(super) fn source_data_graph_with_depth(
     checked: &Check,
     service: &str,
@@ -202,6 +234,8 @@ pub(super) fn source_data_graph_with_depth(
 pub enum PageFormat {
     Standalone,
     Docusaurus,
+    /// Original operation/service navigation with optional field tables.
+    Historical,
 }
 
 #[derive(Debug, Subcommand)]

@@ -195,6 +195,15 @@ pub enum Command {
         /// Select saved evidence; defaults to latest saved check, never runs analyzers.
         #[arg(long)]
         snapshot: Option<String>,
+        /// Replay an exact frozen publication in the historical reader without changing history.
+        #[arg(long, requires_all = ["snapshot", "output"], conflicts_with_all = ["input", "refresh", "publish", "require_complete"])]
+        publication: Option<String>,
+        /// Explicit field/contract descriptions bound to the selected frozen publication.
+        #[arg(long, requires = "publication")]
+        data_model: Option<PathBuf>,
+        /// Retain a bound reading guide as reference without replacing historical navigation.
+        #[arg(long, requires = "publication")]
+        reading_plan: Option<PathBuf>,
         /// Add this render to released documentation history.
         #[arg(long)]
         publish: bool,
@@ -546,6 +555,9 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             require_complete,
             refresh,
             snapshot,
+            publication,
+            data_model,
+            reading_plan,
             publish,
             source_export,
             output,
@@ -558,6 +570,36 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             }
             if let Some(output) = &output {
                 super::static_pages::validate_export_output(output)?;
+            }
+            if let Some(publication) = publication {
+                if !input.is_empty() || refresh || publish || require_complete {
+                    return Err(invalid(
+                        "frozen historical export cannot change the source publication",
+                    ));
+                }
+                let repo = Repository::open(&root)?;
+                let snapshot = snapshot
+                    .as_deref()
+                    .ok_or_else(|| invalid("frozen historical export requires --snapshot"))?;
+                let checked = super::check::Check::load_snapshot(&repo, snapshot)?;
+                return super::static_pages::export_historical_publication(
+                    &repo,
+                    &checked,
+                    snapshot,
+                    &publication,
+                    super::static_pages::HistoricalInputs {
+                        language: language.as_deref(),
+                        data_model: data_model.as_deref(),
+                        reading_plan: reading_plan.as_deref(),
+                    },
+                    &policy,
+                    output
+                        .as_deref()
+                        .ok_or_else(|| invalid("frozen historical export requires --output"))?,
+                );
+            }
+            if data_model.is_some() || reading_plan.is_some() {
+                return Err(invalid("historical reading inputs require --publication"));
             }
             if policy.remote() {
                 if !input.is_empty() || refresh || publish || require_complete {

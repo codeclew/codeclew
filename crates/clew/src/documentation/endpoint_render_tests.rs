@@ -242,6 +242,9 @@ fn render_narrative_files(fixture: &Fixture, inputs: &[Value]) -> Value {
         })
         .collect();
     cli::run(cli::Command::Render {
+        publication: None,
+        data_model: None,
+        reading_plan: None,
         source_export: Default::default(),
         output: None,
         root: fixture.repo.root.clone(),

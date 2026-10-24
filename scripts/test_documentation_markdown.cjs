@@ -60,3 +60,15 @@ test('native field anchors reveal only the selected disclosure, preserving adjac
  details.open=false;events.click({target:{closest:()=>({hash:'#field-latitude'})}});
  assert.equal(details.open,true);assert.equal(sibling.open,false);assert.equal(focused,1);
 });
+
+test('field hash scroll happens after disclosure layout and also on a later page enhancement',()=>{
+ const scheduled=[],positions=[],events={};
+ const details={tagName:'DETAILS',open:false,parentElement:null};
+ const target={tagName:'H3',parentElement:details,scrollIntoView:()=>positions.push(details.open)};
+ const document={querySelectorAll:()=>[],getElementById:id=>id==='field-saved'?target:null,
+  addEventListener:(kind,handler)=>{assert.ok(!events[kind]);events[kind]=handler;},
+  defaultView:{location:{hash:'#field-saved'},requestAnimationFrame:f=>scheduled.push(f),addEventListener:()=>{}}};
+ md.enhance(document);assert.equal(details.open,true);assert.equal(positions.length,0);
+ scheduled.shift()();assert.deepEqual(positions,[true]);
+ details.open=false;md.enhance(document);scheduled.shift()();assert.deepEqual(positions,[true,true]);
+});

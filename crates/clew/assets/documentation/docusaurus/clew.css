@@ -75,3 +75,5 @@ body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!
   .navbar__inner .clew-search input{flex:1 1 0;width:0;min-width:0;max-width:100%;padding:6px 8px}
   .navbar__inner .clew-search button{flex:0 0 auto;padding:6px 8px;font-size:14px}
 }
+
+.clew-details{border:1px solid var(--ifm-color-emphasis-300);border-radius:6px;padding:8px 12px;margin:12px 0}.clew-details>summary{cursor:pointer;min-height:28px}.clew-details[open]>summary{margin-bottom:12px}

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn status(page: &Value) -> String {
     format!(
-        "<ClewPageContext />\n\n<ClewStatus freshness={} verification={} />\n\n",
+        "<ClewStatus freshness={} verification={} />\n\n",
         json!(
             page["sectionState"]["freshness"]
                 .as_str()
@@ -20,6 +20,27 @@ pub(super) fn status(page: &Value) -> String {
         )
     )
 }
+pub(super) fn process_contracts(page: &Value, anchor: &str) -> String {
+    let mut seen = BTreeSet::new();
+    let mut out = String::new();
+    for contract in page["interfaceContractDeclarations"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(Value::as_object)
+        .flat_map(|m| m.values())
+    {
+        let id = text(&contract["id"]);
+        if id.is_empty() || !seen.insert(id) {
+            continue;
+        }
+        out.push_str(&format!("<ClewContextLink path={} fromProcess={} fromQuestion={}>Declared contract: {}</ClewContextLink>\n\n",
+            json!(format!("/contracts/{id}")), json!(text(&page["subject"]).strip_prefix("scenario:").unwrap_or("")),
+            json!(anchor), md(text(&contract["title"]))));
+    }
+    out
+}
+
 pub(super) fn step_models(page: &Value, anchor: &str) -> String {
     let data = &page["processDataFlow"];
     if data["request"]["anchor"] != anchor {

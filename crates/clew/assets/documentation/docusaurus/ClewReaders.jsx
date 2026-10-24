@@ -18,6 +18,10 @@ export function ClewMarkdown({text}) {
 export function ClewFieldDetails({children}) {
   return <details className="dm-field-details">{children}</details>;
 }
+// Native state stays consistent with deep-link disclosure and browser history.
+export function ClewDetails({children, className = '', ...props}) {
+  return <details {...props} className={`clew-details ${className}`}>{children}</details>;
+}
 
 const cache = new Map();
 const packedObjects = new Map();
@@ -247,8 +251,10 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
     if (on && /^#question-[a-zA-Z0-9_-]+$/.test(location.hash)) setAnchor(location.hash.slice(1));
     const url = new URL(location.href); url.searchParams.set('view', on ? 'data-flow' : 'process');
     history.replaceState(null, '', url); setFlow(on);
+    requestAnimationFrame(() => document.getElementById(on ? 'clew-flow' : anchor || 'clew-process')?.scrollIntoView({block: 'start'}));
   }
   return <section className="clew-process" data-reading-view={flow ? 'data-flow' : 'process'}>
+    <div id="clew-process" role="tabpanel" aria-labelledby="clew-process-tab" hidden={flow}>{children}</div>
     <div role="tablist" aria-label={t("Process reading view")} className="clew-tabs">
       {[false, true].map(on => <button key={String(on)} type="button" role="tab" aria-selected={flow === on}
         aria-controls={on ? 'clew-flow' : 'clew-process'} id={on ? 'clew-flow-tab' : 'clew-process-tab'}
@@ -259,9 +265,8 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
           }
         }}>{t(on ? 'Data Flow' : 'Process')}</button>)}
     </div>
-    <div id="clew-process" role="tabpanel" aria-labelledby="clew-process-tab" hidden={flow}>{children}</div>
     <div id="clew-flow" role="tabpanel" aria-labelledby="clew-flow-tab" hidden={!flow}>
-      <p className="dm-origin">{t("Agent proposal")} · {t("Not reviewed")} · <a href={`#${anchor}`} onClick={() => select(false)}>{t("Return to process step")}</a></p>
+      <p className="dm-origin">{t("Optional field-flow analysis")} · <a href={`#${anchor}`} onClick={() => select(false)}>{t("Return to process step")}</a></p>
       {flow && <Widget dataPath={dataPath} anchor={anchor} />}
     </div>
   </section>;

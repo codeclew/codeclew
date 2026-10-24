@@ -1425,6 +1425,45 @@ pub(super) fn write_language(
             .as_ref()
             .map(|gap| super::prose_language::html(gap, &original_path))
             .unwrap_or_default();
+        let mut contract_body = format!(
+            "<div class=\"dm-page dm-contract-page\"><p id=\"dm-return\"></p><h1>{}</h1><p>{}</p>",
+            escape(strv(&c["title"])),
+            escape(label(
+                language,
+                "Declared contract · runtime conformance is not established."
+            ))
+        );
+        if let Some(gap) = &gap {
+            contract_body.push_str(&super::prose_language::html(
+                gap,
+                &format!("{id}.original.json"),
+            ));
+        }
+        if c["declaration"].is_object() {
+            contract_body.push_str(&super::inline_contract::table_html(
+                &c["declaration"],
+                language,
+            ));
+        } else {
+            contract_body.push_str(&format!("<p>{}</p><table><thead><tr><th>Field</th><th>Required</th><th>Nullable</th><th>Schema</th></tr></thead><tbody>", escape(label(language, CONTRACT_REQUIRED_CONDITION))));
+            for field in c["leaves"].as_array().into_iter().flatten() {
+                contract_body.push_str(&format!(
+                    "<tr><th>{}</th><td>{}</td><td>{}</td><td><code>{}</code></td></tr>",
+                    escape(strv(&field["field"])),
+                    field["requiredWhenBranchMatches"],
+                    field["nullable"],
+                    escape(&field["schema"].to_string())
+                ));
+            }
+            contract_body.push_str("</tbody></table>");
+        }
+        contract_body.push_str(&format!("<details><summary>{}</summary><p><a href=\"{}.original.json\">{}</a></p><pre>{}</pre></details></div>",
+            escape(label(language,"Declaration and provenance")),escape(id),escape(label(language,"Complete original source binding")),escape(&serde_json::to_string_pretty(c).map_err(io_error)?)));
+        contract_body.push_str(&data_script(&json!({"models":[],"contracts":[c],"authority":model["authority"],"review":model["review"]})));
+        files.insert(
+            format!("contracts/{id}.html"),
+            page_language(strv(&c["title"]), &contract_body, "../", language).into_bytes(),
+        );
         index.push_str(&format!("<details><summary>{} · {}</summary>{notice}<p>{}</p><table><tr><th>{clew_label_0}</th><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr>",escape(strv(&c["title"])),escape(strv(&c["branchPointer"])),escape(label(language, CONTRACT_REQUIRED_CONDITION)), clew_label_0 = escape(label(language, "Field")), clew_label_1 = escape(label(language, "Required")), clew_label_2 = escape(label(language, "Nullable")), clew_label_3 = escape(label(language, "Schema and exact pointer"))));
         for f in c["leaves"].as_array().unwrap() {
             index.push_str(&format!("<tr><th>{}</th><td>{}</td><td>{}</td><td><code>{}</code><br><code>{}</code></td></tr>",escape(strv(&f["field"])),f["requiredWhenBranchMatches"],f["nullable"],escape(&f["schema"].to_string()),escape(strv(&f["pointer"]))));
@@ -1891,6 +1930,16 @@ mod tests {
                 let original: Value =
                     serde_json::from_slice(&files["contracts/event.original.json"]).unwrap();
                 assert_eq!(original, contract);
+                let destination = String::from_utf8(files["contracts/event.html"].clone()).unwrap();
+                assert!(
+                    destination.contains("id=\"dm-return\"")
+                        && destination.contains("Complete original source binding")
+                        || target == "ru"
+                );
+                assert!(
+                    destination.contains("/components/schemas/Event")
+                        && destination.contains("event.original.json")
+                );
                 assert_eq!(model, before);
                 if target == "ru" {
                     assert!(html.contains("Совпадение выбранной ветви контракта"));

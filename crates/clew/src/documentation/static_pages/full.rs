@@ -202,9 +202,11 @@ pub(super) fn render(
         snapshot,
         checked,
     )?;
-    let process_theme = questions
-        .values()
-        .any(|guide| guide["presentation"] == "SEQUENTIAL");
+    let historical = inputs.format == super::PageFormat::Historical;
+    let process_theme = !historical
+        && questions
+            .values()
+            .any(|guide| guide["presentation"] == "SEQUENTIAL");
     let mut guide_gaps = BTreeMap::new();
     let mut guide_notice_files = BTreeMap::new();
     let mut authored_gaps = BTreeMap::new();
@@ -319,6 +321,14 @@ pub(super) fn render(
             source_projection.register_sources(&payload)?;
             source_projection.value(&mut payload)?;
         }
+        if historical {
+            // Keep the original operation catalogue, tabs and service navigation.
+            // Optional guides remain exact reference files, never a UI replacement.
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("questionReader");
+                object.remove("processDataFlow");
+            }
+        }
         let html = render::html(&payload)?;
         let prefix = "../";
         let navigation = reader::navigation_language(
@@ -349,7 +359,7 @@ pub(super) fn render(
             .into_bytes();
         let _ = name;
     }
-    if let Some(guide) = questions.get("system:overview") {
+    if let Some(guide) = questions.get("system:overview").filter(|_| !historical) {
         let original = files
             .get("overview.html")
             .ok_or_else(|| invalid("system guide has no frozen overview"))?

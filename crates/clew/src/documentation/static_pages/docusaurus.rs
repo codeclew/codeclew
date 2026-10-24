@@ -310,7 +310,7 @@ fn section_evidence(section: &Value, prefix: &str, language: &str) -> Result<Str
     evidence_in_language(&json!({"evidence":evidence}), prefix, language)
 }
 
-const IMPORTS: &str = "import {ClewMarkdown, ClewFieldDetails, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewMarkdown, ClewDetails, ClewFieldDetails, ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -318,7 +318,7 @@ fn rows(value: &Value) -> impl Iterator<Item = &Value> {
 
 fn details(title: &str, body: &str) -> String {
     format!(
-        "<details>\n<summary>{}</summary>\n\n{body}\n</details>\n\n",
+        "<ClewDetails>\n<summary>{}</summary>\n\n{body}\n</ClewDetails>\n\n",
         md(title)
     )
 }
@@ -451,6 +451,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     out.push_str(IMPORTS);
     out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
+    out.push_str("<ClewPageContext />\n\n");
 
     out.push_str(&narrative_page_notice(page)?);
     out.push_str(&page_prose_gaps(page)?);
@@ -460,7 +461,6 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             page["language"].as_str().unwrap_or("en"),
         )?);
     }
-    out.push_str(&reading::status(page));
     let flow = page["processDataFlow"].is_object();
     if flow {
         out.push_str(&format!(
@@ -531,6 +531,12 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             out.push_str(&block_body_in(b, page, sid, "../", false)?);
             if index == 0 {
                 out.push_str(&reading::step_models(page, &anchor));
+                if rows(&guide["sections"])
+                    .find(|s| s["number"].is_number())
+                    .is_some_and(|first| first["id"] == section["id"])
+                {
+                    out.push_str(&reading::process_contracts(page, &anchor));
+                }
                 out.push_str(&reading::process_topics(page, context, Some(sid))?);
                 for reference in rows(&page["modelReferences"]).filter(|r| r["anchor"] == anchor) {
                     out.push_str(&format!(
@@ -560,6 +566,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             &block(&guide["conclusion"], page, "confidence")?,
         ));
     }
+    out.push_str(&reading::status(page));
     out.push_str("## Original accounts and implementation\n\n");
     for op in rows(&page["operations"]) {
         out.push_str(&format!(
@@ -918,16 +925,25 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         .get(id)
         .or_else(|| page["sectionState"].get(id))
         .unwrap_or(&page["sectionState"]);
-    let mut out = format!(
-        "Retained account · {} · {}. Runtime behavior is not established by this export.\n\n{}\n\n",
+    let scope = format!(
+        "Source freshness: {}. Meaning review: {}. Runtime behavior is not established by this export.\n\n",
         md(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
-        md(state["verification"].as_str().unwrap_or("UNASSESSED")),
-        reading::inline(text(&op["summary"]["text"]))
+        md(state["verification"].as_str().unwrap_or("UNASSESSED"))
     );
+    let mut out = format!("{}\n\n", reading::inline(text(&op["summary"]["text"])));
+    if state["freshness"]
+        .as_str()
+        .is_some_and(|s| s.contains("STALE"))
+    {
+        out.push_str(&format!(
+            "<aside className=\"clew-exception\">Source evidence requires review: {}.</aside>\n\n",
+            md(text(&state["freshness"]))
+        ));
+    }
     out.insert_str(0, &operation_language_notice(page, op)?);
     out.push_str(&details(
         "Summary source bindings",
-        &citations(page, id, &op["summary"])?,
+        &(scope + &citations(page, id, &op["summary"])?),
     ));
     for contract in rows(&op["interfaceContracts"]) {
         let declared = &page["interfaceContractDeclarations"][id][text(&contract["id"])];
@@ -996,7 +1012,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             &events,
         ));
     }
-    if rows(&op["explanation"]).next().is_some() {
+    if rows(&op["explanation"]).next().is_some() && !crate::documentation::sections::contains(id) {
         out.push_str(&format!("{heading} Implementation explanation\n\n"));
     }
     for claim in rows(&op["explanation"]) {
@@ -1267,11 +1283,19 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         "<span id=\"service-overview\"></span>\n\n# {}\n\n",
         md(text(&page["title"]))
     ));
+    out.push_str("<ClewPageContext />\n\n");
     out.push_str(&narrative_page_notice(page)?);
     out.push_str(&page_prose_gaps(page)?);
-    out.push_str(&reading::status(page));
     out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
-    for section in rows(&page["sections"]) {
+    let mut sections = rows(&page["sections"]).collect::<Vec<_>>();
+    sections.sort_by_key(|section| match text(&section["id"]) {
+        "section-responsibilities" => 0,
+        "section-entities" => 1,
+        "section-egress" => 2,
+        "section-ingress" => 3,
+        _ => 4,
+    });
+    for section in sections {
         let sid = text(&section["id"]);
         out.push_str(&format!(
             "## {} {{#{sid}}}\n\n",
@@ -1289,10 +1313,14 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             if sid == "section-entities"
                 && rows(&page["serviceModelLinks"]).any(|m| m["fieldSummary"].is_object())
             {
-                out.push_str(&details(
-                    "Original service data description and provenance",
-                    &content,
+                out.push_str(&format!(
+                    "{}\n\n",
+                    md(text(&section["content"]["summary"]["text"]))
                 ));
+                for claim in rows(&section["content"]["explanation"]) {
+                    out.push_str(&prose(text(&claim["text"])));
+                    out.push_str("\n\n");
+                }
             } else {
                 out.push_str(&content);
             }
@@ -1332,6 +1360,15 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                     text(&model["id"])
                 ));
             }
+        }
+        if sid == "section-entities"
+            && section["content"].is_object()
+            && rows(&page["serviceModelLinks"]).any(|m| m["fieldSummary"].is_object())
+        {
+            out.push_str(&details(
+                "Original service data description and provenance",
+                &operation_body(page, &section["content"], "###")?,
+            ));
         }
         if sid == "section-ingress" {
             let inventory = selected_http_links(page, None)?;
@@ -1410,6 +1447,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             out.push_str(&format!("### {} {{#{}}}\n\n[Open the retained record and separate assessment](../notes/{id}--{}.mdx)\n\n", md(reading::note_title(note)), text(&note["id"]), text(&note["id"])));
         }
     }
+    out.push_str(&reading::status(page));
     out.push_str("## Original operations\n\n");
     for op in rows(&page["operations"]) {
         out.push_str(&format!(
@@ -1539,6 +1577,7 @@ fn declared_contract_page(
     let id = text(&contract["id"]);
     let mut body = header(text(&contract["title"]), &format!("/contracts/{id}"));
     body.push_str(IMPORTS);
+    body.push_str("<ClewPageContext />\n\n");
     body.push_str(&format!("# {}\n\n", md(text(&contract["title"]))));
     if let Some(gap) = gap {
         body.push_str(&prose_gap(gap, language)?);
@@ -1572,7 +1611,7 @@ fn declared_contract_page(
                 "json",
             ),
         ));
-        body.push_str("<details>\n<summary>Retained field schemas and pointers</summary>\n\n");
+        body.push_str("<ClewDetails>\n<summary>Retained field schemas and pointers</summary>\n\n");
     }
     for leaf in rows(&contract["leaves"]) {
         body.push_str(&format!(
@@ -1589,7 +1628,7 @@ fn declared_contract_page(
         ));
     }
     if contract["declaration"].is_object() {
-        body.push_str("</details>\n\n");
+        body.push_str("</ClewDetails>\n\n");
     }
     Ok(body)
 }
@@ -3037,7 +3076,7 @@ mod tests {
         assert!(
             rendered.contains("| Responses | 400, 415, 500 and 503 retain independent schemas. |")
         );
-        assert!(rendered.contains("UNVERIFIED · UNASSESSED"));
+        assert!(rendered.contains("Source freshness: UNVERIFIED. Meaning review: UNASSESSED."));
     }
     #[test]
     fn overview_keeps_the_system_guide_and_uses_root_markdown_file_links() {

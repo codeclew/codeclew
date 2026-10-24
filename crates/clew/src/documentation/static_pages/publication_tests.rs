@@ -1555,6 +1555,9 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
     }
     let cli_output = output.join("cli-remote");
     let cli = crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+        publication: None,
+        data_model: None,
+        reading_plan: None,
         root: repo.root.clone(),
         language: Some("en".into()),
         input: vec![],
@@ -1581,6 +1584,9 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
         let forbidden = output.join("must-not-exist");
         assert!(
             crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+                publication: None,
+                data_model: None,
+                reading_plan: None,
                 root: repo.root.clone(),
                 language: None,
                 input,
@@ -1614,6 +1620,9 @@ fn remote_full_publication_exports_preserve_old_and_selected_bindings_in_both_fo
     };
     let cli_selected_export = |name: &str| {
         crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+            publication: None,
+            data_model: None,
+            reading_plan: None,
             root: repo.root.clone(),
             language: Some("en".into()),
             input: vec![],
@@ -1977,4 +1986,67 @@ fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_page
         assert!(body.contains("Owned provider information"));
         assert!(!body.contains("void submit()"));
     }
+}
+
+#[test]
+fn historical_docs_render_replays_exact_publication_without_replacing_reader_or_history() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    let published = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &snapshot,
+    )
+    .unwrap();
+    let publication = published["bundle"].as_str().unwrap();
+    let old_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+    let checked = Check::load_snapshot(&repo, &snapshot).unwrap();
+    let output = temporary.path().join("historical");
+    let result = crate::documentation::cli::run(crate::documentation::cli::Command::Render {
+        root: repo.root.clone(),
+        language: Some("en".into()),
+        input: vec![],
+        require_complete: false,
+        refresh: false,
+        snapshot: Some(snapshot.clone()),
+        publication: Some(publication.into()),
+        data_model: None,
+        reading_plan: None,
+        publish: false,
+        source_export: Default::default(),
+        output: Some(output.clone()),
+    })
+    .unwrap();
+    assert_eq!(result["status"], "RENDERED");
+    let payload: Value =
+        serde_json::from_slice(&fs::read(output.join("services/sample.json")).unwrap()).unwrap();
+    assert!(payload.get("questionReader").is_none());
+    assert!(payload.get("processDataFlow").is_none());
+    let html = fs::read_to_string(output.join("services/sample.html")).unwrap();
+    assert!(html.contains("id=\"scenario-nav\"") && html.contains("id=\"scenario-content\""));
+    assert!(!html.contains("<body class=\"sequential-profile"));
+    assert_eq!(
+        fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+        old_index
+    );
+    let original: Value = serde_json::from_slice(
+        &fs::read(
+            repo.path(&format!(
+                "docs/generated/{publication}/services/sample.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload["operations"], original["operations"]);
+    assert_eq!(payload["operationSources"], original["operationSources"]);
+    assert_eq!(payload["operationStates"], original["operationStates"]);
+    assert_eq!(
+        checked.context_digest,
+        Check::load_snapshot(&repo, &snapshot)
+            .unwrap()
+            .context_digest
+    );
 }

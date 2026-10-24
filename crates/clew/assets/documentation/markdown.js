@@ -108,7 +108,6 @@
   for(const node of document.querySelectorAll('[data-clew-markdown]:not([data-clew-markdown-ready])')){
    node.innerHTML=render(node.textContent,options);node.setAttribute('data-clew-markdown-ready','');
   }
-  if(installed.has(document))return;installed.add(document);
   const open=(hash,moveFocus=false)=>{
    let id;try{id=decodeURIComponent(hash.replace(/^#/,''));}catch{return;}
    const target=document.getElementById(id);if(!target)return;
@@ -116,7 +115,11 @@
    else if(target.nextElementSibling?.tagName==='DETAILS')target.nextElementSibling.open=true;
    for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
    if(moveFocus){const detail=target.tagName==='DETAILS'?target:target.nextElementSibling?.tagName==='DETAILS'?target.nextElementSibling:null;detail?.querySelector?.('summary')?.focus?.({preventScroll:true});}
+   const scroll=()=>target.scrollIntoView?.({block:'start'});
+   if(document.defaultView?.requestAnimationFrame)document.defaultView.requestAnimationFrame(scroll);else scroll();
   };
+  open(document.defaultView?.location.hash||'');
+  if(installed.has(document))return;installed.add(document);
   let pendingFocus=null;
   document.addEventListener('click',event=>{
    if(event.button>0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
@@ -126,7 +129,6 @@
   document.defaultView?.addEventListener('hashchange',()=>{
    const hash=document.defaultView.location.hash;open(hash,hash===pendingFocus);pendingFocus=null;
   });
-  open(document.defaultView?.location.hash||'');
  }
  return {inline,render,enhance};
 });

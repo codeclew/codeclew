@@ -74,3 +74,5 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
  .dm-fields-scroll .dm-fields td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px;color:#42516a}
  .dm-fields-scroll .dm-fields caption{display:block;width:100%;box-sizing:border-box}
 }
+
+@media(max-width:650px){.dm-contract-page td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:.2rem}.dm-contract-page .inline-contract-table tr{border:1px solid #cbd5db}.dm-contract-page .inline-contract-table td{border:0}}

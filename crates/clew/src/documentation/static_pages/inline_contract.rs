@@ -215,6 +215,12 @@ fn visit(
 }
 
 pub(super) fn table(declaration: &Value, language: &str) -> String {
+    table_at(declaration, language, true)
+}
+pub(super) fn table_html(declaration: &Value, language: &str) -> String {
+    table_at(declaration, language, false)
+}
+fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
     let lit = |s: &str| escape(s).replace('{', "&#123;").replace('}', "&#125;");
     let headers = [
         "Field",
@@ -223,8 +229,9 @@ pub(super) fn table(declaration: &Value, language: &str) -> String {
         "Accepts null",
         "Declared constraints / description",
     ];
-    let mut out = String::from(
-        "<div className=\"clew-table-scroll contract-declaration\"><table className=\"clew-schema-table inline-contract-table\"><thead><tr>",
+    let attribute = if portable { "className" } else { "class" };
+    let mut out = format!(
+        "<div {attribute}=\"clew-table-scroll contract-declaration\"><table {attribute}=\"clew-schema-table inline-contract-table\"><thead><tr>"
     );
     for h in headers {
         out.push_str(&format!(
