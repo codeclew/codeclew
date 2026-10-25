@@ -3148,7 +3148,9 @@ mod tests {
         assert_eq!(body.matches("hide_title: true").count(), 1);
         assert!(body.contains("## Идентичность и связи"));
         assert!(body.contains("## Поля и представления"));
-        assert!(body.contains("<summary>Основания и область</summary>"));
+        let evidence_label = crate::documentation::language::label("ru", "Evidence and scope");
+        assert_ne!(evidence_label, "Evidence and scope");
+        assert!(body.contains(&format!("<summary>{evidence_label}</summary>")));
         assert!(!body.contains("## Identity and relationships"));
         assert!(body.contains("/clew-original/data-model/record.original.json"));
         assert!(body.contains("#field-value"));

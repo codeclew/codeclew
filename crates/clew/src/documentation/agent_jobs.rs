@@ -6158,7 +6158,20 @@ mod input_cap_tests {
             bounded.operations[0].events.push(event);
         }
         let markdown = super::super::render::markdown("Reader fixture", &bounded, &BTreeMap::new());
-        assert!(markdown.contains("A bounded overview has not been authored"));
+        let details = markdown
+            .find("<summary>Implementation details</summary>")
+            .unwrap();
+        assert!(markdown[..details].contains(&echo.text));
+        assert!(markdown[details..].contains("```mermaid\nsequenceDiagram"));
+        assert_eq!(
+            markdown[details..]
+                .matches("Additional retained action.")
+                .count(),
+            64
+        );
+        for index in 1..65 {
+            assert!(markdown[details..].contains(&format!("%% additional-event-{index}:")));
+        }
         assert!(markdown.contains(&format!("\n\n{}\n\n", echo.text)));
     }
 
