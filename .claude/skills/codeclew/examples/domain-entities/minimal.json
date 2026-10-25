@@ -1,0 +1,11 @@
+{
+  "schema": "codeclew-documentation-entity/1.0",
+  "id": "reservation",
+  "title": "Reservation",
+  "description": "An explicitly declared business reservation concept. Its business identity and rules require evidence.",
+  "relations": [],
+  "relatedEntities": [],
+  "limitations": [
+    "Service responsibility and lifecycle have not been established."
+  ]
+}

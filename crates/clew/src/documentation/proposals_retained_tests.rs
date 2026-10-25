@@ -149,6 +149,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
             },
         ],
         events: vec![Event {
+            reader: None,
             id: "event".into(),
             kind: "note".into(),
             text: "Returns quantity.".into(),

@@ -71,6 +71,7 @@ pub mod processes;
 pub mod progress;
 pub mod proposals;
 mod reader;
+mod reader_proofs;
 mod removal;
 pub mod render;
 mod retained_contracts;

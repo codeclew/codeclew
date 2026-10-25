@@ -855,6 +855,13 @@ pub(super) fn validate_interaction(
     i: &Interaction,
     services: &BTreeMap<String, Service>,
 ) -> Result<(), ClewError> {
+    if [&i.transport.message_key, &i.transport.purpose]
+        .into_iter()
+        .flatten()
+        .any(|text| text.trim().is_empty() || text.len() > 2048)
+    {
+        return Err(invalid("declared topic key or purpose is invalid"));
+    }
     if i.schema != "codeclew-documentation-interaction/1.0"
         || !valid_id(&i.id)
         || i.title.trim().is_empty()
@@ -863,13 +870,28 @@ pub(super) fn validate_interaction(
             "human" | "agent-proposal" | "imported"
         )
         || i.declaration.rationale.trim().is_empty()
-        || !matches!(i.transport.kind.as_str(), "http" | "kafka")
+        || !matches!(i.transport.kind.as_str(), "http" | "kafka" | "logical")
     {
         return Err(invalid(
             "invalid interaction identity, declaration origin, or unsupported transport",
         ));
     }
     endpoint(&i.from, services)?;
+    // A logical boundary names an API/SDK or storage call without inventing its
+    // physical transport, receiver implementation, HTTP contract or durability.
+    if i.transport.kind == "logical"
+        && (!i.external
+            || i.external_service.is_none()
+            || i.transport.topic.is_some()
+            || i.transport.method.is_some()
+            || i.transport.path.is_some()
+            || !i.addresses.is_empty()
+            || i.contract_reference.is_some())
+    {
+        return Err(invalid(
+            "logical calls require a registered external destination and no HTTP, topic, address or wire-contract claims",
+        ));
+    }
     if i.external {
         if !valid_id(&i.to.service) || i.to.selector.is_some() || i.to.call_site.is_some() {
             return Err(invalid(
@@ -1407,6 +1429,40 @@ mod tests {
                 .all(|x| x.1.id != "over")
         );
     }
+    #[test]
+    fn logical_interactions_cannot_invent_wire_details_or_captured_receivers() {
+        let services = BTreeMap::from([("orders".into(), service("orders"))]);
+        let base = json!({"schema":"codeclew-documentation-interaction/1.0","id":"save","title":"Attempt save","from":{"service":"orders"},"to":{"service":"logical-store"},"external":true,"externalService":"logical-store","transport":{"kind":"logical"},"declaration":{"origin":"agent-proposal","rationale":"Source call only; storage identity and durability unknown"}});
+        let interaction: Interaction = serde_json::from_value(base.clone()).unwrap();
+        validate_interaction(&interaction, &services).unwrap();
+        for (field, value) in [
+            ("method", json!("POST")),
+            ("path", json!("/save")),
+            ("topic", json!("saved")),
+        ] {
+            let mut bad = base.clone();
+            bad["transport"][field] = value;
+            assert!(
+                validate_interaction(&serde_json::from_value(bad).unwrap(), &services).is_err()
+            );
+        }
+        for (field, value) in [
+            ("external", json!(false)),
+            ("externalService", Value::Null),
+            ("contractReference", json!("http-operation")),
+            (
+                "addresses",
+                json!([{"url":"https://example.invalid/","source":"configuration"}]),
+            ),
+        ] {
+            let mut bad = base.clone();
+            bad[field] = value;
+            assert!(
+                validate_interaction(&serde_json::from_value(bad).unwrap(), &services).is_err()
+            );
+        }
+    }
+
     #[test]
     fn rejects_unknown_fields_and_dangling_references() {
         let (_t, r) = setup();

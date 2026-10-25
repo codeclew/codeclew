@@ -196,6 +196,7 @@ pub(super) fn render(
         checked,
         &questions,
     )?;
+    super::data_model::attach_external_payloads(model.as_ref(), &mut files, language)?;
     let comparisons = super::contract_comparison::load(
         inputs.contract_comparison,
         publication,
@@ -230,6 +231,7 @@ pub(super) fn render(
                 "full pages operation bodies differ from frozen narrative",
             ));
         }
+        crate::documentation::reader_proofs::project(&mut payload, &subject, &bindings, repo);
         if let Some(guide) = questions.get(&subject) {
             payload["questionReader"] = guide.clone();
             let original_path = format!(
@@ -806,5 +808,83 @@ mod tests {
         }
         assert_eq!(payload["sources"]["new-id"], selected["new-id"]);
         assert_eq!(payload["selectedSources"], selected);
+    }
+}
+
+#[cfg(test)]
+mod supplemental_reference_tests {
+    use super::*;
+
+    #[test]
+    fn profile_html_renders_multiple_references_without_promoting_capture() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Supplemental reference fixture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut inputs = repo.inputs().unwrap();
+        let external = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-external-service/1.0",
+            "id":"synthetic-provider","title":"Synthetic Provider","description":"Declared provider only",
+            "repository":"https://code.example.invalid/legacy","wiki":"https://wiki.example.invalid/legacy",
+            "declaration":{"origin":"human","rationale":"Synthetic declaration"},"limitations":["Implementation not captured"],
+            "references":[
+                {"id":"wiki-design","title":"Design wiki","kind":"wiki","location":"https://wiki.example.invalid/design","status":"reviewed","declaration":{"origin":"human","rationale":"Synthetic design reference"}},
+                {"id":"wiki-operations","title":"Operations wiki","kind":"wiki","location":"https://wiki.example.invalid/operations","status":"unverified","declaration":{"origin":"agent-proposal","rationale":"Synthetic operations reference"}},
+                {"id":"client-code","title":"Client code","kind":"code","location":"https://code.example.invalid/client","status":"stale","declaration":{"origin":"human","rationale":"Synthetic client reference"}}
+            ]
+        })).unwrap();
+        inputs
+            .external_services
+            .insert("synthetic-provider".into(), external);
+        let checked: Check = serde_json::from_value(json!({
+            "schema":"fixture","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{},
+            "sourceInputs":{"schema":"codeclew-documentation-source-inputs/1.0","inputDigest":"input","selectedServices":[],"inputs":inputs}
+        })).unwrap();
+        let mut files = BTreeMap::new();
+        crate::documentation::external_services::publication(
+            &checked,
+            &mut files,
+            &mut String::new(),
+            "en",
+        )
+        .unwrap();
+        let html =
+            std::str::from_utf8(&files["external-services/synthetic-provider.html"]).unwrap();
+        for (url, title) in [
+            ("https://wiki.example.invalid/design", "Design wiki"),
+            ("https://wiki.example.invalid/operations", "Operations wiki"),
+            ("https://code.example.invalid/client", "Client code"),
+            ("https://code.example.invalid/legacy", "Repository"),
+            ("https://wiki.example.invalid/legacy", "Wiki"),
+        ] {
+            assert_eq!(html.matches(&format!("href=\"{url}\"")).count(), 1);
+            assert!(html.contains(&format!(">{title}</a>")));
+        }
+        for proof in [
+            "wiki · reviewed",
+            "wiki · unverified",
+            "code · stale",
+            "Synthetic design reference",
+            "Synthetic operations reference",
+            "Synthetic client reference",
+            "Supplemental references are separate from captured implementation.",
+        ] {
+            assert!(
+                html.contains(proof),
+                "missing rendered reference distinction: {proof}"
+            );
+        }
+        assert!(html.contains("Declared information; source not captured. Runtime unverified."));
+        let record: Value =
+            serde_json::from_slice(&files["external-services/synthetic-provider.json"]).unwrap();
+        assert_eq!(record["sourceCapture"], "NOT_CAPTURED");
+        assert_eq!(record["runtime"], "UNVERIFIED");
+        assert_eq!(record["authority"], "DECLARED_EXTERNAL_SERVICE");
+        assert_eq!(
+            record["externalService"]["references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 }

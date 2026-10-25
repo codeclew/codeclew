@@ -1,7 +1,9 @@
 # Prepared SOURCE answers
 
-Use this entry for a supplied docs root, service, exact selector and snapshot or
-saved answer packet. Do not load the full managed-code or service guide. Use
+Use this entry for bounded SOURCE Q&A or saved-answer maintenance with a supplied
+docs root, service, exact selector and snapshot or saved answer packet. For durable
+documentation or a complete thread, use the [authoring route](references/authoring-example.md#choose-the-existing-authoring-route)
+instead. For the bounded answer route, do not load the full managed-code or service guide. Use
 absolute task paths and resolve the supported installed/candidate `clew` once.
 For supplied prepared snapshots, start with the packet or engine command below;
 no preliminary Git identity, status or hash checks are needed. For maintenance,

@@ -94,8 +94,16 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
         },
         "entity": {
-          "type": "string",
-          "pattern": "^entity:[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^entity:[A-Za-z][A-Za-z0-9_-]{0,99}$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional domain association for non-domain representations. Null and absence normalize to absence; domain nodes require an explicit entity ID."
         },
         "kind": {
           "enum": [
@@ -118,15 +126,49 @@
         },
         "meaning": {
           "$ref": "#/$defs/fragment"
+        },
+        "readerRole": {
+          "enum": [
+            "input",
+            "output",
+            "stage",
+            "side-effect",
+            "object"
+          ],
+          "description": "Optional authored presentation role backed by the node meaning claim; absence does not imply input/output from graph topology."
         }
       },
       "required": [
         "id",
-        "entity",
         "kind",
         "service",
         "representation",
         "meaning"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "domain"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "entity"
+            ],
+            "properties": {
+              "entity": {
+                "type": "string",
+                "pattern": "^entity:[A-Za-z][A-Za-z0-9_-]{0,99}$"
+              }
+            }
+          }
+        }
       ]
     },
     "edge": {

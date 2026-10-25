@@ -9,9 +9,13 @@ compiler rerun, model call or publication is implicit in the reads below.
    capture/parse failures and possible unsupported entry surfaces separately from
    discovered triggers. Unknown inventory in an older snapshot stays unknown.
    Check `omitted` on every page: a null cursor alone does not establish full
-   delivery. If a row exceeds the Work byte budget, follow its `recovery` request
-   to prepare a larger Work from the same saved snapshot, then restart the query.
-   This recovery does not recapture source or complete an explanation.
+   delivery. Follow a larger-Work `recovery` only when it increases `maxBytes`
+   and the row fits the supported 49152-byte maximum. An `UNAVAILABLE` recovery,
+   or a recovery repeating the current maximum (including older releases), is a
+   delivery gap: do not prepare identical Work or loop the same remedy. Preserve
+   the omitted kind/ID and continue the selected thread with bounded SYMBOL and
+   returned SOURCE/DEPENDENCY part reads. These reads do not complete inventory
+   delivery, recapture source or establish a complete explanation.
 2. For each requested returned `rootDeclarations` ID, read
    `{"query":{"kind":"THREAD_CONTEXT","symbolContains":"EXACT_DECLARATION_ID"}}`
    through the same Work and finish pagination. This Java/Spring slice reuses
@@ -28,8 +32,12 @@ compiler rerun, model call or publication is implicit in the reads below.
    do not prove durable storage or delivery. A local unread candidate, budget
    cut or missing body is unfinished work.
 5. Save progress with `docs work assess-thread --root ROOT --work WORK_ID
-   --input assessment.json`. It requires recorded source reads for each account;
-   reading the controller alone cannot account for downstream bodies. Resume
+   --input assessment.json`. Write one compact account per returned obligation:
+   `references` contains 1..16 Work-local references, including its own completely
+   recorded SOURCE; `explanation` needs at least 16 UTF-8 bytes after trimming and
+   at most 4096 total UTF-8 bytes. Use that obligation's returned source references,
+   rather than one accumulated list of every thread reference. Keep other facts
+   in their own accounts; reading the controller alone cannot account for downstream bodies. Resume
    with `docs work thread-status --root ROOT --work WORK_ID`. Follow its
    `nextCursor` with `--cursor`; this status is
    separate from agent-run status and from publication completeness.
@@ -53,6 +61,36 @@ approval or runtime proof. Inspect remaining open obligations; a gap does not
 become a completed thread by being recorded. Existing proposal/review and
 publication commands remain the authority for accepted documentation.
 
+## Saved Work continuations without Java THREAD_CONTEXT
+
+For Kotlin or another profile without that Java/Spring route, use the existing
+recorded Work queries. After finishing initial/default pages, find a receiver or
+helper declaration with a targeted SYMBOL query:
+
+```json
+{"query":{"kind":"SYMBOL","symbolContains":"ExampleService"}}
+```
+
+Keep that exact query when adding its returned cursor. Inspect receiver
+declarations/imports and returned candidate records, then read their actual
+`sourceReferences` in a new selection:
+
+```json
+{"references":["EXACT_RETURNED_SOURCE_REFERENCE"]}
+```
+
+Select the returned source references to request those exact bodies. These reads
+can also return retained narrative; use the matching SOURCE text as code evidence
+and keep retained prose separate. SOURCE inventory has no `symbolContains` search:
+choose exact SOURCE references delivered by SYMBOL/source inventory instead.
+A zero result describes that search, not absence from the entire snapshot.
+
+Use the body-to-helper/effects loop above. A source-grounded candidate remains
+distinct from a compiler-resolved call edge; reading its body does not prove
+runtime dispatch. Preserve that uncertainty while describing the stages, guards,
+returns and effects the available body does establish. Do not stop at delegation
+or claim a sequence ended at a call when delivered facts include later returns.
+
 ## Choose and diagnose a capture profile
 
 Use read-only Java compiler profiles for builds that preserve source. A Maven
@@ -73,3 +111,5 @@ For a saved failed Check, use `clew support collect` with the relevant docs root
 and cache sharing scope, then follow the [evidence/support route](documentation-evidence.md).
 Preserve saved checkpoints and use their supported recovery commands; do not
 modify private cache objects or repeat capture as a recovery shortcut.
+
+For requested end-to-end service documentation, apply [boundary/domain closure](boundary-completeness.md): complete available downstream calls, register participants, reconcile service-wide egress, and separate domain concepts from DTO contracts and typed DataFlow. Saved thread obligations alone do not establish this semantic completeness.

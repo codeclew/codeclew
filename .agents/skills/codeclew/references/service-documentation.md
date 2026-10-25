@@ -1,3 +1,5 @@
+For domain, egress, field lineage and compact process UX, apply the existing workflow with the [task-oriented reader checklist](task-oriented-readers.md).
+
 # Durable service documentation
 
 Use this workflow for a separate documentation repository with per-service pages,
@@ -1096,7 +1098,8 @@ receipt. The normal configured author/reviewer pipeline can later establish
 be published by this route. Supply `--unassessed` explicitly; it is an output
 classification, not an interactive approval prompt.
 
-Only narrative schema 1.3 is accepted. Prefer Work/proposals so the tool
+Narrative schema 1.3 is supported, and 1.4 adds explicit external boundaries.
+Prefer Work/proposals so the tool
 materializes canonical dependency IDs and preserves the captured influence
 boundary. Direct current-format Narrative imports remain unassessed until reviewed.
 

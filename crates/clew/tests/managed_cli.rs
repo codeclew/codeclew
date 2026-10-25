@@ -4330,6 +4330,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                            from: Option<&str>,
                            to: Option<&str>,
                            source: &Observation| Event {
+            reader: None,
             id: id.into(),
             kind: kind.into(),
             text: text.into(),
@@ -4449,6 +4450,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                  from: Option<&str>,
                  to: Option<&str>,
                  step: &clew::documentation::check::FlowStep| Event {
+        reader: None,
         id: id.into(),
         kind: kind.into(),
         text: text.into(),
@@ -4572,6 +4574,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     scenario_events.insert(
         4,
         Event {
+            reader: None,
             id: "reservation-response".into(),
             kind: "return".into(),
             text: "Return the reservation outcome".into(),

@@ -52,18 +52,6 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
-    let template = template.replace(
-        "<div id=\"scenario-content\"></div>",
-        &format!(
-            "<div id=\"scenario-content\"></div>{}{}",
-            super::external_services::page_links(data),
-            super::declared_diagrams::html(
-                &data["declaredRelationships"],
-                "../",
-                data["language"].as_str().unwrap_or("en")
-            )
-        ),
-    );
     let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
     let extra = data.get("processDataFlow").is_some();
     let model_styles = extra
@@ -557,18 +545,29 @@ pub(super) fn validate_with_retained(
                         || paragraph.text.trim().is_empty()
                         || paragraph.text.len() > 8192
                         || !paragraph.event_ids.is_empty()
-                        || paragraph.authorship.is_some()
                     {
                         return Err(invalid(
-                            "service section body needs distinct evidence-bound paragraphs of at most 8192 bytes without sequence anchors or authorship overrides",
+                            "service section body needs distinct evidence-bound paragraphs of at most 8192 bytes without sequence anchors",
                         ));
                     }
-                    supported_refs(
-                        &paragraph.dependency_ids,
-                        &paragraph.source_ids,
-                        checked,
-                        &allowed,
-                    )?;
+                    super::explanation_authorship::validate_metadata(paragraph)?;
+                    let original = retained
+                        .and_then(|n| n.operations.iter().find(|old| old.id == o.id))
+                        .and_then(|old| old.explanation.iter().find(|p| p.id == paragraph.id));
+                    let historical_context =
+                        super::explanation_authorship::validate(paragraph, checked).is_err()
+                            && original.is_some_and(|old| {
+                                super::explanation_authorship::same_context(old, paragraph)
+                            });
+                    if !historical_context {
+                        super::explanation_authorship::validate(paragraph, checked)?;
+                        supported_refs(
+                            &paragraph.dependency_ids,
+                            &paragraph.source_ids,
+                            checked,
+                            &allowed,
+                        )?;
+                    }
                 }
             }
             continue;
@@ -633,9 +632,20 @@ pub(super) fn validate_with_retained(
             return Err(invalid("invalid summary fragment ID"));
         }
         ids.insert(o.summary.id.clone());
-        for e in &o.events {
-            if !store::valid_id(&e.id) || !ids.insert(e.id.clone()) || e.text.len() > 1024 {
-                return Err(invalid("unsafe or duplicate sequence fragment ID"));
+        for (event_index, e) in o.events.iter().enumerate() {
+            let group_error = |message: &str| {
+                invalid(format!(
+                    "operations[{operation_index}].events[{event_index}]: {message}"
+                ))
+            };
+            if !store::valid_id(&e.id) || !ids.insert(e.id.clone()) {
+                return Err(group_error("unsafe or duplicate sequence fragment ID"));
+            }
+            if e.text.len() > 1024 {
+                return Err(group_error(&format!(
+                    "sequence event text exceeds its UTF-8 byte limit: actualBytes={} maxBytes=1024; shorten the text or split a note into bounded steps while preserving meaning, evidence and the operation's event limit",
+                    e.text.len()
+                )));
             }
             if super::declared_diagrams::boundary(&e.kind) {
                 super::declared_diagrams::supported_refs(
@@ -646,6 +656,79 @@ pub(super) fn validate_with_retained(
                 )?;
             } else {
                 supported_refs(&e.dependency_ids, &e.source_ids, checked, &allowed)?;
+            }
+            if let Some(reader) = &e.reader {
+                if reader
+                    .label
+                    .as_ref()
+                    .is_some_and(|label| label.text.trim().is_empty() || label.text.len() > 160)
+                    || reader.execution.as_ref().is_some_and(|execution| {
+                        execution.meaning.text.trim().is_empty()
+                            || execution.meaning.text.len() > 8192
+                            || !matches!(
+                                execution.mode.as_str(),
+                                "synchronous"
+                                    | "wait"
+                                    | "parallel-await"
+                                    | "background"
+                                    | "unknown"
+                            )
+                    })
+                {
+                    return Err(invalid("reader label or execution mode is invalid"));
+                }
+                if let Some(label) = &reader.label {
+                    let declaration_only = !label.dependency_ids.is_empty()
+                        && label.dependency_ids.iter().all(|id| {
+                            checked
+                                .dependencies
+                                .get(id)
+                                .is_some_and(|dependency| dependency.kind == "DECLARED_INTERACTION")
+                        });
+                    if super::declared_diagrams::boundary(&e.kind) && declaration_only {
+                        if label
+                            .dependency_ids
+                            .iter()
+                            .any(|id| !e.dependency_ids.contains(id))
+                            || label.source_ids.iter().any(|id| !e.source_ids.contains(id))
+                        {
+                            return Err(invalid(
+                                "boundary label must retain its own event's declaration evidence",
+                            ));
+                        }
+                        super::declared_diagrams::supported_refs(
+                            &label.dependency_ids,
+                            &label.source_ids,
+                            checked,
+                            &n.subject,
+                        )?;
+                    } else {
+                        supported_refs(
+                            &label.dependency_ids,
+                            &label.source_ids,
+                            checked,
+                            &allowed,
+                        )?;
+                    }
+                }
+                if let Some(execution) = &reader.execution {
+                    if execution.meaning.dependency_ids.iter().all(|id| {
+                        checked
+                            .dependencies
+                            .get(id)
+                            .is_some_and(|dependency| dependency.kind == "DECLARED_INTERACTION")
+                    }) {
+                        return Err(invalid(
+                            "execution mode requires caller source evidence, not declaration-only evidence",
+                        ));
+                    }
+                    supported_refs(
+                        &execution.meaning.dependency_ids,
+                        &execution.meaning.source_ids,
+                        checked,
+                        &allowed,
+                    )?;
+                }
             }
             if !matches!(
                 e.kind.as_str(),
@@ -661,18 +744,24 @@ pub(super) fn validate_with_retained(
                     | "declared-boundary"
                     | "declared-boundary-return"
             ) {
-                return Err(invalid("unsupported sequence event kind"));
+                return Err(group_error(
+                    "unsupported sequence event kind; use an admitted narrative event kind without changing the group structure",
+                ));
             }
             match e.kind.as_str() {
-                "alt" | "loop" | "opt" => groups.push(e.kind.as_str()),
+                "alt" | "loop" | "opt" => groups.push((e.kind.as_str(), event_index)),
                 "else" => {
-                    if groups.last() != Some(&"alt") {
-                        return Err(invalid("else requires an open alternative group"));
+                    if groups.last().map(|(kind, _)| *kind) != Some("alt") {
+                        return Err(group_error(
+                            "else requires an open alternative group; close the nested opt/loop with end before the outer else",
+                        ));
                     }
                 }
                 "end" => {
                     if groups.pop().is_none() {
-                        return Err(invalid("sequence has an unmatched end"));
+                        return Err(group_error(
+                            "sequence has an unmatched end; preserve one end for each open alt/opt/loop",
+                        ));
                     }
                 }
                 _ => {}
@@ -748,8 +837,10 @@ pub(super) fn validate_with_retained(
                 }
             }
         }
-        if !groups.is_empty() {
-            return Err(invalid("sequence contains an unclosed group"));
+        if let Some((_, event_index)) = groups.last() {
+            return Err(invalid(format!(
+                "operations[{operation_index}].events[{event_index}]: sequence contains an unclosed group; preserve its matching end before moving any later return or alternative"
+            )));
         }
         validate_overview(o)?;
         // Source-bound diagrams must preserve known conditions and return branches.
@@ -1355,13 +1446,14 @@ fn make_bindings_with_retained(
                 )?;
             }
             for e in &o.events {
+                let (dependencies, sources) = e.binding_refs();
                 add_binding(
                     &mut fragments,
                     format!("{prefix}/{}", e.id),
                     subject,
                     e,
-                    &e.dependency_ids,
-                    &e.source_ids,
+                    &dependencies,
+                    &sources,
                     checked,
                 )?;
             }
@@ -1851,7 +1943,7 @@ fn page_data(
             }
         }
         for e in &o.events {
-            sources.extend(e.source_ids.clone());
+            sources.extend(e.binding_refs().1);
         }
         for f in &o.findings {
             sources.extend(f.source_ids.clone());
@@ -2633,9 +2725,6 @@ pub fn mermaid(o: &Operation) -> String {
             ));
         }
         return out;
-    }
-    if o.events.len() > 64 {
-        return "flowchart LR\n    pending[\"A bounded overview has not been authored. Full source evidence is retained separately.\"]\n".into();
     }
     let mut out="sequenceDiagram\n    autonumber\n    %% Agent-interpreted static source; declared edges are not compiler calls.\n".to_owned();
     for p in &o.participants {
@@ -4043,6 +4132,7 @@ fn publish_internal_phases(
         );
         super::status::attach(&mut data, subject, &binding);
         super::explanation_authorship::project(&mut data, subject, &binding, Some(&checked));
+        super::reader_proofs::project(&mut data, subject, &binding, repo);
         // Retain delivery before filtering, so re-inclusion restores accepted
         // source/contract versions even after an excluded endpoint disappears.
         endpoint_selection.retain(subject, &data, &hidden);
@@ -4056,7 +4146,7 @@ fn publish_internal_phases(
         let mut prose =
             super::language::markdown(title, &displayed, &binding.section_states, ui_language);
         prose += &super::explanation_authorship::markdown(&data);
-        prose += &super::declared_diagrams::markdown(&data["declaredRelationships"]);
+
         files.insert(
             format!(
                 "diagrams/{}-declared-relationships.mmd",
@@ -4212,7 +4302,12 @@ fn publish_internal_phases(
             super::reader::text(ui_language,"Revisions, status and update gaps","Версии, состояние и пробелы обновления"),
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
-    super::external_services::publication(&checked, &mut files, &mut cards)?;
+    super::external_services::publication(
+        &checked,
+        &mut files,
+        &mut cards,
+        requested_language.as_deref().unwrap_or("en"),
+    )?;
     let declared_graph = super::declared_diagrams::graph(&checked, None);
     files.insert(
         "diagrams/declared-relationships.json".into(),
@@ -4301,11 +4396,9 @@ fn publish_internal_phases(
     }))?[7..]
         .to_owned();
     let cards = cards.replace("__BUNDLE__", &bundle);
-    let relationships = super::declared_diagrams::html(
-        &declared_graph,
-        &format!("generated/{bundle}/"),
-        ui_language,
-    );
+    // The full declared graph remains a retained artifact; the default reader
+    // inventory does not render a crossing-links architecture diagram.
+    let relationships = String::new();
     let mut reader_failures = failures.clone();
     reader_failures.retain(|key, value| {
         let Some((subject, _)) = key.split_once('/') else {
@@ -5075,6 +5168,7 @@ mod explanation_diagnostic_tests {
                 },
             ],
             events: vec![Event {
+                reader: None,
                 id: "note-step".into(),
                 kind: "note".into(),
                 text: "Record the operation decision".into(),
@@ -5106,6 +5200,251 @@ mod explanation_diagnostic_tests {
             error.message,
             format!("operation 1, explanation paragraph 4: {reason}")
         );
+    }
+
+    #[test]
+    fn compact_labels_and_execution_claims_require_admitted_source_and_keep_original_events() {
+        let (mut narrative, checked) = narrative_and_check();
+        let original = narrative.operations[0].events[0].text.clone();
+        let claim = Fragment {
+            id: "compact-call".into(),
+            text: "Use selected value".into(),
+            dependency_ids: vec!["dependency-one".into()],
+            source_ids: vec!["source-one".into()],
+        };
+        narrative.operations[0].events[0].reader = Some(StepReader {
+            overview: true,
+            label: Some(claim.clone()),
+            execution: Some(ExecutionMeaning {
+                mode: "wait".into(),
+                meaning: claim,
+            }),
+        });
+        validate(&narrative, &checked).unwrap();
+        assert_eq!(narrative.operations[0].events[0].text, original);
+        for mode in ["sync-because-http", "optional-means-background"] {
+            let mut bad = narrative.clone();
+            bad.operations[0].events[0]
+                .reader
+                .as_mut()
+                .unwrap()
+                .execution
+                .as_mut()
+                .unwrap()
+                .mode = mode.into();
+            assert!(validate(&bad, &checked).is_err());
+        }
+        let mut unbound = narrative.clone();
+        unbound.operations[0].events[0]
+            .reader
+            .as_mut()
+            .unwrap()
+            .execution
+            .as_mut()
+            .unwrap()
+            .meaning
+            .source_ids
+            .clear();
+        assert!(validate(&unbound, &checked).is_err());
+        let mut long = narrative;
+        long.operations[0].events[0]
+            .reader
+            .as_mut()
+            .unwrap()
+            .label
+            .as_mut()
+            .unwrap()
+            .text = "x".repeat(161);
+        assert!(validate(&long, &checked).is_err());
+    }
+
+    #[test]
+    fn nested_sequence_stream_rejects_malformed_groups_without_repairing_branches() {
+        let (mut narrative, checked) = narrative_and_check();
+        narrative.operations[0].explanation.clear();
+        let seed = narrative.operations[0].events[0].clone();
+        let stream = |kinds: &[&str]| {
+            kinds
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| Event {
+                    reader: None,
+                    id: format!("step-{index}"),
+                    kind: (*kind).into(),
+                    text: if *kind == "end" {
+                        String::new()
+                    } else {
+                        format!("Synthetic {kind}")
+                    },
+                    from: Some("caller".into()),
+                    to: Some("worker".into()),
+                    ..seed.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        narrative.operations[0].events = stream(&[
+            "alt", "opt", "note", "end", "else", "loop", "alt", "return", "else", "return", "end",
+            "end", "end", "return",
+        ]);
+        narrative.operations[0].explanation = vec![Explanation {
+            id: "flow-explanation".into(),
+            text: "Retain the conditional selection and both return outcomes.".into(),
+            event_ids: narrative.operations[0]
+                .events
+                .iter()
+                .filter(|e| e.kind != "end")
+                .map(|e| e.id.clone())
+                .collect(),
+            dependency_ids: seed.dependency_ids.clone(),
+            source_ids: seed.source_ids.clone(),
+            detail: false,
+            authorship: None,
+        }];
+        let original = narrative.clone();
+        validate(&narrative, &checked).unwrap();
+        assert_eq!(narrative, original);
+        for (kinds, index, reason) in [
+            (
+                vec!["alt", "opt", "else"],
+                2,
+                "else requires an open alternative group",
+            ),
+            (vec!["end"], 0, "unmatched end"),
+            (vec!["alt", "opt", "note", "end"], 0, "unclosed group"),
+            (vec!["unknown"], 0, "unsupported sequence event kind"),
+        ] {
+            narrative.operations[0].events = stream(&kinds);
+            let original = narrative.clone();
+            let error = validate(&narrative, &checked).unwrap_err();
+            assert!(
+                error
+                    .message
+                    .starts_with(&format!("operations[0].events[{index}]:")),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert_eq!(narrative, original);
+        }
+    }
+
+    #[test]
+    fn long_sequence_mermaid_retains_arrows_guards_and_native_limit() {
+        let (mut narrative, checked) = narrative_and_check();
+        let seed = narrative.operations[0].events[0].clone();
+        for count in [65, 160, 512] {
+            let mut events = vec![Event {
+                reader: None,
+                id: "guard".into(),
+                kind: "alt".into(),
+                text: "Normal caller branch".into(),
+                ..seed.clone()
+            }];
+            for index in 1..count - 2 {
+                events.push(Event {
+                    reader: None,
+                    id: format!("arrow-{index}"),
+                    kind: if index % 2 == 1 { "message" } else { "return" }.into(),
+                    from: Some(if index % 2 == 1 { "caller" } else { "worker" }.into()),
+                    to: Some(if index % 2 == 1 { "worker" } else { "caller" }.into()),
+                    text: format!("Synthetic boundary step {index}"),
+                    ..seed.clone()
+                });
+            }
+            events.push(Event {
+                reader: None,
+                id: "alternative".into(),
+                kind: "else".into(),
+                text: "Alternative caller branch".into(),
+                ..seed.clone()
+            });
+            events.push(Event {
+                reader: None,
+                id: "close".into(),
+                kind: "end".into(),
+                text: String::new(),
+                ..seed.clone()
+            });
+            narrative.operations[0].events = events;
+            narrative.operations[0].explanation[0].event_ids = narrative.operations[0]
+                .events
+                .iter()
+                .filter(|e| e.kind != "end")
+                .map(|e| e.id.clone())
+                .collect();
+            for paragraph in narrative.operations[0].explanation.iter_mut().skip(1) {
+                paragraph.event_ids = vec!["guard".into()];
+            }
+            let before = narrative.clone();
+            validate(&narrative, &checked).unwrap();
+            let rendered = mermaid(&narrative.operations[0]);
+            assert!(rendered.starts_with("sequenceDiagram"));
+            assert!(rendered.contains("alt Normal caller branch"));
+            assert!(rendered.contains("else Alternative caller branch"));
+            assert_eq!(
+                rendered.matches("Synthetic boundary step").count(),
+                count - 3
+            );
+            for event in &narrative.operations[0].events {
+                assert!(rendered.contains(&format!("%% {}: dependencies", event.id)));
+            }
+            assert_eq!(narrative, before);
+        }
+        narrative.operations[0].events.push(Event {
+            reader: None,
+            id: "over-limit".into(),
+            ..seed
+        });
+        assert!(
+            validate(&narrative, &checked)
+                .unwrap_err()
+                .message
+                .contains("1..512 events")
+        );
+    }
+
+    #[test]
+    fn sequence_text_limit_reports_utf8_bytes_and_event_path() {
+        let (mut narrative, checked) = narrative_and_check();
+        let seed = narrative.operations[0].events[0].clone();
+        narrative.operations[0].events.push(Event {
+            reader: None,
+            id: "second-note".into(),
+            text: "\u{00e9}".repeat(512),
+            ..seed
+        });
+        for paragraph in &mut narrative.operations[0].explanation {
+            paragraph.event_ids.push("second-note".into());
+        }
+        assert_eq!(narrative.operations[0].events[1].text.len(), 1024);
+        validate(&narrative, &checked).unwrap();
+
+        narrative.operations[0].events[1].text.push('x');
+        assert_eq!(narrative.operations[0].events[1].text.chars().count(), 513);
+        let original = narrative.clone();
+        let error = validate(&narrative, &checked).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidInput);
+        assert!(error.message.starts_with("operations[0].events[1]:"));
+        assert!(error.message.contains("actualBytes=1025 maxBytes=1024"));
+        assert!(!error.message.contains("duplicate"));
+        assert_eq!(narrative, original);
+    }
+
+    #[test]
+    fn sequence_id_errors_remain_distinct_and_keep_validation_priority() {
+        for id in ["bad/id", "summary-one"] {
+            let (mut narrative, checked) = narrative_and_check();
+            narrative.operations[0].events[0].id = id.into();
+            narrative.operations[0].events[0].text = "x".repeat(1025);
+            let original = narrative.clone();
+            let error = validate(&narrative, &checked).unwrap_err();
+            assert_eq!(error.code, crate::error::ErrorCode::InvalidInput);
+            assert_eq!(
+                error.message,
+                "operations[0].events[0]: unsafe or duplicate sequence fragment ID"
+            );
+            assert_eq!(narrative, original);
+        }
     }
 
     #[test]

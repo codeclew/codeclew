@@ -19,66 +19,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 
 const SUPPORT_MATRIX_BYTES: &[u8] = include_bytes!("../support-matrix.json");
-const AGENT_SKILL_BYTES: &[u8] = include_bytes!("../../../skills/codeclew/SKILL.md");
-const AGENT_SKILL_OPENAI_BYTES: &[u8] =
-    include_bytes!("../../../skills/codeclew/agents/openai.yaml");
 const SUPPORT_MATRIX_SCHEMA: &str = "codeclew-support-matrix/1.0";
 const SUPPORT_SUMMARY_SCHEMA: &str = "codeclew-support-summary/1.0";
 const COLD_BUILD_MINIMUM_FREE_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 
 fn agent_skill_digest() -> String {
-    let mut payload = Vec::new();
-    for (relative, content) in [
-        (
-            "README.md",
-            include_bytes!("../../../skills/codeclew/README.md").as_slice(),
-        ),
-        ("SKILL.md", AGENT_SKILL_BYTES),
-        ("agents/openai.yaml", AGENT_SKILL_OPENAI_BYTES),
-        (
-            "references/authoring-example.md",
-            include_bytes!("../../../skills/codeclew/references/authoring-example.md").as_slice(),
-        ),
-        (
-            "references/documentation-evidence.md",
-            include_bytes!("../../../skills/codeclew/references/documentation-evidence.md")
-                .as_slice(),
-        ),
-        (
-            "references/documentation-processes.md",
-            include_bytes!("../../../skills/codeclew/references/documentation-processes.md")
-                .as_slice(),
-        ),
-        (
-            "references/documentation-views.md",
-            include_bytes!("../../../skills/codeclew/references/documentation-views.md").as_slice(),
-        ),
-        (
-            "references/managed-code.md",
-            include_bytes!("../../../skills/codeclew/references/managed-code.md").as_slice(),
-        ),
-        (
-            "references/service-documentation.md",
-            include_bytes!("../../../skills/codeclew/references/service-documentation.md")
-                .as_slice(),
-        ),
-        (
-            "references/thread-preparation.md",
-            include_bytes!("../../../skills/codeclew/references/thread-preparation.md").as_slice(),
-        ),
-        (
-            "scripts/prepared_source.py",
-            include_bytes!("../../../skills/codeclew/scripts/prepared_source.py").as_slice(),
-        ),
-    ] {
-        payload.extend_from_slice(relative.as_bytes());
-        payload.push(0);
-        payload.extend_from_slice(b"420");
-        payload.push(0);
-        payload.extend_from_slice(content);
-        payload.push(0);
-    }
-    canonical::hash_bytes(&payload)
+    env!("CODECLEW_AGENT_SKILL_DIGEST").to_owned()
 }
 
 pub fn support_matrix() -> Result<Value, ClewError> {
@@ -1560,3 +1506,7 @@ mod tests {
         assert!(!encoded.contains("private source"));
     }
 }
+
+#[cfg(test)]
+#[path = "../skill_package.rs"]
+mod skill_package;

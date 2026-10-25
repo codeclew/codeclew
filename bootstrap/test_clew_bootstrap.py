@@ -913,6 +913,27 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 {"clew"}, relative,
             )
 
+    def test_new_nested_skill_files_and_modes_change_only_core_identity(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        registry = bootstrap.load_component_registry(repository)
+        inputs, _development = bootstrap.source_manifest(repository)
+        tools = {key: {"digest": "sha256:" + str(index) * 64}
+                 for index, key in enumerate(["jdk", "platform", "rust"], 1)}
+        original = bootstrap.runtime_component_specs("RELEASE", inputs, tools, registry)
+        path = "skills/codeclew/references/future/nested/schema.json"
+        self.assertTrue(bootstrap.selected_source(path, registry))
+        added = [*inputs, {"path": path, "size": 2, "mode": 0, "sha256": "sha256:" + "a" * 64}]
+        plain = bootstrap.runtime_component_specs("RELEASE", added, tools, registry)
+        executable = [dict(row) for row in added]
+        executable[-1]["mode"] = 0o111
+        changed_mode = bootstrap.runtime_component_specs("RELEASE", executable, tools, registry)
+        for before, after in [(original, plain), (plain, changed_mode)]:
+            self.assertEqual(
+                {a["componentId"] for a, b in zip(before, after, strict=True)
+                 if a["authority"]["componentKey"] != b["authority"]["componentKey"]},
+                {"clew"},
+            )
+
     def test_documentation_embedded_resources_are_in_staged_runtime_inputs(self) -> None:
         import re
         repository = MODULE_PATH.parent.parent

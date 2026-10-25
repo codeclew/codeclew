@@ -56,8 +56,11 @@ pub struct Details {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Node {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader_role: Option<String>,
     pub id: String,
-    pub entity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
     pub kind: String,
     pub service: String,
     pub representation: String,
@@ -88,8 +91,11 @@ pub struct Graph {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposedNode {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader_role: Option<String>,
     pub id: String,
-    pub entity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
     pub kind: String,
     pub service: String,
     pub representation: String,
@@ -477,6 +483,7 @@ pub fn materialize(
     let mut edges = Vec::new();
     for node in &p.nodes {
         nodes.push(Node {
+            reader_role: node.reader_role.clone(),
             id: node.id.clone(),
             entity: node.entity.clone(),
             kind: node.kind.clone(),
@@ -596,12 +603,21 @@ pub fn validate_graph(o: &Operation, checked: &Check, subject: &str) -> Result<(
     for n in &g.nodes {
         if !store::valid_id(&n.id)
             || !ids.insert(n.id.clone())
-            || !v.input_objects.contains(&n.entity)
+            || n.entity
+                .as_ref()
+                .is_some_and(|entity| !v.input_objects.contains(entity))
+            || (n.kind == "domain" && n.entity.is_none())
             || !v.services.contains(&n.service)
             || !matches!(
                 n.kind.as_str(),
                 "domain" | "dto" | "message" | "table" | "field" | "function"
             )
+            || n.reader_role.as_deref().is_some_and(|role| {
+                !matches!(
+                    role,
+                    "input" | "output" | "stage" | "side-effect" | "object"
+                )
+            })
             || n.representation.trim().is_empty()
             || n.representation.len() > 512
             || n.meaning.text.len() > 512
@@ -620,17 +636,22 @@ pub fn validate_graph(o: &Operation, checked: &Check, subject: &str) -> Result<(
                 "representation source must belong to its declared service",
             ));
         }
-        if n.kind == "domain"
-            && (n.representation != n.entity
-                || !n.meaning.dependency_ids.contains(&n.entity)
+        if n.kind == "domain" {
+            let entity = n
+                .entity
+                .as_ref()
+                .ok_or_else(|| invalid("domain nodes require an explicit entity ID"))?;
+            if n.representation != *entity
+                || !n.meaning.dependency_ids.contains(entity)
                 || checked
                     .dependencies
-                    .get(&n.entity)
-                    .is_none_or(|d| d.normalized["entity"]["title"] != n.meaning.text))
-        {
-            return Err(invalid(
-                "domain nodes must use the explicit entity ID and declared title",
-            ));
+                    .get(entity)
+                    .is_none_or(|d| d.normalized["entity"]["title"] != n.meaning.text)
+            {
+                return Err(invalid(
+                    "domain nodes must use the explicit entity ID and declared title",
+                ));
+            }
         }
         nodes.insert(n.id.as_str(), n);
     }
@@ -732,7 +753,11 @@ pub fn markdown(view: &Value, n: &Narrative) -> String {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 super::render::escape(&node.id),
-                super::render::escape(&node.entity),
+                super::render::escape(
+                    node.entity
+                        .as_deref()
+                        .unwrap_or("No domain association established")
+                ),
                 super::render::escape(&node.kind),
                 super::render::escape(&node.representation).replace('|', "&#124;")
             ));
@@ -797,4 +822,38 @@ pub fn mermaid(graph: &Graph) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod association_tests {
+    use super::*;
+
+    #[test]
+    fn optional_entity_preserves_legacy_strings_and_normalizes_absence() {
+        let legacy = json!({"id":"trace", "entity":"entity:order", "kind":"field", "service":"orders", "representation":"request.traceToken", "meaning":{"id":"trace-meaning", "text":"Technical trace token", "dependencyIds":[], "sourceIds":["trace-source"]}});
+        let bound: Node = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(bound.entity.as_deref(), Some("entity:order"));
+        assert_eq!(serde_json::to_value(&bound).unwrap(), legacy);
+        let mut absent = legacy.clone();
+        absent.as_object_mut().unwrap().remove("entity");
+        let node: Node = serde_json::from_value(absent.clone()).unwrap();
+        assert!(node.entity.is_none());
+        let mut null = absent.clone();
+        null["entity"] = Value::Null;
+        let null_node: Node = serde_json::from_value(null).unwrap();
+        assert_eq!(node, null_node);
+        assert_eq!(serde_json::to_value(null_node).unwrap(), absent);
+        let mut proposal = absent;
+        proposal["meaning"] = json!({"text":"Technical trace token", "evidence":["source-ref"]});
+        let missing: ProposedNode = serde_json::from_value(proposal.clone()).unwrap();
+        proposal["entity"] = Value::Null;
+        let explicit_null: ProposedNode = serde_json::from_value(proposal).unwrap();
+        assert!(missing.entity.is_none() && explicit_null.entity.is_none());
+        assert!(
+            serde_json::to_value(explicit_null)
+                .unwrap()
+                .get("entity")
+                .is_none()
+        );
+    }
 }

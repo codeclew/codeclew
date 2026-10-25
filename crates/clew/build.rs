@@ -2,7 +2,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+mod skill_package;
+
 fn main() {
+    generate_skill_package_digest();
     generate_worker_input_manifests();
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");
     unsafe { std::env::set_var("PROTOC", protoc) };
@@ -192,4 +195,14 @@ fn manifest_digest(entries: &[(String, String)]) -> String {
         digest.update([0]);
     }
     format!("sha256:{}", hex::encode(digest.finalize()))
+}
+
+fn generate_skill_package_digest() {
+    let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("../../skills/codeclew");
+    // Cargo observes additions/removals and nested content; the supported
+    // launcher also binds every file's normalized executable mode.
+    println!("cargo:rerun-if-changed={}", root.display());
+    let digest = skill_package::digest(&root).expect("complete portable skill package");
+    println!("cargo:rustc-env=CODECLEW_AGENT_SKILL_DIGEST={digest}");
 }

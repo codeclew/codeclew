@@ -417,3 +417,177 @@ pub(super) fn effective_expansion_selection(requested: &work::Selection) -> work
     }
     effective
 }
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use crate::documentation::model::Observation;
+
+    #[test]
+    fn declaration_query_drains_every_page_and_preflight_failure_is_not_completion() {
+        let mut work = work::api_contract_tests::endpoint_context_fixture();
+        work.request.context_profile = None;
+        work.request.max_items = 1;
+        for index in 0..4 {
+            let id = format!("interaction:synthetic-{index}");
+            let normalized =
+                json!({"from":{"service":"orders"},"to":{"service":"provider"},"external":true});
+            let observation = Observation {
+                id: id.clone(),
+                kind: "DECLARED_INTERACTION".into(),
+                service: String::new(),
+                symbol: id.clone(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec![],
+            };
+            work.influence
+                .insert(id.clone(), observation.digest.clone());
+            work.handles.insert(
+                format!("d-test-{index}"),
+                work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.clone(),
+                },
+            );
+            work.checked.dependencies.insert(id, observation);
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Synthetic declaration pagination").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        work::api_contract_tests::persist_operation_fixture(&repo, &mut work);
+        let selection:Selection=serde_json::from_value(json!({"query":{"kind":"DECLARED_INTERACTION","symbolContains":"interaction:synthetic-"}})).unwrap();
+        let mut pages = vec![];
+        let mut parts = vec![];
+        let error = retrieve(
+            &repo,
+            &work,
+            std::slice::from_ref(&selection),
+            &mut pages,
+            &mut parts,
+            |_, _, _| Err(invalid("synthetic budget exhausted")),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("budget exhausted"));
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0]["nextCursor"].is_string());
+        pages.clear();
+        let result = retrieve(
+            &repo,
+            &work,
+            &[selection],
+            &mut pages,
+            &mut parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 4);
+        assert!(pages.last().unwrap()["nextCursor"].is_null());
+        let ids: BTreeSet<_> = pages
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .filter_map(|row| row["id"].as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            (0..4)
+                .map(|i| format!("interaction:synthetic-{i}"))
+                .collect::<BTreeSet<_>>()
+                .iter()
+                .map(String::as_str)
+                .collect()
+        );
+        assert_eq!(result.receipts.len(), 4);
+    }
+
+    #[test]
+    fn oversized_source_is_delivered_in_full_or_fails_explicitly() {
+        let mut work = work::api_contract_tests::endpoint_context_fixture();
+        work.request.max_bytes = 2048;
+        work.request.max_items = 1;
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("service-source")
+            .unwrap();
+        source.text = "// Independently synthetic source bytes.\n".repeat(180);
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count() as u64;
+        let expected = source.text.clone();
+        let mut second = source.clone();
+        second.id = "second-source".into();
+        second.file = "SecondSynthetic.java".into();
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .insert(second.id.clone(), second);
+        work.handles.insert(
+            "s-test".into(),
+            work::Handle {
+                kind: "SOURCE".into(),
+                id: "service-source".into(),
+            },
+        );
+        work.handles.insert(
+            "s-test-2".into(),
+            work::Handle {
+                kind: "SOURCE".into(),
+                id: "second-source".into(),
+            },
+        );
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Synthetic source parts").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        work::api_contract_tests::persist_operation_fixture(&repo, &mut work);
+        let selection: Selection =
+            serde_json::from_value(json!({"references":["s-test","s-test-2"]})).unwrap();
+        let mut pages = vec![];
+        let mut parts = vec![];
+        retrieve(
+            &repo,
+            &work,
+            &[selection],
+            &mut pages,
+            &mut parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert!(pages.len() >= 2);
+        assert!(
+            pages
+                .iter()
+                .any(|page| page["items"].as_array().unwrap().is_empty()
+                    && page["nextCursor"].is_string())
+        );
+        assert!(pages.last().unwrap()["nextCursor"].is_null());
+        assert!(parts.len() > 1);
+        assert!(parts.last().unwrap()["nextCursor"].is_null());
+        for source_id in ["service-source", "second-source"] {
+            assert_eq!(
+                parts
+                    .iter()
+                    .filter(|p| p["sourceId"] == source_id)
+                    .map(|p| p["text"].as_str().unwrap())
+                    .collect::<String>(),
+                expected
+            );
+        }
+        let bad: Selection = serde_json::from_value(json!({"references":["s-unknown"]})).unwrap();
+        assert!(
+            retrieve(
+                &repo,
+                &work,
+                &[bad],
+                &mut vec![],
+                &mut vec![],
+                |_, _, _| Ok(())
+            )
+            .is_err()
+        );
+    }
+}

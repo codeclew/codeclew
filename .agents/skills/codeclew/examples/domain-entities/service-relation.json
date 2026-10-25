@@ -1,0 +1,21 @@
+{
+  "schema": "codeclew-documentation-entity/1.0",
+  "id": "reservation",
+  "title": "Reservation",
+  "description": "An explicitly declared business reservation concept. Its business identity and rules require evidence.",
+  "relations": [
+    {
+      "service": "orders",
+      "kind": "read",
+      "origin": "agent-proposal",
+      "rationale": "Owned example of a declared read relation; assess it against selected source before accepting meaning.",
+      "confidence": "declared",
+      "representations": [],
+      "dependencyIds": []
+    }
+  ],
+  "relatedEntities": [],
+  "limitations": [
+    "Service responsibility and lifecycle have not been established."
+  ]
+}

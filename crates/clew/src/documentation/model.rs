@@ -1,7 +1,7 @@
 //! Closed, portable authored records. No session IDs or machine paths are identities.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const VERSION: &str = "2.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.3";
@@ -137,6 +137,10 @@ pub struct CallSite {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
@@ -356,9 +360,28 @@ pub struct Participant {
     pub external_service: Option<String>,
 }
 
+/// Optional authored presentation. Both labels and execution semantics retain claims.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StepReader {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<Fragment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionMeaning>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionMeaning {
+    pub mode: String,
+    pub meaning: Fragment,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Event {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader: Option<StepReader>,
     pub id: String,
     /// message, return, note, alt, else, loop, opt, end, or declared.
     pub kind: String,
@@ -371,6 +394,44 @@ pub struct Event {
     pub source_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interaction: Option<String>,
+}
+
+impl Event {
+    pub(super) fn reader_claims(&self) -> impl Iterator<Item = &Fragment> {
+        self.reader.iter().flat_map(|reader| {
+            reader
+                .label
+                .iter()
+                .chain(reader.execution.iter().map(|execution| &execution.meaning))
+        })
+    }
+    /// Presentation evidence affects freshness and source disclosure, never the
+    /// event's source/declaration authority or existing explanation closure.
+    pub(super) fn binding_refs(&self) -> (Vec<String>, Vec<String>) {
+        let dependencies = self
+            .dependency_ids
+            .iter()
+            .chain(
+                self.reader_claims()
+                    .flat_map(|claim| claim.dependency_ids.iter()),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let sources = self
+            .source_ids
+            .iter()
+            .chain(
+                self.reader_claims()
+                    .flat_map(|claim| claim.source_ids.iter()),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        (dependencies, sources)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

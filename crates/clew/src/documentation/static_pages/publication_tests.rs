@@ -1836,18 +1836,36 @@ fn repeated_pinned_render_keeps_both_snapshot_reasons_and_publication_identity()
 
 #[test]
 fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_pages() {
+    external_registry_roundtrip("http");
+}
+
+#[test]
+fn logical_external_registry_reaches_service_egress_and_exported_pages() {
+    external_registry_roundtrip("logical");
+}
+
+fn external_registry_roundtrip(transport: &str) {
     use crate::documentation::{cli::InputArgs, external_services, model::Interaction};
     let (temporary, repo, old) = repository_snapshot();
     let external = json!({"schema":"codeclew-documentation-external-service/1.0","id":"forecast-provider","title":"Forecast Provider","description":"Owned provider information. No source acquisition.","repository":"https://github.com/owned/forecast-provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Owned acceptance declaration"},"limitations":["No runtime verification"]});
     let input = temporary.path().join("external-input.json");
     fs::write(&input, serde_json::to_vec(&external).unwrap()).unwrap();
-    external_services::run(external_services::Command::Put(InputArgs {
-        root: repo.root.clone(),
-        input,
-        expected_input_digest: Some(repo.input_digest().unwrap()),
-    }))
+    external_services::run(external_services::Command::Put {
+        human: false,
+        input: InputArgs {
+            root: repo.root.clone(),
+            input,
+            expected_input_digest: Some(repo.input_digest().unwrap()),
+        },
+    })
     .unwrap();
     let interaction:Interaction=serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"fetch-forecast","title":"Fetch forecast","from":{"service":"sample"},"to":{"service":"forecast-provider"},"transport":{"kind":"http","method":"GET","path":"/forecast"},"declaration":{"origin":"human","rationale":"Declared only"},"external":true,"externalService":"forecast-provider"})).unwrap();
+    let mut interaction = interaction;
+    if transport == "logical" {
+        interaction.transport.kind = "logical".into();
+        interaction.transport.method = None;
+        interaction.transport.path = None;
+    }
     repo.interaction_put(interaction, Some(&repo.input_digest().unwrap()))
         .unwrap();
     let process = json!({"schema":"codeclew-documentation-process/1.0","id":"forecast-process","title":"Forecast request","summary":"Captured caller and declared provider","root":{"service":"sample","selector":{"language":"java","scope":"A","owner":"class:Fixture","name":"submit"}},"interactions":["fetch-forecast"],"process":{"scope":"Owned scope","participants":["sample","forecast-provider"],"trigger":"Declared request","outcomes":["Static caller result; target runtime unknown"]}});
@@ -1923,14 +1941,68 @@ fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_page
         .unwrap(),
     )
     .unwrap();
-    assert!(html.contains("SOURCE NOT CAPTURED") && html.contains("Owned provider information"));
+    assert!(
+        html.to_lowercase().contains("source not captured")
+            && html.contains("Owned provider information")
+    );
     assert!(html.contains("../overview.html"));
+    let markdown = fs::read_to_string(
+        repo.path(&format!(
+            "docs/generated/{bundle}/external-services/forecast-provider.md"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        markdown.contains("https://github.com/owned/forecast-provider")
+            && markdown.contains("https://docs.example.invalid/forecast")
+    );
     let service = fs::read_to_string(
         repo.path(&format!("docs/generated/{bundle}/services/sample.html"))
             .unwrap(),
     )
     .unwrap();
     assert!(service.contains("../external-services/forecast-provider.html"));
+    if transport == "logical"
+        && let Some(directory) = std::env::var_os("CODECLEW_BOUNDARY_EXPORT_OUTPUT")
+    {
+        let directory = std::path::PathBuf::from(directory);
+        fs::create_dir_all(directory.join("services")).unwrap();
+        fs::create_dir_all(directory.join("external-services")).unwrap();
+        for path in [
+            "services/sample.html",
+            "services/sample.json",
+            "external-services/forecast-provider.html",
+        ] {
+            fs::copy(
+                repo.path(&format!("docs/generated/{bundle}/{path}"))
+                    .unwrap(),
+                directory.join(path),
+            )
+            .unwrap();
+        }
+    }
+
+    let data: Value = serde_json::from_slice(
+        &fs::read(
+            repo.path(&format!("docs/generated/{bundle}/services/sample.json"))
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        data["declaredRelationships"]["edges"][0]["transport"]["kind"],
+        transport
+    );
+    assert_eq!(
+        data["declaredRelationships"]["edges"][0]["from"],
+        "service:sample"
+    );
+    assert_eq!(
+        data["declaredRelationships"]["edges"][0]["to"],
+        "external-service:forecast-provider"
+    );
     let catalog = fs::read_to_string(repo.path("docs/catalog.html").unwrap()).unwrap();
     assert!(
         catalog.contains(&format!(
@@ -1985,6 +2057,13 @@ fn external_registry_is_frozen_declared_information_in_local_remote_and_mdx_page
         let body = fs::read_to_string(out.join(path)).unwrap();
         assert!(body.contains("Owned provider information"));
         assert!(!body.contains("void submit()"));
+        if format == PageFormat::Docusaurus {
+            let service = fs::read_to_string(out.join("docs/services/sample.mdx")).unwrap();
+            let egress = service.split_once("{#section-egress}").unwrap().1;
+            let egress = egress.split("\n## ").next().unwrap();
+            assert!(egress.contains("../external-services/forecast-provider.mdx"));
+            assert!(egress.contains(transport));
+        }
     }
 }
 

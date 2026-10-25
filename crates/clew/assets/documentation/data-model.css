@@ -76,3 +76,6 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
 }
 
 @media(max-width:650px){.dm-contract-page td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:.2rem}.dm-contract-page .inline-contract-table tr{border:1px solid #cbd5db}.dm-contract-page .inline-contract-table td{border:0}}
+
+/* Canonical names precede representation details. */
+.dm-fields th:nth-child(1){width:35%}.dm-fields th:nth-child(2){width:65%}

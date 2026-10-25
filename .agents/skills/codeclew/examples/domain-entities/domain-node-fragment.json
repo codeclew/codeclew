@@ -1,0 +1,13 @@
+{
+  "id": "reservation-domain",
+  "entity": "entity:reservation",
+  "kind": "domain",
+  "service": "orders",
+  "representation": "entity:reservation",
+  "meaning": {
+    "text": "Reservation",
+    "evidence": [
+      "EXACT_WORK_DOMAIN_ENTITY_REFERENCE"
+    ]
+  }
+}

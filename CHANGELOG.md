@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.54 — 2026-10-26
+
+- Present authored domain attributes by readable business name, with exact code
+  representations, object-scoped identity, proposed relations and evidence in
+  secondary details. Repeated uses do not create inferred canonical attributes.
+- Group external operations by service and configuration binding. Show safe static
+  configuration references and their selected-source availability separately from
+  effective runtime values, active profiles and routing.
+- Add source-derived request, response, error and message payload views over exact
+  model representations. Preserve partial coverage, direction and known response
+  status; implementation nullability does not establish optional wire properties.
+- Keep process decisions, failure paths, readable source proofs and declared
+  contract navigation attached to their exact retained operation and evidence.
+  Timing annotations remain plain text; technical context opens separately.
+- Extend the portable skill with bounded evidence collection and repair, canonical
+  domain mappings, semantic reader examples and explicit normal/debug acceptance
+  questions. Source, compiler, declaration and runtime authority remain distinct.
+
 ## 0.13.53 — 2026-10-25
 
 - Render Markdown tables and links in service-profile summaries and secondary

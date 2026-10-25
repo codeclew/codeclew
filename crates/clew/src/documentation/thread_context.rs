@@ -505,7 +505,7 @@ pub(super) fn assess(repo: &Repository, id: &str, a: Assessment) -> Result<Value
         .flat_map(|r| r.supplied.iter().map(String::as_str))
         .collect();
     let completed = super::work_parts::completed_source_references(&w, &state)?;
-    for account in &a.accounts {
+    for (index, account) in a.accounts.iter().enumerate() {
         let row = obligations
             .get(account.obligation.as_str())
             .ok_or_else(|| invalid("assessment obligation is outside the retained thread"))?;
@@ -514,9 +514,21 @@ pub(super) fn assess(repo: &Repository, id: &str, a: Assessment) -> Result<Value
             || account.references.is_empty()
             || account.references.len() > 16
         {
-            return Err(invalid(
-                "each thread account needs a bounded explanation and retained evidence references",
-            ));
+            let mut violations = Vec::new();
+            if account.explanation.trim().len() < 16 || account.explanation.len() > 4096 {
+                violations.push(format!("accounts[{index}].explanation: {} UTF-8 bytes ({} after trimming); requires at least 16 UTF-8 bytes after trimming and at most 4096 total UTF-8 bytes", account.explanation.len(), account.explanation.trim().len()));
+            }
+            if account.references.is_empty() || account.references.len() > 16 {
+                violations.push(format!(
+                    "accounts[{index}].references: received {}; expected 1..16 references",
+                    account.references.len()
+                ));
+            }
+            return Err(invalid(format!(
+                "{}; obligation {}. Next action: write one compact account per returned obligation using its own recorded SOURCE references. Keep downstream accounts separate; controller-only evidence does not replace them.",
+                violations.join("; "),
+                account.obligation
+            )));
         }
         let expected: BTreeSet<_> = row["record"]["sourceIds"]
             .as_array()

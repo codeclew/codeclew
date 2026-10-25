@@ -461,7 +461,9 @@
             "topic": { "type": "string", "maxLength": 249 },
             "method": { "type": "string" },
             "path": { "type": "string" },
-            "destinationConfigKey": { "type": "string" }
+            "destinationConfigKey": { "type": "string" },
+            "messageKey": { "type": "string", "minLength": 1, "maxLength": 2048 },
+            "purpose": { "type": "string", "minLength": 1, "maxLength": 2048 }
           },
           "required": ["kind"]
         },

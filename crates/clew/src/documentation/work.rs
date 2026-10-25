@@ -3488,14 +3488,25 @@ pub(super) fn read_loaded_with_requested(
                 .as_str()
                 .is_some_and(|k| k.starts_with("THREAD_"))
             {
-                let mut request = serde_json::to_value(&work.request)
-                    .map_err(|_| invalid("Work request cannot be serialized"))?;
-                request["maxBytes"] = json!(49152);
-                omitted.last_mut().unwrap()["recovery"] = json!({
-                    "command":"docs work prepare", "subject":work.subject,
-                    "snapshot":work.snapshot, "input":request,
-                    "nextAction":"Prepare a new Work from this same saved snapshot with this request, then repeat the original thread query from cursor null. Verify omitted is empty on every page; nextCursor null alone does not establish complete delivery."
-                });
+                let required_page_bytes = bytes(&candidate)?.len() + 512;
+                let recovery = if work.request.max_bytes < 49152 && required_page_bytes <= 49152 {
+                    let mut request = serde_json::to_value(&work.request)
+                        .map_err(|_| invalid("Work request cannot be serialized"))?;
+                    request["maxBytes"] = json!(49152);
+                    json!({
+                        "status":"LARGER_WORK_AVAILABLE", "command":"docs work prepare", "subject":work.subject,
+                        "snapshot":work.snapshot, "input":request,
+                        "currentMaxBytes":work.request.max_bytes, "requiredPageBytes":required_page_bytes, "maximumMaxBytes":49152,
+                        "nextAction":"Prepare a larger Work from this same saved snapshot with this request, then repeat the original thread query from cursor null. Verify omitted is empty on every page; a null cursor alone does not establish complete delivery."
+                    })
+                } else {
+                    json!({
+                        "status":"UNAVAILABLE", "reason":"THREAD_ROW_EXCEEDS_MAXIMUM_WORK_BYTE_BUDGET",
+                        "currentMaxBytes":work.request.max_bytes, "requiredPageBytes":required_page_bytes, "maximumMaxBytes":49152,
+                        "nextAction":"This thread row cannot be delivered within the supported Work page limit. Do not prepare an identical Work or repeat the query as a recovery. Keep this omission explicit. Continue the selected thread through bounded SYMBOL queries and returned SOURCE or DEPENDENCY part reads; inventory delivery remains incomplete."
+                    })
+                };
+                omitted.last_mut().unwrap()["recovery"] = recovery;
             }
             output["omitted"] = json!(omitted);
             consumed += 1;

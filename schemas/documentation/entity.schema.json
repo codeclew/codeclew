@@ -38,7 +38,9 @@
               "changed",
               "read",
               "stored-copy",
-              "owned"
+              "owned",
+              "deleted",
+              "enriched"
             ]
           },
           "origin": {
@@ -72,6 +74,14 @@
             "items": {
               "type": "string"
             }
+          },
+          "role": {
+            "enum": [
+              "master",
+              "consumer",
+              "enricher",
+              "unknown"
+            ]
           }
         },
         "required": [

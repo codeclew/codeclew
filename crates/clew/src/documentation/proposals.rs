@@ -168,7 +168,27 @@ pub struct Assertion {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedStepReader {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<Claim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ProposedExecution>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedExecution {
+    pub mode: String,
+    pub meaning: Claim,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Step {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otherwise_reader: Option<ProposedStepReader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader: Option<ProposedStepReader>,
     pub kind: String,
     pub meaning: Claim,
     #[serde(default)]
@@ -256,7 +276,7 @@ impl StoredArtifact {
         Ok(self.artifact)
     }
 }
-fn stable(scope: &str, slot: &str) -> Result<String, ClewError> {
+pub(super) fn stable(scope: &str, slot: &str) -> Result<String, ClewError> {
     Ok(format!("claim-{}", &digest(&(scope, slot))?[7..27]))
 }
 fn file(id: &str) -> Result<String, ClewError> {
@@ -494,11 +514,17 @@ impl Builder<'_> {
     }
     fn evidence(&self, references: &[String]) -> Result<(Vec<String>, Vec<String>), ClewError> {
         if references.is_empty() || references.len() > 32 {
-            return Err(invalid("claim needs 1..32 recorded evidence references"));
+            return Err(invalid(format!(
+                "claim needs 1..32 recorded evidence references; received {}",
+                references.len()
+            )));
         }
         let mut deps = BTreeSet::new();
         let mut sources = BTreeSet::new();
+        let mut expansion = Vec::new();
         for reference in references {
+            let mut reference_deps = BTreeSet::new();
+            let mut reference_sources = BTreeSet::new();
             let handle = self.handle(reference)?;
             if !evidence_reference_allowed(handle) {
                 return Err(invalid("unsupported evidence reference"));
@@ -513,8 +539,8 @@ impl Builder<'_> {
                             "SOURCE_SCOPE reference is outside exact Work influence",
                         ));
                     }
-                    deps.insert(handle.id.clone());
-                    sources.extend(observation.source_ids.iter().cloned());
+                    reference_deps.insert(handle.id.clone());
+                    reference_sources.extend(observation.source_ids.iter().cloned());
                 }
                 "ENTRYPOINT" => {
                     let entry = self
@@ -525,11 +551,11 @@ impl Builder<'_> {
                         .flat_map(|s| s.entrypoints.iter())
                         .find(|e| e.id == handle.id)
                         .ok_or_else(|| invalid("entrypoint disappeared"))?;
-                    deps.extend(entry.dependency_ids.iter().cloned());
-                    sources.extend(entry.source_ids.iter().cloned());
+                    reference_deps.extend(entry.dependency_ids.iter().cloned());
+                    reference_sources.extend(entry.source_ids.iter().cloned());
                 }
                 "SOURCE" => {
-                    sources.insert(handle.id.clone());
+                    reference_sources.insert(handle.id.clone());
                     let direct: Vec<_> = self
                         .work
                         .checked
@@ -551,7 +577,7 @@ impl Builder<'_> {
                             .ok_or_else(|| {
                                 invalid("SOURCE reference is absent from its Work snapshot")
                             })?;
-                        deps.extend(
+                        reference_deps.extend(
                             self.work
                                 .checked
                                 .dependencies
@@ -567,11 +593,21 @@ impl Builder<'_> {
                                 .map(|d| d.id.clone()),
                         );
                     } else {
-                        deps.extend(direct);
+                        reference_deps.extend(direct);
                     }
                 }
                 _ => return Err(invalid("unsupported evidence reference")),
             }
+            expansion.push(format!(
+                "{} ({} {}): {} dependencies, {} sources",
+                reference,
+                handle.kind,
+                handle.id,
+                reference_deps.len(),
+                reference_sources.len()
+            ));
+            deps.extend(reference_deps);
+            sources.extend(reference_sources);
         }
         if deps.len() > 128
             || (sources.is_empty()
@@ -587,9 +623,23 @@ impl Builder<'_> {
                 }))
             || sources.len() > 32
         {
-            return Err(invalid(
-                "claim evidence exceeds canonical bounds or has no source",
-            ));
+            let mut reasons = Vec::new();
+            if deps.len() > 128 {
+                reasons.push("DEPENDENCY_EXPANSION_LIMIT");
+            }
+            if sources.len() > 32 {
+                reasons.push("SOURCE_EXPANSION_LIMIT");
+            }
+            if reasons.is_empty() {
+                reasons.push("SOURCE_EVIDENCE_MISSING");
+            }
+            return Err(invalid(format!(
+                "claim evidence exceeds canonical bounds or has no source: {}. Combined unique dependencyIds={} (limit 128), sourceIds={} (limit 32). Reference expansion: {}. Next action: use docs work read with a bounded SYMBOL query and its returned SOURCE or FLOW references, or split independent statements into separate evidence-bound claims. Preserve the required facts and references. Source part reads complete delivery but do not reduce canonical expansion; raising page limits does not change these bounds.",
+                reasons.join(", "),
+                deps.len(),
+                sources.len(),
+                expansion.join("; ")
+            )));
         }
         Ok((deps.into_iter().collect(), sources.into_iter().collect()))
     }
@@ -662,6 +712,47 @@ impl Builder<'_> {
         self.claims.insert(id,json!({"version":digest(&(&fragment,&claim.checks,&claim.uncertainty))?,"slot":slot,"fragment":fragment,"checks":results,"meaning":"UNASSESSED","uncertainty":claim.uncertainty,"influence":bindings::expand_dependencies(&fragment.dependency_ids,&self.work.checked)?}));
         Ok(fragment)
     }
+    fn step_reader(
+        &mut self,
+        scope: &str,
+        slot: &str,
+        reader: Option<&ProposedStepReader>,
+    ) -> Result<Option<StepReader>, ClewError> {
+        reader
+            .map(|reader| -> Result<StepReader, ClewError> {
+                let label = reader
+                    .label
+                    .as_ref()
+                    .map(|claim| self.claim(scope, &format!("{slot}/label"), claim))
+                    .transpose()?;
+                let execution = reader
+                    .execution
+                    .as_ref()
+                    .map(|execution| -> Result<ExecutionMeaning, ClewError> {
+                        if !matches!(
+                            execution.mode.as_str(),
+                            "synchronous" | "wait" | "parallel-await" | "background" | "unknown"
+                        ) {
+                            return Err(invalid("unknown execution mode"));
+                        }
+                        Ok(ExecutionMeaning {
+                            mode: execution.mode.clone(),
+                            meaning: self.claim(
+                                scope,
+                                &format!("{slot}/execution"),
+                                &execution.meaning,
+                            )?,
+                        })
+                    })
+                    .transpose()?;
+                Ok(StepReader {
+                    overview: reader.overview,
+                    label,
+                    execution,
+                })
+            })
+            .transpose()
+    }
     fn steps(
         &mut self,
         scope: &str,
@@ -695,9 +786,11 @@ impl Builder<'_> {
                     | "declared-boundary-return"
             ) || (!grouped && !step.children.is_empty())
                 || (step.kind != "alt" && !step.otherwise.is_empty())
+                || (step.otherwise_reader.is_some()
+                    && (step.kind != "alt" || step.otherwise.is_empty()))
             {
                 return Err(invalid(format!(
-                    "{slot}: invalid diagram meaning or branch children"
+                    "{slot}: invalid diagram meaning or branch children; use alt, opt, or loop with children, and otherwise only on alt. Proposal steps must not contain else/end markers; group ends are generated automatically"
                 )));
             }
             let actor = |value: &Option<String>| -> Result<Option<String>, ClewError> {
@@ -729,7 +822,9 @@ impl Builder<'_> {
                         })
                 })
                 .transpose()?;
+            let reader = self.step_reader(scope, &slot, step.reader.as_ref())?;
             let event = Event {
+                reader,
                 id: fragment.id.clone(),
                 kind: step.kind.clone(),
                 text: fragment.text.clone(),
@@ -763,6 +858,11 @@ impl Builder<'_> {
                 )?;
                 if !step.otherwise.is_empty() {
                     let mut other = event.clone();
+                    other.reader = self.step_reader(
+                        scope,
+                        &format!("{slot}/else"),
+                        step.otherwise_reader.as_ref(),
+                    )?;
                     other.id = stable(scope, &format!("{slot}/else"))?;
                     other.kind = "else".into();
                     other.text = super::reader::text(
@@ -796,6 +896,7 @@ impl Builder<'_> {
                     )?;
                 }
                 let mut end = event;
+                end.reader = None;
                 end.id = stable(scope, &format!("{slot}/end"))?;
                 end.kind = "end".into();
                 end.text = String::new();
@@ -1664,6 +1765,482 @@ mod storage_tests {
 mod operation_input_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn nested_groups_preserve_branch_return_placement_and_specific_evidence() {
+        let mut work = work("dispatch");
+        for (index, kind) in [
+            "alt", "opt", "note", "loop", "alt", "return", "return", "return",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let id = format!("branch-proof-{index}");
+            work.handles.insert(
+                format!("d{index}"),
+                work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.clone(),
+                },
+            );
+            work.checked.dependencies.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "VIEW_DEFINITION".into(),
+                    service: String::new(),
+                    symbol: kind.to_string(),
+                    normalized: json!({}),
+                    digest: "digest".into(),
+                    source_ids: vec![format!("specific-source-{index}")],
+                },
+            );
+        }
+        let claim = |text: &str, index| json!({"text":text,"evidence":[format!("d{index}")]});
+        let input = json!([{"kind":"alt","meaning":claim("A slot is available",0),
+            "children":[{"kind":"opt","meaning":claim("A label is supplied",1),
+                "children":[{"kind":"note","meaning":claim("Attach the label",2),"reader":{"overview":true,"label":claim("Attach label",2),"execution":{"mode":"synchronous","meaning":claim("Wait for the local update",2)}}}]}],
+            "otherwise":[{"kind":"loop","meaning":claim("For each fallback slot",3),
+                "children":[{"kind":"alt","meaning":claim("The fallback slot is available",4),
+                    "children":[{"kind":"return","from":"service","to":"caller","meaning":claim("Return the fallback slot",5)}],
+                    "otherwise":[{"kind":"return","from":"service","to":"caller","meaning":claim("Return the unavailable result",6)}]}]}]},
+            {"kind":"return","from":"service","to":"caller","meaning":claim("Return the selected slot",7)}]);
+        let steps: Vec<Step> = serde_json::from_value(input.clone()).unwrap();
+        let canonical = serde_json::to_value(&steps).unwrap();
+        let roundtrip: Vec<Step> = serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(serde_json::to_value(roundtrip).unwrap(), canonical);
+        let mut builder = Builder {
+            work: &work,
+            received: work.handles.keys().cloned().collect(),
+            claims: BTreeMap::new(),
+            diagnostics: vec![],
+            events: 0,
+        };
+        let mut operation: Operation =
+            serde_json::from_value(json!({"id":"dispatch","title":"Dispatch",
+            "summary":{"id":"summary","text":"Select a slot","dependencyIds":[],"sourceIds":[]},
+            "participants":[],"events":[]}))
+            .unwrap();
+        builder
+            .steps(
+                "scenario:dispatch",
+                &steps,
+                "step",
+                0,
+                &mut operation,
+                &BTreeMap::from([
+                    ("service".into(), "service-sample".into()),
+                    ("caller".into(), "caller".into()),
+                ]),
+            )
+            .unwrap();
+        let presentation = operation
+            .events
+            .iter()
+            .find_map(|event| event.reader.as_ref())
+            .unwrap();
+        assert!(presentation.overview);
+        assert_eq!(presentation.label.as_ref().unwrap().text, "Attach label");
+        assert_eq!(presentation.execution.as_ref().unwrap().mode, "synchronous");
+        assert_eq!(
+            presentation.execution.as_ref().unwrap().meaning.source_ids,
+            ["specific-source-2"]
+        );
+        let expected = [
+            ("alt", 0),
+            ("opt", 1),
+            ("note", 2),
+            ("end", 1),
+            ("else", 0),
+            ("loop", 3),
+            ("alt", 4),
+            ("return", 5),
+            ("else", 4),
+            ("return", 6),
+            ("end", 4),
+            ("end", 3),
+            ("end", 0),
+            ("return", 7),
+        ];
+        assert_eq!(operation.events.len(), expected.len());
+        let exact_text = [
+            "A slot is available",
+            "A label is supplied",
+            "Attach the label",
+            "For each fallback slot",
+            "The fallback slot is available",
+            "Return the fallback slot",
+            "Return the unavailable result",
+            "Return the selected slot",
+        ];
+        for (event, (kind, proof)) in operation.events.iter().zip(expected) {
+            assert_eq!(event.kind, kind);
+            assert_eq!(
+                event.text,
+                match kind {
+                    "end" => "",
+                    "else" => "Otherwise",
+                    _ => exact_text[proof],
+                }
+            );
+            assert_eq!(
+                event.from.as_deref(),
+                (kind == "return").then_some("service-sample")
+            );
+            assert_eq!(event.to.as_deref(), (kind == "return").then_some("caller"));
+            assert_eq!(event.dependency_ids, [format!("branch-proof-{proof}")]);
+            assert_eq!(event.source_ids, [format!("specific-source-{proof}")]);
+        }
+        let encoded = serde_json::to_value(&operation).unwrap();
+        assert_eq!(
+            serde_json::to_value(serde_json::from_value::<Operation>(encoded.clone()).unwrap())
+                .unwrap(),
+            encoded
+        );
+        assert!(builder.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reader_evidence_stays_separate_and_otherwise_never_inherits_parent_metadata() {
+        let mut work = work("dispatch");
+        for index in 0..3 {
+            let id = format!("proof-{index}");
+            work.handles.insert(
+                format!("d{index}"),
+                work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.clone(),
+                },
+            );
+            work.influence.insert(id.clone(), "digest".into());
+            work.checked.dependencies.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "SYMBOL".into(),
+                    service: "orders".into(),
+                    symbol: format!("Synthetic{index}"),
+                    digest: "digest".into(),
+                    normalized: json!({}),
+                    source_ids: vec![format!("source-{index}")],
+                },
+            );
+        }
+        let claim = |text: &str, index| json!({"text":text,"evidence":[format!("d{index}")]});
+        let input = json!([{"kind":"alt","meaning":claim("Version absent",0),"reader":{"overview":true,"label":claim("Resolve version",1),"execution":{"mode":"synchronous","meaning":claim("Evaluate local guard",1)}},"children":[{"kind":"note","meaning":claim("Read version",0)}],"otherwiseReader":{"label":claim("Use supplied version",2)},"otherwise":[{"kind":"note","meaning":claim("Retain version",0)}]}]);
+        let build = |value: serde_json::Value| -> Result<Operation, ClewError> {
+            let mut builder = Builder {
+                work: &work,
+                received: work.handles.keys().cloned().collect(),
+                claims: BTreeMap::new(),
+                diagnostics: vec![],
+                events: 0,
+            };
+            let steps: Vec<Step> = serde_json::from_value(value).unwrap();
+            let mut operation:Operation=serde_json::from_value(json!({"id":"dispatch","title":"Dispatch","summary":{"id":"summary","text":"Version","dependencyIds":[],"sourceIds":[]},"participants":[],"events":[]})).unwrap();
+            builder.steps(
+                "scenario:dispatch",
+                &steps,
+                "step",
+                0,
+                &mut operation,
+                &BTreeMap::new(),
+            )?;
+            Ok(operation)
+        };
+        let annotated = build(input.clone()).unwrap();
+        assert_eq!(annotated.events.len(), 5);
+        let parent = annotated.events[0].reader.as_ref().unwrap();
+        assert!(parent.overview && parent.execution.is_some());
+        assert_eq!(parent.label.as_ref().unwrap().source_ids, ["source-1"]);
+        let alternative = annotated.events[2].reader.as_ref().unwrap();
+        assert!(!alternative.overview);
+        assert!(alternative.execution.is_none());
+        assert_eq!(
+            alternative.label.as_ref().unwrap().text,
+            "Use supplied version"
+        );
+        assert_eq!(alternative.label.as_ref().unwrap().source_ids, ["source-2"]);
+        assert!(annotated.events[4].reader.is_none());
+        for event in &annotated.events {
+            assert_eq!(event.source_ids, ["source-0"]);
+            assert_eq!(event.dependency_ids, ["proof-0"]);
+        }
+        let mut plain_input = input.clone();
+        plain_input[0].as_object_mut().unwrap().remove("reader");
+        plain_input[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("otherwiseReader");
+        let plain = build(plain_input).unwrap();
+        let mut unannotated = annotated.clone();
+        for event in &mut unannotated.events {
+            event.reader = None;
+        }
+        assert_eq!(unannotated, plain);
+        assert!(
+            annotated.events[2]
+                .binding_refs()
+                .0
+                .contains(&"proof-2".into())
+        );
+        let mut no_override = input.clone();
+        no_override[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("otherwiseReader");
+        let without = build(no_override).unwrap();
+        assert!(without.events[2].reader.is_none() && without.events[4].reader.is_none());
+        let mut no_branch = input.clone();
+        no_branch[0]["otherwise"] = json!([]);
+        assert!(build(no_branch).is_err());
+        let mut wrong_kind = input;
+        wrong_kind[0]["kind"] = json!("opt");
+        assert!(build(wrong_kind).is_err());
+    }
+
+    #[test]
+    fn malformed_group_steps_are_rejected_at_the_exact_slot() {
+        let work = work("dispatch");
+        let mut builder = Builder {
+            work: &work,
+            received: BTreeSet::from(["d1".into()]),
+            claims: BTreeMap::new(),
+            diagnostics: vec![],
+            events: 0,
+        };
+        let mut fixture = work.clone();
+        fixture.handles.insert(
+            "d1".into(),
+            work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: "view:dispatch".into(),
+            },
+        );
+        builder.work = &fixture;
+        let leaf = json!({"kind":"note","meaning":{"text":"Keep the slot","evidence":["d1"]}});
+        for (kind, children, otherwise) in [
+            ("else", json!([]), json!([])),
+            ("end", json!([]), json!([])),
+            ("unknown", json!([]), json!([])),
+            ("note", json!([leaf.clone()]), json!([])),
+            ("opt", json!([]), json!([leaf.clone()])),
+            ("loop", json!([]), json!([leaf])),
+        ] {
+            let step: Step = serde_json::from_value(json!({"kind":kind,"meaning":{"text":"Synthetic condition","evidence":["d1"]},"children":children,"otherwise":otherwise})).unwrap();
+            let mut operation: Operation =
+                serde_json::from_value(json!({"id":"dispatch","title":"Dispatch",
+                "summary":{"id":"summary","text":"Select a slot","dependencyIds":[],"sourceIds":[]},
+                "participants":[],"events":[]}))
+                .unwrap();
+            let error = builder
+                .steps(
+                    "scenario:dispatch",
+                    &[step],
+                    "step",
+                    0,
+                    &mut operation,
+                    &BTreeMap::new(),
+                )
+                .unwrap_err();
+            assert!(
+                error.message.contains("step/0: invalid diagram"),
+                "{kind}: {}",
+                error.message
+            );
+            assert!(operation.events.is_empty());
+        }
+    }
+
+    #[test]
+    fn owned_nested_grammar_repair_preserves_conditional_siblings() {
+        let mut work = work("dispatch");
+        work.handles.insert(
+            "d1".into(),
+            work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: "view:dispatch".into(),
+            },
+        );
+        let claim = |text: String| json!({"text":text,"evidence":["d1"]});
+        let groups: Vec<Value> = (0..8)
+            .map(|i| {
+                json!({"kind":"alt","meaning":claim(format!("Owned guard {i}")),
+            "children":[{"kind":"note","meaning":claim(format!("Owned effect {i}"))}],
+            "otherwise":[{"kind":"note","meaning":claim(format!("Owned fallback {i}"))}]})
+            })
+            .collect();
+        let mut broken = json!(groups);
+        broken[3]["children"][0] = json!({"kind":"return","meaning":claim("Optional callback body".into()),"children":[{"kind":"note","meaning":claim("Record callback effect".into())}]});
+        let build = |steps: &[Step]| {
+            let mut builder = Builder {
+                work: &work,
+                received: BTreeSet::from(["d1".into()]),
+                claims: BTreeMap::new(),
+                diagnostics: vec![],
+                events: 0,
+            };
+            let mut op:Operation=serde_json::from_value(json!({"id":"dispatch","title":"Dispatch","summary":{"id":"summary","text":"Owned request","sourceIds":[],"dependencyIds":[]},"participants":[],"events":[]})).unwrap();
+            builder.steps(
+                "scenario:dispatch",
+                steps,
+                "step",
+                0,
+                &mut op,
+                &BTreeMap::new(),
+            )?;
+            Ok::<_, ClewError>(op)
+        };
+        let error =
+            build(&serde_json::from_value::<Vec<Step>>(broken.clone()).unwrap()).unwrap_err();
+        assert!(error.message.contains("step/3/children/0: invalid diagram"));
+        let mut repaired = broken.clone();
+        repaired[3]["children"][0]["kind"] = json!("opt");
+        for i in 0..8 {
+            if i != 3 {
+                assert_eq!(repaired[i], broken[i]);
+            }
+        }
+        let mut restored = repaired.clone();
+        restored[3]["children"][0]["kind"] = json!("return");
+        assert_eq!(restored, broken);
+        let steps: Vec<Step> = serde_json::from_value(repaired).unwrap();
+        let canonical = build(&steps).unwrap();
+        assert_eq!(
+            canonical.events.iter().filter(|e| e.kind == "alt").count(),
+            8
+        );
+        // Native grammar can accept a narrowed tree: that is not preservation.
+        let collapsed = build(&steps[..1]).unwrap();
+        assert_eq!(
+            collapsed.events.iter().filter(|e| e.kind == "alt").count(),
+            1
+        );
+        assert_ne!(canonical, collapsed);
+    }
+
+    #[test]
+    fn evidence_expansion_reports_offending_reference_and_unique_counts_without_relaxing_caps() {
+        let mut work = work::api_contract_tests::endpoint_context_fixture();
+        let entry = &mut work.checked.services.get_mut("orders").unwrap().entrypoints[0];
+        entry.dependency_ids = (0..129).map(|i| format!("proof-{i}")).collect();
+        entry.source_ids = vec!["endpoint-source".into()];
+        let entry_id = entry.id.clone();
+        for id in entry.dependency_ids.clone() {
+            work.checked.dependencies.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "SYMBOL".into(),
+                    service: "orders".into(),
+                    symbol: "sample".into(),
+                    normalized: json!({}),
+                    digest: "digest".into(),
+                    source_ids: vec!["endpoint-source".into()],
+                },
+            );
+        }
+        for reference in ["e1", "e2"] {
+            work.handles.insert(
+                reference.into(),
+                work::Handle {
+                    kind: "ENTRYPOINT".into(),
+                    id: entry_id.clone(),
+                },
+            );
+        }
+        let evaluate = |work: &Work| {
+            Builder {
+                work,
+                received: BTreeSet::from(["e1".into(), "e2".into()]),
+                claims: BTreeMap::new(),
+                diagnostics: vec![],
+                events: 0,
+            }
+            .evidence(&["e1".into(), "e2".into()])
+        };
+        let error = evaluate(&work).unwrap_err();
+        for detail in [
+            "DEPENDENCY_EXPANSION_LIMIT",
+            "dependencyIds=129",
+            "sourceIds=1",
+            "e1 (ENTRYPOINT",
+            "e2 (ENTRYPOINT",
+            "129 dependencies, 1 sources",
+            "bounded SYMBOL query",
+            "do not reduce canonical expansion",
+        ] {
+            assert!(
+                error.message.contains(detail),
+                "{detail}: {}",
+                error.message
+            );
+        }
+        // Overlapping refs count the unique union, not the sum of expansion.
+        work.checked.services.get_mut("orders").unwrap().entrypoints[0]
+            .dependency_ids
+            .pop();
+        let (dependencies, sources) = evaluate(&work).unwrap();
+        assert_eq!(dependencies.len(), 128);
+        assert_eq!(sources, ["endpoint-source"]);
+        work.checked.services.get_mut("orders").unwrap().entrypoints[0].source_ids =
+            (0..33).map(|i| format!("source-{i}")).collect();
+        let error = evaluate(&work).unwrap_err();
+        assert!(error.message.contains("SOURCE_EXPANSION_LIMIT"));
+        assert!(error.message.contains("sourceIds=33 (limit 32)"));
+        assert!(error.message.contains("128 dependencies, 33 sources"));
+        work.checked.services.get_mut("orders").unwrap().entrypoints[0]
+            .source_ids
+            .clear();
+        assert!(
+            evaluate(&work)
+                .unwrap_err()
+                .message
+                .contains("SOURCE_EVIDENCE_MISSING")
+        );
+    }
+
+    #[test]
+    fn source_handle_remains_specific_and_unknown_evidence_never_falls_back_to_entrypoint() {
+        let mut work = work::api_contract_tests::endpoint_context_fixture();
+        work.handles.insert(
+            "s1".into(),
+            work::Handle {
+                kind: "SOURCE".into(),
+                id: "endpoint-source".into(),
+            },
+        );
+        let entrypoint = work.checked.services["orders"].entrypoints[0].id.clone();
+        work.handles.insert(
+            "e1".into(),
+            work::Handle {
+                kind: "ENTRYPOINT".into(),
+                id: entrypoint,
+            },
+        );
+        let builder = Builder {
+            work: &work,
+            received: BTreeSet::from(["s1".into(), "e1".into()]),
+            claims: BTreeMap::new(),
+            diagnostics: vec![],
+            events: 0,
+        };
+        let (_, sources) = builder.evidence(&["s1".into()]).unwrap();
+        assert_eq!(sources, ["endpoint-source"]);
+        for unknown in ["s404", "endpoint-source", "service-source"] {
+            let error = builder
+                .evidence(&["s1".into(), unknown.into()])
+                .unwrap_err();
+            assert!(
+                error.message.contains("unknown work reference"),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains("not a catalogue ID"));
+        }
+        assert_eq!(builder.handle("s1").unwrap().kind, "SOURCE");
+        assert_eq!(builder.handle("s1").unwrap().id, "endpoint-source");
+    }
 
     #[test]
     fn interaction_reference_is_delivered_work_identity_not_a_catalogue_id() {

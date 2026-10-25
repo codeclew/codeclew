@@ -636,13 +636,18 @@ pub fn check_interaction(
     if transport == "kafka" {
         boundaries.push("MESSAGE_DELIVERY_ORDER_RETRY_AND_CONSUMER_ACTIVATION_UNKNOWN".into());
     }
+    if transport == "logical" {
+        boundaries.push("LOGICAL_CALL_TRANSPORT_REMOTE_OUTCOME_AND_DURABILITY_UNKNOWN".into());
+    }
     if i.applicability
         .as_ref()
         .is_none_or(|a| a.environments.is_empty())
     {
         boundaries.push("ENVIRONMENT_SCOPE_UNSPECIFIED".into());
     }
-    if caller.is_null() || caller.as_object().is_some_and(|o| o.is_empty()) {
+    if transport != "logical"
+        && (caller.is_null() || caller.as_object().is_some_and(|o| o.is_empty()))
+    {
         boundaries.push("CLIENT_PATTERN_UNSUPPORTED_OR_AMBIGUOUS".into());
     }
     if i.declaration.origin == "agent-proposal" {
@@ -2411,6 +2416,8 @@ mod tests {
                 "create",
             ),
             transport: Transport {
+                message_key: None,
+                purpose: None,
                 kind: "http".into(),
                 topic: None,
                 method: Some("POST".into()),

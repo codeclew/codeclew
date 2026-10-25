@@ -11,6 +11,103 @@ const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'
 const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
+test('service egress keeps logical storage and other-trigger boundaries with local participant links',()=>{
+ const data=fixture();data.subject='service:orders';
+ data.declaredRelationships={nodes:[{id:'external-service:store',label:'Logical reservation storage'},{id:'external-service:sdk',label:'Inference SDK'}],edges:[
+  {id:'guarded-save',from:'service:orders',to:'external-service:store',title:'Attempt guarded save',transport:{kind:'logical'}},
+  {id:'other-trigger',from:'service:orders',to:'external-service:sdk',title:'Other trigger SDK call',transport:{kind:'logical'}},
+  {id:'foreign',from:'service:other',to:'external-service:sdk',title:'Foreign service call',transport:{kind:'logical'}}]};
+ const before=JSON.stringify(data),reader=load(data),html=reader.run('serviceDeclaredEgress()');
+ assert.match(html,/Logical reservation storage/);assert.match(html,/Other trigger SDK call/);
+ assert.match(html,/href="\.\.\/external-services\/store\.html"/);assert.match(html,/Declaration and source checks/);
+ assert.doesNotMatch(html,/Foreign service call/);assert.equal(JSON.stringify(data),before);
+ assert.match(reader.run('groupedEgress()'),/Attempt guarded save/);
+});
+
+test('egress labels remain escaped and same-destination callsites are retained',()=>{
+ const data=fixture();data.subject='service:orders';
+ data.declaredRelationships={nodes:[{id:'external-service:provider',label:'Provider <unsafe>'}],edges:[1,2].map(n=>({id:'call-'+n,from:'service:orders',to:'external-service:provider',title:'Call '+n,transport:{kind:'http'}}))};
+ const html=load(data).run('serviceDeclaredEgress()');assert.match(html,/Call 1/);assert.match(html,/Call 2/);
+ assert.match(html,/Provider &lt;unsafe&gt;/);assert.doesNotMatch(html,/<unsafe>/);
+});
+
+test('proof prefers the recorded explicit claim source without changing evidence order or bindings',()=>{
+ const data=fixture(),operation=data.operations[0],event={id:'helper-call',kind:'note',text:'Read helper result',dependencyIds:[],sourceIds:[]};operation.events=[event];
+ data.sources={'a-annotation':source('@Component'), 'z-body':{...source('fun helper() { return result }'),startLine:15,endLine:25}};
+ operation.summary.sourceIds=['a-annotation','z-body'];event.sourceIds=['a-annotation','z-body'];data.operationSources[operation.id]=data.sources;
+ data.preferredSourceIds={[operation.id]:{[event.id]:['z-body'],[operation.summary.id]:['z-body']}};
+ const before=JSON.stringify(data),reader=load(data);reader.run("showEntry('section-responsibilities')");
+ reader.click({event:event.id});assert.match(reader.e('source-code').innerHTML,/fun helper/);
+ assert.equal(reader.e('source-select').value,'z-body');
+ assert.ok(reader.e('source-select').innerHTML.indexOf('a-annotation')<reader.e('source-select').innerHTML.indexOf('z-body'));
+ reader.click({sources:'a-annotation z-body',sourceClaim:operation.summary.id});
+ assert.equal(reader.e('source-select').value,'z-body');assert.match(reader.e('source-code').innerHTML,/fun helper/);
+ reader.e('source-select').onchange({target:{value:'a-annotation'}});assert.match(reader.e('source-code').innerHTML,/@Component/);
+ assert.equal(JSON.stringify(data),before);
+});
+
+test('Russian readable step proof keeps its operation and claim binding and opens explicit body',()=>{
+ const data=fixture();data.language='ru';const op=data.operations[0];
+ data.sources={'annotation':source('@Service'),'body':source('fun helper() { return client.getForEntity(url) }')};
+ data.operationSources[op.id]=data.sources;op.events=[{id:'helper-call',kind:'note',text:'Helper call',sourceIds:['annotation','body'],dependencyIds:[]}];
+ data.preferredSourceIds={[op.id]:{'helper-call':['body']}};
+ const reader=load(data);reader.run("showEntry('section-responsibilities')");
+ const html=reader.run('stepEvidence(D.operations[0],D.operations[0].events[0])');
+ assert.match(html,/class="source-link"/);assert.match(html,/data-source-operation="section-responsibilities"/);assert.match(html,/data-source-claim="helper-call"/);
+ const dataset=Object.fromEntries([...html.matchAll(/data-([a-z-]+)="([^"]*)"/g)].map(([,key,value])=>[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),value]));
+ reader.click(dataset);assert.equal(reader.e('source-select').value,'body');assert.match(reader.e('source-code').innerHTML,/getForEntity/);
+});
+
+test('legacy, foreign and current-snapshot proof preferences do not invent a source match',()=>{
+ const data=fixture();data.sources={'a':source('FIRST'),'b':source('SECOND')};
+ data.preferredSourceIds={[data.operations[0].id]:{'claim':['foreign','b']}};
+ data.operationSources[data.operations[0].id]=data.sources;const reader=load(data);reader.run("showEntry('section-responsibilities')");reader.click({sources:'a b',sourceClaim:'claim'});assert.match(reader.e('source-code').innerHTML,/SECOND/);
+ reader.click({sources:'a b',sourceClaim:'unknown'});assert.match(reader.e('source-code').innerHTML,/FIRST/);
+ reader.click({sources:'a b',sourceClaim:'claim'},true);assert.match(reader.e('source-code').innerHTML,/FIRST/);
+ const legacy=load({...data,preferredSourceIds:undefined});legacy.click({sources:'a b',sourceClaim:'claim'});assert.match(legacy.e('source-code').innerHTML,/FIRST/);
+});
+
+test('branch rows keep authored prefixes once and preserve the original event text',()=>{
+ for(const language of ['en','ru']){
+  const data=fixture();data.language=language;const before=JSON.stringify(data),reader=load(data);
+  for(const [kind,text,prefixed] of [['alt','If quantity is positive',true],['alt','Если количество положительное',true],['alt','quantity is positive',false],['alt','ifEnabled is true',false],['else','Otherwise return the unchanged value',true],['else','Иначе вернуть исходное значение',true]]){
+   const event={kind,text};
+   const rendered=JSON.parse(reader.run(`JSON.stringify(pseudocodeEvent(D.operations[0],${JSON.stringify(event)}))`));
+   assert.equal(rendered.keyword,prefixed?'':reader.run(`t(${JSON.stringify(kind==='alt'?'If':'Otherwise')})`));
+   assert.equal(rendered.text,text+':');
+  }
+  for(const text of ['Otherwise','Иначе']){
+   const rendered=JSON.parse(reader.run(`JSON.stringify(pseudocodeEvent(D.operations[0],{kind:'else',text:${JSON.stringify(text)}}))`));
+   assert.equal(rendered.text,'');assert.equal(rendered.keyword,reader.run("t('Otherwise')"));
+  }
+  assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('Russian related-documentation and ownership labels are complete owned sentences',()=>{
+ const data=fixture();data.language='ru';const reader=load(data);
+ const html=reader.run('chromeHtml`<h3>Related documentation</h3><p>Service data and domain context</p><h3>Domain entities and their relations</h3><p>${esc(t("The service data description above is separate from domain ownership."))} ${esc(t("No domain ownership declarations have been recorded."))}</p>`');
+ assert.match(html,/Связанная документация/);assert.match(html,/Данные сервиса и предметная область/);
+ assert.match(html,/Предметные сущности и связи с сервисом/);assert.match(html,/Сведения о владельцах сущностей предметной области не заявлены/);
+ assert.doesNotMatch(html,/domain|ownership|Related|Service data/);
+});
+
+test('reading scope distinguishes described public operations from internal inventory and selection',()=>{
+ const data=fixture(),seed=data.operations[0];
+ data.operations=[{...seed,id:'public-1'},{...seed,id:'internal-1'}];
+ data.catalogue=['public-1','public-2','public-3','internal-1','internal-2'].map(id=>({id,kind:'CALLABLE',symbol:id,trigger:{methods:[],paths:[]},sourceIds:[]}));
+ data.boundaryInventory={publicBoundaries:data.catalogue.filter(e=>e.id.startsWith('public-')),internalCallableCount:2,gaps:[]};
+ const before=JSON.stringify(data),reader=load(data),html=reader.run('readingScopeSummary()');
+ assert.match(html,/<b>1<\/b> documented public operations/);assert.match(html,/<b>3<\/b> discovered public boundaries/);assert.match(html,/<b>2<\/b> internal callable evidence records/);
+ assert.doesNotMatch(html,/explicit gaps|<b>5<\/b> discovered/);assert.equal(JSON.stringify(data),before);
+ const russian=load({...data,language:'ru'}).run('readingScopeSummary()');assert.match(russian,/описанных публичных операций/);assert.match(russian,/найденных публичных интерфейсов/);assert.doesNotMatch(russian,/public|boundaries|callable/);
+ data.selectedBoundaryInventory={publicBoundaries:data.catalogue.filter(e=>e.id==='public-2'),gaps:[]};
+ const selected=load(data).run('readingScopeSummary()');
+ assert.match(selected,/<b>0<\/b> documented public operations/);assert.match(selected,/<b>1<\/b> discovered public boundaries/);assert.doesNotMatch(selected,/internal callable/);
+ const legacy=fixture();delete legacy.boundaryInventory;
+ assert.match(load(legacy).run('readingScopeSummary()'),/source and API inventory records/);
+});
+
 test('overview service profile renders safe Markdown blocks and keeps the section evidence owner',()=>{
  const data=fixture(),seed=data.operations[0];
  const text='Original field | Readable name | Comment\n--- | --- | ---\n`id` | Identifier | [Payload](../services/sample.html#section-entities)\n\n<script>unsafe()</script>\n\n[Unsafe](javascript:alert(1))';
@@ -87,7 +184,7 @@ function behaviorFixture(){
 }
 function renderReaderFixture(data){
  const template=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/template.html'),'utf8');
- const style=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/style.css'),'utf8');
+ const style=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/style.css'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/typography.css'),'utf8');
  const analysis=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/analysis.js'),'utf8');
  const payload=JSON.stringify(data).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
  const html=template.replace('/*__STYLE__*/',()=>style).replace('/*__SCRIPT__*/',()=>script).replace('/*__ANALYSIS_SCRIPT__*/',()=>analysis).replace('__DOCUMENT_DATA__',()=>payload);
@@ -95,6 +192,19 @@ function renderReaderFixture(data){
  return html;
 }
 function renderBehaviorFixture(data){return renderReaderFixture(data);}
+function boundaryLayoutFixture(language='en'){
+ const data=behaviorFixture(),op=data.operations[0],russian=language==='ru';data.language=language;
+ const label=russian?'Внешняя система согласования синтетических резервирований и уведомлений':'External synthetic reservation approval and notification system';
+ op.participants=[{id:'service',label:russian?'Сервис синтетического резервирования':'Synthetic reservation service',service:'sample'},{id:'provider',label,service:null,externalService:'provider'}];
+ op.events=[{id:'request',kind:'declared-boundary',text:russian?'Отправить объявленный запрос на резервирование. Порядок выполнения на принимающей стороне и доставка не подтверждены сохранёнными данными.':'Send the declared reservation request. Receiver execution order and successful delivery are not established by the retained evidence.',from:'service',to:'provider',interaction:'request',sourceIds:[],dependencyIds:['interaction:request']}];
+ data.operationExternalCalls={[op.id]:[{eventId:'request',interactionId:'request',to:label,title:'Synthetic reservation',declaration:{origin:'human',rationale:'Independent synthetic layout fixture.'},transport:{kind:'http'},declarationDigest:'synthetic-declaration',snapshotContextDigest:'synthetic-snapshot',authority:'USER_DECLARATION_NOT_RUNTIME_PROOF',retained:true,targetChanged:false}]};
+ return data;
+}
+if(process.env.CODECLEW_BOUNDARY_LAYOUT_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_BOUNDARY_LAYOUT_FIXTURE_OUT);
+ fs.mkdirSync(path.dirname(output),{recursive:true});
+ fs.writeFileSync(output,renderReaderFixture(boundaryLayoutFixture(process.env.CODECLEW_BOUNDARY_LAYOUT_LANGUAGE||'en')));
+}
 if(process.env.CODECLEW_READER_FIXTURE_OUT){
  const output=path.resolve(process.env.CODECLEW_READER_FIXTURE_OUT);
  fs.mkdirSync(path.dirname(output),{recursive:true});
@@ -188,6 +298,84 @@ test('Kafka boundaries keep local publication separate from linked continuations
  r.run("D.subject='service:consumer';D.process=null;");
  assert.match(r.run("serviceTopicBoundaries('incoming')"),/id="topic-incoming-event.changed"/);
  assert.equal(r.run("serviceTopicBoundaries('outgoing')"),'');
+});
+function longSequenceFixture(count=160){
+ const data=boundaryLayoutFixture('en'),op=data.operations[0];
+ op.participants=[{id:'service',label:'Synthetic caller',service:'sample'},...Array.from({length:10},(_,i)=>({id:'provider-'+i,label:'Synthetic port '+i,externalService:'provider-'+i}))];
+ const event=(id,kind,text,from='service',to=null)=>({id,kind,text,from,to,interaction:kind.startsWith('declared-boundary')?'synthetic-boundary':null,sourceIds:['stream-source'],dependencyIds:['stream-dependency']});
+ const pairs=Math.floor((count-3)/2),split=Math.floor(pairs/2);op.events=[event('stream-guard','alt','Caller condition')];
+ for(let i=0;i<pairs;i++){
+  if(i===split)op.events.push(event('stream-else','else','Caller alternative'));
+  const remote='provider-'+(i%10);
+  op.events.push(event('stream-request-'+i,'declared-boundary','Request '+i,'service',remote),event('stream-return-'+i,'declared-boundary-return','Normal return '+i,remote,'service'));
+ }
+ if(op.events.length<count-1)op.events.push(event('stream-note','note','Source-only detail retained outside the arrow projection'));
+ op.events.push(event('stream-end','end',''));
+ data.operationExternalCalls={[op.id]:[]};data.operationSources={[op.id]:{'stream-source':{...Object.values(data.sources)[0],id:'stream-source',text:'OWNED_SYNTHETIC_STREAM_SOURCE'}}};
+ return data;
+}
+if(process.env.CODECLEW_LONG_SEQUENCE_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_LONG_SEQUENCE_FIXTURE_OUT);fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output,renderReaderFixture(longSequenceFixture()));
+}
+function longHeaderSequenceFixture(language='en'){
+ const data=longSequenceFixture();data.language=language;
+ data.operations[0].participants=data.operations[0].participants.map((participant,index)=>({...participant,
+  label:index===0?'Synthetic request coordination service':index%2?'External reservation verification adapter':'Synthetic account reconciliation provider',
+  ...(participant.externalService?{externalService:'synthetic-external-reservation-destination-'+index+'-identifier'}:{})
+ }));
+ return data;
+}
+if(process.env.CODECLEW_SEQUENCE_HEADER_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_SEQUENCE_HEADER_FIXTURE_OUT);fs.mkdirSync(path.dirname(output),{recursive:true});
+ fs.writeFileSync(output,renderReaderFixture(longHeaderSequenceFixture(process.env.CODECLEW_SEQUENCE_HEADER_FIXTURE_LANGUAGE||'en')));
+}
+test('long participant headers wrap readable titles IDs and localized status with separate baselines',()=>{
+ for(const language of ['en','ru'])for(const width of [390,1280]){
+  const data=longHeaderSequenceFixture(language),before=JSON.stringify(data),reader=load(data);
+  const layout=JSON.parse(reader.run(`JSON.stringify(sequenceLayout(D.operations[0],${width}))`));
+  assert.equal(layout.actors.length,11);assert.equal(layout.actorLineHeight,18);
+  for(const actor of layout.actors){
+   const original=data.operations[0].participants.find(p=>p.id===actor.id);
+   assert.equal(actor.titleLines.join(' '),original.label);
+   const technical=original.externalService||original.service;
+   assert.equal(actor.technicalLines.join('').replaceAll(' ',''),technical.replaceAll(' ',''));
+   const titleBottom=actor.titleY+(actor.titleLines.length-1)*layout.actorLineHeight;
+   const technicalBottom=actor.technicalY+(actor.technicalLines.length-1)*layout.actorLineHeight;
+   assert.ok(actor.technicalY-titleBottom>=24);
+   assert.ok(layout.headerBottom-technicalBottom>=12);
+  }
+  assert.ok(layout.rows[0].y>layout.headerBottom);
+  assert.equal(reader.run('JSON.stringify(D)'),before);
+ }
+});
+test('long admitted sequences retain explicit arrows guards sources and immutable data at 65 160 and 512 events',()=>{
+ for(const count of [65,160,512])for(const mobile of [false,true]){
+  const data=longSequenceFixture(count),op=data.operations[0],before=JSON.stringify(data),r=load(data,mobile);
+  assert.equal(op.events.length,count);
+  const html=r.run('overviewDiagram(D.operations[0])');assert.match(html,/class="sequence-svg"/);assert.doesNotMatch(html,/bounded overview|NaN|Infinity/);
+  for(const e of op.events.filter(e=>e.kind.startsWith('declared-boundary')||e.kind==='alt'||e.kind==='else')){
+   const attribute=e.kind.startsWith('declared-boundary')?'data-boundary-declaration="'+r.run(`boundaryEvidenceId(D.operations[0],${JSON.stringify(e)})`):'data-event="'+e.id;
+   assert.ok(html.includes(attribute+'"'),e.id);
+  }
+  for(const width of [390,1440]){
+   const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(D.operations[0],${width}))`));assert.equal(layout.W,Math.max(width,11*240+32));assert.equal(layout.actors.length,11);assert.ok(layout.actors.every(actor=>actor.width>=100));assert.ok(Number.isFinite(layout.H)&&layout.H>0);
+   assert.ok(layout.actors.every(a=>layout.xs[a.id]>=0&&layout.xs[a.id]<=layout.W));
+   assert.equal(layout.rows.filter(row=>row.e.kind.startsWith('declared-boundary')).length,op.events.filter(e=>e.kind.startsWith('declared-boundary')).length);
+  }
+  r.click({event:'stream-guard',sequenceEvent:'true'});assert.match(r.e('source-code').innerHTML,/OWNED_SYNTHETIC_STREAM_SOURCE/);
+  assert.equal(r.run('JSON.stringify(D)'),before);
+ }
+});
+test('external destination wording does not assert an address and logical ports do not request wire addresses',()=>{
+ for(const kind of ['http','logical'])for(const addresses of [[],[{url:'https://example.invalid/owned',source:'synthetic',environment:'test'}]]){
+  if(kind==='logical'&&addresses.length)continue;
+  const data=boundaryLayoutFixture('ru');data.operationExternalCalls[data.operations[0].id][0].transport={kind};data.operationExternalCalls[data.operations[0].id][0].addresses=addresses;
+  const r=load(data),html=r.run('externalCallDetails(D.operations[0],D.operations[0].events[0])');
+  assert.match(html,/Получатель задан декларацией/);assert.doesNotMatch(html,/Адрес задан в декларации/);
+  if(kind==='logical'){assert.match(html,/Физический транспорт и адрес этого логического порта неизвестны/);assert.doesNotMatch(html,/Задайте addresses/);}
+  else if(addresses.length){assert.match(html,/https:\/\/example\.invalid\/owned/);assert.doesNotMatch(html,/Адрес не указан/);}
+  else assert.match(html,/Адрес не указан/);
+ }
 });
 test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
  const data=behaviorFixture(),en=load(data),html=en.e('scenario-content').innerHTML;
@@ -333,16 +521,16 @@ test('notes-only sequence keeps readable behavior and original participants with
  assert.equal(JSON.stringify(op),original);assert.equal(r.run(`diagram(${JSON.stringify({...op,participants:[],events:[]})})`),'');
 });
 
-test('sequence layout wraps complete text inside supplied narrow and wide widths without shrinking typography',()=>{
+test('sequence layout keeps readable lanes and pans within narrow containers without shrinking typography',()=>{
  const data=fixture(),r=load(data),op={...data.operations[0],participants:[{id:'caller',label:'Unused caller'},{id:'dashboard',label:'Dashboard service with a long name'},{id:'kafka',label:'Kafka topic weather.forecast-updated'},{id:'db',label:'Dashboard PostgreSQL'}],events:[]};
  const event=(id,kind,text,from,to)=>({id,kind,text,from,to,sourceIds:['same-source'],dependencyIds:['dep']});
  op.events=[event('guard','alt','The inbox insert reports an existing event id.'),event('empty','note','Return DUPLICATE'),event('else','else','Otherwise'),event('apply','message','For a new forecast event, insert the card from event.place when no card exists; update only when the incoming timestamp is strictly newer.','dashboard','db'),event('self','message','Self-message labels remain complete at the rightmost participant, including a-long-unbroken-identifier-with-unicode-π🙂.','db','db'),event('reply','return','Return the saved result after commit.','db','kafka'),event('declared','declared','Declared delivery remains unverified.','kafka','dashboard'),event('end','end','')];
  const original=JSON.stringify(op);
  for(const width of [224,280,320,375,560,610,1280]){
-  const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)},${width}))`));assert.equal(layout.W,width);assert.deepEqual(layout.actors.map(a=>a.id),['dashboard','kafka','db']);
-  for(const actor of layout.actors){assert.ok(layout.xs[actor.id]-actor.width/2>=0);assert.ok(layout.xs[actor.id]+actor.width/2<=width);assert.equal(actor.titleLines.join('').replace(/ /g,''),actor.label.replace(/ /g,''));}
-  for(const row of layout.rows.filter(row=>['message','return','declared'].includes(row.e.kind))){assert.equal(row.lines.join('').replace(/ /g,''),row.e.text.replace(/ /g,''));assert.ok(row.mid-row.labelWidth/2>=0);assert.ok(row.mid+row.labelWidth/2<=width);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);if(row.e.kind==='declared'){assert.equal(row.captionLines.join('').replace(/ /g,''),'Declared service interaction'.replace(/ /g,''));assert.ok(row.h>row.captionOffset+(row.captionLines.length-1)*14);}if(row.e.from===row.e.to){const end=layout.xs[row.e.from]+row.direction*row.loopWidth;assert.ok(end>=0&&end<=width);}}
-  const svg=r.run(`diagram(${JSON.stringify(op)},${width})`);assert.doesNotMatch(svg,/min-width|NaN|Infinity/);assert.ok(svg.includes(`viewBox="0 0 ${width} `));assert.equal((svg.match(/data-event=/g)||[]).length,5);
+  const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)},${width}))`));assert.equal(layout.W,Math.max(width,3*240+32));assert.deepEqual(layout.actors.map(a=>a.id),['dashboard','kafka','db']);
+  for(const actor of layout.actors){assert.ok(layout.xs[actor.id]-actor.width/2>=0);assert.ok(layout.xs[actor.id]+actor.width/2<=layout.W);assert.equal(actor.titleLines.join('').replace(/ /g,''),actor.label.replace(/ /g,''));}
+  for(const row of layout.rows.filter(row=>['message','return','declared'].includes(row.e.kind))){assert.equal(row.lines.join('').replace(/ /g,''),row.e.text.replace(/ /g,''));assert.ok(row.mid-row.labelWidth/2>=0);assert.ok(row.mid+row.labelWidth/2<=layout.W);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);if(row.e.kind==='declared'){assert.equal(row.captionLines.join('').replace(/ /g,''),'Declared service interaction'.replace(/ /g,''));assert.ok(row.h>row.captionOffset+(row.captionLines.length-1)*14);}if(row.e.from===row.e.to){const end=layout.xs[row.e.from]+row.direction*row.loopWidth;assert.ok(end>=0&&end<=layout.W);}}
+  const svg=r.run(`diagram(${JSON.stringify(op)},${width})`);assert.doesNotMatch(svg,/NaN|Infinity/);assert.ok(svg.includes(`min-width:${layout.W}px`));assert.ok(svg.includes(`viewBox="0 0 ${layout.W} `));assert.equal((svg.match(/data-event=/g)||[]).length,5);
  }
  assert.equal(JSON.stringify(op),original);
 });
@@ -364,7 +552,7 @@ test('sequence layout places arrows below complete Weather labels and bounds par
  assert.equal(layout.rows.length,3);
  for(const row of layout.rows){assert.ok(row.lines.length>1);assert.equal(row.lines.join('').replace(/ /g,''),row.e.text.replace(/ /g,''));assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);assert.ok(row.h>row.arrowOffset+20);}
  const kafka=layout.actors.find(p=>p.id==='dashboard-kafka');
- assert.ok(kafka.titleLines.length>1);assert.ok(kafka.titleLines.every(line=>Array.from(line).length<=20));
+ assert.ok(kafka.titleLines.length>1);assert.ok(kafka.titleLines.every(line=>Array.from(line).length<=32));
  assert.equal(kafka.titleLines.join('').replace(/ /g,''),kafka.label.replace(/ /g,''));
  assert.ok(layout.rows[0].y>layout.headerBottom);
  assert.equal(JSON.stringify(op),original);
@@ -698,11 +886,25 @@ test('missing profile sections and discovered but unauthored entries remain expl
  assert.doesNotMatch(html,/accepted description of external boundaries|creates no entities|No outgoing calls|No Kafka|No cron/);
  assert.match(html,/Thread-to-call links and complete outgoing coverage are not inferred/);
 });
+test('read and stored-copy entity relations do not acquire ownership headings or changed provenance',()=>{
+ for(const language of ['en','ru']){
+  const data=entitySectionFixture();data.language=language;
+  data.operations.find(o=>o.id==='section-entities').visuals=[];
+  data.entities[0].normalized.entity.relations=['read','stored-copy'].map(kind=>({service:'sample',kind,origin:'agent-proposal',confidence:'declared',rationale:'Synthetic non-ownership relation.',representations:[]}));
+  const before=JSON.stringify(data),r=load(data);r.run("showEntry('section-entities')");
+  const html=r.e('scenario-content').innerHTML;
+  assert.match(html,language==='ru'?/<h3>Предметные объекты<\/h3>/:/<h3>Domain catalogue<\/h3>/);
+  assert.doesNotMatch(html,/<h3>Recorded domain ownership<\/h3>|<h3>Зафиксированные владельцы сущностей<\/h3>/);
+  assert.match(html,language==='ru'?/Читает/:/unknown · read/);assert.match(html,language==='ru'?/Работает с копией/:/unknown · stored-copy/);
+  assert.match(html,/agent-proposal/);
+  assert.equal(JSON.stringify(data),before);
+ }
+});
 test('entity section shows only its accepted local visuals while the process gallery still includes all owners',()=>{
  const data=entitySectionFixture();data.savedProcesses=[{id:'saved',title:'Saved workflow',href:'../scenarios/saved.html',status:'AUTHORED'}];
  const r=load(data);r.run("showEntry('section-entities')");
  const html=r.e('scenario-content').innerHTML;
- assert.match(html,/Recorded domain ownership/);assert.match(html,/Synthetic Order/);
+ assert.match(html,/Domain catalogue/);assert.match(html,/Synthetic Order/);
  assert.match(html,/<h3>Entity views<\/h3>/);assert.match(html,/Order identity map/);assert.match(html,/Ownership criteria/);
  assert.doesNotMatch(html,/Dispatch work|Select handler/);
  assert.equal((html.match(/class="visual-artifact"/g)||[]).length,2);
@@ -1101,13 +1303,13 @@ test('pinned-only freshness presents a saved snapshot without hiding the origina
  const data=fixture();data.sectionState={freshness:'UNVERIFIED',verification:'VERIFIED_WITH_LIMITATIONS',contentRevisions:{sample:'abc'},targetRevisions:{sample:'abc'},reasons:[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED',snapshot:'saved'}]};
  const original=JSON.stringify(data.sectionState),r=load(data),html=r.e('freshness-status').innerHTML;
  assert.match(html,/freshness-snapshot/);assert.match(html,/Saved source snapshot/);assert.match(html,/Current checkout freshness was not rechecked/);
- assert.match(html,/^<details[^>]+><summary>Source and review details<\/summary>/);assert.doesNotMatch(html,/^<details[^>]*\bopen(?:\s|=|>)/);
+ assert.match(html,/^<details[^>]+><summary>UNVERIFIED · Source and review details<\/summary>/);assert.doesNotMatch(html,/^<details[^>]*\bopen(?:\s|=|>)/);
  assert.match(html,/Source freshness: <b>UNVERIFIED<\/b>/);assert.match(html,/PINNED_SNAPSHOT_NOT_REVERIFIED/);assert.match(html,/Model approved with limitations/);
  assert.doesNotMatch(html,/freshness-unverified|retained with a gap/);assert.equal(JSON.stringify(r.data.sectionState),original);
  const ru=load({...data,language:'ru'}).e('freshness-status').innerHTML;assert.match(ru,/Сохранённая версия исходного кода/);assert.match(ru,/Не проверено/);
  for(const reasons of [[],[{reason:'SOURCE_MISSING'}],[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED'},{reason:'SOURCE_MISSING'}]]){
   const actual=load({...data,sectionState:{...data.sectionState,reasons}}).e('freshness-status').innerHTML;
-  assert.match(actual,/freshness-unverified/);assert.doesNotMatch(actual,/freshness-snapshot/);assert.match(actual,/^<div /,"actual unknown source state remains prominent");
+  assert.match(actual,/freshness-unverified/);assert.doesNotMatch(actual,/freshness-snapshot/);assert.match(actual,/^<details /,"unknown state is explicit in compact disclosure");assert.match(actual,/<strong>UNVERIFIED<\/strong>/);
  }
  assert.match(load({...data,sectionState:{...data.sectionState,freshness:'STALE'}}).e('freshness-status').innerHTML,/freshness-stale/);
 });
@@ -1709,7 +1911,7 @@ test('operation links expose retained processes and existing data descriptions w
  assert.match(html,/Saved process: Saved item journey/);assert.match(html,/Service data and domain context/);assert.match(html,/Retained explanation/);
  r.click({entry:'section-entities'});html=r.e('scenario-content').innerHTML;
  assert.match(html,/The item row stores an identifier and a value/);
- assert.match(html,/Recorded domain ownership/);assert.match(html,/No domain ownership declarations have been recorded/);
+ assert.match(html,/Domain catalogue/);assert.match(html,/No domain ownership declarations have been recorded/);
  assert.doesNotMatch(html,/No domain entity identities have been declared/);
  assert.equal(r.run('JSON.stringify(D.operations)'),original);
 });
@@ -1873,3 +2075,251 @@ test('bound OpenAPI interface card renders operations and nested schema fields w
  assert.match(body,/POST \/cities\/\{id\}/);assert.match(body,/<code>cityId<\/code>/);assert.match(body,/Response · 503/);assert.match(body,/Unavailable &lt;script&gt;/);assert.doesNotMatch(body,/<script>/);
  assert.equal(JSON.stringify(data),original);
 });
+
+
+test('data-flow SVG and table show honest absence without rewriting legacy associations',()=>{
+ const data=fixture(),before=JSON.stringify(data);
+ const graph={definitionDigest:'view-digest',nodes:[
+  {id:'domain',entity:'entity:order',kind:'domain',service:'sample',representation:'entity:order',meaning:fragment('Order')},
+  {id:'trace',kind:'field',service:'sample',representation:'request.traceToken',meaning:fragment('Technical trace token')},
+  {id:'context',entity:null,kind:'function',service:'sample',representation:'TraceContext',meaning:fragment('Technical context')}
+ ],edges:[]};
+ data.subject='scenario:trace-lineage';data.view={definition:{id:'trace-lineage',title:'Technical trace lineage',view:{scope:'Preserve technical values without claiming a business identity.',inputObjects:['entity:order'],human:{},limitations:[]}},definitionDigest:'view-digest',module:{limitations:[]},relatedComponents:[]};
+ data.operations=[{...data.operations[0],id:'entity-dataflow',dataflow:graph}];data.sections=[];
+ const original=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow')");
+ const html=r.e('scenario-content').innerHTML,svg=r.run('dataflowDiagram(D.operations[0].dataflow)');
+ assert.match(svg,/>entity:order<\/text>/);assert.equal((svg.match(/No domain association established/g)||[]).length,4);
+ assert.match(html,/Choose an input, output or field/);r.run("selectFlow('node','trace')");assert.match(r.e('scenario-content').innerHTML,/No domain association established/);assert.equal(r.e('source-panel').hidden,true);
+ assert.doesNotMatch(svg,/undefined| · null/);assert.equal(JSON.stringify(data),original);assert.notEqual(original,before);
+});
+
+function taskReaderFixture(language='en',view='domain'){
+ const data=entitySectionFixture();data.language=language;
+ const claim=text=>({text,evidence:[{kind:'SOURCE',service:'sample',sourceId:'same-source',textDigest:'owned',startLine:1,endLine:3}]});
+ data.readerModels=[{id:'order',entity:'entity:synthetic-order',title:'Selected result',fieldCoverage:{status:'observed-fields',scope:'Only selected field uses; incoming DTO definition is not retained.',claim:claim('Partial observed fields')},processLinks:[{subject:'service:sample',anchor:'section-entities'}],fields:[{id:'value',path:'result.value',originalName:claim('value'),readableName:claim('Итоговое значение'),meaning:claim('Computed selected result'),representations:[{label:'Result.value',typeLabel:'Decimal',mapping:claim('Exact result expression')}],graphBindings:[{subject:'scenario:lineage',node:'result',claim:claim('Explicit field mapping')}],usage:[{stage:'Compute result',producer:'request',consumer:'response',condition:'Only when enabled',inputs:['request.amount','request.factor'],assessment:'observed-static-use',coveredScope:'Selected computation',claim:claim('Multiply amount by factor; use default factor one when absent'),processes:['scenario:lineage']}]},{id:'unknown',path:'request.unexamined',meaning:claim('Not investigated'),representations:[],usage:[]}]}];
+ data.externalServices={provider:{title:'Provider selection profile',category:'system',identity:{group:'provider',title:'Provider',profile:'selection configuration',status:'proposed',declaration:{origin:'agent-proposal',rationale:'Explicit synthetic identity hypothesis'}}},renewal:{title:'Provider renewal profile',category:'system',identity:{group:'provider',title:'Provider',profile:'renewal configuration',status:'proposed',declaration:{origin:'agent-proposal',rationale:'Same hypothesis, distinct original profile'}}},store:{title:'Logical result storage',category:'storage'}};
+ data.declaredRelationships={nodes:Object.keys(data.externalServices).map(id=>({id:'external-service:'+id,label:data.externalServices[id].title})),edges:[{id:'compute',from:'service:sample',to:'external-service:provider',title:'Compute selected result',transport:{kind:'http',method:'POST',path:'/compute',destinationConfigKey:'provider.endpoint'}},{id:'renew',from:'service:sample',to:'external-service:renewal',title:'Compute renewal result',transport:{kind:'http',path:'/renew'}},{id:'store',from:'service:sample',to:'external-service:store',title:'Attempt result write',transport:{kind:'logical'}},{id:'local',from:'service:sample',to:'service:sample',title:'Local self call',transport:{kind:'http'}}]};
+ if(!data.sections.some(s=>s.id==='section-egress'))data.sections.push({id:'section-egress',title:'Outgoing systems and storage',gap:'Retained original egress description'});
+ if(view==='flow'){
+  const graph={definitionDigest:'view-digest',nodes:[{id:'input',readerRole:'input',kind:'dto',service:'sample',representation:'request',meaning:fragment('Request values')},{id:'rule',readerRole:'stage',kind:'function',service:'sample',representation:'compute',meaning:fragment('Compute selected value')},{id:'result',readerRole:'output',kind:'field',service:'sample',representation:'result.value',meaning:fragment('Selected result value')},{id:'isolated',kind:'domain',entity:'entity:order',service:'sample',representation:'entity:order',meaning:{...fragment('Declared order'),sourceIds:[]}}],edges:[{id:'input-rule',from:'input',to:'rule',kind:'read',authority:'SOURCE_INTERPRETATION',meaning:fragment('Use amount and factor'),uncertainty:''},{id:'rule-result',from:'rule',to:'result',kind:'transform',authority:'SOURCE_INTERPRETATION',meaning:fragment('Multiply amount by factor'),uncertainty:'Conditional on enabled computation'}]};
+  data.subject='scenario:lineage';data.sections=[];data.view={definition:{id:'lineage',title:'Selected calculation lineage',view:{scope:'Owned calculation',inputObjects:['entity:order'],human:{},limitations:[]}},definitionDigest:'view-digest',module:{limitations:[]},relatedComponents:[]};data.operations=[{...data.operations[0],id:'entity-dataflow',title:'Selected calculation lineage',visuals:[],dataflow:graph}];
+ }
+ if(view==='process'){const behavior=behaviorFixture();behavior.language=language;for(const [index,event] of behavior.operations[0].events.entries())if(event.kind!=='end')event.reader={overview:index<5,label:fragment(event.kind==='declared'?'Compute result':event.kind==='return'?'Return prepared result':event.kind==='alt'?'When validation succeeds':'Inspect selected branch'),execution:event.kind==='declared'?{mode:'parallel-await',meaning:fragment('Wait for all required calculations')}:undefined};return behavior;}
+ return data;
+}
+if(process.env.CODECLEW_TASK_READER_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_TASK_READER_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
+ for(const language of ['en','ru'])for(const view of ['domain','flow','process'])fs.writeFileSync(path.join(output,view+'-'+language+'.html'),renderReaderFixture(taskReaderFixture(language,view)));
+}
+test('domain catalogue leads preserved prose, binds only explicit models and labels partial coverage',()=>{
+ const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('section-entities')");const html=r.e('scenario-content').innerHTML;
+ assert.ok(html.indexOf('domain-catalogue')<html.indexOf('original-service-description'));
+ assert.match(html,/Only selected field uses/);assert.match(html,/result.value/);assert.match(html,/Итоговое значение/);assert.match(html,/Unrecorded actions are unknown/);
+ assert.doesNotMatch(html,/grouped-egress|declared-relationships/);assert.equal(JSON.stringify(data),before);
+ data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.doesNotMatch(other.e('scenario-content').innerHTML,/Computed selected result/);
+});
+test('egress groups profiles as explicit hypothesis, rejects grouping without rewriting IDs and hides self calls',()=>{
+ const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('section-egress')");let html=r.e('scenario-content').innerHTML;
+ assert.ok(html.indexOf('grouped-egress')<html.indexOf('original-service-description'));assert.equal((html.match(/<h4>Provider<\/h4>/g)||[]).length,1);assert.match(html,/Identity hypothesis/);assert.match(html,/provider.endpoint/);assert.match(html,/POST <code>\/compute/);assert.match(html,/Logical result storage/);assert.doesNotMatch(html,/Local self call/);assert.equal(JSON.stringify(data),before);
+ data.externalServices.renewal.identity.status='rejected';const rejected=load(data);assert.equal(rejected.run('egressGroups().length'),3);assert.equal(data.externalServices.renewal.identity.profile,'renewal configuration');
+});
+test('DataFlow defaults to selectable overview and selection focuses context without opening source',()=>{
+ const data=taskReaderFixture('en','flow'),before=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow')");let html=r.e('scenario-content').innerHTML;
+ assert.doesNotMatch(html,/<svg|Representations and source bindings/);assert.match(html,/data-flow-select="isolated"/);assert.doesNotMatch(html.slice(html.indexOf('flow-overview'),html.indexOf('flow-all-nodes')),/Declared order/);const noRoles=taskReaderFixture('en','flow');for(const node of noRoles.operations[0].dataflow.nodes)delete node.readerRole;const plain=load(noRoles);plain.run("showEntry('entity-dataflow')");assert.match(plain.e('scenario-content').innerHTML,/Objects and values/);assert.doesNotMatch(plain.e('scenario-content').innerHTML,/<h3>Inputs<\/h3>|<h3>Outputs and destinations<\/h3>/);
+ r.click({flowSelect:'result'});html=r.e('scenario-content').innerHTML;assert.equal(r.e('source-panel').hidden,true);assert.match(html,/Multiply amount by factor/);assert.match(html,/Open source/);assert.doesNotMatch(html,/Use amount and factor/);
+ r.click({flowExpand:''});assert.match(r.e('scenario-content').innerHTML,/Use amount and factor/);
+ r.click({flowField:'order/value'});html=r.e('scenario-content').innerHTML;assert.match(html,/request.amount/);assert.match(html,/default factor one/);assert.match(html,/Only when enabled/);assert.match(html,/Field mappings are explicit claims/);
+ r.click({flowField:'order/unknown'});assert.match(r.e('scenario-content').innerHTML,/Field use has not been investigated/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/Not used in/);
+ r.run("selectFlow('node','isolated')");assert.equal(r.e('source-panel').hidden,true);assert.match(r.e('scenario-content').innerHTML,/Declared order/);r.run("selectFlow('reset')");assert.doesNotMatch(r.e('scenario-content').innerHTML,/<svg/);assert.equal(r.run('JSON.stringify(D)'),before);
+});
+test('compact process uses authored overview and independently evidenced execution without stripping original',()=>{
+ const data=behaviorFixture(),op=data.operations[0],event=op.events.find(e=>e.kind==='declared');event.reader={overview:true,label:fragment('Compute required result'),execution:{mode:'parallel-await',meaning:fragment('Wait for required results')}};
+ const before=JSON.stringify(data),r=load(data),html=r.run('compactProcess(D.operations[0])');assert.match(html,/Compute required result/);assert.match(html,/parallel-await/);assert.match(html,/Wait for required results/);assert.match(html,new RegExp(event.text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.equal(r.run('JSON.stringify(D)'),before);
+});
+
+test('compact boundary label opens its own source without promoting declaration evidence',()=>{
+ const data=boundaryLayoutFixture(),op=data.operations[0],event=op.events[0];
+ event.reader={overview:true,label:{id:'boundary-label',text:'Request reservation',dependencyIds:['caller'],sourceIds:['label-source']}};
+ data.operationSources[op.id]={'label-source':source('Response submit() { return client.call(); }')};
+ const before=JSON.stringify(data),r=load(data);r.run(`showEntry(${JSON.stringify(op.id)})`);
+ const html=r.run('compactProcess(D.operations[0])');
+ assert.match(html,/Label evidence/);assert.match(html,/Declared relationship evidence/);
+ const tag=html.match(/<button[^>]*data-source-claim="boundary-label"[^>]*>/)[0];
+ const dataset=Object.fromEntries([...tag.matchAll(/data-([a-z-]+)="([^"]*)"/g)].map(([,key,value])=>[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),value]));
+ r.click(dataset);assert.equal(r.e('source-select').value,'label-source');
+ assert.match(r.e('source-code').innerHTML,/client\.call/);assert.equal(JSON.stringify(data),before);
+ assert.deepEqual(event.sourceIds,[]);assert.deepEqual(event.dependencyIds,['interaction:request']);
+});
+
+test('compact domain rows disclose original meaning and exact fields before usage without rewriting data',()=>{
+ const data=taskReaderFixture('ru'),before=JSON.stringify(data),r=load(data),html=r.run('domainCatalogue()');
+ assert.match(html,/<details class="domain-object"><summary>/);assert.match(html,/domain-object-name/);assert.match(html,/domain-code-term/);assert.match(html,/domain-object-comment/);
+ assert.ok(html.indexOf('field-glossary')<html.indexOf('class="field-usage"'));
+ assert.match(html,/<details class="field-coverage"><summary>Только найденные обращения к полям/);assert.match(html,/Partial observed fields/);assert.match(html,/Only selected field uses/);
+ assert.equal(JSON.stringify(data),before);
+});
+test('selected field leads with input rule output and keeps definition cautions and object context secondary',()=>{
+ const data=taskReaderFixture('ru','flow'),before=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow');selectFlow('field','order/value')");const html=r.e('scenario-content').innerHTML;
+ assert.ok(html.indexOf('request.amount')<html.indexOf('class="field-definition"'));
+ assert.ok(html.indexOf('Multiply amount by factor')<html.indexOf('class="flow-object-context"'));
+ assert.match(html,/<details class="flow-object-context"><summary>Контекст объекта целиком/);
+ assert.match(html,/<details class="field-use-evidence">/);assert.match(html,/Only selected field uses/);assert.match(html,/Partial observed fields/);
+ assert.equal(JSON.stringify(data),before);
+});
+test('process detail shows original once and moves separate execution interpretation and proofs into one disclosure',()=>{
+ const data=behaviorFixture(),event=data.operations[0].events[0];event.reader={overview:true,label:fragment('Validate request'),execution:{mode:'synchronous',meaning:fragment(event.text)}};
+ const before=JSON.stringify(data),r=load(data),html=r.run('compactProcess(D.operations[0])');
+ assert.equal(html.replace(/<[^>]*>/g,'').split(event.text).length-1,1);assert.match(html,/class="process-step-evidence"/);assert.ok(html.indexOf('process-step-evidence')<html.indexOf('Label evidence'));
+ event.reader.execution.meaning.text='A separate timing explanation';const other=load(data).run('compactProcess(D.operations[0])');assert.ok(other.indexOf('process-step-evidence')<other.indexOf('A separate timing explanation'));assert.equal(JSON.stringify(data.operations[0].events[0].text),JSON.stringify(JSON.parse(before).operations[0].events[0].text));
+});
+test('sequence uses compact labels while retaining surviving negative guards and unbroken ordinary code tokens',()=>{
+ const data=behaviorFixture();data.language='ru';const op=data.operations[0];
+ op.events=[{id:'guard',kind:'alt',text:'Original supplied version guard',reader:{label:fragment('Версия задана')},sourceIds:['summary-source']},{id:'note',kind:'note',text:'Retain version',sourceIds:['summary-source']},{id:'else',kind:'else',text:'Otherwise',reader:{label:fragment('Получить активную версию')},sourceIds:['summary-source']},{id:'call',kind:'message',text:'Original long meaning retained in source inspection',reader:{label:fragment('POST SyntheticSelectionRequest calculateRequiredResult /api/versions/active')},from:'caller',to:'service',sourceIds:['summary-source']},{id:'end',kind:'end',text:'',sourceIds:[]}];
+ const before=JSON.stringify(data),r=load(data),layout=JSON.parse(r.run('JSON.stringify(sequenceLayout(D.operations[0],390))'));
+ const guard=layout.rows[0].lines.join(' ');assert.match(guard,/Условие не выполнено: Версия задана/);assert.match(guard,/Выбранная ветвь: Получить активную версию/);
+ const call=layout.rows.find(row=>row.e.id==='call');assert.ok(call.lines.some(line=>line.includes('SyntheticSelectionRequest')));assert.ok(call.lines.some(line=>line.includes('calculateRequiredResult')));
+ assert.match(r.run('diagram(D.operations[0],390)'),/Original long meaning retained/);assert.equal(JSON.stringify(data),before);
+});
+test('Kafka Russian chrome localizes proposed delivery and keeps uncertainty with retained declaration evidence',()=>{
+ const data=fixture();data.language='ru';const r=load(data),row={id:'synthetic-event',origin:'agent-proposal',runtime:'UNKNOWN',topic:'synthetic.result',declaration:{from:{service:'sample',selector:{name:'send'}},to:{service:'provider'},external:true,externalService:'provider',transport:{kind:'kafka',topic:'synthetic.result',purpose:'Retain a synthetic result'}}};
+ const html=r.run(`topicBoundaryCard(${JSON.stringify([row])},{direction:'outgoing'})`);
+ assert.match(html,/Сохранённые исходники и контекст декларации/);assert.match(html,/Предлагаемая передача/);assert.match(html,/доставка во время исполнения не проверена/);assert.doesNotMatch(html,/Proposed handoff|runtime delivery|declaration context/);assert.ok(html.indexOf('technical-evidence')<html.indexOf('доставка во время исполнения'));
+});
+function compactUxFixture(language,view){
+ if(view==='kafka'){
+  const data=taskReaderFixture(language);data.interactions=[{id:'synthetic-result',origin:'agent-proposal',runtime:'UNKNOWN',topic:'synthetic.result',declaration:{from:{service:'sample',selector:{name:'publishResult'}},to:{service:'provider'},external:true,externalService:'provider',transport:{kind:'kafka',topic:'synthetic.result',purpose:language==='ru'?'Передать наблюдаемый результат. Доставка и ключ не установлены.':'Transfer an observed result. Delivery and key are unknown.'}}}];return data;
+ }
+ if(view==='process'){
+  const data=taskReaderFixture(language,view),op=data.operations[0],ru=language==='ru';
+  op.participants=[{id:'caller',label:ru?'Вызывающая сторона':'Caller'},{id:'service',label:ru?'Обработка заявки':'Request processing',service:'sample'},{id:'provider',label:ru?'Внешний расчёт':'External calculation',externalService:'synthetic-pricing-provider'},{id:'audit',label:ru?'Фоновый аудит':'Background audit',externalService:'synthetic-audit-store'}];
+  const event=(id,kind,text,from,to,label,mode)=>({id,kind,text,from,to,sourceIds:['summary-source'],dependencyIds:[],...(kind==='end'?{}:{reader:{overview:true,label:{...fragment(label||text),sourceIds:['summary-source']},...(mode?{execution:{mode,meaning:{...fragment(text),sourceIds:['summary-source']}}}:{})}})});
+  op.events=[event('incoming','message',ru?'Принять SyntheticSelectionRequest и проверить обязательные входные значения.':'Accept SyntheticSelectionRequest and validate required inputs.','caller','service',ru?'Принять SyntheticSelectionRequest':'Accept SyntheticSelectionRequest'),event('guard','alt',ru?'Версия указана во входе':'Version supplied',null,null),event('note','note',ru?'Сохранить входную версию':'Keep supplied version','service','service'),event('alternative','else',ru?'Версия не указана':'Version not supplied',null,null),event('resolve','message',ru?'Вызвать calculateRequiredResult(request) для выбранной версии.':'Call calculateRequiredResult(request) for the selected version.','service','service','calculateRequiredResult(request)','synchronous'),event('end','end','',null,null),event('required','declared',ru?'Дождаться обязательных результатов расчёта перед формированием ответа.':'Wait for required calculation results before constructing the response.','service','provider',ru?'Обязательные расчёты':'Required calculations','parallel-await'),event('background','declared',ru?'Запустить аудит в фоне, не ожидая его результата перед ответом.':'Start audit in the background without awaiting its result before the response.','service','audit',ru?'Фоновый аудит':'Background audit','background'),event('return','return',ru?'Вернуть подготовленный результат после обязательных расчётов.':'Return the prepared result after required calculations.','service','caller',ru?'Вернуть результат':'Return result')];return data;
+ }
+ if(view!=='domain')return taskReaderFixture(language,view);
+ const data=taskReaderFixture(language),original=data.entities[0],model=data.readerModels[0];
+ data.entities=Array.from({length:7},(_,i)=>{const d=JSON.parse(JSON.stringify(original));d.id='entity:synthetic-domain-'+i;d.normalized.entity.id='synthetic-domain-'+i;d.normalized.entity.title=(language==='ru'?'Результат обработки ':'Processing result ')+(i+1);d.normalized.entity.description=language==='ru'?'Наблюдаемые значения результата и условия их использования сервисом. Полное определение внешнего типа не установлено.':'Observed result values and their service usage conditions. The full external type definition is not established.';for(const r of d.normalized.entity.relations)r.representations=['SyntheticCalculationResult — result.value → response.value','SyntheticResponse'];return d;});
+ data.readerModels=data.entities.map((d,i)=>({...JSON.parse(JSON.stringify(model)),id:'model-'+i,entity:d.id,title:d.normalized.entity.title}));return data;
+}
+if(process.env.CODECLEW_COMPACT_UX_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_COMPACT_UX_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
+ for(const language of ['en','ru'])for(const view of ['domain','flow','process','kafka'])fs.writeFileSync(path.join(output,view+'-'+language+'.html'),renderReaderFixture(compactUxFixture(language,view)));
+}
+
+function boundedFlowFixture(language='en'){
+ const data=taskReaderFixture(language,'flow'),g=data.operations[0].dataflow;data.readerModels=[];
+ const node=(id,label,role)=>({id,kind:'dto',service:'sample',representation:id==='request'?'SyntheticRequest':id,meaning:fragment(label),...(role?{readerRole:role}:{})});
+ g.nodes=[node('request',language==='ru'?'Исходная заявка':'Input request','input')];g.edges=[];
+ for(let i=0;i<13;i++){
+  const id=i===12?'combined':'value-'+i;g.nodes.push(node(id,(language==='ru'?'Производное значение ':'Derived value ')+i));g.nodes.push(node('next-'+i,(language==='ru'?'Следующее значение ':'Next value ')+i));
+  g.edges.push({id:'request-'+i,from:'request',to:id,kind:'transform',authority:'SOURCE_INTERPRETATION',meaning:fragment(i===12?'Combine contributor inputs':'Derive value '+i),uncertainty:''});
+  g.edges.push({id:'next-edge-'+i,from:id,to:'next-'+i,kind:'transform',authority:'SOURCE_INTERPRETATION',meaning:fragment('Use derived value '+i),uncertainty:''});
+ }
+ for(let i=0;i<6;i++){g.nodes.push(node('contributor-'+i,'Contributor '+i));g.edges.push({id:'contribution-'+i,from:'contributor-'+i,to:'combined',kind:'transform',authority:'SOURCE_INTERPRETATION',meaning:fragment('Combine contributor inputs'),uncertainty:''});}
+ return data;
+}
+test('bounded high-degree connection view retains every branch and stays bounded after one further hop',()=>{
+ const data=boundedFlowFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow');selectFlow('node','request');selectFlow('direction','outputs')");
+ const originalFocused=JSON.parse(r.run('JSON.stringify(focusedFlow(D.operations[0].dataflow))'));assert.equal(originalFocused.edges.length,13);
+ let html=r.e('scenario-content').innerHTML;assert.match(html,/Choose a connection/);assert.match(html,/1\/13/);assert.match(html,/data-shown-nodes="2"/);assert.doesNotMatch(html,/class="dataflow-scroll"/);
+ for(const edge of originalFocused.edges){r.run(`selectFlow('connection',${JSON.stringify(edge.id)})`);html=r.e('scenario-content').innerHTML;assert.match(html,new RegExp('data-flow-select="'+edge.to+'"'));assert.equal(r.e('source-panel').hidden,true);assert.ok([...html.matchAll(/data-shown-nodes="(\d+)"/g)].every(m=>Number(m[1])<=4));}
+ r.run("selectFlow('expand')");html=r.e('scenario-content').innerHTML;assert.match(html,/next-edge-12/);assert.ok([...html.matchAll(/data-shown-nodes="(\d+)"/g)].every(m=>Number(m[1])<=4));
+ assert.equal(JSON.stringify(data),before);
+});
+test('bounded multi-input view pages contributors without dropping their rule evidence or inventing a path',()=>{
+ const data=boundedFlowFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow');selectFlow('node','combined')");
+ let html=r.e('scenario-content').innerHTML;assert.match(html,/Contributor inputs/);assert.match(html,/1–3 \/ 7/);assert.match(html,/data-shown-nodes="4"/);assert.match(html,/Other contributors remain part/);
+ r.run("selectFlow('input-page',2)");html=r.e('scenario-content').innerHTML;assert.match(html,/7–7 \/ 7/);assert.match(html,/data-shown-nodes="2"/);assert.equal(r.e('source-panel').hidden,true);
+ const selfData=JSON.parse(JSON.stringify(data));selfData.operations[0].dataflow.edges.push({id:'self',from:'combined',to:'combined',kind:'read',authority:'SOURCE_INTERPRETATION',meaning:fragment('Read same object'),uncertainty:''});const self=load(selfData);self.run("showEntry('entity-dataflow');selectFlow('node','combined');selectFlow('connection','self')");assert.match(self.e('scenario-content').innerHTML,/returns to the same object/);
+ assert.equal(JSON.stringify(data),before);
+});
+test('mobile sequence trace preserves all non-end events, route names, guards and explicit execution modes',()=>{
+ const data=compactUxFixture('ru','process'),before=JSON.stringify(data),r=load(data,true),op=data.operations[0],html=r.run('sequenceTrace(D.operations[0])');
+ assert.deepEqual([...html.matchAll(/data-trace-event="([^"]+)"/g)].map(m=>m[1]),op.events.filter(e=>e.kind!=='end').map(e=>e.id));
+ for(const actor of op.participants)assert.ok(html.includes(actor.label));assert.match(html,/Вызов/);assert.match(html,/Возврат/);assert.match(html,/Условие не выполнено/);assert.match(html,/Параллельно с ожиданием/);assert.match(html,/Без ожидания/);
+ const adaptive=r.run("adaptiveSequence(D.operations[0],'<div>FULL_DIAGRAM</div>')");assert.match(adaptive,/data-presentation="narrow"/);assert.doesNotMatch(adaptive,/<div class="sequence-trace-panel" hidden|<details class="full-sequence-diagram" open/);assert.match(adaptive,/Полная диаграмма последовательности/);assert.equal(JSON.stringify(data),before);
+ const wide=load(data).run("adaptiveSequence(D.operations[0],'<div>FULL_DIAGRAM</div>')");assert.match(wide,/<div class="sequence-trace-panel" hidden>/);assert.match(wide,/<details class="full-sequence-diagram" open>/);
+});
+if(process.env.CODECLEW_BOUNDED_FLOW_TRACE_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_BOUNDED_FLOW_TRACE_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
+ for(const language of ['en','ru']){fs.writeFileSync(path.join(output,'flow-'+language+'.html'),renderReaderFixture(boundedFlowFixture(language)));fs.writeFileSync(path.join(output,'trace-'+language+'.html'),renderReaderFixture(compactUxFixture(language,'process')));}
+}
+test('Russian bounded graph controls retain stable identities and all branches remain interactive',()=>{
+ const data=boundedFlowFixture('ru'),before=JSON.stringify(data),r=load(data);r.run("showEntry('entity-dataflow');selectFlow('node','request')");
+ let html=r.e('scenario-content').innerHTML;assert.match(html,/id="dfcpicker" data-dfcpicker/);assert.match(html,/class="dfcgraph"/);assert.match(html,/data-dfcshift="1"/);
+ r.click({dfcshift:'1'});html=r.e('scenario-content').innerHTML;assert.match(html,/2\/13/);assert.match(html,/id="dfcdiagram"/);assert.equal(r.e('source-panel').hidden,true);assert.equal(JSON.stringify(data),before);
+});
+
+function traceConditionFixture(language='en'){
+ const data=compactUxFixture(language,'process'),op=data.operations[0],ru=language==='ru';
+ const e=(id,kind,text,mode)=>({id,kind,text,sourceIds:['summary-source'],dependencyIds:[],...(kind==='end'?{}:{reader:{label:fragment(text),...(mode?{execution:{mode,meaning:fragment(text)}}:{})}}),...(['message','declared','return'].includes(kind)?{from:kind==='return'?'provider':'service',to:kind==='return'?'service':'provider'}:{})});
+ op.events=[
+  e('outer','alt',ru?'Есть блокирующие входы':'Blocking inputs present'),e('outer-else','else',ru?'Блокирующих входов нет':'No blocking inputs'),
+  e('version','alt',ru?'Активная версия отсутствует':'Active version missing'),e('version-else','else',ru?'Активная версия задана':'Active version supplied'),
+  e('required-guard','loop','required=true: parallel; awaitAll before response','parallel-await'),e('required-call','declared','Call required calculation','parallel-await'),e('required-end','end',''),
+  e('formula-first','message','callFormula(saveResult=false)','synchronous'),e('formula-first-result','alt','First result != null'),e('formula-second','message','callFormula(saveResult=true by default)','synchronous'),
+  e('formula-second-result','alt','Second result != null'),e('optional-guard','loop','required=false: background without await/join','background'),e('optional-call','declared','Call optional calculation','background'),e('nested-return','return','Declared local response'),
+  e('optional-end','end',''),e('second-end','end',''),e('first-end','end',''),e('version-end','end',''),e('outer-end','end','')
+ ];return data;
+}
+test('mobile trace keeps only the nearest guard primary and preserves full negative ancestry in closed details',()=>{
+ for(const language of ['en','ru']){
+  const data=traceConditionFixture(language),before=JSON.stringify(data),r=load(data,true),html=r.run('sequenceTrace(D.operations[0])');
+  const card=id=>html.split(`data-trace-event="${id}"`)[1].split('<li class="sequence-trace-step')[0];
+  const required=card('required-call'),optional=card('optional-call'),nestedReturn=card('nested-return');
+  const ancestors=language==='ru'?['Условие не выполнено: Есть блокирующие входы · Блокирующих входов нет','Условие не выполнено: Активная версия отсутствует · Активная версия задана']:['Condition not met: Blocking inputs present · No blocking inputs','Condition not met: Active version missing · Active version supplied'];
+  for(const [content,local,total] of [[required,'required=true: parallel; awaitAll before response',3],[optional,'required=false: background without await/join',5],[nestedReturn,'required=false: background without await/join',5]]){
+   const primary=content.match(/<p class="sequence-trace-conditions">([\s\S]*?)<\/p>/)[1];assert.ok(primary.includes(local));assert.doesNotMatch(primary,/Blocking inputs|Блокирующих|Active version|Активная версия|First result|Second result/);
+   const inherited=content.match(/<details class="sequence-trace-ancestry">[\s\S]*?<\/details>/)[0];assert.deepEqual([...inherited.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(m=>m[1]),[...ancestors,...(total===5?['First result != null','Second result != null']:[]),local]);assert.ok(content.indexOf(inherited)+inherited.length<=content.indexOf('<details class="sequence-trace-evidence">'));assert.match(content,/<details class="sequence-trace-ancestry"><summary>/);assert.doesNotMatch(content,/<details class="sequence-trace-ancestry" open/);assert.ok(content.includes((language==='ru'?'Все условия':'All conditions')+` (${total})`));assert.ok(content.includes(language==='ru'?'Условие не выполнено: Есть блокирующие входы':'Condition not met: Blocking inputs present'));assert.ok(content.includes(language==='ru'?'Активная версия задана':'Active version supplied'));
+  }
+  const second=card('formula-second');assert.match(second,/<p class="sequence-trace-conditions"><b>[^<]+<\/b> First result != null<\/p>/);assert.ok(second.includes('callFormula(saveResult=true by default)'));assert.ok(html.indexOf('data-trace-event="formula-first"')<html.indexOf('data-trace-event="formula-second"'));
+  assert.deepEqual([...html.matchAll(/data-trace-event="([^"]+)"/g)].map(m=>m[1]),data.operations[0].events.filter(e=>e.kind!=='end').map(e=>e.id));assert.equal(JSON.stringify(data),before);assert.equal(r.e('source-panel').hidden,true);
+ }
+});
+if(process.env.CODECLEW_TRACE_CONDITIONS_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_TRACE_CONDITIONS_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
+ for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'trace-'+language+'.html'),renderReaderFixture(traceConditionFixture(language)));
+}
+
+function semanticDomainFixture(language='en'){
+ const data=taskReaderFixture(language),model=data.readerModels[0],base=model.fields[0],claim=text=>({...base.meaning,text});
+ data.entities[0].normalized.entity.title=language==='ru'?'Транспортное средство':'Vehicle';
+ data.entities[0].normalized.entity.description='An independently constructed business concept; DTOs are representations.';
+ data.entities[0].normalized.entity.relations[0].confidence='uncertain';
+ data.entities[0].normalized.entity.relations[0].rationale='Proposed customer association; the observed read does not establish global customer identity.';
+ model.title=language==='ru'?'Транспортное средство':'Vehicle';
+ const year={...base,id:'manufacture-year',path:'request.year',readableName:claim(language==='ru'?'Год изготовления':'Manufacture year'),meaning:claim('Calendar year in which the vehicle was manufactured.'),representations:[{...base.representations[0],label:'AssetInput.manufactureYear',mapping:claim('Definition identifies manufacture year; the quote mapper copies the value unchanged.')},{...base.representations[0],label:'VehicleWire.year',mapping:claim('Same manufacture-year attribute in the quote mapping; no shared object identity or values across unrelated requests are asserted.')}],usage:[{...base.usage[0],stage:'Quote',representation:'AssetInput.manufactureYear',claim:claim('Read the manufacture year for quote calculation.')},{...base.usage[0],stage:'Renewal',representation:'VehicleWire.year',claim:claim('Read the same attribute in the separately scoped renewal request.')}]};
+ const age={...base,id:'age',path:'calculation.age',readableName:claim(language==='ru'?'Возраст':'Age'),meaning:claim('Derived age at valuation; distinct from manufacture year.'),representations:[{...base.representations[0],label:'RiskFactors.age',mapping:claim('Valuation year minus manufacture year; this is a derived output, not an alias.')}],usage:[]};
+ const reporting={...base,id:'reporting-year',path:'request.year',readableName:claim(language==='ru'?'Отчётный год':'Reporting year'),meaning:claim('Reporting period of a different operation, not manufacture year.'),representations:[{...base.representations[0],label:'ReportInput.year',mapping:claim('Independent reporting operation; identical path spelling does not establish equivalence.')}],usage:[]};
+ const make={...base,id:'make',path:'request.make',readableName:claim(language==='ru'?'Марка':'Make'),meaning:claim('Vehicle manufacturer identity, distinct from model.'),representations:[{...base.representations[0],label:'AssetInput.manufacturer',mapping:claim('Definition and quote mapper identify the same manufacturer attribute.')},{...base.representations[0],label:'VehicleWire.make',mapping:claim('Alternate representation of manufacturer in the renewal mapping.')}],usage:[{...base.usage[0],representation:'AssetInput.manufacturer',claim:claim('The quote mapper copies manufacturer unchanged.')},{...base.usage[0],representation:'VehicleWire.make',claim:claim('The renewal uses the separate request value; object identity is not inferred.')}]};
+ data.entities[0].normalized.entity.relations.push({...data.entities[0].normalized.entity.relations[0],representations:['LegacyInput.year'],rationale:'Whether LegacyInput.year is manufacture year remains unresolved: the field definition and mapper are missing. Path spelling is insufficient; no accepted field alias is asserted.'});
+ model.fields=[year,make,age,reporting];return data;
+}
+test('semantic domain lists canonical attributes first and keeps scoped DTO mappings and repeated uses secondary',()=>{
+ for(const language of ['en','ru']){
+  const data=semanticDomainFixture(language),before=JSON.stringify(data),r=load(data),html=r.run('domainCatalogue()'),summary=html.split('<details class="domain-object"><summary>')[1].split('</summary>')[0];
+  assert.ok(summary.includes(language==='ru'?'Транспортное средство':'Vehicle'));assert.doesNotMatch(summary,/domain-code-term|<code>|Hypothesis|Гипотеза/);
+  const table=html.match(/<div class="table-wrap field-glossary">[\s\S]*?<\/table>/)[0];assert.equal((table.match(/data-domain-field=/g)||[]).length,4);assert.equal((table.match(/data-domain-field="manufacture-year"/g)||[]).length,1);assert.doesNotMatch(table,/request\.year|VehicleWire|AssetInput/);assert.ok(table.includes(language==='ru'?'Год изготовления':'Manufacture year'));assert.ok(table.includes(language==='ru'?'Возраст':'Age'));assert.ok(table.includes(language==='ru'?'Отчётный год':'Reporting year'));
+  assert.equal((table.match(/data-domain-field="make"/g)||[]).length,1);assert.ok(html.includes('AssetInput.manufacturer'));assert.ok(html.includes('VehicleWire.make'));assert.doesNotMatch(table,/LegacyInput/);assert.ok(html.includes('Whether LegacyInput.year is manufacture year remains unresolved'));assert.ok(html.includes('VehicleWire.year'));assert.ok(html.includes('AssetInput.manufactureYear'));assert.ok(html.includes('no shared object identity'));assert.ok(html.includes('Quote'));assert.ok(html.includes('Renewal'));assert.ok(html.indexOf('field-representations')<html.indexOf('Same manufacture-year attribute'));
+  assert.match(html,/<details class="domain-interpretations">/);assert.ok(html.indexOf('domain-interpretations')<html.indexOf('Proposed customer association'));assert.equal(JSON.stringify(data),before);
+ }
+});
+test('timing is a plain nonfocusable annotation while step disclosure remains independently actionable',()=>{
+ const data=compactUxFixture('en','process'),r=load(data),html=r.run('sequenceTrace(D.operations[0])');
+ const timing=html.match(/<span class="execution-mode"[^>]*>[^<]*<\/span>/g);assert.ok(timing.length>=3);assert.ok(timing.every(tag=>!/(tabindex|role=|data-|<button)/.test(tag)));assert.match(html,/<details class="sequence-trace-evidence"><summary>/);
+});
+if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'domain-'+language+'.html'),renderReaderFixture(semanticDomainFixture(language)));
+}
+
+function semanticPayloadFixture(language='en'){
+ const data=compactUxFixture(language,'process'),op=data.operations[0],claim=fragment('Selected source establishes a request field and an observed return. Complete wire schema and the generated message definition are not retained.');
+ const view=(id,component,direction,fields,status)=>({id,title:id==='request'?'Price request':id==='response'?'Price response':id==='error'?'Remote failure response':'Produced Avro value',operation:op.id,subject:data.subject,component,direction,format:id==='message'?'avro':'json',status,documentationLanguage:language,coverage:{status:fields.length?'observed-fields':'unknown',scope:fields.length?'Named source representation; wire presence remains unknown.':'Complete generated definition unavailable in the selected source.',claim},fields,authority:'SOURCE_DERIVED_REPRESENTATION',wireSchema:'NOT_ESTABLISHED_BY_TYPE_OR_MAPPING',runtime:'UNVERIFIED'});
+ const year={model:'vehicle',field:'manufacture-year',path:'manufactureYear',representation:'AssetInput.manufactureYear',typeLabel:'integer',requiredness:'Constructor parameter; wire presence unknown',nullability:'Nullable source property; wire nullability unknown',meaning:fragment('Calendar year of manufacture.'),mapping:fragment('Named request property; no serialization rule is inferred.')};
+ data.payloadViews=[view('request','request-body','incoming',[year]),view('response','response-body','outgoing',[{...year,model:'quote',field:'premium',path:'premium',representation:'PriceResponse.premium',nullability:'Non-null type; wire property presence separate',meaning:fragment('Quoted price.')}],'200'),view('error','error-response-body','outgoing',[],'502'),view('message','message-value','outgoing',[])];return data;
+}
+test('source payload views separate incoming request response error and unknown Avro shape without inventing wire rules',()=>{
+ const data=semanticPayloadFixture(),original=JSON.stringify(data),r=load(data),op=data.operations[0],html=r.run(`contract({id:${JSON.stringify(op.id)}})`);
+ for(const title of ['Price request','Price response','Remote failure response','Produced Avro value'])assert.ok(html.includes(title));assert.match(html,/request-body|Request body/);assert.match(html,/502/);assert.match(html,/manufactureYear/);assert.match(html,/Constructor parameter; wire presence unknown/);assert.match(html,/Nullable source property; wire nullability unknown/);assert.match(html,/Field definition unavailable/);assert.match(html,/No empty or complete payload schema is asserted/);assert.doesNotMatch(html,/No body declared|Interface contract is not documented/);assert.match(html,/data-label="Representation nullability"/);assert.equal((html.match(/class="cpvlegend"/g)||[]).length,1);assert.equal((html.match(/Source-derived representation shape/g)||[]).length,1);assert.ok(html.indexOf('class="cpvlegend"')<html.indexOf('Source-derived representation shape'));assert.equal(JSON.stringify(data),original);
+ r.run(`location.hash=${JSON.stringify('#cpv-'+op.id+'-request')};routeReaderHash()`);assert.equal(r.run('tab'),'contract');assert.ok(r.e('scenario-content').innerHTML.includes('Price request'));assert.equal(r.e('source-panel').hidden,true);
+});
+if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));}

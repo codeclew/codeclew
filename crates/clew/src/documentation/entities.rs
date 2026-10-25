@@ -28,6 +28,8 @@ pub struct Entity {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Relation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub service: String,
     pub kind: String,
     pub origin: String,
@@ -54,8 +56,11 @@ pub fn validate(entity: &Entity, services: &BTreeSet<String>) -> Result<(), Clew
         if !services.contains(&r.service)
             || !matches!(
                 r.kind.as_str(),
-                "created" | "changed" | "read" | "stored-copy" | "owned"
+                "created" | "changed" | "read" | "stored-copy" | "owned" | "deleted" | "enriched"
             )
+            || r.role
+                .as_deref()
+                .is_some_and(|role| !matches!(role, "master" | "consumer" | "enricher" | "unknown"))
             || !matches!(r.origin.as_str(), "human" | "agent-proposal")
             || !matches!(
                 r.confidence.as_str(),
@@ -241,5 +246,30 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             input.expected_input_digest.as_deref(),
             human,
         ),
+    }
+}
+
+#[cfg(test)]
+mod reader_role_tests {
+    use super::*;
+    #[test]
+    fn actions_and_roles_are_explicit_and_absent_roles_never_become_master() {
+        let entity: Entity = serde_json::from_value(json!({"schema":"codeclew-documentation-entity/1.0","id":"order","title":"Order","description":"Conceptual order","relations":[{"service":"orders","kind":"read","origin":"agent-proposal","confidence":"uncertain","rationale":"Selected read only","representations":[],"dependencyIds":[]}],"limitations":[]})).unwrap();
+        let services = BTreeSet::from(["orders".into()]);
+        validate(&entity, &services).unwrap();
+        assert!(
+            serde_json::to_value(&entity).unwrap()["relations"][0]
+                .get("role")
+                .is_none()
+        );
+        for kind in ["deleted", "enriched"] {
+            let mut changed = entity.clone();
+            changed.relations[0].kind = kind.into();
+            changed.relations[0].role = Some("consumer".into());
+            validate(&changed, &services).unwrap();
+        }
+        let mut bad = entity;
+        bad.relations[0].role = Some("master-from-dto".into());
+        assert!(validate(&bad, &services).is_err());
     }
 }

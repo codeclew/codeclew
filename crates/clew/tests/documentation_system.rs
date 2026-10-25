@@ -7023,6 +7023,167 @@ fn view_proposal(
     json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":format!("scenario:{id}"),"title":"Quantity data flow","summary":claim("The selected code normalizes a requested quantity; its domain correspondence remains explicit and uncertain.",vec![&view,&mapper]),"steps":[],"dataflow":{"nodes":[{"id":"domain","entity":format!("entity:{entity}"),"kind":"domain","service":service,"representation":format!("entity:{entity}"),"meaning":claim("Quantity",vec![&entity_ref])},{"id":"input","entity":format!("entity:{entity}"),"kind":"field","service":service,"representation":"quantity parameter","meaning":claim("Requested quantity",vec![&entry])},{"id":"mapper","entity":format!("entity:{entity}"),"kind":"function","service":service,"representation":"Orders.normalize(int)","meaning":claim("Normalize quantity",vec![&mapper])}],"edges":[{"id":"candidate","from":"domain","to":"input","kind":"candidate","authority":"UNKNOWN","matchBasis":"name-only","meaning":{"text":"The matching quantity name is a candidate domain association.","evidence":[&entity_ref,&entry],"uncertainty":"Matching names do not establish domain lineage."}},{"id":"read","from":"input","to":"mapper","kind":"read","authority":"SOURCE_INTERPRETATION","matchBasis":"source-dataflow","meaning":claim("Read the requested quantity for normalization.",vec![&entry,&mapper])}]}}]})
 }
 #[test]
+fn docsys_t11_unbound_technical_lineage_keeps_source_and_strict_domain_identity() {
+    use serde_json::{Value, json};
+    let f = Fixture::new();
+    let source = f.service("orders");
+    f.service("other");
+    fs::write(source.join("Orders.java"), "public class Orders { record TraceContext(String token) {} record AuditEnvelope(String traceToken) {} public int reserve(int quantity) { return normalize(quantity); } private int normalize(int quantity) { return quantity; } public AuditEnvelope trace(String traceToken) { TraceContext tracing = new TraceContext(traceToken); return new AuditEnvelope(tracing.token()); } }\n").unwrap();
+    commit(&source);
+    view_entity(&f, "quantity");
+    view_entity(&f, "unselected");
+    let mut definition = view_definition("trace-lineage", "orders", "quantity");
+    definition["view"]["services"] = json!(["orders", "other"]);
+    assert_eq!(put_view(&f, &definition, false).0, 0);
+    let (old_work, old_frozen) = view_work(&f, "trace-lineage");
+    let legacy = view_proposal(&old_frozen, "trace-lineage", "orders", "quantity");
+    read_view_evidence(&f, &old_work, &old_frozen, &legacy);
+    let ready = proposal_submit(&f, &old_work, &legacy);
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let old_path = f.bundle(
+        published["bundle"].as_str().unwrap(),
+        "scenarios/trace-lineage.json",
+    );
+    let old_bytes = fs::read(&old_path).unwrap();
+    definition["view"]["scope"] =
+        json!("Retain technical trace lineage without inventing a domain association.");
+    assert_eq!(put_view(&f, &definition, false).0, 0);
+    let (work, frozen) = view_work(&f, "trace-lineage");
+    assert_ne!(work, old_work);
+    assert_ne!(
+        frozen["checked"]["contextDigest"],
+        old_frozen["checked"]["contextDigest"]
+    );
+    let trace_id = frozen["checked"]["dependencies"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, d)| {
+            d["kind"] == "SYMBOL"
+                && d["service"] == "orders"
+                && d["symbol"].as_str().is_some_and(|s| {
+                    s.contains("/trace/") || s.contains("#trace(") || s.contains(".trace(")
+                })
+        })
+        .unwrap()
+        .0;
+    let trace_ref = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["kind"] == "DEPENDENCY" && h["id"] == trace_id.as_str())
+        .unwrap()
+        .0;
+    let mut proposal = view_proposal(&frozen, "trace-lineage", "orders", "quantity");
+    for (id, kind, representation) in [
+        ("trace-token", "field", "Orders.trace(String).traceToken"),
+        ("trace-context", "function", "new TraceContext(traceToken)"),
+        ("audit-envelope", "message", "AuditEnvelope.traceToken"),
+    ] {
+        proposal["operations"][0]["dataflow"]["nodes"].as_array_mut().unwrap().push(json!({"id":id,"kind":kind,"service":"orders","representation":representation,"meaning":{"text":representation,"evidence":[trace_ref]}}));
+    }
+    proposal["operations"][0]["dataflow"]["nodes"][4]["entity"] = Value::Null;
+    for (id, from, to) in [
+        ("trace-build", "trace-token", "trace-context"),
+        ("trace-envelope", "trace-context", "audit-envelope"),
+    ] {
+        proposal["operations"][0]["dataflow"]["edges"].as_array_mut().unwrap().push(json!({"id":id,"from":from,"to":to,"kind":"transform","authority":"SOURCE_INTERPRETATION","matchBasis":"source-dataflow","meaning":{"text":"Preserve the source-local technical trace value.","evidence":[trace_ref]}}));
+    }
+    read_view_evidence(&f, &work, &frozen, &proposal);
+    for mutation in [
+        "domain-absent",
+        "domain-null",
+        "domain-empty",
+        "domain-title",
+        "domain-representation",
+        "domain-evidence",
+        "nonselected-association",
+        "unknown-association",
+        "source-absent",
+        "wrong-service",
+    ] {
+        let mut bad = proposal.clone();
+        match mutation {
+            "domain-absent" => {
+                bad["operations"][0]["dataflow"]["nodes"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("entity");
+            }
+            "domain-null" => bad["operations"][0]["dataflow"]["nodes"][0]["entity"] = Value::Null,
+            "domain-empty" => bad["operations"][0]["dataflow"]["nodes"][0]["entity"] = json!(""),
+            "domain-title" => {
+                bad["operations"][0]["dataflow"]["nodes"][0]["meaning"]["text"] =
+                    json!("Guessed identity")
+            }
+            "domain-representation" => {
+                bad["operations"][0]["dataflow"]["nodes"][0]["representation"] =
+                    json!("entity:unselected")
+            }
+            "domain-evidence" => {
+                bad["operations"][0]["dataflow"]["nodes"][0]["meaning"]["evidence"] =
+                    json!([trace_ref])
+            }
+            "nonselected-association" => {
+                bad["operations"][0]["dataflow"]["nodes"][3]["entity"] = json!("entity:unselected")
+            }
+            "unknown-association" => {
+                bad["operations"][0]["dataflow"]["nodes"][3]["entity"] = json!("entity:unknown")
+            }
+            "source-absent" => {
+                bad["operations"][0]["dataflow"]["nodes"][3]["meaning"]["evidence"] = json!([])
+            }
+            _ => bad["operations"][0]["dataflow"]["nodes"][3]["service"] = json!("other"),
+        }
+        assert_eq!(
+            proposal_submit(&f, &work, &bad)["status"],
+            "NEEDS_REPAIR",
+            "{mutation}"
+        );
+    }
+    let ready = proposal_submit(&f, &work, &proposal);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let data = read(f.bundle(
+        published["bundle"].as_str().unwrap(),
+        "scenarios/trace-lineage.json",
+    ));
+    let graph = &data["operations"][0]["dataflow"];
+    assert_eq!(graph["nodes"].as_array().unwrap().len(), 6);
+    assert!(
+        graph["nodes"].as_array().unwrap()[3..]
+            .iter()
+            .all(|n| n.get("entity").is_none())
+    );
+    assert_eq!(graph["nodes"][0]["entity"], "entity:quantity");
+    let md = fs::read_to_string(f.bundle(
+        published["bundle"].as_str().unwrap(),
+        "scenarios/trace-lineage.md",
+    ))
+    .unwrap();
+    assert!(md.contains("No domain association established"));
+    assert!(md.contains("trace-token") && md.contains("audit-envelope"));
+    assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+}
+
+#[test]
 fn docsys_t11_view_module_and_protected_definition_contract() {
     use serde_json::json;
     let f = Fixture::new();
@@ -8544,4 +8705,323 @@ fn docsys_section_review_contract_rejects_object_coverage_and_wrong_binding() {
             );
         }
     }
+}
+#[test]
+fn service_section_retained_text_edit_preserves_provenance_and_frozen_export() {
+    use clew::{canonical, documentation::store::Repository};
+    use serde_json::{Value, json};
+    fn expand_export(root: &std::path::Path, value: &Value, depth: usize) -> Value {
+        assert!(depth < 128);
+        match value {
+            Value::Object(object) => {
+                if object.len() == 1 {
+                    if let Some(id) = object.get("$clewRef").and_then(Value::as_str) {
+                        let name = id.strip_prefix("sha256:").unwrap();
+                        assert!(name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()));
+                        let stored = read(root.join(format!("{name}.json")));
+                        assert_eq!(stored["identity"], id);
+                        let expanded = expand_export(root, &stored["value"], depth + 1);
+                        assert_eq!(canonical::hash(&expanded).unwrap(), id);
+                        return expanded;
+                    }
+                    if let Some(literal) = object.get("$clewLiteral") {
+                        return Value::Object(
+                            literal
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .map(|(k, v)| (k.clone(), expand_export(root, v, depth + 1)))
+                                .collect(),
+                        );
+                    }
+                }
+                Value::Object(
+                    object
+                        .iter()
+                        .map(|(k, v)| (k.clone(), expand_export(root, v, depth + 1)))
+                        .collect(),
+                )
+            }
+            Value::Array(array) => Value::Array(
+                array
+                    .iter()
+                    .map(|v| expand_export(root, v, depth + 1))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let checked = f.checked();
+    let repo = Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let prepare = || {
+        let input = f.input("section-edit-work.json", &json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers","documentationLanguage":"en","entrypoint":"section-egress","maxItems":100,"maxBytes":49152}));
+        let mut page = f.ok(&[
+            "docs",
+            "work",
+            "prepare",
+            "--subject",
+            "service:orders",
+            "--snapshot",
+            &snapshot,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        let id = page["work"].as_str().unwrap().to_owned();
+        while let Some(cursor) = page["nextCursor"].as_str() {
+            page = work_read(&f, &id, json!({"cursor":cursor}));
+        }
+        let frozen = frozen_work(&f, &id);
+        (id, frozen)
+    };
+    let evidence = |work: &Value| {
+        work["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, h)| {
+                h["kind"] == "DEPENDENCY"
+                    && work["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"]
+                        == "SYMBOL"
+                    && work["checked"]["dependencies"][h["id"].as_str().unwrap()]["symbol"]
+                        .as_str()
+                        .is_some_and(|s| s.contains("reserve"))
+            })
+            .unwrap()
+            .0
+            .clone()
+    };
+    let (first, initial) = prepare();
+    let reference = evidence(&initial);
+    let section_reference = initial["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["id"] == "section-egress")
+        .unwrap()
+        .0
+        .clone();
+    let body: Vec<_> = (0..13).map(|i|json!({"text":format!("Paragraph {i}: {}", "Retained source explanation. ".repeat(180)),"evidence":[reference]})).collect();
+    let proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":section_reference,"title":"Outgoing interactions","summary":{"text":"Source-bound outgoing interactions; runtime delivery is not established.","evidence":[reference]},"steps":[],"explanation":body}]});
+    read_view_evidence(&f, &first, &initial, &proposal);
+    let ready = proposal_submit(&f, &first, &proposal);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let baseline = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let old_path = f.bundle(baseline["bundle"].as_str().unwrap(), "services/orders.json");
+    let old_bytes = fs::read(&old_path).unwrap();
+    let old_data: Value = serde_json::from_slice(&old_bytes).unwrap();
+    let (work, frozen) = prepare();
+    let original = frozen["retained"]["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "section-egress")
+        .unwrap();
+    let paragraph = &original["explanation"][6];
+    let edit = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{"kind":"RETAINED_OPERATION","id":"section-egress","recordDigest":canonical::hash(original).unwrap(),"target":"explanationText","fragmentId":paragraph["id"],"author":"Fixture editor","expectedOldValue":paragraph["text"],"replacement":"The configured destination is declared here; the retained source does not prove authentication or runtime delivery."}]});
+    let unread = proposal_submit(&f, &work, &edit);
+    assert_eq!(unread["status"], "NEEDS_REPAIR", "{unread}");
+    let mut cursor = Value::Null;
+    loop {
+        let input=f.input("section-retained-part.json",&json!({"schema":"codeclew-documentation-retained-part-request/1.0","kind":"RETAINED_OPERATION","id":"section-egress","cursor":cursor}));
+        let page = f.ok(&[
+            "docs",
+            "work",
+            "read-retained-part",
+            "--work",
+            &work,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        cursor = page["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    read_view_evidence(&f, &work, &frozen, &json!({"evidence":[evidence(&frozen)]}));
+    for field in ["expectedOldValue", "recordDigest"] {
+        let mut stale = edit.clone();
+        stale["retainedEdits"][0][field] = if field == "recordDigest" {
+            json!(format!("sha256:{}", "0".repeat(64)))
+        } else {
+            json!("stale")
+        };
+        assert_eq!(
+            proposal_submit(&f, &work, &stale)["status"],
+            "NEEDS_REPAIR",
+            "{field}"
+        );
+    }
+    let ready = proposal_submit(&f, &work, &edit);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let bundle = published["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "services/orders.json"));
+    let actual = data["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "section-egress")
+        .unwrap();
+    let mut expected = original.clone();
+    expected["explanation"][6] = actual["explanation"][6].clone();
+    assert_eq!(actual, &expected);
+    assert_eq!(actual["explanation"].as_array().unwrap().len(), 13);
+    assert_eq!(
+        actual["explanation"][6]["text"],
+        edit["retainedEdits"][0]["replacement"]
+    );
+    assert_eq!(
+        actual["explanation"][6]["authorship"]["author"],
+        "Fixture editor"
+    );
+    assert_eq!(
+        actual["explanation"][6]["authorship"]["meaningReview"],
+        "UNASSESSED"
+    );
+    assert!(
+        actual["explanation"][6]["eventIds"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(data["operationSources"], old_data["operationSources"]);
+    assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+    for format in ["standalone", "docusaurus"] {
+        let output = f.temp.path().join(format!("section-export-{format}"));
+        f.ok(&[
+            "docs",
+            "pages",
+            "render",
+            "--snapshot",
+            &snapshot,
+            "--publication",
+            bundle,
+            "--format",
+            format,
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        let exported = read(output.join(if format == "standalone" {
+            "services/orders.json"
+        } else {
+            "static/clew-data/native/services/orders.json"
+        }));
+        let exported = if exported["schema"] == "codeclew-normalized-data/1.0" {
+            expand_export(
+                &output.join("static/clew-data/objects"),
+                &exported["value"],
+                0,
+            )
+        } else {
+            exported
+        };
+        let exported = exported["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["id"] == "section-egress")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{format}: projected IDs and language: {:?}",
+                    exported["operations"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|o| (&o["id"], &o["documentationLanguage"]))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(exported, actual);
+    }
+    // A raw narrative cannot invent an edit or rebase the protected context.
+    let canonical_narrative = f.bindings(bundle)["narratives"]["service:orders"].clone();
+    for attack in ["text", "forged-context", "anchor"] {
+        let mut forged = canonical_narrative.clone();
+        let op = forged["operations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|o| o["id"] == "section-egress")
+            .unwrap();
+        match attack {
+            "text" => op["explanation"][6]["text"] = json!("Unbound ordinary override"),
+            "anchor" => op["explanation"][6]["eventIds"] = json!(["invented-event"]),
+            _ => {
+                op["explanation"][6]["authorship"]["sourceRefs"] =
+                    json!({"invented-source":format!("sha256:{}","0".repeat(64))})
+            }
+        }
+        let input = f.input("forged-section.json", &forged);
+        let result = f.run(&[
+            "docs",
+            "render",
+            "--snapshot",
+            &snapshot,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        assert!(
+            result.0 != 0 || !result.1["updateFailures"]["service:orders/section-egress"].is_null(),
+            "{attack}: {result:?}"
+        );
+        let retained = portable_baseline(&f);
+        let retained = retained.narratives["service:orders"]
+            .operations
+            .iter()
+            .find(|o| o.id == "section-egress")
+            .unwrap();
+        assert_eq!(serde_json::to_value(retained).unwrap(), *actual);
+    }
+    let file = source.join("Orders.java");
+    let old_source = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        old_source.replace("return quantity;", "return quantity + 1;"),
+    )
+    .unwrap();
+    commit(&source);
+    let changed_snapshot = f.checked().save_snapshot(&repo).unwrap();
+    let refreshed = f.ok(&["docs", "render", "--snapshot", &changed_snapshot]);
+    let retained = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    let retained_op = retained["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "section-egress")
+        .unwrap();
+    assert_eq!(retained_op["explanation"][6], actual["explanation"][6]);
+    assert_eq!(
+        retained["operationStates"]["section-egress"]["freshness"],
+        "STALE"
+    );
+    assert_eq!(
+        retained["operationStates"]["section-egress"]["verification"],
+        "UNASSESSED"
+    );
 }

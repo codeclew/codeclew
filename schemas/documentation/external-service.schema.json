@@ -67,6 +67,267 @@
         "type": "string",
         "maxLength": 2048
       }
+    },
+    "category": {
+      "enum": [
+        "system",
+        "storage",
+        "queue",
+        "configuration",
+        "unknown"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "title",
+        "profile",
+        "status",
+        "declaration"
+      ],
+      "properties": {
+        "group": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "status": {
+          "enum": [
+            "proposed",
+            "confirmed",
+            "rejected"
+          ]
+        },
+        "declaration": {
+          "$ref": "#/$defs/declaration"
+        },
+        "dependencyIds": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "confirmed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "declaration": {
+                "properties": {
+                  "origin": {
+                    "const": "human"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "references": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "kind",
+          "location",
+          "status",
+          "declaration"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "kind": {
+            "enum": [
+              "wiki",
+              "document",
+              "code"
+            ]
+          },
+          "location": {
+            "type": "string",
+            "pattern": "^https://",
+            "maxLength": 2048
+          },
+          "status": {
+            "enum": [
+              "unverified",
+              "reviewed",
+              "stale"
+            ]
+          },
+          "declaration": {
+            "$ref": "#/$defs/declaration"
+          }
+        }
+      }
+    },
+    "configurationReferences": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "Authored static key/name references over exact source digests. No resolved value or live backend access.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "key",
+          "binding",
+          "scope",
+          "sources",
+          "declaration"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "binding": {
+            "enum": [
+              "static-reference",
+              "unresolved-reference",
+              "explicitly-unconfigured"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "reference": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "environment-placeholder",
+                  "property-placeholder",
+                  "code-symbol"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "service",
+                "sourceId",
+                "textDigest"
+              ],
+              "properties": {
+                "service": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+                },
+                "sourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "textDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9A-Fa-f]{64}$"
+                }
+              }
+            }
+          },
+          "declaration": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "origin",
+              "rationale"
+            ],
+            "properties": {
+              "origin": {
+                "enum": [
+                  "human",
+                  "agent-proposal",
+                  "imported"
+                ]
+              },
+              "rationale": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "rationale"
+      ],
+      "properties": {
+        "origin": {
+          "enum": [
+            "human",
+            "agent-proposal",
+            "imported"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
     }
   }
 }

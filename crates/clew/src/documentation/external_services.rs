@@ -14,10 +14,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 
+mod configuration;
+pub use configuration::ConfigurationReference;
+
+pub(in crate::documentation) fn configuration_source_label(state: &str) -> &'static str {
+    configuration::source_label(state)
+}
+pub(in crate::documentation) fn configuration_reference_label(kind: &str) -> &'static str {
+    configuration::reference_label(kind)
+}
+
 pub(super) const SCHEMA: &str = "codeclew-documentation-external-service/1.0";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExternalService {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configuration_references: Vec<ConfigurationReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<KnowledgeReference>,
     pub schema: String,
     pub id: String,
     pub title: String,
@@ -30,6 +48,27 @@ pub struct ExternalService {
     pub declaration: super::model::Declaration,
     #[serde(default)]
     pub limitations: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdentityProfile {
+    pub group: String,
+    pub title: String,
+    pub profile: String,
+    pub status: String,
+    pub declaration: super::model::Declaration,
+    #[serde(default)]
+    pub dependency_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeReference {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub location: String,
+    pub status: String,
+    pub declaration: super::model::Declaration,
 }
 pub(super) fn validate(value: &ExternalService) -> Result<(), ClewError> {
     if value.schema != SCHEMA
@@ -51,6 +90,59 @@ pub(super) fn validate(value: &ExternalService) -> Result<(), ClewError> {
             "invalid external-service identity, declaration or bounded authored information",
         ));
     }
+    if value.category.as_deref().is_some_and(|category| {
+        !matches!(
+            category,
+            "system" | "storage" | "queue" | "configuration" | "unknown"
+        )
+    }) || value.references.len() > 64
+    {
+        return Err(invalid("invalid destination category or reference bound"));
+    }
+    let declaration = |d: &super::model::Declaration| {
+        matches!(d.origin.as_str(), "human" | "agent-proposal" | "imported")
+            && !d.rationale.trim().is_empty()
+            && d.rationale.len() <= 4096
+    };
+    if let Some(identity) = &value.identity
+        && (!store::valid_id(&identity.group)
+            || identity.title.trim().is_empty()
+            || identity.title.len() > 512
+            || identity.profile.trim().is_empty()
+            || identity.profile.len() > 512
+            || !matches!(
+                identity.status.as_str(),
+                "proposed" | "confirmed" | "rejected"
+            )
+            || !declaration(&identity.declaration)
+            || identity.dependency_ids.len() > 128
+            || (identity.status == "confirmed" && identity.declaration.origin != "human"))
+    {
+        return Err(invalid(
+            "identity needs a bounded explicit hypothesis or human confirmation",
+        ));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for reference in &value.references {
+        if !store::valid_id(&reference.id)
+            || !ids.insert(&reference.id)
+            || reference.title.trim().is_empty()
+            || reference.title.len() > 512
+            || !matches!(reference.kind.as_str(), "wiki" | "document" | "code")
+            || !matches!(
+                reference.status.as_str(),
+                "unverified" | "reviewed" | "stale"
+            )
+            || !declaration(&reference.declaration)
+            || reference.location.len() > 2048
+            || super::source_links::web_base(&reference.location).is_err()
+        {
+            return Err(invalid(
+                "invalid supplemental reference; use a clean HTTPS location and explicit provenance/status",
+            ));
+        }
+    }
+    configuration::validate(&value.configuration_references)?;
     for url in [&value.repository, &value.wiki].into_iter().flatten() {
         if url.len() > 2048 || super::source_links::web_base(url).is_err() {
             return Err(invalid(
@@ -115,7 +207,7 @@ pub(super) fn attach(
 ) -> Result<(), ClewError> {
     validate_inputs(inputs)?;
     for (id, value) in &inputs.external_services {
-        let normalized = json!({"externalService":value,"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","runtime":"UNVERIFIED"});
+        let normalized = json!({"externalService":value,"configurationEvidence":configuration::project(checked,&value.configuration_references),"interactions":inputs.interactions.values().filter(|i| i.external_service.as_deref()==Some(id)).collect::<Vec<_>>(),"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","runtime":"UNVERIFIED"});
         let key = format!("external-service:{id}");
         checked.dependencies.insert(
             key.clone(),
@@ -134,7 +226,12 @@ pub(super) fn attach(
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    Put(InputArgs),
+    Put {
+        #[command(flatten)]
+        input: InputArgs,
+        #[arg(long)]
+        human: bool,
+    },
     List(ListArgs),
     Show {
         #[arg(long)]
@@ -146,10 +243,26 @@ pub enum Command {
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
-        Command::Put(args) => {
+        Command::Put { input: args, human } => {
             let repo = Repository::open(&args.root)?;
             let value: ExternalService = store::read(&args.input, 64 * 1024)?;
             validate(&value)?;
+            let previous = records(&repo)?.remove(&value.id);
+            if !human
+                && (value
+                    .identity
+                    .as_ref()
+                    .is_some_and(|i| i.status == "confirmed")
+                    || previous
+                        .as_ref()
+                        .and_then(|v| v.identity.as_ref())
+                        .is_some_and(|i| i.declaration.origin == "human"))
+                && previous.as_ref().and_then(|v| v.identity.as_ref()) != value.identity.as_ref()
+            {
+                return Err(invalid(
+                    "human identity decisions require --human; agent proposals cannot replace them",
+                ));
+            }
             if repo.services()?.contains_key(&value.id) {
                 return Err(invalid(
                     "external identity already belongs to a captured service",
@@ -235,52 +348,268 @@ pub(super) fn for_page(checked: &Check, subject: &str) -> Value {
     )
 }
 
-pub(super) fn page_links(data: &Value) -> String {
-    let rows=data["externalServices"].as_object().into_iter().flatten().map(|(id,value)|format!("<li><a href=\"../external-services/{}.html\">{}</a> — declared information; source not captured</li>",escape(id),escape(value["title"].as_str().unwrap_or(id)))).collect::<String>();
-    if rows.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<section aria-label=\"External service information\"><h2>External services</h2><ul>{rows}</ul></section>"
-        )
+fn profile_html(
+    checked: &Check,
+    id: &str,
+    value: &ExternalService,
+    inputs: &super::store::RepositoryInputs,
+    language: &str,
+) -> String {
+    let l = |key| super::language::label(language, key);
+    let mut body = format!(
+        "<nav><a href=\"../overview.html\">{}</a></nav><h1>{}</h1><p>{}</p><p>{}</p>",
+        l("Documentation overview"),
+        escape(&value.title),
+        escape(&value.description),
+        l("Declared information; source not captured. Runtime unverified.")
+    );
+    if let Some(identity) = &value.identity {
+        let status = match identity.status.as_str() {
+            "confirmed" => l("Human-confirmed grouping"),
+            "rejected" => l("Grouping rejected; profiles remain distinct"),
+            _ => l("Identity hypothesis"),
+        };
+        body += &format!(
+            "<section><h2>{status}</h2><p>{}</p><p>{}</p><p><b>{}</b>: {}</p>",
+            escape(&identity.title),
+            escape(&identity.declaration.rationale),
+            l("Profile"),
+            escape(&identity.profile)
+        );
+        if identity.status != "rejected" {
+            body += "<ul>";
+            for (peer_id, peer) in &inputs.external_services {
+                if peer
+                    .identity
+                    .as_ref()
+                    .is_some_and(|p| p.group == identity.group && p.status != "rejected")
+                {
+                    body += &format!(
+                        "<li><a href=\"{}.html\">{}</a> — {}</li>",
+                        escape(peer_id),
+                        escape(&peer.title),
+                        escape(&peer.identity.as_ref().unwrap().profile)
+                    );
+                }
+            }
+            body += "</ul>";
+        }
+        body += &format!(
+            "<details><summary>{}</summary><pre>{}</pre><p>{}</p><code>clew docs external-service put --root &lt;root&gt; --input &lt;profile.json&gt; --expected-input-digest &lt;digest&gt;</code><p>{}</p></details></section>",
+            l("Review or edit identity decision"),
+            escape(&serde_json::to_string_pretty(identity).unwrap_or_default()),
+            l("Keep profile IDs and evidence. Confirmed human decisions require --human."),
+            l("References and grouping never prove physical service identity or runtime routing.")
+        );
     }
+    body += &configuration::html(
+        &configuration::project(checked, &value.configuration_references),
+        language,
+    );
+    body += &format!("<section><h2>{}</h2>", l("Operations and configuration"));
+    let mut groups: BTreeMap<&str, Vec<&super::model::Interaction>> = BTreeMap::new();
+    for interaction in inputs
+        .interactions
+        .values()
+        .filter(|i| i.external_service.as_deref() == Some(id))
+    {
+        groups
+            .entry(&interaction.from.service)
+            .or_default()
+            .push(interaction);
+    }
+    for (service, operations) in groups {
+        let service_title = inputs
+            .services
+            .get(service)
+            .map(|s| s.title.as_str())
+            .unwrap_or(service);
+        body += &format!(
+            "<section class=\"profile-service\"><h3><a href=\"../services/{}.html#section-egress\">{}</a></h3>",
+            escape(service),
+            escape(service_title)
+        );
+        let mut binding_groups: BTreeMap<Option<&str>, Vec<&super::model::Interaction>> =
+            BTreeMap::new();
+        for operation in operations {
+            binding_groups
+                .entry(operation.transport.destination_config_key.as_deref())
+                .or_default()
+                .push(operation);
+        }
+        for operations in binding_groups.into_values() {
+            let common_key = operations
+                .first()
+                .and_then(|i| i.transport.destination_config_key.as_deref())
+                .filter(|key| {
+                    operations
+                        .iter()
+                        .all(|i| i.transport.destination_config_key.as_deref() == Some(key))
+                });
+            if let Some(key) = common_key {
+                body += &format!(
+                    "<p>{}: <code>{}</code></p>",
+                    l("Shared configuration key"),
+                    escape(key)
+                );
+            }
+            body += "<ul class=\"profile-operations\">";
+            for interaction in operations {
+                let transport = &interaction.transport;
+                let destination = match transport.kind.as_str() {
+                    "http" => format!(
+                        "{} {}",
+                        transport.method.as_deref().unwrap_or("HTTP"),
+                        transport.path.as_deref().unwrap_or("")
+                    ),
+                    "kafka" => format!(
+                        "{} {}",
+                        l("Topic"),
+                        transport.topic.as_deref().unwrap_or("")
+                    ),
+                    _ => l("Logical access").into(),
+                };
+                body += &format!(
+                    "<li><details><summary><b>{}</b> · <code>{}</code></summary>",
+                    escape(&interaction.title),
+                    escape(&destination)
+                );
+                if common_key.is_none()
+                    && let Some(key) = &transport.destination_config_key
+                {
+                    body += &format!(
+                        "<p>{}: <code>{}</code></p>",
+                        l("Configuration key"),
+                        escape(key)
+                    );
+                }
+                if transport.kind == "kafka" {
+                    body += &format!(
+                        "<p>{}: <code>{}</code></p><p>{}</p>",
+                        l("Message key"),
+                        escape(
+                            transport
+                                .message_key
+                                .as_deref()
+                                .unwrap_or(l("Not established"))
+                        ),
+                        l(
+                            "A topic name does not establish its payload schema or consumer contract."
+                        )
+                    );
+                }
+                if let Some(purpose) = &transport.purpose {
+                    body += &format!("<p>{}</p>", escape(purpose));
+                }
+                for address in &interaction.addresses {
+                    body += &format!(
+                        "<p><code>{}</code> · {} · {}</p>",
+                        escape(&address.url),
+                        escape(&address.source),
+                        escape(address.environment.as_deref().unwrap_or(""))
+                    );
+                }
+                let processes = inputs
+                    .scenarios
+                    .values()
+                    .filter(|p| p.interactions.contains(&interaction.id))
+                    .collect::<Vec<_>>();
+                if !processes.is_empty() {
+                    body += &format!("<p>{}: ", l("Related processes and contracts"));
+                    for process in processes {
+                        body += &format!(
+                            "<a href=\"../scenarios/{}.html\">{}</a> ",
+                            escape(&process.id),
+                            escape(&process.title)
+                        );
+                    }
+                    body += "</p>";
+                }
+                body += &format!(
+                    "<details><summary>{}</summary><pre>{}</pre></details></details></li>",
+                    l("Declaration evidence"),
+                    escape(&serde_json::to_string_pretty(interaction).unwrap_or_default())
+                );
+            }
+            body += "</ul>";
+        }
+        body += "</section>";
+    }
+    body += "</section>";
+    body += &format!(
+        "<section><h2>{}</h2><p>{}</p><ul>",
+        l("Associated knowledge"),
+        l("Supplemental references are separate from captured implementation.")
+    );
+    for (title, url) in [
+        (l("Repository"), &value.repository),
+        (l("Wiki"), &value.wiki),
+    ] {
+        if let Some(url) = url {
+            body += &format!(
+                "<li><a href=\"{}\" rel=\"noreferrer noopener\">{}</a> · {}</li>",
+                escape(url),
+                title,
+                l("Legacy reference; unverified")
+            );
+        }
+    }
+    for reference in &value.references {
+        body += &format!(
+            "<li><a href=\"{}\" rel=\"noreferrer noopener\">{}</a> · {} · {}<details><summary>{}</summary><p>{}: {}</p></details></li>",
+            escape(&reference.location),
+            escape(&reference.title),
+            escape(&reference.kind),
+            escape(&reference.status),
+            l("Provenance"),
+            escape(&reference.declaration.origin),
+            escape(&reference.declaration.rationale)
+        );
+    }
+    body += &format!(
+        "</ul></section><details><summary>{}</summary><ul>{}</ul><pre>{}</pre></details>",
+        l("Limitations and provenance"),
+        value
+            .limitations
+            .iter()
+            .map(|s| format!("<li>{}</li>", escape(s)))
+            .collect::<String>(),
+        escape(&serde_json::to_string_pretty(&value.declaration).unwrap_or_default())
+    );
+    super::reader::page_language(&value.title, &body, language)
 }
 
 pub(super) fn publication(
     checked: &Check,
     files: &mut BTreeMap<String, Vec<u8>>,
     cards: &mut String,
+    language: &str,
 ) -> Result<(), ClewError> {
     let Some(inputs) = declaration_inputs(checked) else {
         return Ok(());
     };
     for (id, value) in &inputs.external_services {
         validate(value)?;
-        let mut links = String::new();
-        let mut md_links = String::new();
-        for (label, url) in [("Repository", &value.repository), ("Wiki", &value.wiki)] {
+        let html = profile_html(checked, id, value, inputs, language);
+        let mut md_links = value
+            .references
+            .iter()
+            .map(|r| {
+                format!(
+                    "- [{}]({}) · {} · {}\n",
+                    r.title, r.location, r.kind, r.status
+                )
+            })
+            .collect::<String>();
+        for (title, url) in [("Repository", &value.repository), ("Wiki", &value.wiki)] {
             if let Some(url) = url {
-                links += &format!(
-                    "<li><a href=\"{}\" rel=\"noreferrer noopener\">{label}</a></li>",
-                    escape(url)
+                md_links += &format!(
+                    "- [{title}]({})\n",
+                    url.replace('(', "%28").replace(')', "%29")
                 );
-                md_links += &format!("- [{label}]({url})\n");
             }
         }
-        let related=inputs.interactions.values().filter(|i|i.external_service.as_deref()==Some(id)).map(|i|format!("<li>{}: <a href=\"../services/{}.html\">{}</a> → {} (declared interaction; runtime unverified)</li>",escape(&i.title),escape(&i.from.service),escape(&i.from.service),escape(&i.to.service))).collect::<String>();
-        let limitations = value
-            .limitations
-            .iter()
-            .map(|s| format!("<li>{}</li>", escape(s)))
-            .collect::<String>();
-        let html = format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"referrer\" content=\"no-referrer\"><title>{}</title><style>body{{max-width:55rem;margin:3rem auto;padding:0 1rem;font:18px/1.6 system-ui}}p{{white-space:pre-wrap}}</style></head><body><nav><a href=\"../overview.html\">Documentation overview</a></nav><main><p>DECLARED EXTERNAL SERVICE · SOURCE NOT CAPTURED · RUNTIME UNVERIFIED</p><h1>{}</h1><p>{}</p><ul>{links}</ul><h2>Declared interactions</h2><ul>{related}</ul><h2>Limitations</h2><ul>{limitations}</ul><details><summary>Declaration provenance</summary><pre>{}</pre></details></main></body></html>",
-            escape(&value.title),
-            escape(&value.title),
-            escape(&value.description),
-            escape(&serde_json::to_string_pretty(&value.declaration).map_err(io_error)?)
-        );
-        let metadata=serde_json::to_string(&json!({"title":value.title,"externalService":value,"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED"})).map_err(io_error)?.replace('<',"\\u003c");
+        let metadata=serde_json::to_string(&json!({"title":value.title,"externalService":value,"configurationEvidence":configuration::project(checked,&value.configuration_references),"interactions":inputs.interactions.values().filter(|i| i.external_service.as_deref()==Some(id)).collect::<Vec<_>>(),"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED"})).map_err(io_error)?.replace('<',"\\u003c");
         let html = html.replace(
             "</body>",
             &format!(
@@ -288,7 +617,7 @@ pub(super) fn publication(
             ),
         );
         files.insert(format!("external-services/{id}.html"), html.into_bytes());
-        files.insert(format!("external-services/{id}.json"),bytes(&json!({"externalService":value,"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","runtime":"UNVERIFIED"}))?);
+        files.insert(format!("external-services/{id}.json"),bytes(&json!({"externalService":value,"configurationEvidence":configuration::project(checked,&value.configuration_references),"interactions":inputs.interactions.values().filter(|i| i.external_service.as_deref()==Some(id)).collect::<Vec<_>>(),"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","runtime":"UNVERIFIED"}))?);
         files.insert(format!("external-services/{id}.md"),format!("# {}\n\nDeclared external service. Source not captured; runtime unverified.\n\n{}\n\n{md_links}",value.title,value.description).into_bytes());
         *cards += &format!(
             "<article class=\"gap-card\"><p>External service · declared information</p><h2><a href=\"generated/__BUNDLE__/external-services/{id}.html\">{}</a></h2><p>{}</p></article>",
@@ -305,6 +634,117 @@ mod tests {
     fn record() -> ExternalService {
         serde_json::from_value(json!({"schema":SCHEMA,"id":"forecast-provider","title":"Forecast Provider","description":"Declared forecast provider","repository":"https://github.com/owned/provider","wiki":"https://docs.example.invalid/forecast","declaration":{"origin":"human","rationale":"Owned fixture"},"limitations":["Target code not captured"]})).unwrap()
     }
+    #[test]
+    fn native_profile_groups_operations_by_service_and_binding_with_transport_specific_labels() {
+        let tmp = tempfile::tempdir().unwrap();
+        Repository::init(tmp.path(), "Grouped profile fixture").unwrap();
+        let mut inputs = Repository::open(tmp.path()).unwrap().inputs().unwrap();
+        for (id, transport) in [
+            (
+                "quote",
+                json!({"kind":"http","method":"POST","path":"/quote","destinationConfigKey":"pricing.endpoint"}),
+            ),
+            (
+                "renew",
+                json!({"kind":"http","method":"POST","path":"/renew","destinationConfigKey":"pricing.endpoint"}),
+            ),
+            (
+                "alternate",
+                json!({"kind":"http","method":"POST","path":"/quote","destinationConfigKey":"pricing.alternate"}),
+            ),
+            ("store", json!({"kind":"logical"})),
+            (
+                "publish",
+                json!({"kind":"kafka","topic":"observation.created"}),
+            ),
+        ] {
+            inputs.interactions.insert(id.into(),serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":id,"title":id,"from":{"service":"owner"},"to":{"service":"forecast-provider"},"external":true,"externalService":"forecast-provider","transport":transport,"declaration":{"origin":"human","rationale":"Explicit fixture boundary"}})).unwrap());
+        }
+        let checked:Check=serde_json::from_value(json!({"schema":"fixture","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{}})).unwrap();
+        let before = serde_json::to_value(&inputs).unwrap();
+        let html = profile_html(&checked, "forecast-provider", &record(), &inputs, "en");
+        assert_eq!(
+            html.matches("../services/owner.html#section-egress")
+                .count(),
+            1
+        );
+        assert_eq!(
+            html.matches("Shared configuration key: <code>pricing.endpoint</code>")
+                .count(),
+            1
+        );
+        for title in ["quote", "renew", "alternate", "store", "publish"] {
+            assert!(html.contains(title));
+        }
+        assert!(html.contains("Logical access"));
+        assert!(html.contains("Topic observation.created"));
+        assert!(!html.contains("Concrete URL"));
+        assert_eq!(serde_json::to_value(inputs).unwrap(), before);
+    }
+    #[test]
+    fn hypotheses_references_and_legacy_serialization_keep_distinct_authority() {
+        let old = record();
+        let serialized = serde_json::to_value(&old).unwrap();
+        assert!(
+            serialized.get("category").is_none()
+                && serialized.get("identity").is_none()
+                && serialized.get("references").is_none()
+        );
+        let mut value = serialized;
+        value["category"] = json!("system");
+        value["identity"] = json!({"group":"provider","title":"Provider","profile":"primary configuration","status":"proposed","declaration":{"origin":"agent-proposal","rationale":"Owned synthetic hypothesis"},"dependencyIds":[]});
+        value["references"] = json!([{"id":"docs","title":"Documentation","kind":"document","location":"https://docs.example.invalid/provider","status":"unverified","declaration":{"origin":"human","rationale":"Supplemental only"}}]);
+        let external: ExternalService = serde_json::from_value(value.clone()).unwrap();
+        validate(&external).unwrap();
+        assert_eq!(external.declaration, old.declaration);
+        // Build the synthetic negative case with the required Python standard
+        // library, keeping fixture credentials explicit without adding a URL
+        // crate solely for this test. Nothing is resolved or sent over a network.
+        let password_url = std::process::Command::new("python3")
+            .args(["-I", "-S", "-c", r#"
+import json
+from urllib.parse import quote, urlsplit, urlunsplit
+endpoint = urlsplit("https://example.invalid/docs")
+fixture_username = "fixture-user"
+fixture_password = "fixture-password"
+authority = quote(fixture_username, safe="") + ":" + quote(fixture_password, safe="") + "@" + endpoint.netloc
+location = urlunsplit(endpoint._replace(netloc=authority))
+parsed = urlsplit(location)
+assert parsed.hostname == "example.invalid"
+print(json.dumps({"location": location, "passwordPresent": parsed.password == fixture_password and bool(parsed.password)}))
+"#])
+            .output()
+            .unwrap();
+        assert!(
+            password_url.status.success(),
+            "{}",
+            String::from_utf8_lossy(&password_url.stderr)
+        );
+        let password_url: Value = serde_json::from_slice(&password_url.stdout).unwrap();
+        assert_eq!(password_url["passwordPresent"], true);
+        for (pointer, replacement) in [
+            ("/identity/status", json!("confirmed")),
+            ("/references/0/location", password_url["location"].clone()),
+            ("/references/0/status", json!("SOURCE_PROVEN")),
+            ("/category", json!("inferred-physical-database")),
+        ] {
+            let mut bad = value.clone();
+            *bad.pointer_mut(pointer).unwrap() = replacement;
+            assert!(
+                validate(&serde_json::from_value(bad).unwrap()).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut rejected = external.clone();
+        rejected.identity.as_mut().unwrap().status = "rejected".into();
+        validate(&rejected).unwrap();
+        assert_eq!(rejected.id, external.id);
+        assert_eq!(
+            rejected.identity.as_ref().unwrap().profile,
+            external.identity.as_ref().unwrap().profile
+        );
+    }
+
     #[test]
     fn process_participants_accept_registered_external_actors_but_never_external_roots() {
         let service:super::super::model::Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"weather","title":"Weather","repositoryId":"owned","repository":"https://github.com/owned/weather.git","language":"java","profile":"source-syntax","targetRef":"main","source":{"roots":["src"],"dialect":"17"}})).unwrap();

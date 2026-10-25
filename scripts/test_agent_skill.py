@@ -54,6 +54,27 @@ class AgentSkillTest(unittest.TestCase):
             (root / ".DS_Store").write_bytes(b"Finder metadata")
             self.assertEqual(before, installer.digest(installer.package_files(root)))
 
+    def test_portable_authoring_contracts_match_native_schemas_and_resolve_locally(self) -> None:
+        for name in ["proposal.schema.json", "section-author.schema.json", "entity.schema.json", "dataflow.schema.json"]:
+            source = ROOT / "schemas/documentation" / name
+            bundled = CANONICAL_SKILL / "schemas" / name
+            self.assertEqual(bundled.read_bytes(), source.read_bytes())
+            schema = json.loads(bundled.read_text())
+            def visit(value):
+                if isinstance(value, dict):
+                    if "$ref" in value:
+                        reference = value["$ref"]
+                        self.assertTrue(reference.startswith("#/"))
+                        target = schema
+                        for part in reference[2:].split("/"):
+                            target = target[part.replace("~1", "/").replace("~0", "~")]
+                    for child in value.values():
+                        visit(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        visit(child)
+            visit(schema)
+
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
         skill += (CANONICAL_SKILL / "references/managed-code.md").read_text(encoding="utf-8")
@@ -108,7 +129,7 @@ class AgentSkillTest(unittest.TestCase):
                 (installed / "SKILL.md").read_bytes(),
                 (CANONICAL_SKILL / "SKILL.md").read_bytes(),
             )
-            for relative in ["README.md", "scripts/prepared_source.py", "references/managed-code.md"]:
+            for relative in ["README.md", "scripts/prepared_source.py", "scripts/check_json.py", "scripts/collect_proposal.py", "scripts/collect_work_initial.py", "scripts/repair_evidence.py", "references/evidence-repair.md", "examples/thread-order/README.md", "examples/thread-order/build.gradle.kts", "examples/thread-order/settings.gradle.kts", "examples/thread-order/src/main/kotlin/ThreadExample.kt", "schemas/proposal.schema.json", "schemas/section-author.schema.json", "references/managed-code.md"]:
                 self.assertEqual(
                     (installed / relative).read_bytes(),
                     (CANONICAL_SKILL / relative).read_bytes(),

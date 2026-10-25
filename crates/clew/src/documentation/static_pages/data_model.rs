@@ -10,6 +10,8 @@ use std::{
     path::Path,
 };
 
+mod payload_views;
+
 const CONTRACT_REQUIRED_CONDITION: &str = "Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality.";
 
 #[derive(Default)]
@@ -29,6 +31,8 @@ struct Plan {
     documentation_language: Option<String>,
     models: Vec<Model>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    payload_views: Vec<payload_views::PayloadView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     interface_bindings: Vec<InterfaceBinding>,
     #[serde(default)]
     contracts: Vec<Contract>,
@@ -45,7 +49,18 @@ struct InterfaceBinding {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FieldCoverage {
+    status: String,
+    scope: String,
+    claim: Value,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Model {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    field_coverage: Option<FieldCoverage>,
     id: String,
     /// Overrides the plan language for this authored model only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,7 +85,16 @@ struct ReferenceRecord {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GraphBinding {
+    subject: String,
+    node: String,
+    claim: Value,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Field {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    graph_bindings: Vec<GraphBinding>,
     id: String,
     path: String,
     /// Explicit authored names with exact evidence, separate from the comment.
@@ -101,6 +125,8 @@ struct Representation {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Usage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<String>,
     stage: String,
     producer: String,
     consumer: String,
@@ -375,7 +401,7 @@ pub(super) fn load(
     if plan.schema != "codeclew-data-model-plan/1.0"
         || plan.publication != publication
         || plan.snapshot != snapshot
-        || (plan.models.is_empty() && plan.contracts.is_empty())
+        || (plan.models.is_empty() && plan.contracts.is_empty() && plan.payload_views.is_empty())
         || plan.models.len() > 32
         || plan.contracts.len() > 32
         || plan.process_views.len() > 32
@@ -424,6 +450,32 @@ pub(super) fn load(
         {
             return Err(invalid("data-model identity, kind or fields are invalid"));
         }
+        if let Some(entity) = &model.entity
+            && (!entity.starts_with("entity:")
+                || checked
+                    .dependencies
+                    .get(entity)
+                    .is_none_or(|d| d.kind != "DOMAIN_ENTITY"))
+        {
+            return Err(invalid(
+                "model entity must name a selected declared domain concept",
+            ));
+        }
+        if let Some(coverage) = &mut model.field_coverage {
+            if !matches!(
+                coverage.status.as_str(),
+                "complete-definition" | "observed-fields" | "unknown"
+            ) {
+                return Err(invalid("invalid field coverage status"));
+            }
+            text(&coverage.scope)?;
+            coverage.claim = super::question_reading::bind_block(
+                coverage.claim.clone(),
+                files,
+                checked,
+                &mut bytes,
+            )?;
+        }
         text(&model.title)?;
         model.purpose =
             super::question_reading::bind_block(model.purpose.clone(), files, checked, &mut bytes)?;
@@ -442,6 +494,40 @@ pub(super) fn load(
                 || field.usage.len() > 32
             {
                 return Err(invalid("data-model field identity or bounds are invalid"));
+            }
+            if field.graph_bindings.len() > 16 {
+                return Err(invalid("field graph bindings exceed bounds"));
+            }
+            for binding in &mut field.graph_bindings {
+                if !binding.subject.starts_with("scenario:")
+                    || !model
+                        .process_links
+                        .iter()
+                        .any(|link| link.subject == binding.subject)
+                {
+                    return Err(invalid(
+                        "field graph binding requires an explicit related process link",
+                    ));
+                }
+                let page = page_for(files, &binding.subject)?;
+                if !page["operations"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|op| op["dataflow"]["nodes"].as_array())
+                    .flatten()
+                    .any(|node| node["id"] == binding.node)
+                {
+                    return Err(invalid(
+                        "field binding must name a node in the exact selected graph",
+                    ));
+                }
+                binding.claim = super::question_reading::bind_block(
+                    binding.claim.clone(),
+                    files,
+                    checked,
+                    &mut bytes,
+                )?;
             }
             text(&field.path)?;
             for name in [&mut field.readable_name, &mut field.original_name]
@@ -521,6 +607,12 @@ pub(super) fn load(
                     &u.unresolved,
                 ] {
                     text(v)?;
+                }
+                if u.inputs.len() > 32 {
+                    return Err(invalid("field usage inputs exceed bounds"));
+                }
+                for input in &u.inputs {
+                    text(input)?;
                 }
                 u.claim = super::question_reading::bind_block(
                     u.claim.clone(),
@@ -751,9 +843,17 @@ pub(super) fn load(
             }
         }
     }
+    let payload_views = payload_views::validate_and_project(
+        &mut plan.payload_views,
+        &plan.models,
+        files,
+        checked,
+        &mut bytes,
+    )?;
     let mut value = serde_json::to_value(&plan).map_err(io_error)?;
+    value["payloadViews"] = json!(payload_views);
     value["documentationLanguage"] = json!(plan.documentation_language);
-    for kind in ["models", "processViews"] {
+    for kind in ["models", "processViews", "payloadViews"] {
         if let Some(rows) = value[kind].as_array_mut() {
             for row in rows {
                 if row["documentationLanguage"].is_null() {
@@ -872,6 +972,14 @@ fn valid_anchor(page: &Value, guide: Option<&Value>, anchor: &str) -> Result<(),
     }
     Ok(())
 }
+pub(super) fn attach_external_payloads(
+    model: Option<&Value>,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    language: &str,
+) -> Result<(), ClewError> {
+    payload_views::attach_external_links(model, files, language)
+}
+
 pub(super) fn attach_process(
     model: Option<&Value>,
     subject: &str,
@@ -880,6 +988,52 @@ pub(super) fn attach_process(
     let Some(model) = model else {
         return Ok(());
     };
+    let payload_views = model["payloadViews"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["subject"] == subject)
+        .collect::<Vec<_>>();
+    if !payload_views.is_empty() {
+        payload["payloadViews"] = json!(payload_views);
+    }
+    let reader_models = json!(
+        model["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["processLinks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|l| l["subject"] == subject)
+                || m["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|f| f["graphBindings"].as_array().into_iter().flatten())
+                    .any(|b| b["subject"] == subject))
+            .collect::<Vec<_>>()
+    );
+    let reader_enabled = subject.starts_with("service:")
+        || payload["view"].is_object()
+        || payload["operations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|operation| operation["dataflow"].is_object())
+        || model["processViews"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|view| view["subject"] == subject && view["enabled"] == true);
+    if reader_enabled
+        && reader_models
+            .as_array()
+            .is_some_and(|models| !models.is_empty())
+    {
+        payload["readerModels"] = reader_models;
+    }
     for binding in model["interfaceBindings"]
         .as_array()
         .into_iter()
@@ -1139,17 +1293,13 @@ fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<
     };
     let heading = |key| literal(label(language, key));
     let mut out = format!(
-        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
         heading("Field descriptions"),
         heading("Field descriptions"),
-        heading("Original field"),
         heading("Readable name"),
         heading("Comment")
     );
     for field in model["fields"].as_array().into_iter().flatten() {
-        let original = field["originalName"]["text"]
-            .as_str()
-            .unwrap_or_else(|| strv(&field["path"]));
         let name = field["readableName"]["text"]
             .as_str()
             .unwrap_or_else(|| label(language, "Readable name not provided"));
@@ -1171,7 +1321,7 @@ fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<
         } else {
             ""
         };
-        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}><code>{}</code></a></th><td data-label=\"{}\">{}</td><td data-label=\"{}\">{}</td></tr>",literal(&href),literal(original),heading("Readable name"),literal(name),heading("Comment"),body));
+        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}>{}</a></th><td data-label=\"{}\">{}</td></tr>",literal(&href),literal(name),heading("Comment"),body));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -1499,6 +1649,30 @@ pub(super) fn write_language(
         )
         .into_bytes();
     }
+    for view in model["payloadViews"].as_array().into_iter().flatten() {
+        let key = format!(
+            "payload:{}:{}:{}",
+            strv(&view["subject"]),
+            strv(&view["operation"]),
+            strv(&view["id"])
+        );
+        let original_path = format!(
+            "payload-views/{}.original.json",
+            &super::super::digest(&key)?[7..]
+        );
+        files.insert(
+            original_path.clone(),
+            serde_json::to_vec_pretty(view).map_err(io_error)?,
+        );
+        if let Some(gap) = super::prose_language::gap(
+            &view["documentationLanguage"],
+            requested,
+            "PAYLOAD_TRANSLATION",
+            &original_path,
+        )? {
+            gaps.insert(key, gap);
+        }
+    }
     Ok(LanguageAvailability {
         models: gaps,
         contracts: contract_gaps,
@@ -1666,6 +1840,60 @@ mod tests {
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
     #[test]
+    fn explicit_domain_field_coverage_and_graph_mappings_remain_bounded_and_evidence_bound() {
+        let (mut plan, mut files, guides, mut check) = fixture();
+        let claim = plan["models"][0]["purpose"].clone();
+        check.dependencies.insert("entity:record".into(), serde_json::from_value(json!({"id":"entity:record","kind":"DOMAIN_ENTITY","service":"","symbol":"Record","digest":"owned","normalized":{},"sourceIds":[]})).unwrap());
+        plan["models"][0]["entity"] = json!("entity:record");
+        plan["models"][0]["fieldCoverage"] = json!({"status":"observed-fields","scope":"Only saved usage, not a complete definition","claim":claim});
+        let mut page: Value = serde_json::from_slice(&files["scenarios/example.json"]).unwrap();
+        page["operations"][0]["dataflow"] = json!({"nodes":[{"id":"result"}]});
+        files.insert(
+            "scenarios/example.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        plan["models"][0]["fields"][0]["graphBindings"] =
+            json!([{"subject":"scenario:example","node":"result","claim":claim}]);
+        plan["models"][0]["fields"][0]["usage"][0]["inputs"] = json!(["request.value"]);
+        let model = read(&plan, &files, &guides, &check).unwrap();
+        assert_eq!(
+            model["models"][0]["fieldCoverage"]["status"],
+            "observed-fields"
+        );
+        assert_eq!(
+            model["models"][0]["fields"][0]["usage"][0]["inputs"][0],
+            "request.value"
+        );
+        for (pointer, replacement) in [
+            ("/models/0/entity", json!("entity:missing")),
+            (
+                "/models/0/fieldCoverage/status",
+                json!("all-fields-because-list-nonempty"),
+            ),
+            (
+                "/models/0/fields/0/graphBindings/0/subject",
+                json!("scenario:other"),
+            ),
+            ("/models/0/fields/0/graphBindings/0/node", json!("foreign")),
+            (
+                "/models/0/fields/0/graphBindings/0/claim/evidence/0/fragmentId",
+                json!("unreceived"),
+            ),
+        ] {
+            let mut bad = plan.clone();
+            *bad.pointer_mut(pointer).unwrap() = replacement;
+            assert!(read(&bad, &files, &guides, &check).is_err(), "{pointer}");
+        }
+        let mut payload = json!({"language":"en","view":{}});
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        assert_eq!(payload["readerModels"][0]["entity"], "entity:record");
+        assert_eq!(
+            payload["readerModels"][0]["fields"][0]["graphBindings"][0]["node"],
+            "result"
+        );
+    }
+
+    #[test]
     fn contracts_only_plan_binds_exact_declaration_without_models_or_field_flow() {
         let (mut plan, mut files, guides, mut checked) = fixture();
         let schema = json!({"$defs":{"Event":{"type":"object","required":["rain"],"properties":{"rain":{"type":["number","null"],"minimum":0}}}}});
@@ -1770,16 +1998,19 @@ mod tests {
         for portable in [false, true] {
             let table = field_table(&value["models"][0], "en", portable);
             for text in [
-                "Original field",
                 "Readable name",
                 "Comment",
-                "row.value",
                 "Stored display value",
                 "Proposed field meaning",
                 "#field-value",
             ] {
                 assert!(table.contains(text), "{text}");
             }
+            assert!(
+                !table.contains("row.value"),
+                "code representation belongs in field details"
+            );
+            assert_eq!(field["originalName"]["text"], "row.value");
         }
         plan["models"][0]["fields"][0]["readableName"]["evidence"][0]["textDigest"] =
             json!("sha256:changed");
@@ -1989,7 +2220,7 @@ mod tests {
     #[test]
     fn field_inventory_keeps_a_compact_purpose_overview_and_links_to_exact_details() {
         let model = json!({"fields":[
-            {"id":"value","path":"payload.value","meaning":{"text":"Keep <source> {value} and | punctuation"},"representations":[
+            {"id":"value","path":"payload.value","readableName":{"text":"Stored value"},"meaning":{"text":"Keep <source> {value} and | punctuation"},"representations":[
                 {"label":"Request","typeLabel":"string","requiredness":"optional","nullability":"nullable"},
                 {"label":"Storage","typeLabel":"int64","requiredness":"required","nullability":"not nullable"}
             ]},
@@ -2000,15 +2231,16 @@ mod tests {
             let html = field_table(&model, "en", portable);
             assert!(html.contains("<caption>Field descriptions</caption>"));
             assert_eq!(html.matches("scope=\"row\"").count(), 2);
-            assert_eq!(html.matches("scope=\"col\"").count(), 3);
+            assert_eq!(html.matches("scope=\"col\"").count(), 2);
             assert_eq!(
                 html.matches("<a href=").count(),
                 2,
                 "each field has one evidence entry point"
             );
-            assert!(html.contains(
-                "href=\"#field-value\" data-clew-field-details=\"\"><code>payload.value</code>"
-            ));
+            assert!(
+                html.contains("href=\"#field-value\" data-clew-field-details=\"\">Stored value")
+            );
+            assert!(!html.contains("payload.value"));
             if portable {
                 assert!(html.contains(
                     r#"<ClewMarkdown text={"Keep \u003csource\u003e {value} and | punctuation"} />"#
@@ -2293,5 +2525,104 @@ mod tests {
         let mut bad = plan;
         bad["processViews"][0]["anchor"] = json!("question-missing");
         assert!(read(&bad, &files, &guides, &check).is_err());
+    }
+    #[test]
+    fn payload_views_reuse_exact_fields_and_keep_partial_type_and_wire_constraints_separate() {
+        let (mut plan, files, guides, check) = fixture();
+        let original_files = files.clone();
+        let claim = plan["models"][0]["purpose"].clone();
+        plan["payloadViews"] = json!([{"id":"request","title":"Selected request shape","subject":"scenario:example","operation":"saved","component":"request-body","direction":"incoming","format":"json","coverage":{"status":"observed-fields","scope":"Named source property only; wire presence unknown","claim":claim},"fields":[{"model":"record","field":"value","representation":"row","path":"value"}]}]);
+        let value = read(&plan, &files, &guides, &check).unwrap();
+        let view = &value["payloadViews"][0];
+        assert_eq!(view["fields"][0]["typeLabel"], "string");
+        assert_eq!(view["wireSchema"], "NOT_ESTABLISHED_BY_TYPE_OR_MAPPING");
+        assert_eq!(view["runtime"], "UNVERIFIED");
+        assert_eq!(files, original_files);
+        let mut attached =
+            json!({"operations":[{"id":"saved","summary":{"text":"Retained original"}}]});
+        let operations = attached["operations"].clone();
+        attach_process(Some(&value), "scenario:example", &mut attached).unwrap();
+        assert_eq!(attached["operations"], operations);
+        assert_eq!(attached["payloadViews"][0]["id"], "request");
+        let mut fuzzy = plan.clone();
+        fuzzy["payloadViews"][0]["fields"][0]["representation"] = json!("row.value");
+        assert!(read(&fuzzy, &files, &guides, &check).is_err());
+        let mut complete = plan.clone();
+        complete["payloadViews"][0]["coverage"]["status"] = json!("complete-definition");
+        assert!(read(&complete, &files, &guides, &check).is_err());
+        let mut duplicate = plan.clone();
+        let field = duplicate["payloadViews"][0]["fields"][0].clone();
+        duplicate["payloadViews"][0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(field);
+        assert!(read(&duplicate, &files, &guides, &check).is_err());
+        let mut unknown = plan;
+        unknown["payloadViews"][0]["coverage"]["status"] = json!("unknown");
+        assert!(read(&unknown, &files, &guides, &check).is_err());
+        unknown["payloadViews"][0]["fields"] = json!([]);
+        unknown["payloadViews"][0]["component"] = json!("error-response-body");
+        unknown["payloadViews"][0]["status"] = json!("502");
+        let result = read(&unknown, &files, &guides, &check).unwrap();
+        assert_eq!(result["payloadViews"][0]["coverage"]["status"], "unknown");
+    }
+
+    #[test]
+    fn payload_interaction_direction_and_external_links_use_exact_declared_identity() {
+        let (mut plan, mut files, guides, mut checked) = fixture();
+        files.insert(
+            "services/owner.json".into(),
+            files["scenarios/example.json"].clone(),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(tmp.path(), "Payload fixture").unwrap();
+        let mut inputs = super::super::store::Repository::open(tmp.path())
+            .unwrap()
+            .inputs()
+            .unwrap();
+        inputs.interactions.insert("request-price".into(), serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"request-price","title":"Request price","from":{"service":"owner"},"to":{"service":"provider"},"external":true,"externalService":"provider","transport":{"kind":"http","method":"POST","path":"/price"},"declaration":{"origin":"human","rationale":"Explicit fixture boundary"}})).unwrap());
+        checked.source_inputs = Some(crate::documentation::check::SourceInputs {
+            schema: crate::documentation::check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: "input".into(),
+            inputs,
+            selected_services: Default::default(),
+            retained_services: Default::default(),
+        });
+        plan["payloadViews"] = json!([{"id":"request","title":"Price request","subject":"service:owner","operation":"saved","interaction":"request-price","component":"request-body","direction":"outgoing","format":"json","coverage":{"status":"observed-fields","scope":"Named source property","claim":plan["models"][0]["purpose"]},"fields":[{"model":"record","field":"value","representation":"row","path":"value"}]}]);
+        let projected = read(&plan, &files, &guides, &checked).unwrap();
+        let mut response = plan.clone();
+        response["payloadViews"][0]["component"] = json!("response-body");
+        response["payloadViews"][0]["direction"] = json!("incoming");
+        assert!(read(&response, &files, &guides, &checked).is_ok());
+        for direction in ["incoming", "local"] {
+            let mut invalid = plan.clone();
+            invalid["payloadViews"][0]["direction"] = json!(direction);
+            assert!(read(&invalid, &files, &guides, &checked).is_err());
+        }
+        let mut missing = plan.clone();
+        missing["payloadViews"][0]["interaction"] = json!("request-price-missing");
+        assert!(read(&missing, &files, &guides, &checked).is_err());
+        let original_interactions = json!([{"id":"request-price"},{"id":"unrelated"}]);
+        files.insert(
+            "external-services/provider.json".into(),
+            serde_json::to_vec(&json!({"interactions":original_interactions})).unwrap(),
+        );
+        files.insert(
+            "external-services/provider.html".into(),
+            b"<html><body>Retained profile</body></html>".to_vec(),
+        );
+        attach_external_payloads(Some(&projected), &mut files, "en").unwrap();
+        let profile: Value =
+            serde_json::from_slice(&files["external-services/provider.json"]).unwrap();
+        assert_eq!(profile["interactions"], original_interactions);
+        assert_eq!(profile["payloadLinks"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            profile["payloadLinks"][0]["href"],
+            "../services/owner.html#cpv-saved-request"
+        );
+        assert!(
+            String::from_utf8_lossy(&files["external-services/provider.html"])
+                .contains("../services/owner.html#cpv-saved-request")
+        );
     }
 }

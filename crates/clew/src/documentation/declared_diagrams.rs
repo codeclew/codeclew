@@ -1,9 +1,10 @@
 //! Declared architecture is separate from source-resolved transitions.
+#[cfg(test)]
+use super::render::escape;
 use super::{
     check::Check,
     external_services, invalid,
     model::{Event, Participant},
-    render::escape,
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -65,10 +66,15 @@ pub(super) fn validate_arrow(
             "declared boundary is outside this subject or disagrees with the registered external destination; select the declared interaction in the process and prepare a fresh Work",
         ));
     }
-    if !matches!(v["transport"]["kind"].as_str(), Some("http" | "kafka")) {
-        return Err(invalid("declared boundary supports HTTP or Kafka only"));
+    if !matches!(
+        v["transport"]["kind"].as_str(),
+        Some("http" | "kafka" | "logical")
+    ) {
+        return Err(invalid(
+            "declared boundary supports HTTP, Kafka or a logical call",
+        ));
     }
-    if event.kind == "declared-boundary-return" && v["transport"]["kind"] != "http" {
+    if event.kind == "declared-boundary-return" && v["transport"]["kind"] == "kafka" {
         return Err(invalid(
             "Kafka has no synchronous return; use a separate outgoing reply-event interaction",
         ));
@@ -101,6 +107,7 @@ pub(super) fn supported_refs(
             ));
         }
         let e = Event {
+            reader: None,
             id: "evidence".into(),
             kind: "declared-boundary".into(),
             text: String::new(),
@@ -167,6 +174,7 @@ pub(super) fn graph(checked: &Check, subject: Option<&str>) -> Value {
     json!({"schema":"codeclew-declared-relationship-graph/1.0","authority":"DECLARED_RELATIONSHIP","runtime":"UNVERIFIED","scope":subject,"nodes":nodes.into_values().collect::<Vec<_>>(),"edges":edges,"executionOrder":"NOT_ESTABLISHED"})
 }
 
+#[cfg(test)]
 fn href(node: &Value, prefix: &str) -> String {
     format!(
         "{}{}",
@@ -180,6 +188,9 @@ fn href(node: &Value, prefix: &str) -> String {
 
 /// Inline SVG keeps links active; the adjacent list is the keyboard/text route.
 /// Fixed logical width scrolls on narrow screens instead of shrinking labels.
+// Historical formatter fixtures remain useful for checking declaration escaping;
+// production readers consume the projected graph in their own HTML/MDX views.
+#[cfg(test)]
 pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
     let nodes = g["nodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let edges = g["edges"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -277,6 +288,7 @@ pub(super) fn html(g: &Value, prefix: &str, language: &str) -> String {
     )
 }
 
+#[cfg(test)]
 pub(super) fn markdown(g: &Value) -> String {
     if g["edges"].as_array().is_none_or(Vec::is_empty) {
         return String::new();
@@ -346,6 +358,172 @@ mod tests {
         let event=serde_json::from_value(json!({"id":"step","kind":"declared-boundary","text":"Declared request","interaction":"http","from":"service-owned","to":"provider","dependencyIds":["interaction:http"],"sourceIds":[]})).unwrap();
         (checked, event)
     }
+    fn reader_fixture() -> (Check, super::super::model::Narrative) {
+        let (mut checked, mut event) = fixture();
+        event.kind = "declared-boundary-return".into();
+        event.from = Some("provider".into());
+        event.to = Some("service-owned".into());
+        checked.scenarios.insert("process".into(), serde_json::from_value(json!({"id":"process","steps":[{"id":"root","service":"owned","symbol":"submit","kind":"SOURCE_DECLARATION","dependencyIds":["caller-method"],"sourceIds":["caller-source"],"detail":{},"depth":0}],"boundaries":[],"truncated":false,"dependencyIds":[]})).unwrap());
+        let source=serde_json::from_value(json!({"id":"caller-source","service":"owned","revision":"rev","file":"Caller.java","startLine":1,"endLine":1,"text":"Response submit() { return client.call(); }","textDigest":"source-digest","evidenceDigest":"evidence-digest","authority":"TEST"})).unwrap();
+        checked
+            .services
+            .get_mut("owned")
+            .unwrap()
+            .sources
+            .insert("caller-source".into(), source);
+        checked.dependencies.insert("caller-method".into(),serde_json::from_value(json!({"id":"caller-method","kind":"SYMBOL","service":"owned","symbol":"submit","digest":"method-digest","sourceIds":["caller-source"],"normalized":{}})).unwrap());
+        let narrative=serde_json::from_value(json!({"schema":"codeclew-documentation-narrative/1.4","subject":"scenario:process","contextDigest":"c","operations":[{"id":"process","title":"Declared boundary","summary":{"id":"summary","text":"Caller source with a declared boundary.","dependencyIds":["caller-method"],"sourceIds":["caller-source"]},"participants":[{"id":"service-owned","label":"Owned","service":"owned"},{"id":"provider","label":"Provider","service":null,"externalService":"provider"}],"events":[event],"explanation":[{"id":"retained-paragraph","text":"The declaration describes the local boundary response only.","eventIds":["step"],"dependencyIds":["interaction:http"],"sourceIds":[],"detail":false}]}],"gaps":{}})).unwrap();
+        (checked, narrative)
+    }
+    #[test]
+    fn boundary_reader_keeps_retained_explanation_closure_and_its_own_freshness_sources() {
+        use super::super::{
+            model::{ExecutionMeaning, Fragment, StepReader},
+            render,
+        };
+        let (checked, mut narrative) = reader_fixture();
+        render::validate(&narrative, &checked).unwrap();
+        let original = serde_json::to_value(&narrative.operations[0]).unwrap();
+        let context = serde_json::to_value(&checked).unwrap();
+        let proof = Fragment {
+            id: "caller-label".into(),
+            text: "Local call result".into(),
+            dependency_ids: vec!["caller-method".into()],
+            source_ids: vec!["caller-source".into()],
+        };
+        narrative.operations[0].events[0].reader = Some(StepReader {
+            overview: false,
+            label: Some(proof.clone()),
+            execution: Some(ExecutionMeaning {
+                mode: "wait".into(),
+                meaning: proof,
+            }),
+        });
+        render::validate(&narrative, &checked).unwrap();
+        let event = &narrative.operations[0].events[0];
+        assert_eq!(event.dependency_ids, ["interaction:http"]);
+        assert!(event.source_ids.is_empty());
+        assert_eq!(
+            serde_json::to_value(&narrative.operations[0].explanation).unwrap(),
+            original["explanation"]
+        );
+        let bindings = render::make_bindings(
+            &checked,
+            BTreeMap::from([("scenario:process".into(), narrative.clone())]),
+        )
+        .unwrap();
+        let event_binding = &bindings.fragments["scenario:process/process/step"];
+        assert!(
+            event_binding.dependencies.contains_key("caller-method")
+                && event_binding.dependencies.contains_key("interaction:http")
+        );
+        assert!(event_binding.sources.contains_key("caller-source"));
+        assert_eq!(event_binding.content["sourceIds"], json!([]));
+        assert_eq!(
+            event_binding.content["dependencyIds"],
+            json!(["interaction:http"])
+        );
+        let mut changed_reader_source = checked.clone();
+        changed_reader_source
+            .dependencies
+            .get_mut("caller-method")
+            .unwrap()
+            .digest = "changed-reader-source".into();
+        let freshness = super::super::bindings::freshness(Some(&bindings), &changed_reader_source);
+        assert!(
+            freshness["affected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|fragment| { fragment["fragment"] == "scenario:process/process/step" })
+        );
+        assert!(
+            freshness["unaffected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|fragment| { fragment == "scenario:process/process/retained-paragraph" })
+        );
+        assert_eq!(serde_json::to_value(&checked).unwrap(), context);
+        assert_eq!(
+            graph(&checked, Some("scenario:process"))["runtime"],
+            "UNVERIFIED"
+        );
+        let mut leaked = narrative.clone();
+        leaked.operations[0].events[0]
+            .dependency_ids
+            .push("caller-method".into());
+        assert!(render::validate(&leaked, &checked).is_err());
+        let mut unbound = narrative.clone();
+        unbound.operations[0].events[0]
+            .reader
+            .as_mut()
+            .unwrap()
+            .label
+            .as_mut()
+            .unwrap()
+            .source_ids = vec!["missing".into()];
+        assert!(render::validate(&unbound, &checked).is_err());
+        let mut foreign = checked.clone();
+        foreign
+            .dependencies
+            .get_mut("caller-method")
+            .unwrap()
+            .service = "unselected".into();
+        assert!(render::validate(&narrative, &foreign).is_err());
+    }
+    #[test]
+    fn declaration_label_is_specific_to_its_boundary_and_never_establishes_execution() {
+        use super::super::{
+            model::{ExecutionMeaning, Fragment, StepReader},
+            render,
+        };
+        let (mut checked, mut narrative) = reader_fixture();
+        let proof = Fragment {
+            id: "declaration-label".into(),
+            text: "Declared HTTP response".into(),
+            dependency_ids: vec!["interaction:http".into()],
+            source_ids: vec![],
+        };
+        narrative.operations[0].events[0].reader = Some(StepReader {
+            overview: false,
+            label: Some(proof.clone()),
+            execution: None,
+        });
+        render::validate(&narrative, &checked).unwrap();
+        let mut unrelated = narrative.clone();
+        unrelated.operations[0].events[0]
+            .reader
+            .as_mut()
+            .unwrap()
+            .label
+            .as_mut()
+            .unwrap()
+            .dependency_ids = vec!["interaction:event".into()];
+        assert!(render::validate(&unrelated, &checked).is_err());
+        let mut execution = narrative.clone();
+        execution.operations[0].events[0]
+            .reader
+            .as_mut()
+            .unwrap()
+            .execution = Some(ExecutionMeaning {
+            mode: "wait".into(),
+            meaning: proof.clone(),
+        });
+        assert!(render::validate(&execution, &checked).is_err());
+        let mut ordinary = narrative.clone();
+        ordinary.operations[0].events[0].kind = "message".into();
+        ordinary.operations[0].events[0].dependency_ids = vec!["caller-method".into()];
+        ordinary.operations[0].events[0].source_ids = vec!["caller-source".into()];
+        assert!(render::validate(&ordinary, &checked).is_err());
+        checked
+            .dependencies
+            .get_mut("interaction:http")
+            .unwrap()
+            .normalized["transport"]["kind"] = json!("kafka");
+        assert!(render::validate(&narrative, &checked).is_err());
+    }
+
     #[test]
     fn boundary_is_scoped_registered_and_never_requires_resolved_source_call() {
         let (mut checked, mut e) = fixture();
@@ -378,6 +556,21 @@ mod tests {
         );
         e.kind = "declared-boundary".into();
         validate_arrow(&e, &checked, "scenario:process").unwrap();
+    }
+    #[test]
+    fn logical_api_return_is_explicit_and_never_infers_physical_transport() {
+        let (mut checked, mut e) = fixture();
+        checked
+            .dependencies
+            .get_mut("interaction:http")
+            .unwrap()
+            .normalized["transport"] = json!({"kind":"logical"});
+        validate_arrow(&e, &checked, "scenario:process").unwrap();
+        e.kind = "declared-boundary-return".into();
+        validate_arrow(&e, &checked, "scenario:process").unwrap();
+        let graph = graph(&checked, Some("scenario:process"));
+        // Declaration input is not rewritten by admitting an event kind.
+        assert_eq!(graph["runtime"], "UNVERIFIED");
     }
     #[test]
     fn scoped_graph_keeps_parallel_ids_and_same_titles_separate_and_links_safe() {

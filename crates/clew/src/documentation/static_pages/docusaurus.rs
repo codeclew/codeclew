@@ -5,6 +5,8 @@ use crate::error::ClewError;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 mod contracts;
+mod external_profile;
+mod payload_views;
 mod reading;
 
 const REF: &str = "$clewRef";
@@ -969,6 +971,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         "Summary source bindings",
         &(scope + &citations(page, id, &op["summary"])?),
     ));
+    out.push_str(&payload_views::render(page, id, heading, language)?);
     for contract in rows(&op["interfaceContracts"]) {
         let declared = &page["interfaceContractDeclarations"][id][text(&contract["id"])];
         out.push_str(&format!("{heading} {}\n\n", md(text(&contract["title"]))));
@@ -1354,19 +1357,96 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                 sid == "section-ingress",
             )?);
         }
+        if sid == "section-entities" {
+            for record in rows(&page["entities"]) {
+                let entity = &record["normalized"]["entity"];
+                if rows(&entity["relations"]).any(|r| r["service"] == id) {
+                    out.push_str(&format!(
+                        "### {}\n\n{}\n\n",
+                        md(text(&entity["title"])),
+                        prose(text(&entity["description"]))
+                    ));
+                    for relation in rows(&entity["relations"]).filter(|r| r["service"] == id) {
+                        out.push_str(&format!(
+                            "{} · {} · {}\n\n{}\n\n",
+                            md(crate::documentation::language::label(
+                                language,
+                                relation["role"].as_str().unwrap_or("unknown")
+                            )),
+                            md(crate::documentation::language::label(
+                                language,
+                                text(&relation["kind"])
+                            )),
+                            md(text(&relation["confidence"])),
+                            md(text(&relation["rationale"]))
+                        ));
+                    }
+                }
+            }
+        }
+        if sid == "section-egress" {
+            let mut groups: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
+            for edge in rows(&page["declaredRelationships"]["edges"])
+                .filter(|edge| edge["from"] == page["subject"] && edge["to"] != page["subject"])
+            {
+                groups
+                    .entry(text(&edge["to"]).to_owned())
+                    .or_default()
+                    .push(edge);
+            }
+            for (destination, edges) in groups {
+                let eid = destination.strip_prefix("external-service:");
+                let record = eid
+                    .map(|id| &page["externalServices"][id])
+                    .unwrap_or(&Value::Null);
+                let title = record["title"].as_str().unwrap_or(&destination);
+                out.push_str(&format!("### {}\n\n", md(title)));
+                if let Some(eid) = eid {
+                    out.push_str(&format!(
+                        "[{}](../external-services/{eid}.mdx)\n\n",
+                        md(title)
+                    ));
+                }
+                if record["identity"].is_object() {
+                    out.push_str(&format!(
+                        "{} · {}: {}\n\n",
+                        md(crate::documentation::language::label(
+                            language,
+                            "Identity hypothesis"
+                        )),
+                        md(text(&record["identity"]["status"])),
+                        md(text(&record["identity"]["declaration"]["rationale"]))
+                    ));
+                }
+                for edge in edges {
+                    out.push_str(&format!(
+                        "- **{}** · {} {} · {}: `{}`\n",
+                        md(&format!(
+                            "{} · {}",
+                            text(&edge["title"]),
+                            text(&edge["transport"]["kind"])
+                        )),
+                        md(text(&edge["transport"]["method"])),
+                        md(text(&edge["transport"]["path"])),
+                        md(crate::documentation::language::label(
+                            language,
+                            "Configuration key"
+                        )),
+                        md(edge["transport"]["destinationConfigKey"]
+                            .as_str()
+                            .unwrap_or(crate::documentation::language::label(
+                                language,
+                                "Not established"
+                            )))
+                    ));
+                }
+                out.push('\n');
+            }
+        }
         if section["content"].is_object() {
             let content = operation_body(page, &section["content"], "###")?;
-            if sid == "section-entities"
-                && rows(&page["serviceModelLinks"]).any(|m| m["fieldSummary"].is_object())
-            {
-                out.push_str(&format!(
-                    "{}\n\n",
-                    prose(text(&section["content"]["summary"]["text"]))
-                ));
-                for claim in rows(&section["content"]["explanation"]) {
-                    out.push_str(&prose(text(&claim["text"])));
-                    out.push_str("\n\n");
-                }
+            if matches!(sid, "section-entities" | "section-egress") {
+                // The complete accepted original stays after the task-oriented inventory.
             } else {
                 out.push_str(&content);
             }
@@ -1407,10 +1487,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                 ));
             }
         }
-        if sid == "section-entities"
-            && section["content"].is_object()
-            && rows(&page["serviceModelLinks"]).any(|m| m["fieldSummary"].is_object())
-        {
+        if matches!(sid, "section-entities" | "section-egress") && section["content"].is_object() {
             out.push_str(&details(
                 "Original service data description and provenance",
                 &operation_body(page, &section["content"], "###")?,
@@ -2146,42 +2223,6 @@ pub(super) fn project(
             }
             body
         };
-        let mut body = body;
-        if page["declaredRelationships"]["edges"]
-            .as_array()
-            .is_some_and(|v| !v.is_empty())
-        {
-            let graph = &page["declaredRelationships"];
-            body.push_str("\n## Declared service relationships\n\nDeclared architecture; runtime unverified. External source is not captured. Position does not establish execution order. Use the participant links below when the diagram host disables embedded links.\n\n");
-            // Mermaid link behavior depends on the host; normal Markdown links are always retained.
-            let source = super::super::declared_diagrams::mermaid(graph)
-                .lines()
-                .filter(|l| !l.trim_start().starts_with("click "))
-                .collect::<Vec<_>>()
-                .join("\n");
-            body.push_str(&fence(&source, "mermaid"));
-            for node in rows(&graph["nodes"]) {
-                body.push_str(&format!(
-                    "- [{}]({}) · `{}` · {}\n",
-                    md(text(&node["label"])),
-                    text(&node["href"]).replace(".html", ".mdx"),
-                    md(text(&node["id"])),
-                    md(text(&node["sourceCapture"]))
-                ));
-            }
-        }
-        if let Some(externals) = page["externalServices"]
-            .as_object()
-            .filter(|m| !m.is_empty())
-        {
-            body.push_str("\n## External services\n\nDeclared information; target source is not captured and runtime behavior is unverified.\n\n");
-            for (id, entry) in externals {
-                body.push_str(&format!(
-                    "- [{}](../external-services/{id}.mdx)\n",
-                    md(text(&entry["title"]))
-                ));
-            }
-        }
         put(&mut files, format!("docs/{directory}/{id}.mdx"), body);
         if !process {
             for note in rows(&page["notes"]) {
@@ -2311,12 +2352,63 @@ pub(super) fn project(
                 return Err(invalid("invalid frozen external-service page"));
             }
             let mut body = header(text(&entry["title"]), &format!("/external-services/{id}"));
-            body.push_str(&format!("# {}\n\nDeclared external service. Source not captured; runtime unverified.\n\n{}\n\n",md(text(&entry["title"])),md(text(&entry["description"]))));
+            body.push_str(&format!(
+                "# {}\n\n{}\n\n{}\n\n",
+                md(text(&entry["title"])),
+                md(crate::documentation::language::label(
+                    language,
+                    "Declared information; source not captured. Runtime unverified."
+                )),
+                md(text(&entry["description"]))
+            ));
             for (label, key) in [("Repository", "repository"), ("Wiki", "wiki")] {
                 if let Some(url) = entry[key].as_str() {
                     body.push_str(&format!(
                         "- [{label}]({})\n",
                         url.replace('(', "%28").replace(')', "%29")
+                    ));
+                }
+            }
+            body.push_str(&external_profile::operations_and_configuration(
+                record, language,
+            )?);
+            if entry["identity"].is_object() {
+                let identity = &entry["identity"];
+                body.push_str(&format!(
+                    "\n## {} · {}\n\n{}\n\n{}: {}\n\n{}\n\n",
+                    md(crate::documentation::language::label(
+                        language,
+                        "Identity hypothesis"
+                    )),
+                    md(text(&identity["status"])),
+                    md(text(&identity["title"])),
+                    md(crate::documentation::language::label(language, "Profile")),
+                    md(text(&identity["profile"])),
+                    md(text(&identity["declaration"]["rationale"]))
+                ));
+            }
+            if rows(&entry["references"]).next().is_some() {
+                body.push_str(&format!(
+                    "\n## {}\n\n{}\n\n",
+                    md(crate::documentation::language::label(
+                        language,
+                        "Associated knowledge"
+                    )),
+                    md(crate::documentation::language::label(
+                        language,
+                        "Supplemental references are separate from captured implementation."
+                    ))
+                ));
+                for reference in rows(&entry["references"]) {
+                    body.push_str(&format!(
+                        "- [{}]({}) · {} · {} — {}\n",
+                        md(text(&reference["title"])),
+                        text(&reference["location"])
+                            .replace('(', "%28")
+                            .replace(')', "%29"),
+                        md(text(&reference["kind"])),
+                        md(text(&reference["status"])),
+                        md(text(&reference["declaration"]["rationale"]))
                     ));
                 }
             }
@@ -3078,7 +3170,7 @@ mod tests {
     #[test]
     fn portable_model_exposes_a_static_field_table_before_original_evidence_details() {
         let model = json!({"id":"entity","title":"Entity","purpose":{"text":"Purpose"},"identity":{"text":"Identity"},
-            "fields":[{"id":"name","path":"name","meaning":{"text":"Display name"},"representations":[
+            "fields":[{"id":"name","path":"name","readableName":{"text":"Display name"},"meaning":{"text":"Display name"},"representations":[
                 {"label":"Request","typeLabel":"string","requiredness":"optional","nullability":"unknown","mapping":{"text":"Original mapping"}}
             ]}],"processLinks":[],"relatedModels":[]});
         let original = model.clone();
@@ -3095,7 +3187,9 @@ mod tests {
             .unwrap();
         let details = body.find("### name {#field-name}").unwrap();
         assert!(table < details);
-        assert!(body.contains("<th scope=\"row\"><a href=\"#field-name\" data-clew-field-details=\"\"><code>name</code>"));
+        assert!(body.contains(
+            "<th scope=\"row\"><a href=\"#field-name\" data-clew-field-details=\"\">Display name"
+        ));
         assert!(body.contains("<ClewMarkdown text={\"Display name\"} />"));
         assert!(body[details..].contains("Request") && body[details..].contains("string"));
         assert!(body[details..].contains("optional") && body[details..].contains("unknown"));

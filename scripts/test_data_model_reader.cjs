@@ -60,7 +60,7 @@ test('an explicit widget locale localizes controls while preserving authored wor
  const matrix=russianRoot.matrixHtml(rows,data.request.stages,'fixture');
  assert.match(matrix,/Показать основания вывода/);
  assert.doesNotMatch(matrix,/Подтверждения схемы/);
- assert.ok(matrix.includes('Overview.field01'),'authored model title remains exact');
+ assert.ok(matrix.includes('Overview · field01'),'authored model title remains exact');
  for(const stage of data.request.stages)assert.ok(matrix.includes('data-stage="'+stage+'"'),'stage identity remains exact');
  const row=rows[0],focused=englishRoot.focused(row,row.field.usage,data);
  assert.match(focused,/<p>View evidence<\/p>/,'authored text matching the owned action stays English');
@@ -71,7 +71,7 @@ test('an explicit widget locale localizes controls while preserving authored wor
 
 test('bounded inventory preserves twenty fields, omitted fields, unmapped leaves and every evidence state',()=>{
  const a=api(),before=JSON.stringify(scaling),rows=a.overviewRows(scaling),html=a.matrixHtml(rows,scaling.request.stages,'fixture');
- assert.equal(rows.length,21);assert.match(html,/aria-label="View evidence: Fixture.field01, Receive, Displays field"/);assert.equal((html.match(/<td /g)||[]).length,63);
+ assert.equal(rows.length,21);assert.match(html,/aria-label="View evidence: Fixture · field01, Receive, Displays field"/);assert.equal((html.match(/<td /g)||[]).length,63);
  for(const label of ['Displays field','Object handling','No direct use found in Synthetic Receive handler only','Unknown — not investigated','Unknown — dynamic use unresolved','Unknown — stale evidence','Unknown — outside the selected investigation','Unknown — no canonical field mapping'])assert.ok(html.includes(label),label);
  assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/Known model fields \/ container paths: 20.*Selected process fields: 18/);
  assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/Contract leaves: 21/);
@@ -110,11 +110,11 @@ test('a sole contract does not silently hide related model fields on fresh overv
  data.models.push({id:'related',title:'Related model',fields:[{id:'outside',path:'outside',selectedProcessField:false,meaning:{text:'Outside selected trace.'},representations:[],usage:[]}]});
  const {nodes}=mounted(data);
  assert.equal(nodes['.dm-contract-select'].value,'');
- assert.match(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
+ assert.match(nodes['.dm-matrix'].innerHTML,/Related model · outside/);
  assert.match(nodes['.dm-overview-summary'].innerHTML,/Displayed rows: 22/);
  assert.match(nodes['.dm-overview-summary'].innerHTML,/related inventory: Related model · Model fields: 1/);
  nodes['.dm-contract-select'].value='fixture';nodes['.dm-contract-select'].events.change();
- assert.doesNotMatch(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
+ assert.doesNotMatch(nodes['.dm-matrix'].innerHTML,/Related model · outside/);
  assert.match(nodes['.dm-overview-summary'].innerHTML,/Displayed rows: 21/);
 });
 
@@ -147,7 +147,7 @@ test('return from evidence closes the detail boundary and preserves explicit fil
  assert.equal(nodes['.dm-drilldown'].open,false);assert.equal(button.focused,true);assert.equal(button.scrolled,true);assert.equal(button.attrs['aria-expanded'],'false');assert.equal(button.attrs['aria-current'],'true');assert.equal(button.attrs['aria-pressed'],undefined);
  const q=new URL(location.href).searchParams;
  assert.equal(q.get('contract'),'fixture');assert.equal(q.get('stage'),'Receive');assert.equal(q.get('cellStage'),'Receive');assert.equal(q.get('field'),'fixture/field-01');
- assert.match(nodes['.dm-selected-context'].textContent,/Fixture.field01 · Receive/);
+ assert.match(nodes['.dm-selected-context'].textContent,/Fixture · field01 · Receive/);
 });
 
 test('editorial reading notes expose purpose and stale interpretation qualifications without altering original data',()=>{

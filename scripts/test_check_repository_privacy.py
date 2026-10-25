@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 MODULE_PATH = Path(__file__).resolve().with_name("check_repository_privacy.py")
@@ -20,6 +21,17 @@ SPEC.loader.exec_module(privacy)
 
 
 class RepositoryPrivacyTest(unittest.TestCase):
+    def test_password_urls_are_rejected_even_for_explicit_synthetic_fixtures(self) -> None:
+        fixture_username = "fixture-user"
+        fixture_password = "fixture-password"
+        for endpoint in ["https://example.invalid/docs", "https://service.example.org/docs"]:
+            parts = urlsplit(endpoint)
+            authority = quote(fixture_username, safe="") + ":" + quote(fixture_password, safe="") + "@" + parts.netloc
+            location = urlunsplit(parts._replace(netloc=authority))
+            self.assertEqual(urlsplit(location).password, fixture_password)
+            self.assertIn("credential-url", privacy.blob_rules(location.encode(), "negative-fixture.rs"))
+        self.assertNotIn("credential-url", privacy.blob_rules(b"https://example.invalid/docs"))
+
     def test_personal_and_bot_identities_pass_without_weakening_content_checks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

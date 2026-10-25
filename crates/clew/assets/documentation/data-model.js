@@ -8,7 +8,7 @@
  const labels={'validate':t('Validated'),'identify-or-route':t('Identity / routing'),'calculate-or-decide':t('Decision / calculation'),'display':t('Displayed'),'persist':t('Stored'),'forward':t('Forwarded'),'whole-object-serialization-or-comparison':t('Whole-object use')};
  const states={'observed-static-use':t('Seen in retained source'),'no-use-found-in-bounded-complete-scope':t('No direct use found in this scope'),'not-investigated':t('Not investigated'),'unresolved-dynamic-use':t('Dynamic use unresolved'),'stale-evidence':t('Stale evidence — use unknown')};
  const esc=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
- const fields=data=>(data.models||[]).flatMap(model=>(model.fields||[]).map(field=>({model,field,key:model.id+'/'+field.id,label:model.title+'.'+field.path})));
+ const fields=data=>(data.models||[]).flatMap(model=>(model.fields||[]).map(field=>({model,field,key:model.id+'/'+field.id,label:model.title+' · '+(field.readableName?.text||field.path)})));
  // The inventory is bounded to the models/contracts supplied by the renderer.
  function overviewRows(data,contract=''){
   const rows=fields(data).filter(r=>!contract||(r.field.representations||[]).some(rep=>rep.contract===contract));

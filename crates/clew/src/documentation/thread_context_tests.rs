@@ -1166,3 +1166,153 @@ fn native_java_spring_registration_preserves_distinct_beans_and_overrides() {
     );
     analysis::verify_evidence(&evidence).unwrap();
 }
+
+#[test]
+fn oversized_thread_scope_at_maximum_budget_reports_unavailable_without_repeating_work() {
+    let mut evidence = syntax_fixture();
+    syntax::observe(
+        &mut evidence,
+        "SOURCE_SCOPE",
+        "oversized-scope",
+        json!({
+            "roots":["src/main/java"], "inventory":{}, "auditNotes":"x".repeat(60000)
+        }),
+        vec![],
+    )
+    .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Oversized owned thread scope").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let w = persisted_work(&repo, evidence);
+    for budget in [2048, 49152] {
+        let mut request = w.request.clone();
+        request.max_bytes = budget;
+        let prepared =
+            work::prepare_with_snapshot(&repo, w.subject.clone(), request, w.snapshot.as_deref())
+                .unwrap();
+        let mut cursor = None;
+        let mut found = false;
+        loop {
+            let page = work::read(
+                &repo,
+                prepared["work"].as_str().unwrap(),
+                work::Selection {
+                    query: Some(work::Query {
+                        kind: "THREAD_INVENTORY".into(),
+                        symbol_contains: String::new(),
+                        projection: Default::default(),
+                    }),
+                    cursor,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for omitted in page["omitted"].as_array().unwrap() {
+                if omitted["recovery"]["requiredPageBytes"].as_u64().unwrap() <= 49152 {
+                    continue;
+                }
+                found = true;
+                let recovery = &omitted["recovery"];
+                assert_eq!(omitted["kind"], "THREAD_SCOPE");
+                assert_eq!(recovery["status"], "UNAVAILABLE");
+                assert_eq!(recovery["currentMaxBytes"], budget);
+                assert_eq!(recovery["maximumMaxBytes"], 49152);
+                assert!(recovery.get("command").is_none());
+                assert!(recovery.get("input").is_none());
+                assert!(
+                    recovery["nextAction"]
+                        .as_str()
+                        .unwrap()
+                        .contains("inventory delivery remains incomplete")
+                );
+            }
+            cursor = page["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(
+            found,
+            "oversized scope must remain explicitly omitted at budget {budget}"
+        );
+    }
+}
+
+#[test]
+fn account_diagnostics_identify_reference_and_utf8_byte_bounds_before_accepting_own_source() {
+    let temp = tempfile::tempdir().unwrap();
+    Repository::init(temp.path(), "Owned account bounds").unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let w = persisted_work(&repo, syntax_fixture());
+    let declaration = method(&w.checked.services["contour"], "OrderController", "save");
+    let root = declaration.id.clone();
+    let reference = w
+        .handles
+        .iter()
+        .find(|(_, h)| h.kind == "SOURCE" && declaration.source_ids.contains(&h.id))
+        .unwrap()
+        .0
+        .clone();
+    work::read(
+        &repo,
+        &w.id,
+        work::Selection {
+            references: vec![reference.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let rows = query(&w, "THREAD_CONTEXT", &root).unwrap();
+    let obligation = rows
+        .iter()
+        .find(|r| r["obligationKind"] == "BODY" && r["record"]["declaration"] == root)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let make = |text: String, count: usize| Assessment {
+        schema: "codeclew-thread-assessment/1.0".into(),
+        root_declaration: root.clone(),
+        accounts: vec![Account {
+            obligation: obligation.clone(),
+            explanation: text,
+            references: vec![reference.clone(); count],
+        }],
+    };
+    for count in [0, 17, 18, 28] {
+        let error = assess(
+            &repo,
+            &w.id,
+            make(
+                "Read the exact controller body; downstream behavior is accounted separately."
+                    .into(),
+                count,
+            ),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("accounts[0].references"));
+        assert!(
+            error
+                .message
+                .contains(&format!("received {count}; expected 1..16"))
+        );
+        assert!(error.message.contains(&obligation));
+        assert!(error.message.contains("own recorded SOURCE"));
+    }
+    for (text, total, trimmed) in [
+        ("λ".repeat(7), 14, 14),
+        ("λ".repeat(2049), 4098, 4098),
+        (" ".repeat(32), 32, 0),
+    ] {
+        let error = assess(&repo, &w.id, make(text, 1)).unwrap_err();
+        assert!(error.message.contains("accounts[0].explanation"));
+        assert!(
+            error
+                .message
+                .contains(&format!("{total} UTF-8 bytes ({trimmed} after trimming)"))
+        );
+    }
+    for text in ["λ".repeat(8), "λ".repeat(2048)] {
+        assess(&repo, &w.id, make(text, 1)).unwrap();
+    }
+}

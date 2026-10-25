@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.13.53"
+  version: "0.13.54"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -12,13 +12,18 @@ metadata:
 
 ## Prepared SOURCE: start here
 
-When the caller supplies a documentation root, service, exact selector and saved
-snapshot or answer/evidence, read only [README.md](README.md). It is the complete
+Use this shortcut only when the requested result is bounded SOURCE Q&A or saved
+answer maintenance and the caller supplies a documentation root, service, exact
+selector and saved snapshot or answer/evidence. Read only [README.md](README.md). It is the complete
 short route for SOURCE Q&A and answer maintenance, including the bounded packet
 helper. With a previous full packet and exact target, compare directly; no
 preliminary packet metadata, Git or hash read is required. Do not load the references below for that route. If relevant inputs are
 already verified unchanged, reuse the saved answer/evidence without context fetch
 or full JSON output.
+
+A request to create durable documentation or a complete thread uses the authoring
+route below, even with the same prepared inputs. Choose by the requested result,
+not the shape of its root/service/snapshot arguments.
 
 ## Other workflows
 
@@ -31,10 +36,10 @@ Read only the reference for the requested result:
 | Inventory entrypoints and prepare complete local threads | [Thread preparation](references/thread-preparation.md) |
 | Collect or explain a saved failed Check | [Evidence and support](references/documentation-evidence.md) |
 
-For durable prose authoring, begin with the [authoring start route](references/service-documentation.md#authoring-start-route).
+For durable prose authoring, begin with the [short authoring route](references/authoring-example.md#choose-the-existing-authoring-route).
 It separates full-service public entrypoint coverage from a focused operation,
-and uses Work-local proposal input rather than materialized Narrative output.
-Overview sections alone do not establish full-service completion. This route
+and chooses the existing native coordinator or Work-local proposal path.
+Overview sections alone do not establish full-service completion. For complete threads, service egress, domain concepts or DataFlow, apply [boundary and domain closure](references/boundary-completeness.md) before accepting the result. This route
 does not apply to the prepared SOURCE shortcut above.
 
 This is the installed-product workflow for a target repository. Resolve the
