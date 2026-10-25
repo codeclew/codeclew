@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -109,18 +110,21 @@ MINIMAL_SOURCE_FILES = (
     "packaging/macos/upgrade",
     "scripts/install_agent_skill.py",
     "site/install.sh",
-    "skills/codeclew/README.md",
-    "skills/codeclew/SKILL.md",
-    "skills/codeclew/agents/openai.yaml",
-    "skills/codeclew/references/authoring-example.md",
-    "skills/codeclew/references/documentation-evidence.md",
-    "skills/codeclew/references/documentation-processes.md",
-    "skills/codeclew/references/documentation-views.md",
-    "skills/codeclew/references/service-documentation.md",
-    "skills/codeclew/references/managed-code.md",
-    "skills/codeclew/references/thread-preparation.md",
-    "skills/codeclew/scripts/prepared_source.py",
 )
+
+
+def minimal_source_files(root: Path) -> tuple[str, ...]:
+    """Keep the complete bounded skill identical to the installed/runtime package."""
+    installer = runpy.run_path(str(Path(__file__).with_name("install_agent_skill.py")))
+    install_error = installer["InstallError"]
+    try:
+        skill = installer["package_files"](root / "skills" / "codeclew")
+    except install_error as error:
+        raise ReleaseError(f"release skill package is invalid: {error}") from error
+    return (
+        *MINIMAL_SOURCE_FILES,
+        *("skills/codeclew/" + relative for relative, _content, _mode in skill),
+    )
 
 
 def require_dotnet_sdk(root: Path, environment: dict[str, str]) -> None:
@@ -229,7 +233,7 @@ def source_file_rows(source: Path) -> list[dict[str, object]]:
 def assemble_source(root: Path, package: Path, revision: str, source_tree: str) -> str:
     source = package / "source"
     source.mkdir(mode=0o700)
-    for relative in MINIMAL_SOURCE_FILES:
+    for relative in minimal_source_files(root):
         origin = root / relative
         destination = source / relative
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

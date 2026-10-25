@@ -22,6 +22,24 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_release_skill_enumeration_reuses_installer_bounds_and_rejects_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            skill = root / "skills/codeclew"
+            (skill / "references").mkdir(parents=True)
+            (skill / "SKILL.md").write_text("Public fixture skill")
+            (skill / "references/nested.md").write_text("Public fixture reference")
+            self.assertIn("skills/codeclew/references/nested.md", release.minimal_source_files(root))
+            link = skill / "linked.md"
+            link.symlink_to(skill / "SKILL.md")
+            with self.assertRaisesRegex(release.ReleaseError, "symlink"):
+                release.minimal_source_files(root)
+            link.unlink()
+            for index in range(64):
+                (skill / f"extra-{index}.md").write_text("Public size-bound fixture")
+            with self.assertRaisesRegex(release.ReleaseError, "invalid size"):
+                release.minimal_source_files(root)
+
     def test_runtime_build_failure_retains_bounded_bootstrap_stderr(self) -> None:
         detail = b"x" * 5000 + b'\n{"schema":"codeclew-bootstrap-error/1.0","error":"controlled failure"}'
         completed = subprocess.CompletedProcess([], 7, stdout=b"", stderr=detail)
@@ -310,11 +328,13 @@ class ReleaseVersionTest(unittest.TestCase):
                 )
 
     def test_minimal_source_excludes_repository_and_is_manifest_bound(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        skill = root / "skills/codeclew"
         with tempfile.TemporaryDirectory() as value:
             package = Path(value) / "codeclew"
             package.mkdir()
             digest = release.assemble_source(
-                release.Path(__file__).resolve().parent.parent,
+                root,
                 package,
                 "a" * 40,
                 "b" * 40,
@@ -327,7 +347,10 @@ class ReleaseVersionTest(unittest.TestCase):
             }
             self.assertEqual(
                 observed,
-                {*release.MINIMAL_SOURCE_FILES, "release-source.json"},
+                {*release.MINIMAL_SOURCE_FILES, "release-source.json",
+                 *("skills/codeclew/" + path.relative_to(skill).as_posix()
+                   for path in skill.rglob("*")
+                   if path.is_file() and path.name != ".DS_Store")},
             )
             manifest = json.loads((source / "release-source.json").read_bytes())
             self.assertEqual(manifest["manifestDigest"], digest)
