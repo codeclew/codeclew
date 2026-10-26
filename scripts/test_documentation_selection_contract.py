@@ -92,6 +92,39 @@ def operation_answer_schema_errors(value: dict[str, object]) -> list[str]:
 
 
 class DocumentationSelectionContractTest(unittest.TestCase):
+    def test_data_model_reader_claims_match_current_native_shapes(self) -> None:
+        schema = json.loads((ROOT / "schemas/documentation/data-model-plan.schema.json").read_text())
+        definitions = schema["$defs"]
+        claim = {"title": "Selected branch", "text": "Only the selected source branch applies.",
+                 "evidence": [{"kind": "RETAINED", "subject": "service:sample", "operation": "map",
+                               "fragmentId": "claim", "textDigest": "sha256:" + "a" * 64}]}
+        usage = {"stage": "Mapper", "producer": "Input", "consumer": "Mapper",
+                 "representation": "Input.value", "kinds": ["read", "calculate-or-decide"],
+                 "assessment": "observed-static-use", "coveredScope": "Selected method", "claim": claim,
+                 "presentation": {"condition": claim, "uncertainty": claim}}
+        self.assertEqual(definition_errors(usage, definitions["usage"], definitions), [])
+        usage["presentation"]["invented"] = True
+        self.assertTrue(definition_errors(usage, definitions["usage"], definitions))
+        representation = {"label": "Input.value", "typeLabel": "Boolean", "requiredness": "Retained metadata",
+                          "nullability": "Retained metadata", "mapping": claim,
+                          "requirednessClaim": claim, "nullabilityClaim": claim}
+        self.assertEqual(definition_errors(representation, definitions["representation"], definitions), [])
+
+    def test_data_model_constructor_observations_stay_bounded_and_separate_from_fields(self) -> None:
+        schema = json.loads((ROOT / "schemas/documentation/data-model-plan.schema.json").read_text())
+        definitions = schema["$defs"]
+        claim = {"title": "Source call", "text": "The selected source passes this expression.",
+                 "evidence": [{"kind": "RETAINED", "subject": "service:sample", "operation": "map",
+                               "fragmentId": "claim", "textDigest": "sha256:" + "a" * 64}]}
+        view = {"id": "observed", "title": "Observed value", "subject": "service:sample", "operation": "map",
+                "component": "message-value", "direction": "outgoing", "format": "Imported constructor",
+                "coverage": {"status": "unknown", "scope": "Source call only", "claim": claim}, "fields": [],
+                "constructorArguments": [{"position": 1, "expression": "enabled ? 1 : 0", "claim": claim}]}
+        self.assertEqual(definition_errors(view, definitions["payloadView"], definitions), [])
+        for position in [0, 257, "1"]:
+            view["constructorArguments"][0]["position"] = position
+            self.assertTrue(definition_errors(view, definitions["payloadView"], definitions))
+
     def test_operation_answer_1_2_schema_accepts_linked_glossary_and_predicates(self) -> None:
         answer = {
             "schema": "codeclew-operation-answer/1.2",

@@ -1,8 +1,8 @@
 # Authoring contracts
 
-These self-contained JSON schemas are byte-for-byte copies of the public
-Codeclew 0.13.52 source contracts. They are portable documentation for that
-already admitted runtime, not a runtime upgrade or a new validation engine.
+These self-contained JSON schemas are byte-for-byte copies of the corresponding
+Codeclew source contracts. They are portable documentation, not a runtime upgrade
+or a new validation engine; use the contract of the admitted runtime.
 
 | File | Use |
 | --- | --- |

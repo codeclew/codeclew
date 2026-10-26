@@ -273,6 +273,12 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 160
+        },
+        "requirednessClaim": {
+          "$ref": "#/$defs/block"
+        },
+        "nullabilityClaim": {
+          "$ref": "#/$defs/block"
         }
       },
       "required": [
@@ -304,7 +310,7 @@
         },
         "contract": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 2048
         },
         "representation": {
@@ -314,13 +320,14 @@
         },
         "condition": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 2048
         },
         "kinds": {
           "type": "array",
           "items": {
             "enum": [
+              "read",
               "validate",
               "identify-or-route",
               "calculate-or-decide",
@@ -330,7 +337,7 @@
               "whole-object-serialization-or-comparison"
             ]
           },
-          "maxItems": 7
+          "maxItems": 8
         },
         "assessment": {
           "enum": [
@@ -348,7 +355,7 @@
         },
         "unresolved": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 2048
         },
         "claim": {
@@ -371,19 +378,29 @@
             "minLength": 1,
             "maxLength": 2048
           }
+        },
+        "presentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "condition": {
+              "$ref": "#/$defs/block"
+            },
+            "uncertainty": {
+              "$ref": "#/$defs/block"
+            }
+          },
+          "description": "Optional evidence-bound reader claims. Empty or omitted presentation does not imply unconditional behavior; legacy machine condition and unresolved text remain provenance."
         }
       },
       "required": [
         "stage",
         "producer",
         "consumer",
-        "contract",
         "representation",
-        "condition",
         "kinds",
         "assessment",
         "coveredScope",
-        "unresolved",
         "claim"
       ]
     },
@@ -1049,6 +1066,35 @@
           "minLength": 1,
           "maxLength": 256,
           "description": "Exact selected interaction for external profile navigation; direction is relative to the selected service and request/response component."
+        },
+        "constructorArguments": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "position",
+              "expression",
+              "claim"
+            ],
+            "properties": {
+              "position": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 256
+              },
+              "expression": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "claim": {
+                "$ref": "#/$defs/block"
+              }
+            }
+          },
+          "description": "Observed source call positions and literal expressions, not generated schema fields, keys or requiredness. Native admission additionally requires unique increasing positions, UTF-8 byte limits and exact evidence bindings."
         }
       },
       "description": "Source-derived observed payload shape, not a generated wire schema. Every field selects one exact existing canonical-model representation; coverage and operation mapping bind selected source evidence."

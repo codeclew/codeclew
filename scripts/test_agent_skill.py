@@ -55,7 +55,7 @@ class AgentSkillTest(unittest.TestCase):
             self.assertEqual(before, installer.digest(installer.package_files(root)))
 
     def test_portable_authoring_contracts_match_native_schemas_and_resolve_locally(self) -> None:
-        for name in ["proposal.schema.json", "section-author.schema.json", "entity.schema.json", "dataflow.schema.json"]:
+        for name in ["proposal.schema.json", "section-author.schema.json", "entity.schema.json", "dataflow.schema.json", "data-model-plan.schema.json"]:
             source = ROOT / "schemas/documentation" / name
             bundled = CANONICAL_SKILL / "schemas" / name
             self.assertEqual(bundled.read_bytes(), source.read_bytes())
