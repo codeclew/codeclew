@@ -11,6 +11,41 @@ const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'
 const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
+test('field inspector uses exact model and field identities and returns focus to its canonical row',()=>{
+ for(const language of ['en','ru']){
+  const data=fieldInspectorFixture(language),before=JSON.stringify(data),r=load(data);r.run('showEntry("section-entities")');
+  const frame=r.e(r.run('domainRecordsKey("order")'));
+  r.click({domainModel:'order',domainFieldSelect:'current-id'});
+  assert.match(frame.outerHTML,/CURRENT_ONLY_USE/);assert.doesNotMatch(frame.outerHTML,/ORIGIN_ONLY_USE/);
+  assert.match(frame.outerHTML,/CurrentRow.id/);assert.doesNotMatch(frame.outerHTML,/OriginDto.sourceId/);
+  assert.equal((frame.outerHTML.match(/data-domain-field="current-id"/g)||[]).length,1);
+  assert.match(frame.outerHTML,/field-glossary" hidden/);assert.ok(r.e(r.run('domainFieldKey("order","current-id")+"-detail"')).focused);
+  assert.equal(r.e('source-panel').hidden,true);
+  r.click({domainModel:'order',domainFieldReturn:'current-id'});assert.doesNotMatch(frame.outerHTML,/field-glossary" hidden/);
+  assert.ok(r.e(r.run('domainFieldKey("order","current-id")+"-control"')).focused);
+  assert.match(frame.outerHTML,/ORIGIN_ONLY_USE/);assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('field inspector preserves absent usage and representations as explicit local gaps',()=>{
+ const data=fieldInspectorFixture(),before=JSON.stringify(data),r=load(data);r.run('showEntry("section-entities")');r.click({domainModel:'order',domainFieldSelect:'unexamined'});
+ const html=r.e(r.run('domainRecordsKey("order")')).outerHTML;
+ assert.match(html,/No usage is recorded in this scope/);assert.match(html,/No representation mapping is recorded for this field/);
+ assert.match(html,/data-domain-field-return="unexamined"/);assert.equal(JSON.stringify(data),before);
+});
+
+test('field inspector refuses ambiguous IDs and does not join fields with overlapping names',()=>{
+ const data=fieldInspectorFixture(),before=JSON.stringify(data),r=load(data);r.run('showEntry("section-entities")');
+ r.click({domainModel:'order',domainFieldSelect:'origin-id'});assert.match(r.e(r.run('domainRecordsKey("order")')).outerHTML,/ORIGIN_ONLY_USE/);assert.doesNotMatch(r.e(r.run('domainRecordsKey("order")')).outerHTML,/CURRENT_ONLY_USE/);
+ r.click({domainModel:'other-record',domainFieldSelect:'current-id'});assert.match(r.e(r.run('domainRecordsKey("other-record")')).outerHTML,/OTHER_MODEL_ONLY_USE/);
+ assert.equal(r.run('domainFieldSelections.get("order")'),'origin-id');assert.equal(r.run('domainFieldSelections.get("other-record")'),'current-id');
+ assert.equal(r.run('inspectDomainField("ambiguous","same-id")'),false);
+ const ambiguous=r.run('modelFieldRecords(D.readerModels.find(m=>m.id==="ambiguous"))');assert.doesNotMatch(ambiguous,/data-domain-field-select/);assert.match(ambiguous,/ambiguous or missing identity/);
+ assert.equal(JSON.stringify(data),before);
+ const duplicated=fieldInspectorFixture();duplicated.readerModels.push(structuredClone(duplicated.readerModels[0]));
+ const copy=load(duplicated);assert.doesNotMatch(copy.run('modelFieldRecords(D.readerModels[0])'),/data-domain-field-select|id="domain-records/);
+});
+
 test('polish route heading has one transport identity and preserves a distinct authored title',()=>{
  for(const language of ['en','ru']){
   const data=httpNavigationFixture();data.language=language;const before=JSON.stringify(data),r=load(data);
@@ -2281,6 +2316,22 @@ function polishFixture(language='en',state='unknown'){
  data.sectionState=status;data.operationStates=Object.fromEntries(data.operations.map(o=>[o.id,status]));
  if(state==='error')data.updateFailures={sample:{error:'Synthetic source read failed',scope:'Selected source check'}};
  return data;
+}
+function fieldInspectorFixture(language='en'){
+ const data=polishFixture(language),model=data.readerModels[0],seed=model.fields[0];
+ const claim=text=>({text,evidence:[{kind:'SOURCE',service:'sample',sourceId:'same-source',textDigest:'owned',startLine:1,endLine:3}]});
+ const identifier=language==='ru'?'Идентификатор':'Identifier';
+ const field=(id,path,meaning,label,use)=>({...structuredClone(seed),id,path,graphBindings:[],readableName:claim(identifier),meaning:claim(meaning),representations:label?[{label,typeLabel:'String',mapping:claim('Explicit synthetic representation mapping.')}]:[],usage:use?[{...structuredClone(seed.usage[0]),representation:label,inputs:[path],kinds:['forward'],stage:'Prepare synthetic payload',consumer:'receiver payload',coveredScope:'Synthetic field mapping only',claim:claim(use)}]:[]});
+ model.title=language==='ru'?'Текущая запись':'Current record';
+ model.fields=[field('current-id','record.id','Identifier on the current record.','CurrentRow.id','CURRENT_ONLY_USE: forward the current identifier unchanged.'),field('origin-id','request.sourceId','Identifier retained from the original request.','OriginDto.sourceId','ORIGIN_ONLY_USE: retain the source identifier separately.'),{...field('unexamined','record.unexamined','No use or representation has been recorded here.',null,null),readableName:claim(language==='ru'?'Неисследованное поле':'Unexamined field')},{...field('long-label','record.longLabel','A long label used for responsive layout checks.','CurrentRow.longLabel','LONG_LABEL_USE: keep the selected label.'),readableName:claim(language==='ru'?'Очень длинное читаемое имя поля для проверки переноса на узком экране':'A deliberately long readable field name for narrow screen wrapping')}];
+ data.readerModels.push({...structuredClone(model),id:'other-record',entity:undefined,title:language==='ru'?'Другая локальная запись':'Other local record',fields:[field('current-id','other.id','An unrelated explicit model field.','OtherRow.id','OTHER_MODEL_ONLY_USE: use the unrelated model field.')]});
+ data.readerModels.push({...structuredClone(model),id:'ambiguous',entity:undefined,title:language==='ru'?'Неоднозначная запись':'Ambiguous record',fields:[field('same-id','first.id','First retained duplicate record.','First.id','FIRST_DUPLICATE_USE'),field('same-id','second.id','Second retained duplicate record.','Second.id','SECOND_DUPLICATE_USE')]});
+ return data;
+}
+if(process.env.CODECLEW_FIELD_INSPECTOR_FIXTURE_OUT){
+ const out=path.resolve(process.env.CODECLEW_FIELD_INSPECTOR_FIXTURE_OUT);fs.mkdirSync(out,{recursive:true});
+ const sharedStyle=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.css'),'utf8'),sharedReader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ for(const language of ['en','ru'])fs.writeFileSync(path.join(out,'fields-'+language+'.html'),renderReaderFixture(fieldInspectorFixture(language)).replace('</style>',()=>sharedStyle+'</style>').replace('</body>',()=>'<script>'+sharedReader+'</script></body>'));
 }
 if(process.env.CODECLEW_POLISH_FIXTURE_OUT){
  const out=path.resolve(process.env.CODECLEW_POLISH_FIXTURE_OUT);fs.mkdirSync(out,{recursive:true});

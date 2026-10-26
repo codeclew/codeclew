@@ -1391,5 +1391,11 @@
   "Copy path": "Копировать путь",
   "Path copied": "Путь скопирован",
   "Could not copy. Select the path and copy it manually.": "Не удалось скопировать. Выделите путь и скопируйте вручную.",
-  "Update failed": "Ошибка обновления"
+  "Update failed": "Ошибка обновления",
+  "Inspect field": "Посмотреть поле",
+  "Field details": "Подробности поля",
+  "Back to fields": "Назад к полям",
+  "Field navigation is unavailable for an ambiguous or missing identity.": "Переход к полю недоступен: идентификатор отсутствует или неоднозначен.",
+  "No usage is recorded in this scope.": "В этой области использование не зафиксировано.",
+  "No representation mapping is recorded for this field.": "Для этого поля преобразование в представление не зафиксировано."
 }
