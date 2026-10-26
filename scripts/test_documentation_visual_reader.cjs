@@ -2323,3 +2323,19 @@ test('source payload views separate incoming request response error and unknown 
  r.run(`location.hash=${JSON.stringify('#cpv-'+op.id+'-request')};routeReaderHash()`);assert.equal(r.run('tab'),'contract');assert.ok(r.e('scenario-content').innerHTML.includes('Price request'));assert.equal(r.e('source-panel').hidden,true);
 });
 if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));}
+
+test('profile payload deep link opens an actual zero-event service egress catalogue without inventing a process',()=>{
+ const data=fixture(),op={...data.operations[0],id:'section-egress',title:'Outgoing messages',summary:fragment('Retained outgoing message catalogue'),events:[],visuals:[]};
+ data.operations=[op];data.sections=[{id:'section-overview',title:'Overview',gap:'Overview not authored'},{id:op.id,title:op.title,content:op}];
+ data.operationSources={[op.id]:{'same-source':source('fun publish(input: Mapped) { sender.send(GeneratedValue(input.value)) }')}};data.operationStates={[op.id]:{freshness:'CURRENT',verification:'UNASSESSED'}};
+ data.externalServices={observer:{title:'Observation transport',category:'queue'}};
+ data.declaredRelationships={nodes:[{id:'external-service:observer',label:'Observation transport'}],edges:[{id:'publish-observation',from:data.subject,to:'external-service:observer',title:'Publish observation',transport:{kind:'kafka',topic:'observation.created'}}]};
+ data.payloadViews=[{id:'observation-value',operation:op.id,subject:data.subject,interaction:'publish-observation',title:'Published observation value',component:'message-value',direction:'outgoing',format:'avro',coverage:{status:'observed-fields',scope:'Mapped.value only; imported Avro definition unavailable',claim:fragment('Named mapper access only')},fields:[{model:'record',field:'value',path:'input.value (mapper access)',representation:'Mapped.value',typeLabel:'String',requiredness:'Wire presence unknown',nullability:'Wire nullability unknown',meaning:fragment('Value supplied to the mapper'),mapping:fragment('Named mapper access')}],authority:'SOURCE_DERIVED_REPRESENTATION',runtime:'UNVERIFIED'}];
+ const original=JSON.stringify(data),r=load(data),anchor='cpv-section-egress-observation-value';
+ r.run(`location.hash=${JSON.stringify('#'+anchor)};routeReaderHash()`);
+ const html=r.e('scenario-content').innerHTML;
+ assert.equal(r.run('current.id'),'section-egress');assert.equal(r.run('location.hash'),'#'+anchor);assert.ok(html.includes('id="'+anchor+'"'));
+ assert.ok(html.indexOf('id="'+anchor+'"')<html.indexOf('class="original-service-description"'));
+ assert.match(html,/Mapped.value only; imported Avro definition unavailable/);assert.match(html,/input.value \(mapper access\)/);
+ assert.doesNotMatch(html,/class="process-thread"|class="sequence-trace"/);assert.equal(r.e('source-panel').hidden,true);assert.equal(JSON.stringify(data),original);
+});

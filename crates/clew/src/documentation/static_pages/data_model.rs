@@ -1292,17 +1292,37 @@ fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<
         "tabindex=\"0\""
     };
     let heading = |key| literal(label(language, key));
+    let fields = model["fields"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let missing_names = fields.iter().any(|field| {
+        field["readableName"]["text"]
+            .as_str()
+            .is_none_or(|name| name.trim().is_empty())
+    });
+    let fallback_note = if missing_names {
+        format!(
+            "<p {attr}=\"small-label\">{}</p>",
+            heading("Source paths are shown where readable names are not provided.")
+        )
+    } else {
+        String::new()
+    };
     let mut out = format!(
-        "<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        "{fallback_note}<div {attr}=\"dm-fields-scroll\" {focus} role=\"region\" aria-label=\"{}\"><table {attr}=\"dm-fields\" role=\"table\"><caption>{}</caption><thead><tr><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
         heading("Field descriptions"),
         heading("Field descriptions"),
         heading("Readable name"),
         heading("Comment")
     );
-    for field in model["fields"].as_array().into_iter().flatten() {
-        let name = field["readableName"]["text"]
+    for field in fields {
+        let readable_name = field["readableName"]["text"]
             .as_str()
-            .unwrap_or_else(|| label(language, "Readable name not provided"));
+            .filter(|name| !name.trim().is_empty());
+        let name = readable_name
+            .map(literal)
+            .unwrap_or_else(|| format!("<code>{}</code>", literal(strv(&field["path"]))));
         let comment = field["meaning"]["text"]
             .as_str()
             .filter(|v| !v.trim().is_empty())
@@ -1321,7 +1341,7 @@ fn field_table_at(model: &Value, language: &str, portable: bool, prefix: Option<
         } else {
             ""
         };
-        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}>{}</a></th><td data-label=\"{}\">{}</td></tr>",literal(&href),literal(name),heading("Comment"),body));
+        out.push_str(&format!("<tr><th scope=\"row\"><a href=\"{}\"{disclosure}>{name}</a></th><td data-label=\"{}\">{}</td></tr>",literal(&href),heading("Comment"),body));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -2022,10 +2042,40 @@ mod tests {
     fn field_names_are_not_inferred_from_generic_claim_titles() {
         let model = json!({"fields":[{"id":"id","path":"id","meaning":{"title":"Source interpretation","text":"Exact complete original comment"}}]});
         let table = field_table(&model, "en", false);
-        assert!(table.contains("Readable name not provided"));
+        assert!(table.contains("Source paths are shown where readable names are not provided."));
+        assert!(table.contains("<code>id</code>"));
         assert!(table.contains("Exact complete original comment"));
         assert!(!table.contains("Source interpretation"));
-        assert!(field_table(&model, "ru", false).contains("Понятное название не указано"));
+        assert!(field_table(&model, "ru", false).contains(
+            "Если понятное название не задано, показан точный путь поля в исходном коде."
+        ));
+    }
+    #[test]
+    fn legacy_field_links_keep_distinct_paths_without_inventing_business_names() {
+        let model = json!({"fields":[
+            {"id":"current","path":"dto.currentValue","meaning":{"text":"Current retained value"}},
+            {"id":"prior","path":"dto.priorValue","meaning":{"text":"Earlier retained value"}},
+            {"id":"named","path":"dto.technicalName","readableName":{"text":"Display value"},"meaning":{"text":"Named retained value"}}
+        ]});
+        let original = model.clone();
+        for portable in [false, true] {
+            let table = field_table(&model, "en", portable);
+            for (id, path) in [("current", "dto.currentValue"), ("prior", "dto.priorValue")] {
+                assert!(table.contains(&format!(
+                    "href=\"#field-{id}\" data-clew-field-details=\"\"><code>{path}</code>"
+                )));
+            }
+            assert!(table.contains(">Display value</a>"));
+            assert!(!table.contains("dto.technicalName"));
+            assert_eq!(
+                table
+                    .matches("Source paths are shown where readable names are not provided.")
+                    .count(),
+                1
+            );
+            assert!(!table.contains("Readable name not provided</a>"));
+        }
+        assert_eq!(model, original);
     }
     #[test]
     fn authored_language_inherits_per_model_without_changing_bound_claims() {
@@ -2624,5 +2674,75 @@ mod tests {
             String::from_utf8_lossy(&files["external-services/provider.html"])
                 .contains("../services/owner.html#cpv-saved-request")
         );
+    }
+
+    #[test]
+    fn source_message_payload_can_belong_to_retained_egress_catalogue_without_a_trace() {
+        let (mut plan, _, _, mut checked) = fixture();
+        let statement = "Mapper supplies Mapped.value to the publisher; the imported Avro definition is unavailable.";
+        let source_text = "data class Mapped(val value: String)\nfun publish(input: Mapped) { sender.send(GeneratedValue(input.value)) }";
+        let source = json!({"id":"mapper-source","service":"owner","file":"Mapper.kt","revision":"retained","startLine":1,"endLine":2,"text":source_text,"textDigest":crate::canonical::hash_bytes(source_text.as_bytes()),"evidenceDigest":"retained","authority":"EXACT_SNAPSHOT_TEXT"});
+        let operation = json!({"id":"section-egress","title":"Outgoing messages","events":[],"summary":{"id":"mapper-claim","text":statement,"sourceIds":["mapper-source"]}});
+        let mut page = json!({"subject":"service:owner","operations":[operation],"operationSources":{"section-egress":{"mapper-source":source}},"operationStates":{"section-egress":{"freshness":"CURRENT","verification":"UNASSESSED"}}});
+        let claim = json!({"title":"Selected mapper evidence","text":statement,"evidence":[{"kind":"RETAINED","subject":"service:owner","operation":"section-egress","fragmentId":"mapper-claim","textDigest":crate::canonical::hash_bytes(statement.as_bytes())}]});
+        let model = &mut plan["models"][0];
+        model["purpose"] = claim.clone();
+        model["identity"] = claim.clone();
+        model["processLinks"] = json!([]);
+        model["fields"][0]["meaning"] = claim.clone();
+        model["fields"][0]["usage"] = json!([]);
+        model["fields"][0]["representations"] = json!([{"label":"Mapped.value","typeLabel":"String","requiredness":"Wire presence unknown","nullability":"Non-null source property; wire nullability unknown","mapping":claim}]);
+        plan["processViews"] = json!([]);
+        plan["payloadViews"] = json!([{"id":"observation-value","title":"Published observation value","subject":"service:owner","operation":"section-egress","interaction":"publish-observation","component":"message-value","direction":"outgoing","format":"avro","coverage":{"status":"observed-fields","scope":"Mapped.value only; imported Avro definition unavailable","claim":claim},"fields":[{"model":"record","field":"value","representation":"Mapped.value","path":"input.value (mapper access)"}]}]);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::documentation::store::Repository::init(tmp.path(), "Catalogue payload fixture")
+            .unwrap();
+        let mut inputs = crate::documentation::store::Repository::open(tmp.path())
+            .unwrap()
+            .inputs()
+            .unwrap();
+        inputs.interactions.insert("publish-observation".into(),serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"publish-observation","title":"Publish observation","from":{"service":"owner"},"to":{"service":"provider"},"external":true,"externalService":"provider","transport":{"kind":"kafka","topic":"observation.created"},"declaration":{"origin":"human","rationale":"Exact outgoing fixture interaction"}})).unwrap());
+        checked.source_inputs = Some(crate::documentation::check::SourceInputs {
+            schema: crate::documentation::check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: "input".into(),
+            inputs,
+            selected_services: Default::default(),
+            retained_services: Default::default(),
+        });
+        let mut files = BTreeMap::from([(
+            "services/owner.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        )]);
+        let projected = read(&plan, &files, &BTreeMap::new(), &checked).unwrap();
+        let original = page["operations"].clone();
+        attach_process(Some(&projected), "service:owner", &mut page).unwrap();
+        assert_eq!(page["operations"], original);
+        assert_eq!(page["operations"][0]["events"], json!([]));
+        assert_eq!(
+            page["payloadViews"][0]["coverage"]["status"],
+            "observed-fields"
+        );
+        assert_eq!(
+            page["payloadViews"][0]["wireSchema"],
+            "NOT_ESTABLISHED_BY_TYPE_OR_MAPPING"
+        );
+        files.insert(
+            "external-services/provider.json".into(),
+            serde_json::to_vec(&json!({"interactions":[{"id":"publish-observation"}]})).unwrap(),
+        );
+        attach_external_payloads(Some(&projected), &mut files, "en").unwrap();
+        let profile: Value =
+            serde_json::from_slice(&files["external-services/provider.json"]).unwrap();
+        assert_eq!(
+            profile["payloadLinks"][0]["href"],
+            "../services/owner.html#cpv-section-egress-observation-value"
+        );
+        let mut unknown = plan.clone();
+        unknown["payloadViews"][0]["coverage"]["status"] = json!("unknown");
+        unknown["payloadViews"][0]["fields"] = json!([]);
+        assert!(read(&unknown, &files, &BTreeMap::new(), &checked).is_ok());
+        let mut absent = plan;
+        absent["payloadViews"][0]["operation"] = json!("section-missing");
+        assert!(read(&absent, &files, &BTreeMap::new(), &checked).is_err());
     }
 }

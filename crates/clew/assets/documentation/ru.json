@@ -1354,5 +1354,6 @@
   "Property reference": "Ссылка на свойство",
   "Code symbol": "Символ в коде",
   "Unknown reference kind": "Вид ссылки не установлен",
-  "How to read these data shapes": "Как читать формы данных"
+  "How to read these data shapes": "Как читать формы данных",
+  "Source paths are shown where readable names are not provided.": "Если понятное название не задано, показан точный путь поля в исходном коде."
 }

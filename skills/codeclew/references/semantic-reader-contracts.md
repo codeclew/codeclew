@@ -52,6 +52,16 @@ selected service. An optional exact `interaction` links an external profile;
 request/response side and direction must match that local service. Optional
 `status` belongs only to a response component.
 
+A real retained ingress/egress catalogue section may own a payload view even
+when its operation has zero events and no authored business-process trace.
+For an outgoing topic, bind the actual service `section-egress` operation and
+the exact outgoing `interaction`; cite the selected mapper/source evidence and
+state partial or unknown schema coverage. The external profile links to this
+section's data view. This describes exchanged data, not an ordered trace. Do not
+invent a process, attach the view to an unrelated process, or create a fictitious
+section merely to satisfy validation. A catalogue gap without a retained owner
+operation is not an eligible owner.
+
 Each field selects an existing `model`, `field` ID and exact `representation`
 label, with a source-supported observed `path`. No fuzzy representation selection
 is performed. The view reuses type, presence, nullability, meaning and mapping

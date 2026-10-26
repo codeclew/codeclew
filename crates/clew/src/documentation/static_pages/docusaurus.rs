@@ -944,6 +944,15 @@ fn selected_http_links(page: &Value, input: Option<&str>) -> Result<String, Clew
 }
 
 fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, ClewError> {
+    operation_body_with_payloads(page, op, heading, true)
+}
+
+fn operation_body_with_payloads(
+    page: &Value,
+    op: &Value,
+    heading: &str,
+    include_payloads: bool,
+) -> Result<String, ClewError> {
     let id = text(&op["id"]);
     let language = page["language"].as_str().unwrap_or("en");
     let t = |key| crate::documentation::language::label(language, key);
@@ -971,7 +980,9 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         "Summary source bindings",
         &(scope + &citations(page, id, &op["summary"])?),
     ));
-    out.push_str(&payload_views::render(page, id, heading, language)?);
+    if include_payloads {
+        out.push_str(&payload_views::render(page, id, heading, language)?);
+    }
     for contract in rows(&op["interfaceContracts"]) {
         let declared = &page["interfaceContractDeclarations"][id][text(&contract["id"])];
         out.push_str(&format!("{heading} {}\n\n", md(text(&contract["title"]))));
@@ -1444,11 +1455,10 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             }
         }
         if section["content"].is_object() {
-            let content = operation_body(page, &section["content"], "###")?;
             if matches!(sid, "section-entities" | "section-egress") {
                 // The complete accepted original stays after the task-oriented inventory.
             } else {
-                out.push_str(&content);
+                out.push_str(&operation_body(page, &section["content"], "###")?);
             }
         } else {
             out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
@@ -1488,9 +1498,12 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             }
         }
         if matches!(sid, "section-entities" | "section-egress") && section["content"].is_object() {
+            // An explicit source-derived data view belongs to its catalogue
+            // owner; it does not require or synthesize an execution trace.
+            out.push_str(&payload_views::render(page, sid, "###", language)?);
             out.push_str(&details(
                 "Original service data description and provenance",
-                &operation_body(page, &section["content"], "###")?,
+                &operation_body_with_payloads(page, &section["content"], "###", false)?,
             ));
         }
         if sid == "section-ingress" {
@@ -3221,6 +3234,25 @@ mod tests {
         .map(|id| body.find(&format!("{{#{id}}}")).unwrap());
         assert!(positions.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(page, original);
+    }
+
+    #[test]
+    fn catalogue_payload_anchor_is_visible_outside_original_description_without_sequence_events() {
+        let operation = json!({"id":"section-egress","title":"Outgoing messages","summary":{"text":"Retained outgoing catalogue","sourceIds":[]},"events":[]});
+        let page = json!({"subject":"service:owner","title":"Owner","language":"en","sections":[{"id":"section-egress","title":"Outgoing messages","content":operation}],"operations":[operation],"payloadViews":[{"id":"observation-value","operation":"section-egress","interaction":"publish-observation","title":"Published observation value","component":"message-value","direction":"outgoing","format":"avro","coverage":{"status":"observed-fields","scope":"Mapped.value only; imported Avro definition unavailable","claim":{"text":"Mapper access only"}},"fields":[{"model":"record","field":"value","path":"input.value (mapper access)","representation":"Mapped.value","typeLabel":"String","requiredness":"Wire presence unknown","nullability":"Wire nullability unknown","meaning":{"text":"Value supplied to the mapper"},"mapping":{"text":"Named mapper access"}}]}]});
+        let original = page.clone();
+        let body = service_page(&page, "owner").unwrap();
+        let anchor = "{#cpv-section-egress-observation-value}";
+        assert_eq!(body.matches(anchor).count(), 1);
+        let provenance = body
+            .find("Original service data description and provenance")
+            .unwrap();
+        assert!(body.find(anchor).unwrap() < provenance);
+        assert!(!body[provenance..].contains(anchor));
+        assert!(body.contains("Mapped.value only; imported Avro definition unavailable"));
+        assert!(body.contains("../data-model/record.mdx#field-value"));
+        assert_eq!(page, original);
+        assert_eq!(page["operations"][0]["events"], json!([]));
     }
 
     #[test]
