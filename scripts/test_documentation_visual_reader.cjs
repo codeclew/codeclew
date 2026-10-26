@@ -414,10 +414,10 @@ function load(data=fixture(),mobile=false){
  const media={matches:mobile,addEventListener(){}};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
- testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
+ testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>{const previous=listeners[name];listeners[name]=previous?event=>{previous(event);fn(event);}:fn;},querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
  const context=vm.createContext({document:testDocument,URLSearchParams,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{open(...args){opened.push(args);},addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,document:testDocument,media,navigationHistory,opened,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
+ return {data,e:element,document:testDocument,media,navigationHistory,opened,toggle:target=>listeners.toggle({target}),run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 function importedObservationFixture(value){
  const data=fixture(),text=JSON.stringify(value,null,2),id='assessment-observation';
@@ -2794,4 +2794,58 @@ if(process.env.CODECLEW_EXTERNAL_SERVICE_FIXTURE_OUT){
   html=html.replace('</head>','<style>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.css'),'utf8')+'</style></head>').replace('</body>','<script>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8')+'</script></body>');
   fs.writeFileSync(path.join(out,'owner-'+language+'.html'),html);
  }
+}
+
+function wideSequenceFixture(language='en'){
+ const d=fixture(),ru=language==='ru',op={...d.operations[0],id:'wide-sequence',title:ru?'Проверить запрос и передать синтетическую запись':'Check request and dispatch a synthetic record',visuals:[],overviewDiagram:null};
+ d.subject='scenario:wide-sequence';d.language=language;d.title=ru?'Синтетический процесс обработки записи':'Synthetic record processing';d.subtitle='Synthetic renderer fixture only; no runtime execution or source completeness is claimed.';d.sections=[];d.operations=[op];d.catalogue=[{id:op.id,symbol:'RecordCoordinator.process',kind:'SOURCE_DECLARATION',trigger:{},sourceIds:['same-source']}];
+ const actors=[['caller','Client','Клиент'],['service','Record coordinator','Координатор записи'],['catalog','Reference catalogue','Каталог справочных данных'],['cache','Result cache','Кеш результата'],['broker','Message submission port','Порт отправки сообщений'],['worker','Independent background worker','Независимый фоновый обработчик'],['metrics','Metrics collector','Сборщик метрик'],['audit','Remote audit archive','Удалённый архив аудита']];
+ op.participants=actors.map(([id,en,local])=>({id,label:ru?local:en,...(id==='audit'?{externalService:'audit'}:{service:id})}));
+ const event=(id,kind,from,to,en,local)=>({id,kind,from,to,text:ru?local:en,sourceIds:['same-source'],dependencyIds:['dep']});
+ op.events=[event('receive','message','caller','service','Accept and validate the synthetic request.','Принять и проверить синтетический запрос.'),event('guard','opt',null,null,'Request passed the selected guard','Запрос прошёл выбранную проверку'),event('lookup','message','service','catalog','Read the explicitly selected catalogue record.','Прочитать выбранную запись каталога.'),event('lookup-reply','return','catalog','service','Return the selected catalogue value.','Вернуть выбранное значение каталога.'),event('cache','message','service','cache','Write the prepared result to the local cache.','Записать подготовленный результат в локальный кеш.'),event('dispatch','message','service','broker','Submit background work; this step does not await worker completion.','Передать работу в фон; этот шаг не ожидает завершения обработчика.'),event('worker','message','broker','worker','Separate background entrypoint consumes the submitted record.','Отдельная фоновая точка входа принимает переданную запись.'),event('metric','message','worker','metrics','Record the selected processing measurement.','Записать выбранное измерение обработки.'),event('archive','message','metrics','audit','Submit the measurement to the declared remote archive; runtime delivery remains unverified.','Передать измерение в заявленный удалённый архив; доставка при исполнении не проверена.'),event('end','end',null,null,'',''),event('reply','return','service','caller','Return the local accepted result; independent work may continue.','Вернуть локальный результат принятия; независимая работа может продолжаться.')];
+ op.events.find(e=>e.id==='dispatch').reader={label:fragment(ru?'Передать работу в фон':'Submit background work'),execution:{mode:'background',meaning:fragment('Local submission is distinct from independent worker completion.')}};
+ op.summary=fragment('Synthetic retained interpretation used to verify navigation and layout only.');op.explanation=[];op.interfaceContracts=[];op.boundaries=['Synthetic source only. Independent runtime scheduling and delivery were not observed.'];
+ d.sources={'same-source':{...source('final class RecordCoordinator {\n  void process(Request input) {\n    validate(input);\n    prepare(input);\n    submit(input); // no wait for independent worker completion\n  }\n}'),file:'src/RecordCoordinator.java',endLine:7}};
+ d.operationSources={[op.id]:d.sources};d.operationStates={[op.id]:{freshness:'UNVERIFIED',verification:'UNASSESSED'}};d.externalServices={audit:{title:'Remote audit archive'}};return d;
+}
+
+test('expanded sequence keeps the original SVG participants arrows and evidence controls',()=>{
+ for(const language of ['en','ru']){
+  const d=wideSequenceFixture(language),before=JSON.stringify(d),r=load(d),html=r.run('sequence(entries[0],D.operations[0])'),svg=r.run('diagram(D.operations[0])');
+  assert.match(html,/data-sequence-expand aria-expanded="false" aria-controls="sequence-reading-wide-sequence"/);assert.match(html,/data-sequence-collapse hidden/);assert.equal((html.match(/<svg class="sequence-svg"/g)||[]).length,1);assert.ok(html.includes(svg));
+  assert.match(html,/id="sequence-reading-wide-sequence" class="overview-scroll" tabindex="0" role="region"/);assert.match(svg,/data-sequence-event="true"/);assert.match(svg,/external-services\/audit.html/);assert.match(svg,/event-return/);assert.match(svg,/background|Без ожидания/);assert.equal(JSON.stringify(d),before);
+ }
+});
+
+test('expanded reading Escape closes source first then restores its original action and page position',()=>{
+ const r=load(wideSequenceFixture());r.run(`
+  globalThis.readScroll=document.getElementById('reading-scroll');globalThis.readExit=document.getElementById('reading-exit');globalThis.readOpen=document.getElementById('reading-open');
+  globalThis.readRoot=document.getElementById('reading-root');readRoot.querySelector=s=>s==='.overview-scroll'?readScroll:readExit;readRoot.contains=n=>n===readScroll;
+  readOpen.closest=()=>readRoot;window.scrollX=12;window.scrollY=640;globalThis.returnPosition=null;window.scrollTo=value=>returnPosition=value;
+ `);
+ assert.equal(r.run('expandSequence(readOpen)'),true);assert.equal(r.e('reading-open').hidden,true);assert.equal(r.e('reading-exit').hidden,false);assert.equal(r.document.activeElement,r.e('reading-scroll'));assert.equal(r.e('reading-open').attributes['aria-expanded'],'true');r.run('readScroll.scrollLeft=420;readScroll.scrollTop=180');
+ r.e('source-panel').hidden=false;assert.equal(r.key('Escape'),true);assert.equal(r.e('source-panel').hidden,true);assert.equal(r.run('!!expandedSequence'),true);
+ assert.equal(r.key('Escape'),true);assert.equal(r.run('expandedSequence'),null);assert.equal(r.document.activeElement,r.e('reading-open'));assert.equal(r.e('reading-open').attributes['aria-expanded'],'false');assert.equal(r.run('returnPosition.top'),640);assert.equal(r.run('returnPosition.left'),12);
+ r.run('readScroll.scrollLeft=0;readScroll.scrollTop=0;expandSequence(readOpen)');assert.equal(r.e('reading-scroll').scrollLeft,420);assert.equal(r.e('reading-scroll').scrollTop,180);
+ r.toggle({tagName:'DETAILS',open:false,contains:()=>true});assert.equal(r.run('expandedSequence'),null);
+});
+
+test('expanded sequence is cleared on navigation and does not re-render its live SVG',()=>{
+ const r=load(wideSequenceFixture());r.run(`
+  globalThis.liveSvg={parentElement:{clientWidth:1200},getAttribute:n=>n==='data-sequence-operation'?'wide-sequence':'800',set outerHTML(value){throw Error('Expanded SVG was replaced');}};
+  globalThis.liveRoot={isConnected:true,contains:n=>n===liveSvg,classList:{remove(){}},querySelector:()=>null};
+  expandedSequence={root:liveRoot,control:document.getElementById('return-control'),exit:document.getElementById('exit-control')};
+  document.querySelectorAll=s=>s==='.sequence-svg'?[liveSvg]:[];reflowSequences();
+ `);
+ assert.equal(r.run('!!expandedSequence'),true);r.run('document.querySelectorAll=()=>[];showEntry("wide-sequence","contract")');assert.equal(r.run('expandedSequence'),null);
+});
+
+if(process.env.CODECLEW_WIDE_SEQUENCE_FIXTURE_OUT){
+ const out=path.resolve(process.env.CODECLEW_WIDE_SEQUENCE_FIXTURE_OUT);fs.mkdirSync(path.join(out,'scenarios'),{recursive:true});
+ for(const language of ['en','ru']){
+  let html=renderReaderFixture(wideSequenceFixture(language));html=html.replace('</head>','<style>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.css'),'utf8')+'</style></head>').replace('</body>','<script>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8')+'</script></body>');
+  fs.writeFileSync(path.join(out,'scenarios','sequence-'+language+'.html'),html);
+ }
+ for(const dir of ['services','external-services'])fs.mkdirSync(path.join(out,dir),{recursive:true});
+ const d=wideSequenceFixture();for(const p of d.operations[0].participants){const dir=p.externalService?'external-services':'services',id=p.externalService||p.service;fs.writeFileSync(path.join(out,dir,id+'.html'),'<!doctype html><meta charset="utf-8"><title>Synthetic participant</title><h1>'+p.label+'</h1><p>Synthetic navigation target; implementation and runtime not verified.</p><a href="../scenarios/sequence-en.html#wide-sequence">Return to synthetic process</a>');}
 }
