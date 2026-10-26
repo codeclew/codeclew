@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic transport exercise. Scripted reviews are NOT real model acceptance."""
 import argparse
+import copy
 import json
 from pathlib import Path
 import runpy
@@ -66,6 +67,12 @@ def setup(root, case):
     return response
 }
 ''')
+    if case == 'polarity':
+        main = source('s-main', 'Handler', '''fun handle(amount: Int): String {
+    if (amount < 0) return "negative"
+    return "nonnegative"
+}
+''')
     candidate = source('s-candidate', 'Collector', '''fun collect(request: Request, rates: Boolean): Result {
     if (SAVE_ENABLED && rates) try { history.save(request) } catch (e: Exception) { log(e) }
     if (LOOKUP_ENABLED && !rates) history.read(request)
@@ -95,12 +102,29 @@ def setup(root, case):
         operation['steps'] = [audit, reply]
         replacement = [reply, audit]
         reason = 'Reply.from is called before response.audit assignment in the actual containing source.'
-    else:
+    elif case == 'polarity':
+        negative = {'kind': 'return', 'from': 'sample', 'to': 'caller',
+                    'meaning': claim('Return the negative result.', ['s-main'])}
+        nonnegative = {'kind': 'return', 'from': 'sample', 'to': 'caller',
+                       'meaning': claim('Return the nonnegative result.', ['s-main'])}
+        group = {'kind': 'alt',
+                 'meaning': claim('When amount is nonnegative return nonnegative; otherwise return negative.', ['s-main']),
+                 'children': [negative], 'otherwise': [nonnegative]}
+        operation['summary'] = claim('Choose the result from the sign of amount.', ['s-main'])
+        operation['steps'] = [group]
+        base['uncertainties'] = ['Runtime invocation is not established.']
+        path, refs = '/operations/0/steps/0', ['s-main']
+        replacement = copy.deepcopy(group)
+        replacement['meaning'] = claim('Amount is negative.', refs)
+        reason = 'The source-true negative path is the first child, but the header starts with the nonnegative path. The two child returns already match source; repair the predicate without swapping them.'
+    elif case == 'literal':
         path, refs = '/operations/0/summary', ['s-main', 's-literal']
         operation['summary']['text'] = 'AUTHORITY is unknown in the selected evidence.'
         replacement = claim('AUTHORITY is the source literal worker; deployment use remains unproven.', refs)
         reason = 'The available declaration supplies the literal; runtime use is a separate unknown.'
         base['uncertainties'].insert(0, 'AUTHORITY is unavailable in the delivered source.')
+    else:
+        raise ValueError('Unknown owned exercise case')
     archive(root, base)
     request = {'schema': 'codeclew-semantic-handoff-request/1.0', 'work': 'owned-work', 'workPage': 'work/initial.stdout',
         'nativeAttempt': 'native-before', 'scope': 'One owned handler and available collector/literal candidates; no runtime dispatch or completion proof.',
@@ -184,6 +208,6 @@ if __name__ == '__main__':
     if target.is_relative_to(SKILL):
         parser.error('output must stay outside the installed skill')
     target.mkdir(parents=True, exist_ok=False)
-    for case in ('omission', 'order', 'literal'):
+    for case in ('omission', 'order', 'literal', 'polarity'):
         directory = target / case;directory.mkdir()
         print(json.dumps({'case': case, **run(directory, case)}))

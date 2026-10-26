@@ -6,8 +6,9 @@ Run with Python 3.11+ and a fresh absolute caller-owned output directory:
 python3 -I -S SKILL/examples/semantic-repair/run_owned.py --output /ABSOLUTE/NEW/owned-run
 ```
 
-The three cases model an omitted guarded candidate effect, reversed response
-helper order and a source-known literal incorrectly described as unavailable.
+The four cases model an omitted guarded candidate effect, reversed response
+helper order, a source-known literal incorrectly described as unavailable, and
+a whole-choice summary whose leading predicate contradicts its first child path.
 Initial Work pages expose SOURCE and SYMBOL navigation. The scripted reviewer
 adds a separately saved, same-Work source acquisition. Repair contexts contain
 only addressed old fragments and necessary exact source. The helper assembles
@@ -17,6 +18,13 @@ uncertainties remain exact.
 The literal case corrects both the operation claim and an explicitly allowed
 existing root `/uncertainties/0` string. The unrelated runtime uncertainty at
 index one stays exact; no uncertainty is added, deleted or reordered by repair.
+
+The polarity case delivers the source condition and both child paths as one
+bounded group. Its first child and alternative return already agree with source;
+only the header meaning changes. Both child arrays, evidence references and the
+unrelated operation remain exact. Compare a source-true and a source-false path
+with the proposed header. This is an owned transport/repair counterexample, not
+a natural-language predicate classifier or evidence that a model passed it.
 
 The exercise uses a **fake CLI transport and scripted review/replacements**.
 It does not invoke Luna, another model, the installed runtime, source capture or

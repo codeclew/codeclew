@@ -310,6 +310,16 @@ source-supported contrast. A default passed into a provider is not the current
 runtime flag value. Do not invent the backend or business rationale from a flag
 name or numeric threshold.
 
+Keep a decision predicate separate from the summary of its outcomes. In a
+Proposal `alt.meaning` or materialized `alt.text`, the predicate selects the
+first child path; `otherwise`/`else` is its complement. True may reject or throw;
+it does not mean business success. A whole if/else explanation belongs in
+`summary`/`explanation`, not in the condition header. Walk one source-true and
+one source-false case against the header and actual first child actions, keeping
+negation, boundary comparisons, return depth and catch scope. After render, check
+the same hierarchy in the affected reader branch. Grammar, content delivery and
+source citations alone do not prove predicate/child consistency.
+
 Explain the roles of arguments that materially affect a decision or alternative:
 fallback/default, mode, limit, comparison basis, timeout or error policy. Showing
 a positional literal or copying a call expression is not that explanation.

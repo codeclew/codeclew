@@ -111,6 +111,14 @@ evidence in one short pass:
 - Check each requested branch's condition, positive/negative outcome and return
   placement. Retain each claim's specific evidence; broader entrypoint or
   declaration references do not replace it.
+- For each `alt`, read `meaning` as the predicate selecting `children`; its
+  negation selects `otherwise`. It is not a summary of both outcomes. Keep the
+  complete fork summary in operation `summary`/`explanation`. Compare one true
+  and one false source path with the header and their first child actions. If
+  the header describes the opposite path, repair its predicate or the evidenced
+  grouping; do not swap correct branch actions merely to fit a prose summary.
+  Preserve negation, null/comparison boundaries, nested returns and catch scope.
+  A valid tree or matching evidence references do not establish this polarity.
 - Compare the requested thread scope with delivered stage, guard, return,
   data-effect and result facts. Keep still-unread evidence tasks explicit; do not
   finish a full-thread request as a controller-only account while supported local
@@ -225,7 +233,12 @@ actor to choose its label, copy participant IDs from another Work, or put the
 materialized `service-<id>` alias into a proposal step that expects the service ID.
 
 Only `alt`, `opt` and `loop` steps may contain `children`; only `alt` may contain
-`otherwise`. Other step kinds must leave both arrays empty. When preparing a
+`otherwise`. The `alt.meaning` predicate is true for `children` and false for
+`otherwise`; true does not mean the successful business outcome. Do not use a
+whole if/else summary as that predicate. Put the fork summary in operation
+`summary`/`explanation`, and keep actions in their evidenced child paths. The
+same guard/body distinction applies to `opt` and `loop`.
+Other step kinds must leave both arrays empty. When preparing a
 compact model packet, include these rules and the relevant
 [interaction rules](#declared-interactions) below, rather than an arbitrary
 prefix of this reference. The JSON carrier schema alone does not enforce every

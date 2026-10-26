@@ -90,6 +90,26 @@ class HandoffTests(unittest.TestCase):
         self.assertIn('proposal', context)
         self.assertEqual(context['binding']['proposalDigest'], H['sha']((self.root / 'native-before/input.original.json').read_bytes()))
 
+    def test_polarity_repair_changes_only_the_header_of_a_complete_bounded_group(self):
+        root = self.root / 'polarity'; root.mkdir()
+        result = D['run'](root, 'polarity')
+        before = json.loads((root / 'native-before/input.original.json').read_text())
+        after = json.loads((root / 'applied/input.original.json').read_text())
+        old_group, new_group = before['operations'][0]['steps'][0], after['operations'][0]['steps'][0]
+        self.assertNotEqual(old_group['meaning'], new_group['meaning'])
+        for key in ('kind', 'children', 'otherwise'):
+            self.assertEqual(old_group[key], new_group[key])
+        self.assertEqual(old_group['meaning']['evidence'], new_group['meaning']['evidence'])
+        self.assertEqual(before['operations'][0]['summary'], after['operations'][0]['summary'])
+        self.assertEqual(before['operations'][1:], after['operations'][1:])
+        self.assertEqual(before['uncertainties'], after['uncertainties'])
+        context = json.loads((root / 'repair/repair-context.json').read_text())
+        self.assertEqual(context['targets'][0]['old'], old_group)
+        self.assertEqual(context['targets'][0]['path'], '/operations/0/steps/0')
+        self.assertEqual(json.loads((root / 'repair/first-review.original.json').read_text())['verdict'], 'REJECT')
+        self.assertEqual(result['nativeMeaningReview'], 'UNASSESSED')
+        self.assertEqual(result['exerciseAuthority'], 'SCRIPTED_OWNED_TRANSPORT_ONLY_NO_MODEL_CALLS')
+
     def test_stale_base_work_archive_and_first_review_are_blocked(self):
         for index, name in enumerate(('native-before/input.original.json', 'work/initial.stdout', 'first-review.json')):
             with tempfile.TemporaryDirectory() as directory:
