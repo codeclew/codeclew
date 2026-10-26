@@ -343,6 +343,40 @@ mod tests {
         assert!(!template.contains("Sections and source"));
         assert!(template.contains("__DOCUMENT_DATA__"));
         assert!(validate(Some("fr")).is_err());
+        if let Some(root) = std::env::var_os("CODECLEW_UI_NATIVE_FIXTURE_ROOT") {
+            let root = std::path::PathBuf::from(root);
+            let output = root.join("native");
+            std::fs::create_dir_all(&output).unwrap();
+            for entry in std::fs::read_dir(root.join("inputs")).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let data: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let language = data["language"].as_str().unwrap();
+                let html = crate::documentation::render::html(&data).unwrap();
+                if language == "ru" {
+                    assert!(html.contains("<summary>На этой странице</summary>"));
+                    assert!(html.contains("Полнота и источники"));
+                }
+                let navigation = crate::documentation::reader::navigation_language(
+                    "",
+                    "index.html",
+                    None,
+                    &[],
+                    language,
+                );
+                let html = crate::documentation::reader::decorate(&html, &navigation);
+                std::fs::write(
+                    output
+                        .join(path.file_stem().unwrap())
+                        .with_extension("html"),
+                    html,
+                )
+                .unwrap();
+            }
+        }
     }
     #[test]
     fn russian_markdown_never_includes_filtered_english_prose_or_changes_identifiers() {

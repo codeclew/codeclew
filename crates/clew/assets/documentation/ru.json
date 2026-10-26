@@ -1398,5 +1398,6 @@
   "Field navigation is unavailable for an ambiguous or missing identity.": "Переход к полю недоступен: идентификатор отсутствует или неоднозначен.",
   "No usage is recorded in this scope.": "В этой области использование не зафиксировано.",
   "No representation mapping is recorded for this field.": "Для этого поля преобразование в представление не зафиксировано.",
-  "Expand diagram": "Развернуть диаграмму"
+  "Expand diagram": "Развернуть диаграмму",
+  "No matching sections": "Подходящих разделов не найдено"
 }

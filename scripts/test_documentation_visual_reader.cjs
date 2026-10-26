@@ -2849,3 +2849,41 @@ if(process.env.CODECLEW_WIDE_SEQUENCE_FIXTURE_OUT){
  for(const dir of ['services','external-services'])fs.mkdirSync(path.join(out,dir),{recursive:true});
  const d=wideSequenceFixture();for(const p of d.operations[0].participants){const dir=p.externalService?'external-services':'services',id=p.externalService||p.service;fs.writeFileSync(path.join(out,dir,id+'.html'),'<!doctype html><meta charset="utf-8"><title>Synthetic participant</title><h1>'+p.label+'</h1><p>Synthetic navigation target; implementation and runtime not verified.</p><a href="../scenarios/sequence-en.html#wide-sequence">Return to synthetic process</a>');}
 }
+
+test('editorial no-match search recovers localized navigation and keeps input focus',()=>{
+ for(const language of ['en','ru']){
+  const d=questionFixture();d.language=language;d.questionReader.language=language;const before=JSON.stringify(d),r=load(d);r.run('showEntry("process-overview")');
+  r.e('search').value='no-match-zz';r.run('nav()');assert.equal(r.e('clear-search').hidden,false);
+  assert.match(r.e('scenario-nav').innerHTML,/role="status"/);assert.match(r.e('scenario-nav').innerHTML,/data-clear-search/);assert.match(r.e('scenario-nav').innerHTML,language==='ru'?/Подходящих разделов не найдено/:/No matching sections/);
+  r.click({clearSearch:''});assert.equal(r.e('search').value,'');assert.equal(r.e('clear-search').hidden,true);assert.equal(r.document.activeElement,r.e('search'));
+  assert.match(r.e('scenario-nav').innerHTML,/href="#question-story"/);assert.match(r.e('scenario-nav').innerHTML,/href="#question-confidence"/);assert.equal(JSON.stringify(d),before);
+ }
+});
+test('sequential navigation retains its deliberate no-search presentation',()=>{
+ const d=questionFixture();d.questionReader.presentation='SEQUENTIAL';d.questionReader.sections[0].number=1;const before=JSON.stringify(d),r=load(d);
+ r.e('search').value='no-match-zz';r.run('nav()');assert.match(r.e('scenario-nav').innerHTML,/question-story/);assert.doesNotMatch(r.e('scenario-nav').innerHTML,/no-results|data-clear-search|<input/);assert.equal(JSON.stringify(d),before);
+});
+test('tab title follows section early returns routes history selection and authored operation titles',()=>{
+ for(const language of ['en','ru']){
+  const d=fieldInspectorFixture(language),before=JSON.stringify(d),r=load(d),suffix=' · '+d.title;
+  r.run('showEntry("health")');assert.equal(r.document.title,'GET /health'+suffix);assert.equal((r.document.title.match(/GET/g)||[]).length,1);
+  for(const [id,title] of [['section-entities','Domain entities'],['section-egress','External calls and storage'],['section-responsibilities','Responsibilities'],['section-overview',language==='ru'?'Обзор':'Overview']]){
+   r.click({entry:id});assert.equal(r.document.title,r.run('t('+JSON.stringify(title)+')')+suffix);
+  }
+  r.run('location.hash="#section-entities";routeReaderHash()');assert.equal(r.document.title,r.run("t('Domain entities')")+suffix);
+  r.run('location.hash="#health";routeReaderHash()');assert.equal(r.document.title,'GET /health'+suffix);
+  r.run('location.hash="#section-egress";routeReaderHash()');assert.equal(r.document.title,r.run("t('External calls and storage')")+suffix);
+  r.run('showEntry("named")');assert.equal(r.document.title,(language==='ru'?'Просмотр именованных мест':'List named places')+suffix);
+  r.run('catalogue()');assert.equal(r.document.title,r.run("t('Source and API inventory')")+suffix);r.run('coverage()');assert.equal(r.document.title,r.run("t('Coverage and evidence')")+suffix);
+  assert.equal(JSON.stringify(d),before);
+ }
+});
+if(process.env.CODECLEW_CROSS_FLOW_FIXTURE_INPUT_OUT){
+ const out=path.resolve(process.env.CODECLEW_CROSS_FLOW_FIXTURE_INPUT_OUT);fs.mkdirSync(out,{recursive:true});
+ for(const language of ['en','ru']){
+  const editorial=questionFixture();editorial.language=language;editorial.questionReader.language=language;
+  const sequential=structuredClone(editorial);sequential.questionReader.presentation='SEQUENTIAL';sequential.questionReader.sections[0].number=1;
+  const cases={['service-'+language]:fieldInspectorFixture(language),['editorial-'+language]:editorial,['sequential-'+language]:sequential,['sequence-'+language]:wideSequenceFixture(language),['owner-'+language]:externalProfileFixture(language),['stale-'+language]:polishFixture(language,'stale'),['error-'+language]:polishFixture(language,'error')};
+  for(const [name,data] of Object.entries(cases))fs.writeFileSync(path.join(out,name+'.json'),JSON.stringify(data));
+ }
+}

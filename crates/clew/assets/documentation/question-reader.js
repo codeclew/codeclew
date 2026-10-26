@@ -14,7 +14,8 @@ function questionNav(){
  $('project-title').textContent=guide.title;$('project-subtitle').textContent='A bounded source-based account';
  $('revision-links').hidden=true;$('catalogue-button').hidden=true;
  const query=$('search').value.toLowerCase().trim();
- $('scenario-nav').innerHTML=guide.sections.filter(s=>(s.title+' '+s.blocks.map(b=>b.title+' '+b.text).join(' ')).toLowerCase().includes(query)).map(s=>chromeHtml`<a class="scenario-link question-link" href="#${esc(questionAnchor(s.id))}">${esc(s.title)}</a>`).join('');
+ $('scenario-nav').innerHTML=guide.sections.filter(s=>(s.title+' '+s.blocks.map(b=>b.title+' '+b.text).join(' ')).toLowerCase().includes(query)).map(s=>chromeHtml`<a class="scenario-link question-link" href="#${esc(questionAnchor(s.id))}">${esc(s.title)}</a>`).join('')||searchEmptyState('No matching sections');
+ const selected=questionSelectedAnchor||location.hash.slice(1);if(questionSection(selected))questionActive(selected);
  if(current?.id!=='process-overview'&&!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="#question-confidence">Back to the questions and source context</a></p>`);
  return true;
 }
