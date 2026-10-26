@@ -206,12 +206,14 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     let rows = &data["operationExternalCalls"][&operation_id];
     assert_eq!(rows.as_array().unwrap().len(), 1);
     assert_eq!(rows[0]["eventId"], event_id);
-    assert_eq!(rows[0]["contract"]["id"], outgoing.id);
-    assert_ne!(rows[0]["contract"]["id"], incoming.id);
-    assert_eq!(rows[0]["contractStatus"], "EXPLICIT_SAVED_CONTRACT");
+    // These OpenAPI operations belong to the caller, not the uncaptured
+    // external receiver. Retain the operator's reference without presenting
+    // either caller contract as the receiver's request/response schema.
+    assert_eq!(rows[0]["contractReference"], outgoing.id);
+    assert!(rows[0]["contract"].is_null());
+    assert_eq!(rows[0]["contractStatus"], "FOREIGN_RECEIVER_CONTRACT");
     assert!(
-        outgoing
-            .source_ids
+        call.source_ids
             .iter()
             .all(|id| data["operationSources"][&operation_id].get(id).is_some())
     );
@@ -250,7 +252,9 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
         old["addresses"][0]["url"],
         "https://inventory.example.invalid/v1"
     );
-    assert_eq!(old["contract"]["id"], outgoing.id);
+    assert_eq!(old["contractReference"], outgoing.id);
+    assert!(old["contract"].is_null());
+    assert_eq!(old["contractStatus"], "FOREIGN_RECEIVER_CONTRACT");
     assert_eq!(old["targetChanged"], true);
     assert_eq!(old["retained"], true);
     assert_eq!(read(f.bundle(bundle, "services/orders.json")), data);
