@@ -410,7 +410,7 @@ pub(super) fn load(
         return Err(invalid("data-model schema, binding or bounds are invalid"));
     }
     let mut ids = BTreeSet::new();
-    let mut bytes = 0;
+    let mut bytes = super::question_reading::EvidenceBudget::default();
     let mut contracts = Vec::new();
     for c in &plan.contracts {
         if !store::valid_id(&c.id) || !ids.insert(c.id.clone()) {
@@ -1858,6 +1858,68 @@ mod tests {
         let path = tmp.path().join("model.json");
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
+    }
+    #[test]
+    fn repeated_shared_source_keeps_all_models_fields_and_payloads_within_unique_budget() {
+        // Synthetic accounting fixture, not semantic approval: many independent
+        // descriptions cite the same exact retained source body.
+        let (mut plan, mut files, guides, checked) = fixture();
+        let text = "s".repeat(16 * 1024);
+        for bytes in files.values_mut() {
+            let mut page: Value = serde_json::from_slice(bytes).unwrap();
+            page["operationSources"]["saved"]["source"]["text"] = json!(text);
+            page["operationSources"]["saved"]["source"]["textDigest"] =
+                json!(crate::canonical::hash_bytes(text.as_bytes()));
+            *bytes = serde_json::to_vec(&page).unwrap();
+        }
+        let original = plan["models"][0].clone();
+        let models = (0..11)
+            .map(|i| {
+                let mut model = original.clone();
+                model["id"] = json!(if i == 0 {
+                    "record".into()
+                } else {
+                    format!("record-{i}")
+                });
+                model["fields"] = json!(
+                    (0..6)
+                        .map(|j| {
+                            let mut field = original["fields"][0].clone();
+                            field["id"] = json!(if j == 0 {
+                                "value".into()
+                            } else {
+                                format!("value-{j}")
+                            });
+                            field["path"] = json!(format!("value{j}"));
+                            field
+                        })
+                        .collect::<Vec<_>>()
+                );
+                model
+            })
+            .collect::<Vec<_>>();
+        plan["models"] = json!(models);
+        plan["payloadViews"]=json!((0..5).map(|i|json!({"id":format!("shape-{i}"),"title":"Observed source shape","subject":"scenario:example","operation":"saved","component":"response-body","direction":"outgoing","format":"source representation; wire format unknown","coverage":{"status":"observed-fields","scope":"Selected field only; not a complete wire schema","claim":original["purpose"]},"fields":[{"model":"record","field":"value","representation":"row","path":"value0"}]})).collect::<Vec<_>>());
+        let projected = read(&plan, &files, &guides, &checked).unwrap();
+        assert_eq!(projected["models"].as_array().unwrap().len(), 11);
+        assert_eq!(
+            projected["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|model| model["fields"].as_array().unwrap().len())
+                .sum::<usize>(),
+            66
+        );
+        assert_eq!(projected["payloadViews"].as_array().unwrap().len(), 5);
+        plan["models"][10]["fields"][5]["meaning"]["evidence"][0]["textDigest"] =
+            json!(format!("sha256:{}", "0".repeat(64)));
+        assert!(
+            read(&plan, &files, &guides, &checked)
+                .unwrap_err()
+                .message
+                .contains("claim text changed")
+        );
     }
     #[test]
     fn explicit_domain_field_coverage_and_graph_mappings_remain_bounded_and_evidence_bound() {

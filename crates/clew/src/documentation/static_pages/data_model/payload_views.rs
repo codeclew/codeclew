@@ -38,7 +38,7 @@ pub(super) fn validate_and_project(
     models: &[Model],
     files: &BTreeMap<String, Vec<u8>>,
     checked: &Check,
-    bytes: &mut usize,
+    bytes: &mut super::super::question_reading::EvidenceBudget,
 ) -> Result<Vec<Value>, ClewError> {
     if views.len() > 128 {
         return Err(invalid("payload views exceed 128 entries"));

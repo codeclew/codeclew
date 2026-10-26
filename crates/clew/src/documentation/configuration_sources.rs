@@ -1,6 +1,6 @@
 //! Retain static JVM resources from the exact admitted repository snapshot.
 //! Resource text is file evidence only, never resolved configuration or compiler semantics.
-use super::super::model::{Service, ServiceEvidence, Source, SourceOccurrence};
+use super::super::model::{SOURCE_EXTRACTOR, Service, ServiceEvidence, Source, SourceOccurrence};
 use super::{digest, invalid};
 use crate::{canonical, error::ClewError};
 use std::{
@@ -77,10 +77,11 @@ pub(super) fn retain(
                 text: text.to_string(),
                 text_digest: text_digest.clone(),
                 evidence_digest: digest(&(
-                    "JVM_STATIC_RESOURCE/1.0",
+                    SOURCE_EXTRACTOR,
                     snapshot,
-                    path,
                     &text_digest,
+                    0usize,
+                    text.len(),
                 ))?,
                 authority: "EXACT_SNAPSHOT_TEXT".into(),
                 text_origin: None,
@@ -119,7 +120,7 @@ mod tests {
             service: s.id.clone(),
             revision: revision.into(),
             service_digest: "service".into(),
-            extractor: "COMPILER".into(),
+            extractor: crate::documentation::model::EXTRACTOR.into(),
             runtime_mode: "RELEASE".into(),
             coverage: "COMPILER".into(),
             boundaries: vec![],
@@ -141,6 +142,7 @@ mod tests {
             &BTreeSet::from([format!("modules/measure/src/main/{extension}")]),
         )
         .unwrap();
+        crate::documentation::analysis::verify_evidence(&e).unwrap();
         e
     }
     #[test]
@@ -169,7 +171,7 @@ mod tests {
             ("application.yml".into(), Arc::from("outside: true")),
         ]);
         for language in ["java", "kotlin"] {
-            let e = capture(language, "revision-one", &files);
+            let e = capture(language, &"a".repeat(40), &files);
             assert_eq!(e.sources.len(), 3);
             assert_eq!(e.coverage, "COMPILER");
             for source in e.sources.values() {
@@ -178,9 +180,9 @@ mod tests {
                     source.text_digest,
                     canonical::hash_bytes(source.text.as_bytes())
                 );
-                assert_eq!(source.revision, "revision-one");
+                assert_eq!(source.revision, "a".repeat(40));
                 assert_eq!(source.authority, "EXACT_SNAPSHOT_TEXT");
-                assert_eq!(source.occurrence.as_ref().unwrap().snapshot, "revision-one");
+                assert_eq!(source.occurrence.as_ref().unwrap().snapshot, "a".repeat(40));
             }
             assert!(e.observations.is_empty());
         }
@@ -189,17 +191,17 @@ mod tests {
     fn changed_and_removed_configuration_cannot_survive_the_next_capture() {
         let path = "modules/measure/src/main/resources/application.yml".to_owned();
         let mut files = BTreeMap::from([(path.clone(), Arc::from("enabled: false\n"))]);
-        let first = capture("java", "revision-one", &files);
+        let first = capture("java", &"a".repeat(40), &files);
         files.insert(path.clone(), Arc::from("enabled: true\n"));
-        let changed = capture("java", "revision-two", &files);
+        let changed = capture("java", &"b".repeat(40), &files);
         let a = first.sources.values().next().unwrap();
         let b = changed.sources.values().next().unwrap();
         assert_eq!(a.id, b.id);
         assert_ne!(a.text_digest, b.text_digest);
         assert_ne!(a.evidence_digest, b.evidence_digest);
         assert_eq!(b.text, "enabled: true\n");
-        assert_eq!(b.revision, "revision-two");
+        assert_eq!(b.revision, "b".repeat(40));
         files.remove(&path);
-        assert!(capture("java", "revision-three", &files).sources.is_empty());
+        assert!(capture("java", &"c".repeat(40), &files).sources.is_empty());
     }
 }

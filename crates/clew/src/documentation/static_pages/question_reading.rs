@@ -121,24 +121,47 @@ fn operation<'a>(page: &'a Value, id: &str) -> Result<&'a Value, ClewError> {
         .and_then(|rows| rows.iter().find(|op| op["id"] == id))
         .ok_or_else(|| invalid("reading-plan operation is absent from publication"))
 }
-fn source_record(source: &Value, bytes: &mut usize) -> Result<(), ClewError> {
+/// Bound unique admitted evidence independently from repeated projection work.
+#[derive(Default)]
+pub(super) struct EvidenceBudget {
+    unique_bytes: usize,
+    expanded_bytes: usize,
+    references: usize,
+    sources: BTreeSet<String>,
+}
+fn source_record(source: &Value, budget: &mut EvidenceBudget) -> Result<(), ClewError> {
     let text = source["text"]
         .as_str()
         .ok_or_else(|| invalid("reading-plan source is unavailable"))?;
+    // Always validate each occurrence, including a repeated identity. Accounting
+    // deduplication must never admit a changed body or bypass caller range pins.
     if source["textDigest"] != crate::canonical::hash_bytes(text.as_bytes()) {
         return Err(invalid("reading-plan source digest differs"));
     }
-    *bytes += text.len();
-    if *bytes > 2 * 1024 * 1024 {
-        return Err(invalid("reading-plan evidence exceeds 2 MiB"));
+    budget.references = budget.references.saturating_add(1);
+    budget.expanded_bytes = budget.expanded_bytes.saturating_add(text.len());
+    if budget.references > 32_768 || budget.expanded_bytes > 64 * 1024 * 1024 {
+        return Err(invalid(
+            "reading-plan expanded evidence exceeds bounded work",
+        ));
+    }
+    let identity = crate::canonical::hash(source).map_err(io_error)?;
+    if budget.sources.insert(identity) {
+        budget.unique_bytes = budget.unique_bytes.saturating_add(text.len());
+        if budget.unique_bytes > 2 * 1024 * 1024 {
+            return Err(invalid(
+                "reading-plan evidence exceeds 2 MiB of unique sources",
+            ));
+        }
     }
     Ok(())
 }
+
 fn project_block(
     block: Block,
     files: &BTreeMap<String, Vec<u8>>,
     checked: &Check,
-    bytes: &mut usize,
+    bytes: &mut EvidenceBudget,
 ) -> Result<Value, ClewError> {
     if !bounded(&block.title, 256)
         || !bounded(&block.text, 2048)
@@ -252,7 +275,7 @@ pub(super) fn bind_block(
     value: Value,
     files: &BTreeMap<String, Vec<u8>>,
     checked: &Check,
-    bytes: &mut usize,
+    bytes: &mut EvidenceBudget,
 ) -> Result<Value, ClewError> {
     project_block(
         serde_json::from_value(value).map_err(io_error)?,
@@ -287,7 +310,7 @@ pub(super) fn load(
         }
     };
     let mut guides = BTreeMap::new();
-    let mut bytes = 0;
+    let mut bytes = EvidenceBudget::default();
     for plan in plans {
         let (subject, guide) = project_plan(plan, publication, files, checked, &mut bytes)?;
         if guides.insert(subject, guide).is_some() {
@@ -302,7 +325,7 @@ fn project_plan(
     publication: &str,
     files: &BTreeMap<String, Vec<u8>>,
     checked: &Check,
-    bytes: &mut usize,
+    bytes: &mut EvidenceBudget,
 ) -> Result<(String, Value), ClewError> {
     let system = plan.subject == "system:overview";
     let expected_schema = if system {
@@ -603,6 +626,60 @@ pub(super) fn overview_html(original: &str, guide: &Value) -> Result<String, Cle
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_evidence_is_unique_but_each_occurrence_still_rejects_tampering() {
+        let text = "s".repeat(16 * 1024);
+        let source = json!({"id":"shared-source","file":"shared.kt","text":text,"textDigest":crate::canonical::hash_bytes(text.as_bytes())});
+        let mut budget = EvidenceBudget::default();
+        for _ in 0..256 {
+            source_record(&source, &mut budget).unwrap();
+        }
+        assert_eq!(budget.unique_bytes, 16 * 1024);
+        assert_eq!(budget.expanded_bytes, 4 * 1024 * 1024);
+        let mut tampered = source.clone();
+        tampered["text"] = json!("changed after earlier references");
+        assert!(
+            source_record(&tampered, &mut budget)
+                .unwrap_err()
+                .message
+                .contains("source digest differs")
+        );
+    }
+    #[test]
+    fn distinct_source_records_still_obey_the_unique_evidence_limit() {
+        let text = "s".repeat(1024 * 1024);
+        let mut source = json!({"id":"first","file":"first.kt","text":text,"textDigest":crate::canonical::hash_bytes(text.as_bytes())});
+        let mut budget = EvidenceBudget::default();
+        source_record(&source, &mut budget).unwrap();
+        source["id"] = json!("second");
+        source["file"] = json!("second.kt");
+        source_record(&source, &mut budget).unwrap();
+        let third =
+            json!({"id":"third","text":"x","textDigest":crate::canonical::hash_bytes(b"x")});
+        assert!(
+            source_record(&third, &mut budget)
+                .unwrap_err()
+                .message
+                .contains("2 MiB of unique sources")
+        );
+    }
+    #[test]
+    fn repeated_projection_work_and_reference_count_remain_bounded() {
+        let text = "s".repeat(128 * 1024);
+        let source =
+            json!({"text":text,"textDigest":crate::canonical::hash_bytes(text.as_bytes())});
+        let mut budget = EvidenceBudget::default();
+        for _ in 0..512 {
+            source_record(&source, &mut budget).unwrap();
+        }
+        assert!(source_record(&source, &mut budget).is_err());
+        let source = json!({"text":"x","textDigest":crate::canonical::hash_bytes(b"x")});
+        let mut budget = EvidenceBudget::default();
+        for _ in 0..32_768 {
+            source_record(&source, &mut budget).unwrap();
+        }
+        assert!(source_record(&source, &mut budget).is_err());
+    }
     fn check() -> Check {
         serde_json::from_value(json!({"schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{}})).unwrap()
     }
