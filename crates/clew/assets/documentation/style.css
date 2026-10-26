@@ -116,6 +116,18 @@ a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;
  .cpv .cpv-field-overview td:last-child{padding-top:0}
 }
 .contract-evidence{margin-top:16px}.contract-raw[id^="contract-source-"]{scroll-margin-top:90px}
+.interaction-links{grid-template-columns:repeat(auto-fit,minmax(min(100%,255px),1fr));min-width:0}
+.interaction-link{grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr);box-sizing:border-box;width:100%;min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;text-decoration:none}
+.interaction-link>*{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.interaction-link:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
+.interaction-action{text-decoration:underline;text-underline-offset:3px}
+.interaction-disclosure,.interaction-details{min-width:0}.interaction-disclosure>summary{list-style:none}.interaction-disclosure>summary::-webkit-details-marker{display:none}
+.interaction-details{padding:12px;border:1px solid var(--line);overflow-wrap:anywhere}.interaction-details pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.topic-path{display:grid;grid-template-columns:minmax(0,1fr) 20px minmax(0,1.4fr) 20px minmax(0,1fr);min-width:0}
+.topic-path>*,.topic-boundary,.topic-boundary h3{min-width:0;overflow-wrap:anywhere}
+.topic-path code,.topic-boundary h3 code{white-space:normal;overflow-wrap:anywhere}
+.constructor-observations code{white-space:pre-wrap;overflow-wrap:anywhere}.constructor-observations th:first-child{width:70px}
+.cpv:focus{outline:2px solid var(--blue);outline-offset:4px}
 @media(max-width:760px){
  .contract-declaration .table-wrap{overflow:visible}
  .contract-declaration .inline-contract-table,.contract-declaration .inline-contract-table tbody,.contract-declaration .inline-contract-table tr,.contract-declaration .inline-contract-table td{display:block;width:100%;box-sizing:border-box;min-width:0}

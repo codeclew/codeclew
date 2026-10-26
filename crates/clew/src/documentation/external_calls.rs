@@ -12,24 +12,29 @@ fn contract<'a>(
     link: &InteractionCheck,
     checked: &'a Check,
 ) -> (Option<&'a Observation>, &'static str) {
-    if let Some(id) = reference {
-        let value = checked
+    let explicit = reference.and_then(|id| {
+        checked
             .dependencies
             .get(id)
-            .filter(|o| o.kind == "CONTRACT_OPERATION");
-        return (
-            value,
-            if value.is_some() {
-                "EXPLICIT_SAVED_CONTRACT"
-            } else {
-                "REFERENCE_UNAVAILABLE"
-            },
-        );
+            .filter(|o| o.kind == "CONTRACT_OPERATION")
+    });
+    if reference.is_some() && explicit.is_none() {
+        return (None, "REFERENCE_UNAVAILABLE");
+    }
+    if explicit.is_some_and(|contract| contract.service != receiver) {
+        return (None, "FOREIGN_RECEIVER_CONTRACT");
     }
     if !matches!(link.to.status.as_str(), "RESOLVED" | "SOURCE_MATCH")
         || link.to.candidates.len() != 1
     {
-        return (None, "NOT_BOUND");
+        return (
+            None,
+            if link.to.candidates.len() > 1 {
+                "AMBIGUOUS_RECEIVER_CONTRACT"
+            } else {
+                "NOT_BOUND"
+            },
+        );
     }
     let Some(evidence) = checked.services.get(receiver) else {
         return (None, "NOT_BOUND");
@@ -42,6 +47,15 @@ fn contract<'a>(
         .iter()
         .filter(|e| e.symbol == declaration.symbol && e.dependency_ids.contains(&declaration.id))
         .collect();
+    if let Some(contract) = explicit {
+        if !entries
+            .iter()
+            .any(|entry| contract.normalized["entrypoint"] == entry.id)
+        {
+            return (None, "INCOMPATIBLE_RECEIVER_CONTRACT");
+        }
+        return (Some(contract), "EXPLICIT_SAVED_CONTRACT");
+    }
     let candidates: Vec<_> = checked
         .dependencies
         .values()
@@ -329,6 +343,53 @@ mod tests {
             .call_site
             .status = "AMBIGUOUS".into();
         assert!(project(&operation, &checked).is_empty());
+    }
+
+    #[test]
+    fn explicit_contract_requires_the_exact_receiver_and_selected_entrypoint() {
+        let (mut checked, operation) = fixture();
+        assert_eq!(
+            project(&operation, &checked)[0]["contractStatus"],
+            "EXPLICIT_SAVED_CONTRACT"
+        );
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .normalized["contractReference"] = json!("incoming-contract");
+        let rows = project(&operation, &checked);
+        assert_eq!(rows[0]["contractStatus"], "FOREIGN_RECEIVER_CONTRACT");
+        assert!(rows[0]["contract"].is_null());
+        checked
+            .dependencies
+            .get_mut("interaction:outgoing")
+            .unwrap()
+            .normalized["contractReference"] = json!("outgoing-contract");
+        checked
+            .dependencies
+            .get_mut("outgoing-contract")
+            .unwrap()
+            .normalized["entrypoint"] = json!("another-entry");
+        assert_eq!(
+            project(&operation, &checked)[0]["contractStatus"],
+            "INCOMPATIBLE_RECEIVER_CONTRACT"
+        );
+        checked
+            .dependencies
+            .get_mut("outgoing-contract")
+            .unwrap()
+            .normalized["entrypoint"] = json!("receiver-entry");
+        checked
+            .interactions
+            .get_mut("outgoing")
+            .unwrap()
+            .to
+            .candidates
+            .push("another-declaration".into());
+        assert_eq!(
+            project(&operation, &checked)[0]["contractStatus"],
+            "AMBIGUOUS_RECEIVER_CONTRACT"
+        );
     }
 
     #[test]

@@ -374,7 +374,7 @@ test('external destination wording does not assert an address and logical ports 
   assert.match(html,/Получатель задан декларацией/);assert.doesNotMatch(html,/Адрес задан в декларации/);
   if(kind==='logical'){assert.match(html,/Физический транспорт и адрес этого логического порта неизвестны/);assert.doesNotMatch(html,/Задайте addresses/);}
   else if(addresses.length){assert.match(html,/https:\/\/example\.invalid\/owned/);assert.doesNotMatch(html,/Адрес не указан/);}
-  else assert.match(html,/Адрес не указан/);
+  else assert.match(html,/Адрес для этой связи не сохранён/);
  }
 });
 test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
@@ -626,12 +626,12 @@ test('external call missing and multiple declarations remain explicit; old pages
  delete row.addresses[0].environment;assert.match(load(data).e('scenario-content').innerHTML,/Environment: unspecified/);
  row.addresses=[];row.contract=null;row.contractStatus='REFERENCE_UNAVAILABLE';row.bindingStatus='MULTIPLE_DECLARED_INTERACTIONS';
  let html=load(data).e('scenario-content').innerHTML;
- assert.match(html,/Address not provided/);assert.match(html,/referenced contract is unavailable/);assert.match(html,/exact saved CONTRACT_OPERATION ID/);assert.match(html,/Multiple declarations match/);
+ assert.match(html,/No address is retained/);assert.match(html,/Remote wire contract is not established/);assert.match(html,/REFERENCE_UNAVAILABLE/);assert.doesNotMatch(html,/Set contractReference|CONTRACT_OPERATION ID/);assert.match(html,/Multiple declarations match/);
  assert.doesNotMatch(html,/Incoming caller operation/);
  row.contractStatus='AMBIGUOUS_RECEIVER_CONTRACT';
- html=load(data).e('scenario-content').innerHTML;assert.match(html,/Multiple saved receiver contracts match/);assert.doesNotMatch(html,/Incoming caller operation/);
+ html=load(data).e('scenario-content').innerHTML;assert.match(html,/AMBIGUOUS_RECEIVER_CONTRACT/);assert.doesNotMatch(html,/Incoming caller operation/);
  row.contractStatus='NOT_BOUND';row.targetChanged=true;row.retained=true;
- html=load(data).e('scenario-content').innerHTML;assert.match(html,/No outgoing contract is bound/);assert.match(html,/earlier accepted operation/);
+ html=load(data).e('scenario-content').innerHTML;assert.match(html,/Remote wire contract is not established/);assert.match(html,/earlier accepted operation/);
  delete data.operationExternalCalls;
  html=load(data).e('scenario-content').innerHTML;assert.doesNotMatch(html,/external-call-details/);assert.doesNotMatch(html,/inventory\.example/);
 });
@@ -2053,8 +2053,8 @@ test('Kafka external destination uses its registered page and never a fabricated
  const data=fixture();data.externalServices={provider:{title:'External <provider>'}};const reader=load(data);
  const i={id:'event',origin:'human',runtime:'UNKNOWN',declaration:{external:true,externalService:'provider',from:{service:'sample'},to:{service:'provider'},transport:{kind:'kafka',topic:'requests'}}};
  const expression='topicBoundaryCard('+JSON.stringify([i])+',{direction:"outgoing"})';
- const html=reader.run(expression);assert.match(html,/href="\.\.\/external-services\/provider\.html"/);assert.doesNotMatch(html,/href="\.\.\/services\/provider\.html/);assert.match(html,/External &lt;provider&gt;/);assert.match(html,/Source not captured/);
- reader.run('D.externalServices={}');const absent=reader.run(expression);assert.doesNotMatch(absent,/href="\.\.\/services\/provider\.html/);assert.doesNotMatch(absent,/href="\.\.\/external-services/);assert.match(absent,/Source not captured/);
+ const html=reader.run(expression);assert.match(html,/href="\.\.\/external-services\/provider\.html"/);assert.doesNotMatch(html,/href="\.\.\/services\/provider\.html/);assert.match(html,/External &lt;provider&gt;/);assert.match(html,/Receiver source not captured/);
+ reader.run('D.externalServices={}');const absent=reader.run(expression);assert.doesNotMatch(absent,/href="\.\.\/services\/provider\.html/);assert.doesNotMatch(absent,/href="\.\.\/external-services/);assert.match(absent,/Receiver source not captured/);
 });
 
 
@@ -2148,7 +2148,7 @@ test('DataFlow defaults to selectable overview and selection focuses context wit
  r.click({flowSelect:'result'});html=r.e('scenario-content').innerHTML;assert.equal(r.e('source-panel').hidden,true);assert.match(html,/Multiply amount by factor/);assert.match(html,/Open source/);assert.doesNotMatch(html,/Use amount and factor/);
  r.click({flowExpand:''});assert.match(r.e('scenario-content').innerHTML,/Use amount and factor/);
  r.click({flowField:'order/value'});html=r.e('scenario-content').innerHTML;assert.match(html,/request.amount/);assert.match(html,/default factor one/);assert.match(html,/Only when enabled/);assert.match(html,/Field mappings are explicit claims/);
- r.click({flowField:'order/unknown'});assert.match(r.e('scenario-content').innerHTML,/Field use has not been investigated/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/Not used in/);
+ r.click({flowField:'order/unknown'});assert.doesNotMatch(r.e('scenario-content').innerHTML,/Field use has not been investigated/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/Not used in/);
  r.run("selectFlow('node','isolated')");assert.equal(r.e('source-panel').hidden,true);assert.match(r.e('scenario-content').innerHTML,/Declared order/);r.run("selectFlow('reset')");assert.doesNotMatch(r.e('scenario-content').innerHTML,/<svg/);assert.equal(r.run('JSON.stringify(D)'),before);
 });
 test('compact process uses authored overview and independently evidenced execution without stripping original',()=>{
@@ -2451,3 +2451,92 @@ test('reader lead follows section to nested visual heading and back without stal
  showSection();location.hash='#section-entities';changed();assert.equal(lead.querySelector('h1').textContent,'Business objects');
  live.replaceChildren(node('div','question-reader'));changed();assert.equal(lead.children.length,0);
 });
+
+function reviewFollowupFixture(language='en'){
+ const d=fixture();d.language=language;d.title=language==='ru'?'Синтетический reader для ревью':'Synthetic reader review';d.subtitle='Synthetic data only; development renderer preview, not an official package.';
+ const op={...d.operations[0],id:'submit-record',title:'Prepare and publish a record',visuals:[],participants:[{id:'app',label:'Reading service',service:'sample'},{id:'archive',label:'Archive provider',externalService:'archive'},{id:'unregistered',label:'Unregistered destination'}],events:[
+  {id:'save',kind:'declared-boundary',interaction:'save-record',from:'app',to:'archive',text:'ArchiveGatewayWithAnIntentionallyLongSourceName.submitEnvelope(RecordEnvelopeWithAnIntentionallyLongTypeName)',sourceIds:[],dependencyIds:[]},
+  {id:'unresolved',kind:'declared-boundary',interaction:'missing-profile',from:'app',to:'unregistered',text:'The destination is declared; no source or profile is retained.',sourceIds:[],dependencyIds:[]}],explanation:[]};
+ d.operations=[op];d.catalogue=[{id:op.id,symbol:'RecordMapper.submit',kind:'SOURCE_DECLARATION',trigger:{},sourceIds:['same-source']}];d.sections=[];
+ d.operationSources={[op.id]:d.sources};d.operationStates={[op.id]:{freshness:'CURRENT',verification:'UNASSESSED'}};
+ d.externalServices={archive:{title:'Archive provider',category:'storage'}};
+ d.payloadViews=[{id:'event',subject:d.subject,operation:op.id,interaction:'record-published',title:language==='ru'?'Наблюдаемые данные публикации':'Observed publication data',component:'message-value',direction:'outgoing',format:'Observed imported constructor; wire schema unavailable',coverage:{status:'unknown',scope:'The generated schema is not retained; only the source constructor call is described.',claim:fragment('Observed constructor call only; no field schema or message key is inferred.')},fields:[],constructorArguments:Array.from({length:12},(_,i)=>({position:i+1,expression:i===3?'input.flags.enabled ? 1 : 0':'input.part'+(i+1),claim:fragment(i===3?'A local Boolean read produces a 0/1 constructor argument.':'The source expression is passed at this constructor position.')}))}];
+ d.readerModels=[{id:'reading',title:'Reading',fields:[{id:'factor',path:'input.flags.enabled',readableName:fragment('Calculation flag'),meaning:fragment('The local flag contributes a numeric factor.'),representations:[{label:'Input.enabled',typeLabel:'Boolean',requiredness:'UNPROVEN_PRESENCE',nullability:'UNPROVEN_NULLABILITY',mapping:fragment('The selected mapper reads the flag.')}],usage:[{stage:'RecordMapper',consumer:'RecordMapper',producer:'Input',representation:'Input.enabled',condition:'BOILERPLATE_CONDITION',unresolved:'BOILERPLATE_UNKNOWN',contract:'',inputs:[],kinds:['read','calculate-or-decide'],assessment:'observed-static-use',coveredScope:'Selected source method',claim:fragment('Reads the flag and calculates a numeric factor locally.'),presentation:{uncertainty:fragment('The active runtime flag value is not established.')}}]}]}];
+ const selectedSource='final class RecordMapper {\n  ImportedEvent map(Input input) {\n    return new ImportedEvent('+d.payloadViews[0].constructorArguments.map(a=>a.expression).join(', ')+');\n  }\n}';
+ d.sources={'same-source':{...source(selectedSource),file:'src/RecordMapper.java',endLine:5,textDigest:'sha256:'+require('node:crypto').createHash('sha256').update(selectedSource).digest('hex')}};d.operationSources={[op.id]:d.sources};
+ d.interactions=[{id:'record-published',origin:'human',runtime:'UNKNOWN',declaration:{external:true,externalService:'archive',from:{service:'sample'},to:{service:'archive'},transport:{kind:'kafka',topic:'synthetic.record.calculated.with.a.deliberately.long.topic.name.v1'}}}];
+ d.payloadViews[0].constructorArguments.forEach(a=>a.claim.evidence=[{kind:'SELECTED_SOURCE',source:{id:'same-source',...d.sources['same-source']},startLine:1,endLine:5}]);
+ d.operationExternalCalls={[op.id]:[{eventId:'save',interactionId:'save-record',to:'archive',title:'Archive declared record',transport:{kind:'logical'},addresses:[],contract:null,contractStatus:'REFERENCE_UNAVAILABLE',declaration:{origin:'human',rationale:'Synthetic declared destination.'},snapshotContextDigest:'synthetic'}]};
+ return d;
+}
+
+test('review usage omits empty inputs and boilerplate presentation but retains original machine values',()=>{
+ const d=reviewFollowupFixture(),before=JSON.stringify(d),r=load(d),html=r.run('modelFieldRecords(D.readerModels[0],D.subject,true)');
+ const primary=html.slice(0,html.indexOf('<details class="field-use-evidence"'));
+ assert.doesNotMatch(primary,/Input<|Not established|BOILERPLATE|→|RecordMapper · RecordMapper/);
+ assert.match(primary,/Calculates in/);assert.match(primary,/Reads the flag and calculates/);assert.match(primary,/active runtime flag/);
+ assert.match(html,/BOILERPLATE_CONDITION/);assert.match(html,/observed-static-use/);assert.equal(JSON.stringify(d),before);
+ d.readerModels[0].fields[0].usage[0].presentation.condition=fragment('Only when the selected source branch is entered.');
+ assert.match(load(d).run('modelFieldRecords(D.readerModels[0],D.subject,true)'),/Only when the selected source branch is entered/);
+ d.readerModels[0].fields[0].usage[0].kinds=['forward'];assert.match(load(d).run('modelFieldRecords(D.readerModels[0],D.subject,true)'),/Forwards to/);
+});
+
+test('review requiredness is scoped by an explicit bound representation claim rather than usage',()=>{
+ const d=semanticPayloadFixture(),op=d.operations[0];d.payloadViews[0].fields[0].requiredness='LEGACY_REQUIRED_UNPROVEN';
+ let html=load(d).run(`sourcePayloadViews({id:${JSON.stringify(op.id)}})`),primary=html.slice(0,html.indexOf('<details class="contract-raw"'));
+ assert.doesNotMatch(primary,/LEGACY_REQUIRED_UNPROVEN/);assert.match(html,/LEGACY_REQUIRED_UNPROVEN/);
+ d.payloadViews[0].fields[0].requirednessClaim=fragment('Required only in the selected DTO declaration.');
+ html=load(d).run(`sourcePayloadViews({id:${JSON.stringify(op.id)}})`);assert.match(html,/Required only in the selected DTO declaration/);
+});
+
+test('review unknown Kafka schema shows12 source argument positions and links the topic to the exact payload',()=>{
+ const d=reviewFollowupFixture(),before=JSON.stringify(d),r=load(d),html=r.run('sourcePayloadViews(D.operations[0])');
+ assert.match(html,/Observed constructor arguments \(12\)<\/h4>/);assert.match(html,/\(12\)/);assert.match(html,/input.flags.enabled \? 1 : 0/);
+ assert.equal((html.match(/data-label="Position"/g)||[]).length,12);assert.doesNotMatch(html,/data-label="Representation presence"/);
+ assert.match(html,/not schema field names, message keys or requiredness/);
+ d.sources['unrelated-topic-mention']=source(d.interactions[0].declaration.transport.topic);
+ const topic=load(d).run('topicBoundaryCard(D.interactions,{direction:"outgoing"})');
+ assert.match(topic,/data-sources="same-source"/);assert.doesNotMatch(topic,/unrelated-topic-mention/);
+ delete d.sources['unrelated-topic-mention'];
+ assert.match(topic,/href="#cpv-submit-record-event"/);assert.match(topic,/Receiver source not captured/);assert.equal(JSON.stringify(d),before);
+ for(const arg of d.payloadViews[0].constructorArguments)arg.claim.evidence[0].source.revision='historical-revision';
+ assert.doesNotMatch(load(d).run('topicBoundaryCard(D.interactions,{direction:"outgoing"})'),/data-sources="same-source"/);
+ for(const arg of d.payloadViews[0].constructorArguments)arg.claim.evidence[0].source.revision=d.sources['same-source'].revision;
+ r.run('location.hash="#cpv-submit-record-event";routeReaderHash()');assert.equal(r.run('tab'),'contract');assert.ok(r.e('scenario-content').innerHTML.includes('input.part12'));
+});
+
+test('review connection cards link a registered profile or disclose a declaration even with no snippets',()=>{
+ const d=reviewFollowupFixture(),before=JSON.stringify(d),html=load(d).run('interactionOverview(D.operations[0])');
+ assert.match(html,/<a class="interaction-link" href="\.\.\/external-services\/archive.html"/);
+ assert.match(html,/<details class="interaction-disclosure"><summary class="interaction-link">/);
+ assert.match(html,/View connection/);assert.doesNotMatch(html,/data-event=/);assert.equal(JSON.stringify(d),before);
+ const row=d.operationExternalCalls[d.operations[0].id][0];row.contractStatus='FOREIGN_RECEIVER_CONTRACT';
+ const details=load(d).run('externalCallDetails(D.operations[0],D.operations[0].events[0])');
+ assert.doesNotMatch(details,/Set contractReference|CONTRACT_OPERATION/);assert.match(details,/FOREIGN_RECEIVER_CONTRACT/);assert.match(details,/Remote wire contract is not established/);
+});
+
+test('outgoing contract fallback links only the exact interaction payload within a shared operation',()=>{
+ const d=reviewFollowupFixture(),op=d.operations[0],row=d.operationExternalCalls[op.id][0];
+ d.payloadViews=[
+  {...d.payloadViews[0],id:'matching',title:'Exact archived payload',interaction:row.interactionId},
+  {...d.payloadViews[0],id:'foreign',title:'Other call payload',interaction:'other-interaction'},
+  {...d.payloadViews[0],id:'local',title:'Local calculation payload',interaction:undefined}
+ ];
+ for(const stale of [false,true]){
+  row.targetChanged=stale;const html=load(d).run('externalCallDetails(D.operations[0],D.operations[0].events[0])');
+  assert.match(html,/href="#cpv-submit-record-matching"/);
+  assert.doesNotMatch(html,/Other call payload|Local calculation payload|#cpv-submit-record-foreign|#cpv-submit-record-local/);
+ } row.interactionId=undefined;assert.doesNotMatch(load(d).run('externalCallDetails(D.operations[0],D.operations[0].events[0])'),/href="#cpv-/);
+});
+
+if(process.env.CODECLEW_REVIEW_FOLLOWUP_FIXTURE_OUT){
+ const out=path.resolve(process.env.CODECLEW_REVIEW_FOLLOWUP_FIXTURE_OUT);for(const dir of ['services','external-services','data-model'])fs.mkdirSync(path.join(out,dir),{recursive:true});
+ for(const language of ['en','ru']){
+  const d=reviewFollowupFixture(language),reader=load(d),extra=reader.run('modelFieldRecords(D.readerModels[0],D.subject,true)')+reader.run('topicBoundaryCard(D.interactions,{direction:"outgoing"})');
+  // Same shipped renderer and CSS as a full native page; only the inputs are synthetic.
+  let html=renderReaderFixture(d);html=html.replace('<script type="application/json" id="document-data"',`<section id="review-field-and-topic" style="margin:24px;max-width:1000px">${extra}</section><script type="application/json" id="document-data"`);
+  fs.writeFileSync(path.join(out,'services',language==='en'?'sample.html':'sample-ru.html'),html);
+ }
+ fs.writeFileSync(path.join(out,'index.html'),'<!doctype html><meta charset="utf-8"><title>Synthetic reader review</title><h1>Synthetic renderer review</h1><p>Development renderer only; no official package or private content.</p><a href="services/sample.html#submit-record">English</a> · <a href="services/sample-ru.html#submit-record">Русский</a>');
+ fs.writeFileSync(path.join(out,'external-services/archive.html'),'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Archive provider</title><h1>Archive provider</h1><p>Synthetic declared external profile.</p><p><a href="../services/sample.html#cpv-submit-record-event">Observed publication data</a></p>');
+}

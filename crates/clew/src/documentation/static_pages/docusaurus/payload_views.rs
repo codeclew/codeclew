@@ -94,12 +94,28 @@ pub(super) fn render(
                     md(text(&field["path"])),
                     md(text(&field["representation"])).replace('\n', "<br/>"),
                     type_label,
-                    md(text(&field["requiredness"])).replace('\n', "<br/>"),
-                    md(text(&field["nullability"])).replace('\n', "<br/>")
+                    md(text(&field["requirednessClaim"]["text"])).replace('\n', "<br/>"),
+                    md(text(&field["nullabilityClaim"]["text"])).replace('\n', "<br/>")
                 ));
             }
             body.push('\n');
             body.push_str(&details(t("Types, requiredness and null"), &constraints));
+        }
+        let arguments = rows(&view["constructorArguments"]).collect::<Vec<_>>();
+        if !arguments.is_empty() {
+            body.push_str(&format!("**{} ({})**\n\n{}\n\n| {} | {} | {} |\n| --- | --- | --- |\n",
+                md(t("Observed constructor arguments")),arguments.len(),
+                md(t("Source call positions and expressions; these are not schema field names, message keys or requiredness.")),
+                md(t("Position")),md(t("Source expression")),md(t("Meaning and mapping"))));
+            for argument in arguments {
+                body.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    argument["position"],
+                    md(text(&argument["expression"])),
+                    md(text(&argument["claim"]["text"]))
+                ));
+            }
+            body.push('\n');
         }
         let mut evidence = format!("{}\n\n", md(text(&view["coverage"]["claim"]["text"])));
         for field in rows(&view["fields"]) {
@@ -113,7 +129,7 @@ pub(super) fn render(
             ));
         }
         evidence.push_str(&fence(
-            &serde_json::to_string_pretty(&view["coverage"]["claim"]).map_err(io_error)?,
+            &serde_json::to_string_pretty(view).map_err(io_error)?,
             "json",
         ));
         body.push_str(&details(
@@ -128,6 +144,17 @@ pub(super) fn render(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unknown_wire_schema_keeps_observed_constructor_positions_visible() {
+        let page = json!({"payloadViews":[{"id":"observed","operation":"publish","title":"Source constructor","component":"message-value","direction":"outgoing","format":"Imported constructor","coverage":{"status":"unknown","scope":"Schema not retained","claim":{"text":"Source call only"}},"fields":[],"constructorArguments":[{"position":1,"expression":"input.value","claim":{"text":"Pass the selected value"}},{"position":2,"expression":"enabled ? 1 : 0","claim":{"text":"Compute a local0/1 factor"}}]}]});
+        let body = render(&page, "publish", "###", "en").unwrap();
+        assert!(body.contains("Observed constructor arguments (2)"));
+        assert!(body.contains("input.value"));
+        assert!(body.contains("enabled ? 1 : 0"));
+        assert!(!body.contains("| Representation presence |"));
+        assert!(body.contains("not schema field names"));
+    }
 
     #[test]
     fn payload_cards_share_secondary_caveats_and_keep_each_specific_gap_primary() {

@@ -55,6 +55,47 @@ For an unresolved technical attribute use a specific neutral readable label and
 retain its unresolved meaning proposition; never invent a business interpretation
 to satisfy label presence.
 
+## Reader usage, conditions and constraints
+
+Describe each observed action with its exact `usage[].kinds`: `read`,
+`calculate-or-decide`, `validate`, `persist` or `forward` as supported by the
+selected source. A local read or calculation is not a send/receive boundary.
+Set `consumer` to the actual recipient or local calculation owner and `stage`
+to the source stage; identical labels are shown once. Do not fabricate a
+separate recipient to make a transformation look like a transfer.
+
+Omit empty `inputs` and empty optional `condition`, `contract` and `unresolved`
+strings. An omitted input is missing selected evidence, not proof that a DTO
+lacks the field. Do not author generic unknown or unconditional filler. Preserve
+machine `assessment`, `coveredScope` and consequential unresolved evidence.
+Existing machine condition/unresolved strings remain in provenance. For a useful
+reader-visible condition or material uncertainty, supply the optional
+`presentation.condition` or `presentation.uncertainty` as a normal evidence-bound
+reading block (`id`, `text`, exact `evidence` and optional `links`). An empty or
+absent presentation makes no claim of unconditional behavior. When upgrading an
+older plan, explicitly carry its meaningful source-supported conditions into
+these blocks; do not silently drop them or filter prose with broad regexes.
+
+Presence, nullability and the condition of use answer different questions.
+`representations[].requirednessClaim` and `nullabilityClaim` optionally carry
+reader-visible evidence-bound reading blocks for that exact representation.
+Name the DTO/field/operation or schema branch and the relevant declaration or
+validation evidence in each claim. A registered `contract` plus exact `field`
+keeps its schema-derived constraints. Legacy `requiredness` and `nullability`
+strings remain required metadata and are preserved in provenance; alone they
+are not sufficient reader evidence. Never infer wire presence from a read,
+non-null source type, constructor position or another DTO with the same name.
+
+For an outgoing call, resolve `contractReference` to an exact saved
+`CONTRACT_OPERATION` only when its receiver service and entrypoint match the
+selected receiver declaration. A same-name or incoming contract is not a match.
+If no reference is supplied, the renderer reuses only one exact receiver-bound
+saved operation. Missing, ambiguous, incompatible, foreign and stale bindings
+remain author diagnostics. Repair those through supported declaration/Work
+commands; never put commands such as "Set contractReference" into reader prose.
+Show any source-supported local DTO/payload observations without presenting them
+as the remote wire contract. Preserve stale retained data in provenance.
+
 ## Source-derived payload views
 
 Prefer existing registered declared schemas and `contracts`/`interfaceBindings`
@@ -94,6 +135,30 @@ definition, and `complete-definition` only with complete selected model definiti
 and every field. Complete type coverage still does not establish complete wire
 schema, serialization or runtime conformance. Separate normal and error response
 views. Say exactly which definition is missing, retaining useful observed fields.
+
+If a generated schema is unavailable but a constructor call is captured,
+`payloadViews[].constructorArguments` can retain the observed call separately:
+
+```json
+{"constructorArguments":[{"position":1,"expression":"input.enabled ? 1 : 0",
+  "claim":{"id":"observed-factor","text":"The mapper supplies a local 0/1 factor.",
+    "evidence":[{"kind":"SOURCE","service":"sample",
+      "sourceId":"EXACT_SOURCE","textDigest":"sha256:SOURCE_TEXT_SHA256",
+      "startLine":4,"endLine":4}]}}]}
+```
+
+Use the existing reading-block evidence shape and exact captured source range.
+Positions are one-based, unique and strictly increasing, from 1 through 256;
+there are at most 128 observations and each expression is at most 2048 UTF-8
+bytes. Quote the observed expression literally and explain transformations only
+when supported. Counts must come from actual rows. Never say twelve arguments
+are shown if they exist only in coverage prose. With no field definition keep
+`coverage.status: "unknown"` and `fields: []`; arguments do not become generated
+Avro field names, wire types, schema completeness, a message key or requiredness.
+Keep exact `interaction` and owner links so topic, external profile and process
+reach the same payload. Topic evidence uses exact retained interaction/payload
+source bindings, never a source-text search for the topic name. Preserve all
+original source and provenance even when routine caveats move into disclosures.
 
 When the task requests inputs/results/errors or exchanged data, inventory each
 in-scope operation and author its supported payload views; a behavior card or

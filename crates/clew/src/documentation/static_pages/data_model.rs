@@ -114,6 +114,10 @@ struct Representation {
     type_label: String,
     requiredness: String,
     nullability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requiredness_claim: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nullability_claim: Option<Value>,
     mapping: Value,
     #[serde(default)]
     contract: Option<String>,
@@ -130,16 +134,32 @@ struct Usage {
     stage: String,
     producer: String,
     consumer: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     contract: String,
     representation: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     condition: String,
     kinds: Vec<String>,
     assessment: String,
     covered_scope: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     unresolved: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presentation: Option<UsagePresentation>,
     claim: Value,
     #[serde(default)]
     processes: Vec<String>,
+}
+/// Reader claims are separate from retained machine scope/unknown strings.
+/// An explicit empty presentation omits boilerplate, never asserting that a
+/// condition is unconditional or an input/DTO is absent.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UsagePresentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    condition: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uncertainty: Option<Value>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -222,6 +242,7 @@ struct ProcessReference {
     stages: Vec<String>,
 }
 const KINDS: &[&str] = &[
+    "read",
     "validate",
     "identify-or-route",
     "calculate-or-decide",
@@ -582,6 +603,17 @@ pub(super) fn load(
                     checked,
                     &mut bytes,
                 )?;
+                for claim in [&mut r.requiredness_claim, &mut r.nullability_claim]
+                    .into_iter()
+                    .flatten()
+                {
+                    *claim = super::question_reading::bind_block(
+                        claim.clone(),
+                        files,
+                        checked,
+                        &mut bytes,
+                    )?;
+                }
             }
             for u in &mut field.usage {
                 for process in &u.processes {
@@ -600,13 +632,29 @@ pub(super) fn load(
                     &u.stage,
                     &u.producer,
                     &u.consumer,
-                    &u.contract,
                     &u.representation,
-                    &u.condition,
                     &u.covered_scope,
-                    &u.unresolved,
                 ] {
                     text(v)?;
+                }
+                for value in [&u.contract, &u.condition, &u.unresolved]
+                    .into_iter()
+                    .filter(|v| !v.is_empty())
+                {
+                    text(value)?;
+                }
+                if let Some(presentation) = &mut u.presentation {
+                    for claim in [&mut presentation.condition, &mut presentation.uncertainty]
+                        .into_iter()
+                        .flatten()
+                    {
+                        *claim = super::question_reading::bind_block(
+                            claim.clone(),
+                            files,
+                            checked,
+                            &mut bytes,
+                        )?;
+                    }
                 }
                 if u.inputs.len() > 32 {
                     return Err(invalid("field usage inputs exceed bounds"));
@@ -1514,16 +1562,25 @@ pub(super) fn write_language(
                         )
                     })
                     .unwrap_or_else(|| {
-                        format!(
-                            "{} · {} · {}",
+                        [
                             strv(&r["typeLabel"]),
-                            strv(&r["requiredness"]),
-                            strv(&r["nullability"])
-                        )
+                            strv(&r["requirednessClaim"]["text"]),
+                            strv(&r["nullabilityClaim"]["text"]),
+                        ]
+                        .into_iter()
+                        .filter(|text| !text.trim().is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ")
                     });
+                let original_metadata = format!(
+                    "{}<details><summary>{}</summary><pre>{}</pre></details>",
+                    escape(&constraints),
+                    escape(label(language, "Original representation metadata")),
+                    escape(&serde_json::to_string_pretty(r).map_err(io_error)?)
+                );
                 let constraints_html = format!(
                     "{}{}",
-                    escape(&constraints),
+                    original_metadata,
                     r["relatedModel"]
                         .as_str()
                         .map(|id| format!(
@@ -1889,6 +1946,62 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
+    #[test]
+    fn usage_reader_claims_are_bound_separately_from_machine_unknowns() {
+        let (mut plan, files, guides, checked) = fixture();
+        let claim = plan["models"][0]["purpose"].clone();
+        let use_row = &mut plan["models"][0]["fields"][0]["usage"][0];
+        use_row["presentation"] = json!({});
+        use_row.as_object_mut().unwrap().remove("condition");
+        use_row.as_object_mut().unwrap().remove("unresolved");
+        use_row.as_object_mut().unwrap().remove("contract");
+        use_row["kinds"] = json!(["read", "calculate-or-decide"]);
+        let value = read(&plan, &files, &guides, &checked).unwrap();
+        assert_eq!(
+            value["models"][0]["fields"][0]["usage"][0]["presentation"],
+            json!({})
+        );
+        plan["models"][0]["fields"][0]["usage"][0]["presentation"] =
+            json!({"condition":claim,"uncertainty":claim});
+        plan["models"][0]["fields"][0]["representations"][0]["requirednessClaim"] = claim.clone();
+        let original = plan.clone();
+        assert!(read(&plan, &files, &guides, &checked).is_ok());
+        assert_eq!(plan, original);
+        plan["models"][0]["fields"][0]["usage"][0]["presentation"]["condition"]["evidence"][0]["operation"] =
+            json!("foreign");
+        assert!(read(&plan, &files, &guides, &checked).is_err());
+    }
+
+    #[test]
+    fn constructor_positions_remain_observations_without_schema_fields() {
+        let (mut plan, files, guides, checked) = fixture();
+        let claim = plan["models"][0]["purpose"].clone();
+        plan["payloadViews"] = json!([{"id":"constructor","title":"Observed source arguments","subject":"scenario:example","operation":"saved","component":"message-value","direction":"outgoing","format":"Imported constructor; wire schema unavailable","coverage":{"status":"unknown","scope":"Only selected constructor expressions are observed","claim":claim},"fields":[],"constructorArguments":[{"position":1,"expression":"input.value","claim":claim},{"position":2,"expression":"enabled ? 1 : 0","claim":claim}]}]);
+        let before = plan.clone();
+        let value = read(&plan, &files, &guides, &checked).unwrap();
+        assert_eq!(value["payloadViews"][0]["fields"], json!([]));
+        assert_eq!(
+            value["payloadViews"][0]["constructorArguments"][1]["expression"],
+            "enabled ? 1 : 0"
+        );
+        assert_eq!(
+            value["payloadViews"][0]["wireSchema"],
+            "NOT_ESTABLISHED_BY_TYPE_OR_MAPPING"
+        );
+        assert_eq!(plan, before);
+        for position in [0, 1, 257] {
+            let mut bad = plan.clone();
+            bad["payloadViews"][0]["constructorArguments"][1]["position"] = json!(position);
+            assert!(read(&bad, &files, &guides, &checked).is_err());
+        }
+        let mut bad = plan.clone();
+        bad["payloadViews"][0]["constructorArguments"][0]["claim"]["evidence"][0]["operation"] =
+            json!("foreign");
+        assert!(read(&bad, &files, &guides, &checked).is_err());
+        plan["payloadViews"][0]["coverage"]["status"] = json!("complete-definition");
+        assert!(read(&plan, &files, &guides, &checked).is_err());
+    }
+
     #[test]
     fn repeated_shared_source_keeps_all_models_fields_and_payloads_within_unique_budget() {
         // Synthetic accounting fixture, not semantic approval: many independent

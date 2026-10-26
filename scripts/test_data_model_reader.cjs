@@ -211,3 +211,11 @@ test('return captions distinguish whole-process roots from precise steps without
   assert.equal(url.searchParams.get('view'),'process');assert.equal(url.searchParams.get('field'),'city/id');assert.equal(url.searchParams.get('stage'),'Store');
  }
 });
+
+test('observed local reads have a readable category and finite counts without becoming transfers',()=>{
+ const d=sample();d.models[0].fields[0].usage[0].kinds=['read'];
+ assert.equal(api().stats(d,'event','Store').categories.read,1);
+ assert.equal(api().cellLabel(d.models[0].fields[0].usage),'Read');
+ assert.equal(api('ru').cellLabel(d.models[0].fields[0].usage),'Читается');
+ const rows=api().overviewRows(d);assert.match(api().compactHtml(rows,['Store'],'event'),/Reads field/);
+});

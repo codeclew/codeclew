@@ -22,6 +22,16 @@ pub(super) struct PayloadView {
     pub status: Option<String>,
     pub coverage: FieldCoverage,
     pub fields: Vec<PayloadField>,
+    /// Observed source call positions, never generated schema fields or keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constructor_arguments: Vec<ConstructorArgument>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ConstructorArgument {
+    pub position: u32,
+    pub expression: String,
+    pub claim: Value,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -162,6 +172,25 @@ pub(super) fn validate_and_project(
             checked,
             bytes,
         )?;
+        if view.constructor_arguments.len() > 128 {
+            return Err(invalid("observed constructor arguments exceed128 entries"));
+        }
+        let mut previous_position = 0;
+        for argument in &mut view.constructor_arguments {
+            if argument.position <= previous_position || argument.position > 256 {
+                return Err(invalid(
+                    "observed constructor arguments need unique increasing source positions1..256",
+                ));
+            }
+            text(&argument.expression)?;
+            previous_position = argument.position;
+            argument.claim = super::super::question_reading::bind_block(
+                argument.claim.clone(),
+                files,
+                checked,
+                bytes,
+            )?;
+        }
         let mut paths = BTreeSet::new();
         let mut fields = Vec::new();
         let mut selected: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -193,7 +222,7 @@ pub(super) fn validate_and_project(
             }
             let representation = representations[0];
             selected.entry(&model.id).or_default().insert(&field.id);
-            fields.push(json!({"model":model.id,"field":field.id,"path":reference.path,"readableName":field.readable_name,"originalName":field.original_name,"representation":representation.label,"typeLabel":representation.type_label,"relatedModel":representation.related_model,"requiredness":representation.requiredness,"nullability":representation.nullability,"meaning":field.meaning,"mapping":representation.mapping}));
+            fields.push(json!({"model":model.id,"field":field.id,"path":reference.path,"readableName":field.readable_name,"originalName":field.original_name,"representation":representation.label,"typeLabel":representation.type_label,"relatedModel":representation.related_model,"requiredness":representation.requiredness,"nullability":representation.nullability,"requirednessClaim":representation.requiredness_claim,"nullabilityClaim":representation.nullability_claim,"meaning":field.meaning,"mapping":representation.mapping}));
         }
         if view.coverage.status == "complete-definition" {
             for (id, fields) in selected {
@@ -210,7 +239,7 @@ pub(super) fn validate_and_project(
                 }
             }
         }
-        result.push(json!({"id":view.id,"title":view.title,"subject":view.subject,"operation":view.operation,"component":view.component,"format":view.format,"direction":view.direction,"interaction":view.interaction,"status":view.status,"coverage":view.coverage,"fields":fields,"authority":"SOURCE_DERIVED_REPRESENTATION","wireSchema":"NOT_ESTABLISHED_BY_TYPE_OR_MAPPING","runtime":"UNVERIFIED"}));
+        result.push(json!({"id":view.id,"title":view.title,"subject":view.subject,"operation":view.operation,"component":view.component,"format":view.format,"direction":view.direction,"interaction":view.interaction,"status":view.status,"coverage":view.coverage,"fields":fields,"constructorArguments":view.constructor_arguments,"authority":"SOURCE_DERIVED_REPRESENTATION","wireSchema":"NOT_ESTABLISHED_BY_TYPE_OR_MAPPING","runtime":"UNVERIFIED"}));
     }
     Ok(result)
 }
