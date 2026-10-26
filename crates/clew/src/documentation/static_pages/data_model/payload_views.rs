@@ -98,12 +98,19 @@ pub(super) fn validate_and_project(
             ));
         }
         if let Some(id) = &view.interaction {
-            let inputs = checked
+            let source = checked
                 .source_inputs
                 .as_ref()
                 .ok_or_else(|| invalid("payload interaction needs frozen source inputs"))?;
+            // Recomposition preserves the original source-selection contract.
+            // Resolve all declarations from its effective immutable closure,
+            // never by falling back per ID to older or live catalogue records.
+            let inputs = checked
+                .composition
+                .as_ref()
+                .map(|composition| &composition.inputs)
+                .unwrap_or(&source.inputs);
             let interaction = inputs
-                .inputs
                 .interactions
                 .get(id)
                 .ok_or_else(|| invalid("payload interaction is unavailable"))?;
@@ -111,7 +118,6 @@ pub(super) fn validate_and_project(
                 id.to_owned()
             } else if let Some(id) = view.subject.strip_prefix("scenario:") {
                 inputs
-                    .inputs
                     .scenarios
                     .get(id)
                     .ok_or_else(|| invalid("payload scenario is unavailable"))?

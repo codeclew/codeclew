@@ -2739,6 +2739,156 @@ mod tests {
     }
 
     #[test]
+    fn payload_declarations_use_one_frozen_recomposition_closure() {
+        use crate::documentation::{check, composition, digest, model, store::Repository};
+
+        let (mut plan, mut files, guides, _) = fixture();
+        files.insert(
+            "services/owner.json".into(),
+            files["scenarios/example.json"].clone(),
+        );
+        files.insert(
+            "services/other.json".into(),
+            files["scenarios/example.json"].clone(),
+        );
+        let mut page: Value = serde_json::from_slice(&files["services/owner.json"]).unwrap();
+        page["operations"][0]["events"] = json!([]);
+        files.insert(
+            "services/owner.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        plan["payloadViews"] = json!([{"id":"message","title":"Selected outgoing value","subject":"service:owner","operation":"saved","interaction":"publish-value","component":"message-value","direction":"outgoing","format":"source representation","coverage":{"status":"observed-fields","scope":"Selected mapper field only","claim":plan["models"][0]["purpose"]},"fields":[{"model":"record","field":"value","representation":"row","path":"value"}]}]);
+        let tmp = tempfile::tempdir().unwrap();
+        Repository::init(tmp.path(), "Frozen payload declarations").unwrap();
+        let repo = Repository::open(tmp.path()).unwrap();
+        for id in ["owner", "other"] {
+            let service: model::Service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":id,"title":id,"repositoryId":id,"repository":format!("https://example.invalid/{id}"),"language":"java","profile":"java-17plus-maven-read-only","compilations":[":/main"],"targetRef":"HEAD"})).unwrap();
+            repo.service_add(service, Some(&repo.input_digest().unwrap()))
+                .unwrap();
+        }
+        // Save a real immutable Check contract before any boundary or process
+        // declaration exists. Source extraction is orthogonal to this resolver.
+        let capture = || {
+            let inputs = repo.inputs().unwrap();
+            let mut checked = check::assemble(
+                digest(&inputs).unwrap(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                &inputs.interactions,
+                &inputs.scenarios,
+            )
+            .unwrap();
+            checked.source_inputs = Some(check::SourceInputs {
+                schema: check::SOURCE_INPUTS_SCHEMA.into(),
+                input_digest: digest(&inputs).unwrap(),
+                inputs,
+                selected_services: BTreeSet::new(),
+                retained_services: BTreeSet::new(),
+            });
+            checked.save_snapshot(&repo).unwrap()
+        };
+        let original = capture();
+        let interaction = |sender: &str| -> model::Interaction {
+            serde_json::from_value(json!({"schema":"codeclew-documentation-interaction/1.0","id":"publish-value","title":"Publish value","from":{"service":sender},"to":{"service":"provider"},"external":true,"transport":{"kind":"kafka","topic":"value.created"},"declaration":{"origin":"human","rationale":"Explicit fixture boundary"}})).unwrap()
+        };
+        let scenario = |owner: &str| -> model::Scenario {
+            serde_json::from_value(json!({"schema":"codeclew-documentation-process/1.0","id":"example","title":"Example","summary":"Selected mapper fixture","root":{"service":owner},"interactions":[],"maxDepth":4,"maxNodes":64,"process":{"scope":"Selected value","participants":[owner],"trigger":"Mapping request","outcomes":["Mapped value"],"linkedSubviews":[]}})).unwrap()
+        };
+        repo.interaction_put(interaction("owner"), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        repo.put(
+            "scenarios/example.yaml",
+            &scenario("owner"),
+            Some(&repo.input_digest().unwrap()),
+        )
+        .unwrap();
+        let (_, composed_handle) = composition::recompose(&repo, &original).unwrap();
+        let composed = Check::load_snapshot(&repo, &composed_handle).unwrap();
+        assert!(
+            composed
+                .source_inputs
+                .as_ref()
+                .unwrap()
+                .inputs
+                .interactions
+                .is_empty()
+        );
+        let projected = read(&plan, &files, &guides, &composed).unwrap();
+        assert_eq!(projected["payloadViews"][0]["interaction"], "publish-value");
+        attach_process(Some(&projected), "service:owner", &mut page).unwrap();
+        assert_eq!(page["operations"][0]["events"], json!([]));
+        let mut scoped = plan.clone();
+        scoped["payloadViews"][0]["subject"] = json!("scenario:example");
+        assert!(read(&scoped, &files, &guides, &composed).is_ok());
+        for (field, value) in [
+            ("direction", "incoming"),
+            ("direction", "local"),
+            ("subject", "service:other"),
+            ("interaction", "publish-value-extra"),
+        ] {
+            let mut bad = plan.clone();
+            bad["payloadViews"][0][field] = json!(value);
+            assert!(
+                read(&bad, &files, &guides, &composed).is_err(),
+                "{field}={value}"
+            );
+        }
+        let mut response = plan.clone();
+        response["payloadViews"][0]["component"] = json!("response-body");
+        response["payloadViews"][0]["direction"] = json!("incoming");
+        assert!(read(&response, &files, &guides, &composed).is_ok());
+
+        // Neither an old capture nor a saved composition follows live edits.
+        assert!(
+            read(
+                &plan,
+                &files,
+                &guides,
+                &Check::load_snapshot(&repo, &original).unwrap()
+            )
+            .is_err()
+        );
+        let with_declarations = capture();
+        assert!(
+            read(
+                &plan,
+                &files,
+                &guides,
+                &Check::load_snapshot(&repo, &with_declarations).unwrap()
+            )
+            .is_ok()
+        );
+        repo.interaction_put(interaction("other"), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        repo.put(
+            "scenarios/example.yaml",
+            &scenario("other"),
+            Some(&repo.input_digest().unwrap()),
+        )
+        .unwrap();
+        let frozen = Check::load_snapshot(&repo, &composed_handle).unwrap();
+        assert!(read(&scoped, &files, &guides, &frozen).is_ok());
+        let (changed, _) = composition::recompose(&repo, &original).unwrap();
+        assert!(read(&plan, &files, &guides, &changed).is_err());
+        assert!(read(&scoped, &files, &guides, &changed).is_ok());
+
+        // A missing record in a composition must not resurrect the original
+        // source contract's declaration (or a later live replacement).
+        repo.interaction_remove("publish-value", &repo.input_digest().unwrap())
+            .unwrap();
+        let (_, removed_handle) = composition::recompose(&repo, &with_declarations).unwrap();
+        repo.interaction_put(interaction("owner"), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let removed = Check::load_snapshot(&repo, &removed_handle).unwrap();
+        assert!(
+            read(&plan, &files, &guides, &removed)
+                .unwrap_err()
+                .message
+                .contains("payload interaction is unavailable")
+        );
+    }
+
+    #[test]
     fn source_message_payload_can_belong_to_retained_egress_catalogue_without_a_trace() {
         let (mut plan, _, _, mut checked) = fixture();
         let statement = "Mapper supplies Mapped.value to the publisher; the imported Avro definition is unavailable.";
