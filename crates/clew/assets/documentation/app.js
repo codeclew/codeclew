@@ -275,6 +275,18 @@ function sourceLabel(symbol){
  return match?`${match[2]==='class'?match[3].split('.').pop()+'.':''}${match[4]}() · ${match[1].split('/').pop()}`:symbol;
 }
 const label=e=>(e.kind==='SECTION'?sectionTitles[e.id]:['NOTE','VISUAL','SERVICE_FRAGMENT'].includes(e.kind)?e.symbol:operation(e)?.title)||e.trigger.paths?.join(' · ')||sourceLabel(e.symbol)||e.id;
+function navigationLabel(e){
+ const title=String(label(e));
+ if(!['HTTP_ENDPOINT','DECLARED_OPENAPI'].includes(e.kind))return title;
+ // The separate badge owns literal transport prefixes, not authored prose.
+ const methods=[...new Set((e.trigger.methods||[]).filter(value=>typeof value==='string'&&value.length).flatMap(value=>[value,value.toUpperCase()]))];
+ if(!methods.length)return title;
+ const names=methods.map(value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
+ const prefix=new RegExp('^(?:'+names+')(?:\\s*[/,|]\\s*(?:'+names+'))*(?:\\s+|$)');
+ const text=title.trim().replace(prefix,'').trim(),tokens=text.split(/\s+|·/);
+ const paths=(e.trigger.paths||[]).filter(path=>!tokens.includes(path));
+ return [...paths,text].filter(Boolean).join(' · ')||e.id;
+}
 function plantumlPreview(stem,available,alt){return available?chromeHtml`<div class="diagram-img-wrap"><img class="diagram-img" src="../diagrams/${esc(stem)}.svg" alt="${esc(alt)}"></div>`:chromeHtml`<p class="renderer-unavailable">${esc(t('PlantUML SVG preview is unavailable; the .puml file and text steps remain available.'))}</p>`;}
 function threadEvidenceLinks(sourceIds){
  const thread=D.processThread;if(!thread)return button(sourceIds,t('Source'),true);
@@ -432,7 +444,7 @@ function nav(){
  const matches=entries.filter(e=>[label(e),e.id,e.symbol,JSON.stringify(e.trigger),e.searchText||''].join(' ').toLowerCase().includes(q));
  const inventory=new Set(inventoryEntries());
  const pending=e=>inventory.has(e)&&!operation(e);
- const row=e=>chromeHtml`<button class="scenario-link" data-entry="${esc(e.id)}" title="${esc(e.symbol||e.id)}" ${current?.id===e.id?'aria-current="page"':''}><span class="nav-icon">${esc(t(method(e)))}</span><span>${esc(label(e))}</span>${pending(e)?chromeHtml`<span class="nav-issue" title="Explicit documentation gap"></span>`:''}</button>`;
+ const row=e=>chromeHtml`<button class="scenario-link" data-entry="${esc(e.id)}" title="${esc(e.symbol||e.id)}" ${current?.id===e.id?'aria-current="page"':''}><span class="nav-icon">${esc(t(method(e)))}</span> <span>${esc(navigationLabel(e))}</span>${pending(e)?chromeHtml`<span class="nav-issue" title="Explicit documentation gap"></span>`:''}</button>`;
  const unexplained=matches.filter(pending);
  $('scenario-nav').innerHTML=matches.filter(e=>!pending(e)).map(row).join('')+(unexplained.length?chromeHtml`<details class="pending-navigation" ${q||unexplained.some(e=>e.id===current?.id)?'open':''}><summary>Awaiting explanation · ${unexplained.length}</summary>${unexplained.map(row).join('')}</details>`:'')||chromeHtml`<p class="no-results">No matching operations</p>`;
 }

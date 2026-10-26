@@ -11,6 +11,81 @@ const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'
 const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
+test('HTTP navigation shows transport methods once and retains exact routes and meaningful titles',()=>{
+ for(const mobile of [false,true]){
+  const data=httpNavigationFixture(),before=JSON.stringify(data),reader=load(data,mobile);
+  const row=id=>reader.e('scenario-nav').innerHTML.match(new RegExp('<button[^>]*data-entry="'+id+'"[^>]*>[\\s\\S]*?<\\/button>'))?.[0];
+  const text=id=>row(id).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  for(const [id,expected] of [
+   ['health','GET /health'],['create-place','POST /places'],['list-places','GET /places'],
+   ['openapi','GET /openapi.json'],['refresh','POST /places/{id}/refresh'],
+   ['named','GET /places/named · List named places'],['unprefixed','GET /places/history'],
+   ['multiple','GET / POST /places/{id} · Read or replace place'],
+   ['natural-title','GET /health/report · Get health report']
+  ]){
+   assert.equal(text(id),expected);
+   assert.doesNotMatch(row(id),/aria-hidden="true"|aria-label=/);
+  }
+  assert.equal(text('local'),'CODE GET values from local cache');
+  assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('HTTP navigation preserves search matches, entry selection and original headings',()=>{
+ for(const mobile of [false,true]){
+  const data=httpNavigationFixture(),before=JSON.stringify(data),reader=load(data,mobile);
+  for(const [query,id] of [['GET /health','health'],['refresh','refresh'],['POST / GET','multiple'],['List named places','named']]){
+   reader.e('search').value=query;reader.run('nav()');
+   assert.ok(reader.e('scenario-nav').innerHTML.includes('data-entry="'+id+'"'));
+  }
+  reader.e('search').value='refresh';reader.run('nav()');
+  assert.doesNotMatch(reader.e('scenario-nav').innerHTML,/data-entry="health"/);
+  reader.click({entry:'refresh'});
+  assert.equal(reader.run('current.id'),'refresh');
+  assert.match(reader.e('scenario-content').innerHTML,/<h2>POST \/places\/\{id\}\/refresh<\/h2>/);
+  assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('HTTP navigation handles declared routes and incomplete methods without stripping ordinary prose',()=>{
+ const data=httpNavigationFixture(),seed=data.operations[0];
+ const rows=[
+  ['declared','DECLARED_OPENAPI',['GET'],'/declared','GET /declared','/declared'],
+  ['unknown','HTTP_ENDPOINT',[],'/unknown','Inspect unknown transport','Inspect unknown transport'],
+  ['legacy','HTTP_ENDPOINT',[null],'','Original retained title','Original retained title'],
+  ['custom','HTTP_ENDPOINT',['M-SEARCH'],'/discovery','M-SEARCH /discovery','/discovery'],
+  ['word','HTTP_ENDPOINT',['GET'],'/status','GETTING status','/status · GETTING status']
+ ];
+ for(const [id,kind,methods,route,title] of rows){
+  data.catalogue.push({id,kind,symbol:title,trigger:{methods,paths:route?[route]:[]},sourceIds:[]});
+  data.operations.push({...seed,id,title});
+ }
+ const before=JSON.stringify(data),reader=load(data);
+ for(const [id,_kind,_methods,_route,_title,expected] of rows)assert.equal(reader.run('navigationLabel(entries.find(e=>e.id==='+JSON.stringify(id)+'))'),expected);
+ assert.equal(JSON.stringify(data),before);
+});
+
+function httpNavigationFixture(){
+ const data=fixture(),seed=data.operations[0];
+ const rows=[
+  ['health',['GET'],['/health'],'GET /health'],
+  ['create-place',['POST'],['/places'],'POST /places'],
+  ['list-places',['GET'],['/places'],'GET /places'],
+  ['openapi',['GET'],['/openapi.json'],'GET /openapi.json'],
+  ['refresh',['POST'],['/places/{id}/refresh'],'POST /places/{id}/refresh'],
+  ['named',['GET'],['/places/named'],'List named places'],
+  ['unprefixed',['GET'],['/places/history'],'/places/history'],
+  ['multiple',['GET','POST'],['/places/{id}'],'POST / GET /places/{id} · Read or replace place'],
+  ['natural-title',['GET'],['/health/report'],'Get health report'],
+  ['local',[],[],'GET values from local cache']
+ ];
+ data.title='Synthetic HTTP navigation fixture';data.subtitle='Synthetic routes; no private source or runtime behavior is represented.';
+ data.catalogue=rows.map(([id,methods,paths,title])=>({id,symbol:id==='local'?'Cache.read':title,kind:id==='local'?'SOURCE_DECLARATION':'HTTP_ENDPOINT',trigger:{methods,paths},sourceIds:[]}));
+ data.operations=rows.map(([id,_methods,_paths,title])=>({...seed,id,title,summary:fragment('Synthetic navigation example.'),visuals:[]}));
+ data.sections=[];data.boundaryInventory={publicBoundaries:data.catalogue.filter(e=>e.kind==='HTTP_ENDPOINT'),gaps:[]};
+ return data;
+}
+
 test('service egress keeps logical storage and other-trigger boundaries with local participant links',()=>{
  const data=fixture();data.subject='service:orders';
  data.declaredRelationships={nodes:[{id:'external-service:store',label:'Logical reservation storage'},{id:'external-service:sdk',label:'Inference SDK'}],edges:[
@@ -192,6 +267,9 @@ function renderReaderFixture(data){
  return html;
 }
 function renderBehaviorFixture(data){return renderReaderFixture(data);}
+if(process.env.CODECLEW_HTTP_NAV_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_HTTP_NAV_FIXTURE_OUT);fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output,renderReaderFixture(httpNavigationFixture()));
+}
 function boundaryLayoutFixture(language='en'){
  const data=behaviorFixture(),op=data.operations[0],russian=language==='ru';data.language=language;
  const label=russian?'Внешняя система согласования синтетических резервирований и уведомлений':'External synthetic reservation approval and notification system';
