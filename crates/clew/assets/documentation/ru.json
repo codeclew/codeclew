@@ -1,7 +1,9 @@
 {
+  "Payload descriptions and declarations": "Описания данных и декларации",
+  "Payload description": "Описание данных",
   "Service data description": "Описание данных сервиса",
   "Documented data objects": "Описанные объекты данных",
-  "Service role and ownership have not been declared for this object.": "Роль сервиса и владелец этого объекта не определены.",
+  "Business ownership has not been declared for this object.": "Владелец этого объекта в бизнес-системе не определён.",
   "No structured business-object catalogue has been authored.": "Структурированный каталог предметных объектов ещё не подготовлен.",
   "No domain association established": "Доменная связь не установлена",
   "Declared transport": "Объявленный транспорт",

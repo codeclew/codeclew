@@ -54,10 +54,19 @@ pub(super) fn render(
                 md(t("Meaning"))
             ));
             for field in rows(&view["fields"]) {
+                let type_label = if let Some(target) = field["relatedModel"].as_str() {
+                    format!(
+                        "[{}](../data-model/{}.mdx#fields-and-representations)",
+                        md(text(&field["typeLabel"])),
+                        target
+                    )
+                } else {
+                    md(text(&field["typeLabel"]))
+                };
                 body.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
                     md(text(&field["path"])),
-                    md(text(&field["typeLabel"])),
+                    type_label,
                     md(text(&field["requiredness"])),
                     md(text(&field["nullability"])),
                     md(text(&field["meaning"]["text"])).replace('\n', "<br/>")
@@ -126,6 +135,16 @@ mod tests {
         assert!(body.contains("{#cpv-quote-failure}"));
         assert!(body.contains("../data-model/vehicle.mdx#field-year"));
         assert!(!body.contains("No body declared"));
+        assert_eq!(page, original);
+    }
+
+    #[test]
+    fn payload_nested_type_uses_the_exact_projected_model_link() {
+        let page = json!({"payloadViews":[{"id":"input","operation":"apply","title":"Local input","fields":[{"path":"request.record","typeLabel":"Record?","relatedModel":"record","model":"request","field":"record"}],"coverage":{"status":"observed-fields"}}]});
+        let original = page.clone();
+        let body = render(&page, "apply", "###", "en").unwrap();
+        assert!(body.contains("[Record?](../data-model/record.mdx#fields-and-representations)"));
+        assert!(body.contains("../data-model/request.mdx#field-record"));
         assert_eq!(page, original);
     }
 }

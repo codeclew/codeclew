@@ -16,12 +16,19 @@ A source-proven read can use relation `kind:"read"`, `role:"unknown"`,
 unknown ownership in its rationale. Use `owned` or `master` only with evidence.
 Register that concept with `docs entity put`, recompose the captured snapshot,
 and explicitly bind its canonical model using `entity:"entity:<id>"`.
+The exact model entity binding plus the retained entity relation to a service
+exposes that dictionary on its service landing, even without process links.
+This establishes dictionary navigation, not field usage or business ownership.
 
 If only a representation is established, describe it as such instead of inventing
 an entity. An explicitly authored VALUE_OBJECT or READ_MODEL may use a
 `processLinks` item with the exact service subject and `anchor:"section-entities"`
 without an `entity` association. Its business meaning and fields remain visible;
-its service role/ownership stay unknown. A DTO catalogue alone is not a business
+business ownership may remain unknown while its source-supported local role is
+known. Describe creation of a local context/result, a copied/read representation
+or an ignored receiver result in purpose/usage. Local allocation does not prove
+business creation or master ownership; unknown master ownership does not erase
+an observed local role. A DTO catalogue alone is not a business
 catalogue: group justified aliases as representations of one scoped attribute;
 keep copied objects, historical versions and derived values separate, with their
 specific mapping or unresolved relationship. Bind models deliberately; do not

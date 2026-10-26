@@ -113,6 +113,7 @@ ci_run checks python3 -I -S scripts/test_documentation_selection_contract.py
 ci_run checks python3 -I -S scripts/test_first_document.py
 ci_run checks python3 -I -S scripts/build_cli_documentation.py --check
 ci_run checks python3 -I -S scripts/test_agent_skill.py
+ci_run checks python3 -I -S scripts/test_reader_plan_preflight.py
 ci_run checks python3 -I -S scripts/test_prepared_source.py
 ci_run checks python3 -I -S scripts/test_pilot.py
 ci_run checks python3 -I -S scripts/test_macos_distribution.py

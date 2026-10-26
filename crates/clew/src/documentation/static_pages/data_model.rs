@@ -997,16 +997,45 @@ pub(super) fn attach_process(
     if !payload_views.is_empty() {
         payload["payloadViews"] = json!(payload_views);
     }
+    // The model's exact domain identity plus a retained explicit service
+    // relation is sufficient for dictionary navigation. It does not assert
+    // field usage, runtime ownership or a relationship to any other service.
+    let declared_models: BTreeSet<&str> = model["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| {
+            m["entity"].as_str().is_some_and(|entity| {
+                subject.strip_prefix("service:").is_some_and(|service| {
+                    payload["entities"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|d| {
+                            d["kind"] == "DOMAIN_ENTITY"
+                                && d["id"] == entity
+                                && d["normalized"]["entity"]["relations"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|relation| relation["service"] == service)
+                        })
+                })
+            })
+        })
+        .filter_map(|m| m["id"].as_str())
+        .collect();
     let reader_models = json!(
         model["models"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| m["processLinks"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|l| l["subject"] == subject)
+            .filter(|m| declared_models.contains(strv(&m["id"]))
+                || m["processLinks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|l| l["subject"] == subject)
                 || m["fields"]
                     .as_array()
                     .into_iter()
@@ -1064,54 +1093,55 @@ pub(super) fn attach_process(
     let mut references = Vec::new();
     let mut service_links = Vec::new();
     for m in model["models"].as_array().into_iter().flatten() {
-        for link in m["processLinks"].as_array().into_iter().flatten() {
-            if subject.starts_with("service:")
-                && link["subject"] == subject
-                && link["anchor"] == "section-entities"
-                && !service_links
-                    .iter()
-                    .any(|entry: &Value| entry["id"] == m["id"])
-            {
-                let fields = m["fields"]
+        if subject.starts_with("service:")
+            && (declared_models.contains(strv(&m["id"]))
+                || m["processLinks"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|f| {
-                        json!({"id":f["id"],"path":f["path"],
+                    .any(|link| link["subject"] == subject && link["anchor"] == "section-entities"))
+        {
+            let fields = m["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|f| {
+                    json!({"id":f["id"],"path":f["path"],
                         "originalName":f.get("originalName").map(|n|json!({"text":n["text"]})),
                         "readableName":f.get("readableName").map(|n|json!({"text":n["text"]})),
                         "meaning":{"text":f["meaning"]["text"]}})
-                    })
-                    .collect::<Vec<_>>();
-                let mut provenance = m.clone();
-                // Full source and representation evidence remains on canonical model pages.
-                // This compact disclosure retains every exact evidence identity without copying source bytes.
-                fn compact(v: &mut Value) {
-                    match v {
-                        Value::Object(map) => {
-                            if map.contains_key("textDigest") && map.contains_key("file") {
-                                map.remove("text");
-                            }
-                            for value in map.values_mut() {
-                                compact(value);
-                            }
+                })
+                .collect::<Vec<_>>();
+            let mut provenance = m.clone();
+            // Full source and representation evidence remains on canonical model pages.
+            // This compact disclosure retains every exact evidence identity without copying source bytes.
+            fn compact(v: &mut Value) {
+                match v {
+                    Value::Object(map) => {
+                        if map.contains_key("textDigest") && map.contains_key("file") {
+                            map.remove("text");
                         }
-                        Value::Array(values) => {
-                            for value in values {
-                                compact(value);
-                            }
+                        for value in map.values_mut() {
+                            compact(value);
                         }
-                        _ => (),
                     }
+                    Value::Array(values) => {
+                        for value in values {
+                            compact(value);
+                        }
+                    }
+                    _ => (),
                 }
-                compact(&mut provenance);
-                let summary = json!({"id":m["id"],"title":m["title"],"fields":fields});
-                let language = payload["language"].as_str().unwrap_or("en");
-                service_links.push(json!({"id":m["id"],"title":m["title"],"kind":m["kind"],
+            }
+            compact(&mut provenance);
+            let summary = json!({"id":m["id"],"title":m["title"],"fields":fields});
+            let language = payload["language"].as_str().unwrap_or("en");
+            service_links.push(json!({"id":m["id"],"title":m["title"],"kind":m["kind"],
                     "documentationLanguage":m["documentationLanguage"],"authority":model["authority"],"review":model["review"],
                     "fieldSummary":summary,"fieldTableHtml":service_field_table(&summary,language,false),"provenance":provenance,
                     "href":format!("../data-model/{}.html#fields-and-representations",strv(&m["id"]))}));
-            }
+        }
+        for link in m["processLinks"].as_array().into_iter().flatten() {
             if link["subject"] == subject && link["reference"].is_object() {
                 references.push(json!({"id":m["id"],"title":m["title"],"documentationLanguage":m["documentationLanguage"],"anchor":link["anchor"],
                     "stages":link["reference"]["stages"],"href":format!("../data-model/{}.html",strv(&m["id"]))}));
@@ -2420,6 +2450,70 @@ mod tests {
         assert!(other.get("serviceModelLinks").is_none());
     }
     #[test]
+    fn declared_entity_relation_exposes_its_dictionary_only_on_the_exact_service() {
+        let (mut plan, files, guides, mut checked) = fixture();
+        let entity = json!({"id":"entity:record","kind":"DOMAIN_ENTITY","service":"","symbol":"Record","digest":"fixture","sourceIds":[],"normalized":{"entity":{"id":"record","title":"Record","relations":[{"service":"sample","kind":"read","origin":"agent-proposal","confidence":"uncertain","rationale":"Selected source read only"}]}}});
+        checked.dependencies.insert(
+            "entity:record".into(),
+            serde_json::from_value(entity.clone()).unwrap(),
+        );
+        plan["models"][0]["entity"] = json!("entity:record");
+        plan["models"][0]["kind"] = json!("ENTITY");
+        plan["models"][0]["processLinks"] = json!([]);
+        let model = read(&plan, &files, &guides, &checked).unwrap();
+        let original =
+            json!({"language":"en","entities":[entity],"original":"Preserved service description"});
+        let mut service = original.clone();
+        attach_process(Some(&model), "service:sample", &mut service).unwrap();
+        assert_eq!(service["readerModels"][0]["entity"], "entity:record");
+        assert_eq!(
+            service["readerModels"][0]["fields"],
+            model["models"][0]["fields"]
+        );
+        assert_eq!(
+            service["serviceModelLinks"][0]["fieldSummary"]["fields"][0]["meaning"]["text"],
+            "Proposed field meaning"
+        );
+        assert_eq!(
+            service["serviceModelLinks"][0]["href"],
+            "../data-model/record.html#fields-and-representations"
+        );
+        assert_eq!(service["entities"], original["entities"]);
+        assert_eq!(service["original"], original["original"]);
+        assert_eq!(service["readerModels"][0]["processLinks"], json!([]));
+        assert!(service.get("processFieldFlow").is_none());
+        for subject in ["service:other", "service:sample-extra", "scenario:example"] {
+            let mut other = original.clone();
+            other["view"] = json!({});
+            attach_process(Some(&model), subject, &mut other).unwrap();
+            assert!(other.get("readerModels").is_none(), "{subject}");
+            assert!(other.get("serviceModelLinks").is_none(), "{subject}");
+        }
+        // Same names alone do not bind a dictionary, nor does the presence of
+        // a domain entity without a retained relation to the selected service.
+        let mut unbound = model.clone();
+        unbound["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("entity");
+        let mut service = original.clone();
+        attach_process(Some(&unbound), "service:sample", &mut service).unwrap();
+        assert!(service.get("readerModels").is_none());
+        let mut service = original.clone();
+        service["entities"][0]["normalized"]["entity"]["relations"] = json!([]);
+        attach_process(Some(&model), "service:sample", &mut service).unwrap();
+        assert!(service.get("readerModels").is_none());
+        // An additional explicit navigation link still yields one dictionary.
+        let mut linked = model;
+        linked["models"][0]["processLinks"] =
+            json!([{"subject":"service:sample","anchor":"section-entities"}]);
+        let mut service = original;
+        attach_process(Some(&linked), "service:sample", &mut service).unwrap();
+        assert_eq!(service["readerModels"].as_array().unwrap().len(), 1);
+        assert_eq!(service["serviceModelLinks"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn reference_records_reject_wrong_shape_unbound_evidence_and_foreign_stages() {
         let (mut plan, files, guides, check) = fixture();
         plan["models"][0]["records"] =
@@ -2680,6 +2774,25 @@ mod tests {
     }
 
     #[test]
+    fn payload_nested_type_preserves_only_an_exact_validated_model_reference() {
+        let (mut plan, files, guides, checked) = fixture();
+        let mut nested = plan["models"][0].clone();
+        nested["id"] = json!("nested");
+        nested["title"] = json!("Nested record");
+        plan["models"].as_array_mut().unwrap().push(nested);
+        plan["models"][0]["fields"][0]["representations"][0]["relatedModel"] = json!("nested");
+        plan["payloadViews"] = json!([{"id":"input","title":"Local input","subject":"scenario:example","operation":"saved","component":"request-body","direction":"local","format":"Source representation; wire format unknown","coverage":{"status":"observed-fields","scope":"Selected field only","claim":plan["models"][0]["purpose"]},"fields":[{"model":"record","field":"value","representation":"row","path":"request.record"}]}]);
+        let projected = read(&plan, &files, &guides, &checked).unwrap();
+        assert_eq!(
+            projected["payloadViews"][0]["fields"][0]["relatedModel"],
+            "nested"
+        );
+        plan["models"][0]["fields"][0]["representations"][0]["relatedModel"] =
+            json!("nested-extra");
+        assert!(read(&plan, &files, &guides, &checked).is_err());
+    }
+
+    #[test]
     fn payload_interaction_direction_and_external_links_use_exact_declared_identity() {
         let (mut plan, mut files, guides, mut checked) = fixture();
         files.insert(
@@ -2885,6 +2998,22 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("payload interaction is unavailable")
+        );
+        std::fs::remove_file(repo.path("scenarios/example.yaml").unwrap()).unwrap();
+        let (_, removed_scenario_handle) =
+            composition::recompose(&repo, &with_declarations).unwrap();
+        repo.put(
+            "scenarios/example.yaml",
+            &scenario("owner"),
+            Some(&repo.input_digest().unwrap()),
+        )
+        .unwrap();
+        let removed_scenario = Check::load_snapshot(&repo, &removed_scenario_handle).unwrap();
+        assert!(
+            read(&scoped, &files, &guides, &removed_scenario)
+                .unwrap_err()
+                .message
+                .contains("payload scenario is unavailable")
         );
     }
 

@@ -1995,6 +1995,16 @@ test('bound interface card shows complete declaration apart from unchanged code 
  assert.match(fallback,/Code accepts finite latitude/);
 });
 
+test('payload behavior descriptions never count as schemas or erase known local roles',()=>{
+ const data=fixture(),op=data.operations[0];data.language='ru';
+ op.interfaceContracts=[{id:'local-result',title:'Local result',kind:'payload',rows:[{id:'result',label:'Return',value:'Construct a local result; HTTP serialization is not established.',sourceIds:[]}],boundaries:[]}];
+ const before=JSON.stringify(data),r=load(data),html=r.run("interfaceContracts({id:'section-responsibilities'})");
+ assert.match(html,/Описания данных и декларации · 1/);assert.match(html,/Описание данных/);
+ assert.doesNotMatch(html,/1 schemas|1 схем|Схема данных/);assert.match(html,/Construct a local result/);
+ assert.equal(JSON.stringify(data),before);
+ assert.equal(r.run("t('Business ownership has not been declared for this object.')"),'Владелец этого объекта в бизнес-системе не определён.');
+});
+
 test('new inline declaration chrome localizes while schema values stay literal',()=>{
  const data=fixture();data.language='ru';const r=load(data);
  for(const key of ['Presence','Required in parent','Optional in parent','Each array item','Root schema','Excluded','Allowed','Not established'])assert.notEqual(r.run('t('+JSON.stringify(key)+')'),key,key);
@@ -2116,7 +2126,7 @@ test('domain catalogue leads preserved prose, binds only explicit models and lab
  assert.ok(html.indexOf('domain-catalogue')<html.indexOf('original-service-description'));
  assert.match(html,/Only selected field uses/);assert.match(html,/result.value/);assert.match(html,/Итоговое значение/);assert.match(html,/Unrecorded actions are unknown/);
  assert.doesNotMatch(html,/grouped-egress|declared-relationships/);assert.equal(JSON.stringify(data),before);
- data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.match(other.e('scenario-content').innerHTML,/Computed selected result/);assert.match(other.e('scenario-content').innerHTML,/Service role and ownership have not been declared/);data.readerModels[0].processLinks=[];assert.doesNotMatch(load(data).run('domainCatalogue()'),/Computed selected result/);
+ data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.match(other.e('scenario-content').innerHTML,/Computed selected result/);assert.match(other.e('scenario-content').innerHTML,/Business ownership has not been declared/);data.readerModels[0].processLinks=[];assert.doesNotMatch(load(data).run('domainCatalogue()'),/Computed selected result/);
 });
 test('egress groups profiles as explicit hypothesis, rejects grouping without rewriting IDs and hides self calls',()=>{
  const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('section-egress')");let html=r.e('scenario-content').innerHTML;
@@ -2321,6 +2331,15 @@ test('source payload views separate incoming request response error and unknown 
  const data=semanticPayloadFixture(),original=JSON.stringify(data),r=load(data),op=data.operations[0],html=r.run(`contract({id:${JSON.stringify(op.id)}})`);
  for(const title of ['Price request','Price response','Remote failure response','Produced Avro value'])assert.ok(html.includes(title));assert.match(html,/request-body|Request body/);assert.match(html,/502/);assert.match(html,/manufactureYear/);assert.match(html,/Constructor parameter; wire presence unknown/);assert.match(html,/Nullable source property; wire nullability unknown/);assert.match(html,/Field definition unavailable/);assert.match(html,/No empty or complete payload schema is asserted/);assert.doesNotMatch(html,/No body declared|Interface contract is not documented/);assert.match(html,/data-label="Representation nullability"/);assert.equal((html.match(/class="cpvlegend"/g)||[]).length,1);assert.equal((html.match(/Source-derived representation shape/g)||[]).length,1);assert.ok(html.indexOf('class="cpvlegend"')<html.indexOf('Source-derived representation shape'));assert.equal(JSON.stringify(data),original);
  r.run(`location.hash=${JSON.stringify('#cpv-'+op.id+'-request')};routeReaderHash()`);assert.equal(r.run('tab'),'contract');assert.ok(r.e('scenario-content').innerHTML.includes('Price request'));assert.equal(r.e('source-panel').hidden,true);
+});
+test('source payload nested type links use only explicit projected identities',()=>{
+ const data=semanticPayloadFixture();data.payloadViews[0].fields[0].relatedModel='nested-record';
+ const before=JSON.stringify(data),r=load(data),html=r.run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`);
+ assert.match(html,/href="\.\.\/data-model\/nested-record.html#fields-and-representations"/);
+ assert.match(html,/href="\.\.\/data-model\/vehicle.html#field-manufacture-year"/);
+ assert.equal(JSON.stringify(data),before);
+ delete data.payloadViews[0].fields[0].relatedModel;
+ assert.doesNotMatch(load(data).run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`),/nested-record/);
 });
 if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));}
 

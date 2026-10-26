@@ -33,6 +33,27 @@ about exhaustive enums, time zones or unestablished identity remain secondary.
 Review the complete requested catalogue: fixing one year example does not account
 for every original field. Track each original field/use to its canonical target,
 explicit copy/derivation relation or named unresolved mapping.
+The author/orchestrator derives and freezes that bounded source-to-attribute
+inventory autonomously from the authorized question and selected evidence before
+dispatch; no new user approval or user-supplied manifest is required. A shorter
+self-selected inventory cannot redefine the requested scope. Use the same
+inventory and question in normal and debug mode. Include local
+and history types, copied representations, formulas and named unresolved inputs
+when the selected evidence contains them. A missing framework route does not
+make available method/type semantics unavailable: retain honest compiler/SYNTAX
+limits without dropping those parts of the requested reader. Do not invent a
+framework entrypoint or an empty operation to bypass a native gate.
+
+For this semantic reader outcome, author an evidence-bound `readableName` for
+every canonical field in the requested documentation language. Optionality in the
+general schema does not make an absent business label acceptable here. A path
+such as `record.measuredValue` is an exact code representation, not a translated
+business name. Preserve it in `originalName`/representations; do not translate
+or rename source identifiers. Review whether the authored name is actually
+supported, including technical fields that have no established business meaning.
+For an unresolved technical attribute use a specific neutral readable label and
+retain its unresolved meaning proposition; never invent a business interpretation
+to satisfy label presence.
 
 ## Source-derived payload views
 
@@ -73,6 +94,39 @@ definition, and `complete-definition` only with complete selected model definiti
 and every field. Complete type coverage still does not establish complete wire
 schema, serialization or runtime conformance. Separate normal and error response
 views. Say exactly which definition is missing, retaining useful observed fields.
+
+When the task requests inputs/results/errors or exchanged data, inventory each
+in-scope operation and author its supported payload views; a behavior card or
+separate unlinked DTO page does not meet that request. Reuse the exact existing
+canonical fields and representation labels, including retained nested paths and
+type/presence/nullability limits. Keep normal/error results separate. A local
+method result or status is not HTTP: use local direction and label its source
+scope without inventing serialization, a network response or a wire declaration.
+Do not turn an available type definition into unknown coverage to avoid mapping.
+
+Before export, run the bounded preflight from the installed skill directory:
+
+```sh
+python3 -I -S SKILL_DIR/scripts/reader_plan_preflight.py --plan MODEL_PLAN.json \
+  --service service:sample --payload-owner service:sample/apply \
+  --expected-field record/value --nested-field request/record=record
+```
+
+Repeat `--payload-owner` for each exact owner selected by the requested task.
+Supply the complete scoped canonical target inventory with repeated
+`--expected-field MODEL/FIELD`; this is not a name-matching source extractor.
+Use `--nested-field MODEL/FIELD=TARGET_MODEL` for each source-supported nested
+definition that needs navigation. Set the representation's exact `relatedModel`,
+not only a type name or a prose mention. Every representation-only model needed
+on the service landing needs an explicit `processLinks` item for that service
+and `section-entities`; a domain model instead needs its exact entity association
+and retained service relation. Do not guess association from class names.
+This checks label presence and selected inventory/navigation only. Repair findings through
+the assigned author, then run native export and independent rendered review;
+neither this check nor an export success approves language or business meaning.
+Run the same requested inventory checks for normal and debug plans. Independently
+compare the actual reader answers: a different mode or shorter packet does not
+authorize dropping copies, historical attributes, formulas or unresolved mappings.
 
 ## Static configuration references
 

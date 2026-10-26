@@ -1500,7 +1500,13 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                                 && rows(&record["normalized"]["entity"]["relations"])
                                     .any(|relation| relation["service"] == id)
                         }) {
-                            out.push_str(&format!("\n\n{}\n\n", md(crate::documentation::language::label(language, "Service role and ownership have not been declared for this object."))));
+                            out.push_str(&format!(
+                                "\n\n{}\n\n",
+                                md(crate::documentation::language::label(
+                                    language,
+                                    "Business ownership has not been declared for this object."
+                                ))
+                            ));
                         }
                     }
                     out.push_str(&super::data_model::service_field_table(
@@ -3310,7 +3316,7 @@ mod tests {
             "A sample supplied for calibration.",
             "Measured level",
             "Level supplied for calibration",
-            "Service role and ownership have not been declared for this object.",
+            "Business ownership has not been declared for this object.",
         ] {
             assert!(body.find(meaning).unwrap() < provenance);
         }

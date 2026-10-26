@@ -41,6 +41,9 @@ secondary details. Do not strip text heuristically to manufacture a short label.
   consumption or an explicitly bound field glossary; follow [domain authoring](domain-entities.md).
 - Reuse `data-model-plan/1.0`, its exact publication/snapshot/source claims,
   `readableName`, `originalName`, `meaning`, representations and usage states.
+  For this reader task every field needs a source-supported business-language
+  `readableName`; a technical path is not a substitute. Check requested payload
+  owners with the bounded preflight in [semantic reader contracts](semantic-reader-contracts.md).
   Optional model `entity` explicitly names a selected declared `entity:<id>`.
   Do not associate models by name equality or publish the entire DTO inventory
   as domain objects. Conceptual objects may have no canonical code type.
