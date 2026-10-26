@@ -141,6 +141,13 @@ def reader_scope(root, spec, tracked=None):
         retained = R['bind_scope'](raw, binding['digest'])
     except (ValueError, TypeError, AttributeError) as error:
         raise Blocked(str(error)) from error
+    retained['deliveryContract'] = {
+        'evidenceNotesCloseReaderTargets': False,
+        'requiredCheck': 'reader_plan_preflight.py with --reader-export after native render; exact target.rendered file/pointer/page bindings',
+        'deliveryStatus': 'UNVERIFIED_UNTIL_POST_EXPORT_CHECK',
+        'modeScope': 'Normal and debug deliver the same full question; diagnostics are additional evidence, not replacement reader content',
+        'meaningAuthority': 'MECHANICAL_LINKS_ONLY_MEANING_UNASSESSED',
+    }
     if 'coverage' in binding:
         coverage = binding['coverage']
         require(isinstance(coverage, dict) and set(coverage) == {'path', 'digest'}, 'INVALID_READER_COVERAGE_BINDING')

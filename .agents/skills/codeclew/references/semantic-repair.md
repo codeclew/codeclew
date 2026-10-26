@@ -67,7 +67,13 @@ planner, model dispatch or semantic approval. Run the reader preflight on the
 final assembled documents and explicit candidate dispositions before export.
 Optional `readerScope.coverage: {"path":"reader-coverage.json", "digest":"FILE_SHA256"}`
 also pins and carries an existing disposition map bound to that original scope;
-the handoff does not treat these declared dispositions as validated semantics.
+the handoff does not treat these declared dispositions as validated semantics or
+reader delivery. Its `deliveryContract` keeps evidence notes separate from native
+reader targets and carries the same normal/debug delivery requirement through
+review and repair. After native export, run the same preflight with
+`--reader-export` and exact target `rendered` file/pointer/page bindings. Keep the
+report separate from independent meaning approval; do not satisfy required reader
+content using debug claims or another non-rendered sidecar.
 
 ```sh
 python3 -I -S SKILL/scripts/semantic_handoff.py prepare \

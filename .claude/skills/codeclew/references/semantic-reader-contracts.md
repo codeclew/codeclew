@@ -218,19 +218,51 @@ Return one disposition per candidate in a separate `reader-coverage.json`:
 ```
 
 Kinds are `canonical`, `copy`, `history`, `derived`, `unresolved` and `excluded`.
-Targets are exact nonempty JSON pointers in `plan` or named `--document` inputs.
+Targets are exact nonempty JSON pointers in reader-bearing `plan` slots or
+named native Narrative/Proposal `--document` inputs. Evidence notes, debug
+claims, source dumps and provenance are supporting records, not reader targets.
+Renaming a sidecar does not make its claims a native paragraph. A candidate
+needed to answer the question must reach a model, field, sequence or prose slot
+in the native documentation. A formula may use an explanatory paragraph without
+inventing a model field. Do not exclude an obligation merely to simplify debug
+output or to make the helper pass.
 A sourced formula may point to its explanatory paragraph; it need not invent a
 model field. `unresolved` requires a target and reason; `excluded` requires an
 explicit question-scoped reason and may have no target. Exclusion rationale,
 aliases, copy scope and formula correctness still need independent review.
-The helper checks the earlier digest, missing/duplicate dispositions and broken
-targets; `TARGETS_PRESENT_MEANING_UNASSESSED` is mechanical closure, not a semantic
+The helper checks the earlier digest, missing/duplicate dispositions, reader-slot
+eligibility and broken targets; `TARGETS_PRESENT_MEANING_UNASSESSED` is mechanical closure, not a semantic
 PASS or proof of initial inventory completeness. It never runs models or capture.
 The existing [semantic handoff](semantic-repair.md) carries this same bounded
 inventory with `readerScope: {"path":"reader-scope.json", "digest":"EARLIER_SCOPE_SHA256"}`.
 When dispositions already exist, include `coverage` inside `readerScope` with
 its own `path` and exact file `digest`; the existing handoff tracks and carries
 that map too. It remains unassessed until the preflight and independent review.
+
+After the supported native export, bind each target to its actual native JSON
+slot and reading page in a new version of the coverage map. Retain the original
+scope digest and candidate inventory. Preserve earlier coverage files and their
+pinned handoffs; record the new delivery map's path/digest in the continuation
+instead of overwriting a pinned file. The coordinator may add delivery bindings:
+
+```json
+{"document":"plan", "pointer":"/models/0/fields/0",
+ "rendered":{"file":"data-model.json", "pointer":"/models/0/fields/0",
+             "page":"data-model/record.html"}}
+```
+
+Repeat the same command with `--coverage reader-coverage-delivered.json` and
+`--reader-export NATIVE_EXPORT_DIRECTORY`. Native
+paragraphs can bind to a service/process JSON operation or a section's `content`;
+use the actual rendered pointer and page from `pages-manifest.json`. Canonical
+IDs and Narrative operation IDs must still match. Work-local Proposal IDs remain
+the native coordinator's binding responsibility. Only native content slots count:
+a matching string in `notes`, `sources` or another provenance branch does not.
+The helper checks native file/page hashes, exact content presence and routes. Its
+`readerDelivery: LINKS_PRESENT_MEANING_UNASSESSED` does not prove browser visibility,
+meaning, source truth or that a command really ran. Without this option delivery
+remains `NOT_CHECKED_NO_EXPORT`. Preserve the post-export report, then independently
+open the actual reader and compare answers to the unchanged full question.
 
 Repeat `--payload-owner` for each exact owner selected by the requested task.
 Supply the complete scoped canonical target inventory with repeated
@@ -278,6 +310,18 @@ source-supported contrast. A default passed into a provider is not the current
 runtime flag value. Do not invent the backend or business rationale from a flag
 name or numeric threshold.
 
+Explain the roles of arguments that materially affect a decision or alternative:
+fallback/default, mode, limit, comparison basis, timeout or error policy. Showing
+a positional literal or copying a call expression is not that explanation.
+Bind actual arguments to the selected signature's parameter names using delivered
+typed bindings or a bounded exact declaration/interface follow-up. Resolve the
+specific overload when necessary; do not guess parameter roles from a literal.
+Keep caller-supplied values and their declared parameter roles separate from a
+provider implementation's behavior or active runtime configuration. If that
+behavior is absent, leave that specific fact unknown while retaining available
+argument-role facts. Deliver the explanation beside the reader's decision, not
+only in diagnostic notes.
+
 Before calling meaning/status/fields unknown, resolve the specific named handler,
 mapper, definition or version-service method in the already selected evidence.
 Use bounded targeted lookups, not full inventory/context replay or recapture.
@@ -294,6 +338,8 @@ For normal/debug acceptance use the new [public example](../examples/semantic-re
 Require independent rendered answers for equivalent, distinct and unresolved
 attributes, current/history copies, payload coverage and contrasting predicates.
 The debug result keeps the same answer and adds only bounded identities/lookups
-and checks. Reject invented business labels and an unjustified unknown when the
+and checks. Additional notes never replace main reader content, even when their
+JSON pointers are valid. Compare native model/prose destinations after render
+in both modes, not just coverage sidecars. Reject invented business labels and an unjustified unknown when the
 handler/definition is available outside the initial fragment. Preserve rejected
 attempts and their costs; no automatic semantic PASS from counts or assertions.

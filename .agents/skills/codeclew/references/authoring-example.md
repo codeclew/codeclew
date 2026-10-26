@@ -17,7 +17,12 @@ source runtime or a private converter when a released capability is unavailable.
 For a broad documentation request, preserve the whole requested surface before
 selecting an operation: service purpose, responsibilities/processes, business
 objects and fields, ingress, egress and relevant configuration. Use the same scope
-in normal and debug modes; debug adds diagnostics, not a narrower task. A focused
+in normal and debug modes; debug adds diagnostics, not a narrower task. The
+reader answer must remain complete in the native pages: notes, coverage maps and
+debug claims are evidence aids, not substitutes for requested explanations.
+Use the [reader preflight](semantic-reader-contracts.md) before export and its post-export
+`--reader-export` check to bind each required target to actual native content and
+a page; retain semantic-unassessed limits and independent rendered review. A focused
 operation draft completes only that operation. Continue the requested remaining
 surfaces through their supported section/catalogue/data-model routes, or report a
 specific unfinished scope with its evidence gap. Do not call the broad task PASS
@@ -84,6 +89,11 @@ effects with bounded reads. A navigation lead is unfinished acquisition, not
 proof that its behavior is unavailable. For each relevant call, record actual
 arguments, forwarded/default values and whether the call is inside a callback or
 follows its return; a mode from one call does not apply to the next call.
+For arguments that change a decision, explain the source-supported parameter
+role and consequence. Read the exact signature/interface with a bounded follow-up
+when the initial body leaves that role unclear; a positional literal alone is
+not an explanation. Do not infer provider implementation or runtime settings
+from a caller-supplied default, mode or limit.
 
 When native grammar rejects a node, correct that exact node and compare the
 structural diff before resubmitting. Keep every unaffected branch, condition,
@@ -143,9 +153,12 @@ reader summary with supported behavior and outcomes, then their evidence limits.
 
 Normal request: "Document this selected operation from its saved Work."
 `debug=true` is an instruction convention for the same request and commands,
-not a `clew` flag or a reason to make extra model calls. Save the sanitized
-request, active skill/helper versions, selected Work/snapshot, original failed
-and final artifacts, commands, native statuses, validation results and available
+not a `clew` flag or a reason to make extra model calls. Keep the same full
+question and pinned candidate inventory. Keep every required answer in native
+reader prose/models; add debug notes alongside it.
+Check post-render delivery in both modes before comparing their actual answers.
+Save the sanitized request, active skill/helper versions, selected Work/snapshot,
+original failed and final artifacts, commands, native statuses, validation results and available
 receipts in a new private directory outside the skill. Record concrete coverage
 gaps and decision reasons, without private reasoning or invented authority.
 Write `debug.json` with exactly these six top-level keys and no others:

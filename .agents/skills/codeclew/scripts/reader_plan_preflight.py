@@ -62,7 +62,143 @@ def target_at(document, pointer):
     return document
 
 
-def scope_findings(scope, coverage, documents):
+def reader_slot(document, pointer, native=False):
+    """Recognize reader-bearing slots, never arbitrary evidence/diagnostic JSON."""
+    parts = pointer.strip('/').split('/')
+    ignored = {'id', 'schema', 'sourceIds', 'dependencyIds', 'evidence', 'sources',
+               'provenance', 'contextDigest', 'revision', 'textDigest'}
+    if any(part in ignored for part in parts):
+        raise ValueError('Metadata is not a reader-content target')
+    schema = document.get('schema')
+    if schema in ('codeclew-data-model-plan/1.0', 'codeclew-data-model-reading/1.0'):
+        if len(parts) < 2 or parts[0] not in ('models', 'payloadViews'):
+            raise ValueError('Not a model or payload reader slot')
+        row = target_at(document, '/' + '/'.join(parts[:2]))
+        identity = (parts[0], row['id'])
+        if len(parts) > 3 and parts[2] == 'fields' and parts[0] == 'models':
+            field = target_at(document, '/' + '/'.join(parts[:4]))
+            identity += (field['id'],)
+        return identity
+    authored = schema in ('codeclew-documentation-narrative/1.3',
+                          'codeclew-documentation-narrative/1.4',
+                          'codeclew-documentation-proposal/1.0')
+    if not authored and not native:
+        raise ValueError('Unsupported reader-content schema; evidence-only notes cannot close delivery')
+    if len(parts) < 2 or parts[0] not in ('operations', 'sections'):
+        raise ValueError('Not an operation or section reader slot')
+    row = target_at(document, '/' + '/'.join(parts[:2]))
+    remainder = parts[2:]
+    if native and parts[0] == 'sections' and remainder[:1] == ['content']:
+        remainder = remainder[1:]
+    if remainder and remainder[0] not in ('title', 'summary', 'steps', 'events',
+                                         'explanation', 'findings', 'boundaries',
+                                         'contracts', 'interfaceContracts'):
+        raise ValueError('Not reader prose or sequence content')
+    # Proposal IDs can be work-local; the native coordinator validates that
+    # binding. Narrative IDs and canonical model IDs survive native export.
+    return ('prose', None if schema == 'codeclew-documentation-proposal/1.0' else row['id'])
+
+
+def visible_content(value, keep_ids=False):
+    ignored = {'id', 'schema', 'sourceIds', 'dependencyIds', 'evidence', 'sources',
+               'provenance', 'contextDigest', 'documentationLanguage'}
+    if keep_ids:
+        ignored.remove('id')
+    if isinstance(value, dict):
+        return {k: visible_content(v, keep_ids) for k, v in value.items() if k not in ignored}
+    if isinstance(value, list):
+        return [visible_content(v, keep_ids) for v in value]
+    return value
+
+
+def contains_content(actual, expected):
+    if isinstance(expected, dict):
+        return bool(expected) and isinstance(actual, dict) and all(
+            k in actual and contains_content(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) >= len(expected) and all(
+            contains_content(a, e) for a, e in zip(actual, expected))
+    return type(actual) is type(expected) and actual == expected
+
+
+class ReaderExport:
+    """Bounded, read-only checks of declared native files and reader routes."""
+    def __init__(self, root):
+        self.root = Path(root).absolute()
+        self.used, self.cache, self.documents, self.verified = 0, {}, {}, set()
+        self.manifest = json.loads(self.read('pages-manifest.json'))
+        if self.manifest.get('schema') != 'codeclew-native-pages-full-manifest/1.0':
+            raise ValueError('Expected a native full pages manifest')
+        self.files = {row['path']: row['digest'] for row in self.manifest['files']}
+
+    def read(self, name):
+        path = Path(name)
+        if path.is_absolute() or not path.parts or any(p in ('.', '..') for p in path.parts):
+            raise ValueError('Reader delivery needs a relative native export path')
+        target = self.root
+        if target.is_symlink():
+            raise ValueError('Reader export root must not be a symlink')
+        for part in path.parts:
+            target = target / part
+            if target.is_symlink():
+                raise ValueError('Reader delivery cannot follow symlinks')
+        if name in self.cache:
+            return self.cache[name]
+        if not target.is_file():
+            raise ValueError('Reader delivery needs a regular file')
+        size = target.stat().st_size
+        if size > 64 * 1024 * 1024 or self.used + size > 128 * 1024 * 1024:
+            raise ValueError('Reader delivery exceeds64 MiB/file or128 MiB total')
+        limit = min(64 * 1024 * 1024, 128 * 1024 * 1024 - self.used)
+        with target.open('rb') as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError('Reader delivery exceeds its read budget')
+        self.used += len(raw)
+        self.cache[name] = raw
+        return raw
+
+    def bound(self, name):
+        raw = self.read(name)
+        if name not in self.verified:
+            if self.files.get(name) != sha(raw):
+                raise ValueError('Native delivery file is absent or changed in manifest')
+            self.verified.add(name)
+        return raw
+
+    def check(self, target, document, scope):
+        delivery = target.get('rendered')
+        if not isinstance(delivery, dict) or set(delivery) != {'file', 'pointer', 'page'}:
+            raise ValueError('An exact rendered file/pointer/page binding is required')
+        source_slot = reader_slot(document, target['pointer'])
+        name = delivery['file']
+        if name not in self.documents:
+            self.documents[name] = json.loads(self.bound(name))
+        native = self.documents[name]
+        native_slot = reader_slot(native, delivery['pointer'], native=True)
+        if source_slot[0] != native_slot[0] or (source_slot[1] is not None and source_slot != native_slot):
+            raise ValueError('Reader target identity changed')
+        page = delivery['page']
+        if source_slot[0] in ('models', 'payloadViews'):
+            if delivery['file'] != 'data-model.json' or native.get('schema') != 'codeclew-data-model-reading/1.0':
+                raise ValueError('Not the native data-model projection')
+            expected_page = 'data-model/' + source_slot[1] + '.html' if source_slot[0] == 'models' else 'data-model.html'
+            if page != expected_page:
+                raise ValueError('Not the selected model/payload reader route')
+        else:
+            if not any(p.get('json') == delivery['file'] and p.get('html') == page
+                       and p.get('subject') == scope['inventory']['subject']
+                       for p in self.manifest['pages']) or native.get('subject') != scope['inventory']['subject']:
+                raise ValueError('Not the scoped native service/process reader')
+        self.bound(page)
+        keep_ids = source_slot[0] in ('models', 'payloadViews')
+        expected = visible_content(target_at(document, target['pointer']), keep_ids)
+        actual = visible_content(target_at(native, delivery['pointer']), keep_ids)
+        if not contains_content(actual, expected):
+            raise ValueError('Authored reader content was not delivered to that native slot')
+
+
+def scope_findings(scope, coverage, documents, reader_export=None):
     if not isinstance(coverage, dict) or coverage.get('schema') != 'codeclew-reader-coverage/1.0':
         raise ValueError('Scope check requires reader-coverage/1.0 dispositions')
     if coverage.get('scopeDigest') != scope['digest']:
@@ -95,18 +231,30 @@ def scope_findings(scope, coverage, documents):
                     raise ValueError('Empty target')
             except (KeyError, IndexError, TypeError, ValueError):
                 findings.append({'code': 'CANDIDATE_TARGET_MISSING', 'candidate': candidate, 'target': target})
+                continue
+            try:
+                reader_slot(documents[target['document']], target['pointer'])
+            except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+                findings.append({'code': 'CANDIDATE_TARGET_NOT_READER_CONTENT', 'candidate': candidate, 'target': target})
+                continue
+            if reader_export is not None:
+                try:
+                    reader_export.check(target, documents[target['document']], scope)
+                except (OSError, KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
+                    findings.append({'code': 'CANDIDATE_READER_DELIVERY_MISSING', 'candidate': candidate,
+                                     'target': target, 'detail': str(error)})
     findings.extend({'code': 'CANDIDATE_DISPOSITION_MISSING', 'candidate': candidate}
                     for candidate in sorted(candidates - seen))
     return findings
 
 
 def inspect(plan, payload_owners=(), service=None, expected_fields=(), nested_fields=(),
-            reader_scope=None, coverage=None, documents=None):
+            reader_scope=None, coverage=None, documents=None, reader_export=None):
     if not isinstance(plan, dict) or plan.get('schema') != 'codeclew-data-model-plan/1.0':
         raise ValueError('Expected a data-model-plan/1.0 object')
     findings = []
     if reader_scope is not None:
-        findings.extend(scope_findings(reader_scope, coverage, {**(documents or {}), 'plan': plan}))
+        findings.extend(scope_findings(reader_scope, coverage, {**(documents or {}), 'plan': plan}, reader_export))
     models = {model.get('id'): model for model in plan.get('models', [])}
     if service is not None and (not service.startswith('service:') or not service[8:]):
         raise ValueError('Service must be service:ID')
@@ -160,7 +308,11 @@ def inspect(plan, payload_owners=(), service=None, expected_fields=(), nested_fi
         result['readerScopeDigest'] = reader_scope['digest']
         result['questionDigest'] = reader_scope['inventory']['questionDigest']
         result['scopeClosure'] = 'INCOMPLETE' if findings else 'TARGETS_PRESENT_MEANING_UNASSESSED'
+        result['readerDelivery'] = ('INCOMPLETE' if findings else 'LINKS_PRESENT_MEANING_UNASSESSED') if reader_export else 'NOT_CHECKED_NO_EXPORT'
+        if reader_export:
+            result['exportIdentity'] = reader_export.manifest.get('exportIdentity')
         result['limits'] += ' Scope closure checks the earlier pinned candidate dispositions and exact targets only; it cannot prove initial inventory completeness, mapping correctness or justified exclusions.'
+        result['limits'] += ' Reader targets exclude evidence notes. Post-export checks bind native content slots and hashed page routes, not browser visibility, source truth, execution provenance or semantic correctness. Without --reader-export, delivery is unverified.'
     return result
 
 
@@ -176,10 +328,13 @@ def main():
     parser.add_argument('--reader-scope-digest', help='Exact earlier scope file digest retained in the dispatch/handoff')
     parser.add_argument('--coverage', type=Path, help='Candidate dispositions/targets bound to that scope digest')
     parser.add_argument('--document', action='append', default=[], help='NAME=JSON_FILE for exact prose targets; plan is already available')
+    parser.add_argument('--reader-export', type=Path, help='Post-render native export; verify target.rendered file/pointer/page bindings and manifest hashes')
     args = parser.parse_args()
     try:
         if bool(args.reader_scope) != bool(args.reader_scope_digest) or bool(args.reader_scope) != bool(args.coverage):
             raise ValueError('Use --reader-scope, --reader-scope-digest and --coverage together')
+        if args.reader_export and not args.reader_scope:
+            raise ValueError('--reader-export requires the earlier reader scope and coverage')
         documents = {}
         for entry in args.document:
             name, sep, path = entry.partition('=')
@@ -190,10 +345,14 @@ def main():
                 raise ValueError('Reader document exceeds4 MiB')
             documents[name] = json.loads(raw)
         scope = bind_scope(args.reader_scope.read_bytes(), args.reader_scope_digest) if args.reader_scope else None
-        coverage = json.loads(args.coverage.read_text(encoding='utf-8')) if args.coverage else None
+        coverage_raw = args.coverage.read_bytes() if args.coverage else None
+        coverage = json.loads(coverage_raw) if coverage_raw is not None else None
         result = inspect(json.loads(args.plan.read_text(encoding='utf-8')), args.payload_owner,
-                         args.service, args.expected_field, args.nested_field, scope, coverage, documents)
-    except (OSError, ValueError, TypeError, AttributeError) as error:
+                         args.service, args.expected_field, args.nested_field, scope, coverage, documents,
+                         ReaderExport(args.reader_export) if args.reader_export else None)
+        if coverage_raw is not None:
+            result['coverageDigest'] = sha(coverage_raw)
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError) as error:
         parser.exit(2, f'{error}\n')
     print(json.dumps(result, ensure_ascii=False))
     return 2 if result['findings'] else 0
