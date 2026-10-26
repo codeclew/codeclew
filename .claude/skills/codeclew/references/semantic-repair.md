@@ -56,6 +56,19 @@ The author is explicitly Luna Max; the independent reviewer uses the caller's
 selected model. Different IDs record the assignment; they do not prove process
 isolation or which model really executed. Enforce isolation in the host session.
 
+For a full-question semantic reader task, add optional `readerScope` to this
+request with `path` and the exact earlier file `digest`, using the
+[bounded original question/candidate inventory](semantic-reader-contracts.md).
+Prepare binds that file in the existing tracked inputs and includes its original
+question and source pins in review/repair/affected-review contexts. It retains
+the same digest across native submission and publication/model phases; a changed
+inventory blocks this handoff instead of silently narrowing it. This adds no
+planner, model dispatch or semantic approval. Run the reader preflight on the
+final assembled documents and explicit candidate dispositions before export.
+Optional `readerScope.coverage: {"path":"reader-coverage.json", "digest":"FILE_SHA256"}`
+also pins and carries an existing disposition map bound to that original scope;
+the handoff does not treat these declared dispositions as validated semantics.
+
 ```sh
 python3 -I -S SKILL/scripts/semantic_handoff.py prepare \
   --input-root OUTPUT_ROOT --input request.json --output review-01

@@ -623,6 +623,52 @@ narratives until reviewed replacements are supplied. A digest detects changes;
 it does not prove an agent's explanation. Missing history/source stays
 UNRESOLVED. No hosted LLM or embedded API key is part of this workflow.
 
+### Maintain a few paragraphs without reauthoring the operation
+
+Use the exact saved publication and its snapshot as the baseline. For a large
+retained operation, prepare ordinary Work for that exact entrypoint and collect
+all its `RETAINED_OPERATION` parts using the [bounded part route](operation-selection.md#exact-requests-for-omitted-retained-and-dependency-records).
+Keep the unchanged canonical events, claims, IDs, evidence, diagrams and authored
+metadata in the local assembler. Give the author only the selected paragraphs,
+their source context and necessary anchors; do not replay the whole operation
+through a model or require a Narrative-to-Proposal converter.
+
+For source-bound machine paragraphs without protected authorship, copy the
+canonical Narrative, replace only the reviewed text slots, and retain its exact
+subject/contextDigest and all other fields. Publish this local working revision
+against its saved evidence first, then export that resulting publication:
+
+```sh
+clew docs render --root DOCS_ROOT --snapshot SAVED_SNAPSHOT \
+  --input corrected-narrative.json
+clew docs render --root DOCS_ROOT --snapshot SAVED_SNAPSHOT \
+  --publication NEW_BUNDLE --data-model rebound-model-plan.json \
+  --output NEW_EXPORT_DIRECTORY
+```
+
+Take `NEW_BUNDLE` from the first result and check `updateFailures` before export.
+Copy the complete previous model-plan and change only its `publication` binding
+when its snapshot, models, fields, payload owners and cited fragments remain
+valid. If a changed paragraph is itself cited as RETAINED evidence, its exact
+textDigest binding must be reviewed and updated too; do not bypass a stale
+binding or drop the model/payload views. Snapshot or entity declaration changes
+need their own admitted binding. Compare the complete old/new operations after
+assembly: only the intended text slots may differ. These commands neither run
+source capture nor claim verified meaning; omit `--publish` for a local working
+revision without adding a released-history entry.
+
+For explicitly attributed user-documentation text instead, the existing local
+Proposal accepts `operations: []` and `retainedEdits` items with
+`kind: "RETAINED_OPERATION"`, exact operation `id`/`recordDigest`,
+`target: "explanationText"`, exact `fragmentId`/`expectedOldValue`, `replacement`
+and declared `author`. Read every exact retained part, submit with
+`docs proposal submit`, then publish with `docs proposal publish --unassessed`.
+This path preserves the other canonical fields but attributes the replacement
+as `USER_DOCUMENTATION / UNASSESSED`; retained source links are unverified
+context, not fresh code proof. Do not use it to overwrite protected authorship
+through direct Narrative input or represent a manual replacement as verified
+source semantics.
+
 ## Discover internal processes before authoring
 
 Use `docs process candidates --root ROOT --service ID --snapshot SNAPSHOT` to

@@ -173,6 +173,41 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(H['references']({'text': 'Owned', 'evidence': ['s1'], 'checks': [
             {'kind': 'factEquals', 'evidence': 'd1', 'field': 'kind', 'expected': 'RETURN'}]}), {'s1': 1, 'd1': 1})
 
+    def test_original_question_and_candidate_scope_carry_through_existing_handoff(self):
+        helper = runpy.run_path(str(ROOT / 'scripts/test_reader_plan_preflight.py'))
+        scope, _, coverage, _ = helper['ReaderPlanPreflightTests']().scoped()
+        path = self.write('reader-scope.json', scope['inventory'])
+        expected = H['sha'](path.read_bytes())
+        coverage['scopeDigest'] = expected
+        coverage_path = self.write('reader-coverage.json', coverage)
+        request = self.read('request.json')
+        request['readerScope'] = {'path': 'reader-scope.json', 'digest': expected,
+                                 'coverage': {'path': 'reader-coverage.json', 'digest': H['sha'](coverage_path.read_bytes())}}
+        self.write('request.json', request)
+        self.ready()
+        for name in ['handoff/review-context.json', 'repair/repair-context.json']:
+            context = self.read(name)
+            self.assertEqual(context['readerScope']['inventory'], scope['inventory'])
+            self.assertEqual(context['readerScope']['coverage'], coverage)
+            self.assertEqual(context['binding']['readerScopeDigest'], expected)
+        code, result = self.apply()
+        self.assertEqual(code, 0, result)
+        affected = self.read('applied/affected-review-context.json')
+        self.assertEqual(affected['readerScope']['inventory'], scope['inventory'])
+        self.assertEqual(affected['readerScope']['coverage'], coverage)
+        self.assertEqual(affected['binding']['readerScopeDigest'], expected)
+        changed_coverage = copy.deepcopy(coverage); changed_coverage['dispositions'].pop()
+        self.write('reader-coverage.json', changed_coverage)
+        code, result = self.invoke('repair-context', 'handoff', 'changed-coverage', review='first-review.json')
+        self.assertEqual(code, 2, result)
+        self.assertIn('STALE_HANDOFF_INPUT', result['reason'])
+        self.write('reader-coverage.json', coverage)
+        value = self.read('reader-scope.json'); value['candidates'].pop()
+        self.write('reader-scope.json', value)
+        code, result = self.invoke('repair-context', 'handoff', 'changed-scope', review='first-review.json')
+        self.assertEqual(code, 2, result)
+        self.assertIn('STALE_HANDOFF_INPUT', result['reason'])
+
     def test_one_native_attempt_preserves_failure_and_never_retries(self):
         self.ready(); self.write('native-response.json', {'error': {'message': 'owned failure'}})
         code, result = self.apply(); self.assertEqual(code, 2)

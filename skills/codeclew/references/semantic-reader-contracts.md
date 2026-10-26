@@ -109,18 +109,75 @@ Before export, run the bounded preflight from the installed skill directory:
 ```sh
 python3 -I -S SKILL_DIR/scripts/reader_plan_preflight.py --plan MODEL_PLAN.json \
   --service service:sample --payload-owner service:sample/apply \
-  --expected-field record/value --nested-field request/record=record
+  --expected-field record/value --nested-field request/record=record \
+  --reader-scope reader-scope.json --reader-scope-digest EARLIER_SCOPE_SHA256 \
+  --coverage reader-coverage.json --document narrative=narrative.json
 ```
+
+Before author dispatch, save the original question and bounded relevant candidate
+inventory independently of the final plan. Retain its exact file SHA-256 in the
+existing dispatch/continuation handoff. The author/orchestrator derives this
+inventory from already selected retained evidence; no new user approval or full
+context replay is required. Give the author this bounded inventory and original
+question. Do not reconstruct it from the final model IDs.
+Use this shape, repeating candidates for the question's selected objects, fields,
+representations and transformations:
+
+```json
+{
+  "schema": "codeclew-reader-scope/1.0",
+  "question": "Original authorized reader question",
+  "questionDigest": "sha256:UTF8_QUESTION_BYTES_SHA256",
+  "subject": "service:sample", "snapshot": "ORIGINAL_SNAPSHOT", "work": "ORIGINAL_WORK",
+  "candidates": [{
+    "id": "candidate-value", "kind": "field", "declaration": "EXACT_RETAINED_DECLARATION_OR_MEMBER",
+    "sources": [{"service":"sample", "sourceId":"EXACT_SOURCE", "revision":"REVISION",
+      "file":"src/Example.java", "startLine":4, "endLine":4, "textDigest":"sha256:SOURCE_TEXT_SHA256"}]
+  }],
+  "limitations": ["Relevance and completeness of this bounded initial inventory require independent review."]
+}
+```
+
+The source pins retain exact identity/range, not only a whole-file source ID.
+Keep the same original question/inventory digest in normal/debug and later
+publication phases, even when their Work or publication IDs differ. Supplement
+newly resolved candidates explicitly in the handoff; never silently delete an
+earlier obligation. An incomplete initial inventory remains a limitation.
+
+Return one disposition per candidate in a separate `reader-coverage.json`:
+
+```json
+{"schema":"codeclew-reader-coverage/1.0", "scopeDigest":"EARLIER_SCOPE_SHA256",
+ "dispositions":[{"candidate":"candidate-value", "kind":"canonical",
+   "targets":[{"document":"plan", "pointer":"/models/0/fields/0"}]}]}
+```
+
+Kinds are `canonical`, `copy`, `history`, `derived`, `unresolved` and `excluded`.
+Targets are exact nonempty JSON pointers in `plan` or named `--document` inputs.
+A sourced formula may point to its explanatory paragraph; it need not invent a
+model field. `unresolved` requires a target and reason; `excluded` requires an
+explicit question-scoped reason and may have no target. Exclusion rationale,
+aliases, copy scope and formula correctness still need independent review.
+The helper checks the earlier digest, missing/duplicate dispositions and broken
+targets; `TARGETS_PRESENT_MEANING_UNASSESSED` is mechanical closure, not a semantic
+PASS or proof of initial inventory completeness. It never runs models or capture.
+The existing [semantic handoff](semantic-repair.md) carries this same bounded
+inventory with `readerScope: {"path":"reader-scope.json", "digest":"EARLIER_SCOPE_SHA256"}`.
+When dispositions already exist, include `coverage` inside `readerScope` with
+its own `path` and exact file `digest`; the existing handoff tracks and carries
+that map too. It remains unassessed until the preflight and independent review.
 
 Repeat `--payload-owner` for each exact owner selected by the requested task.
 Supply the complete scoped canonical target inventory with repeated
-`--expected-field MODEL/FIELD`; this is not a name-matching source extractor.
+`--expected-field MODEL/FIELD` for convenient presence checks; these flags do not
+replace the earlier source-candidate inventory or extract names from source.
 Use `--nested-field MODEL/FIELD=TARGET_MODEL` for each source-supported nested
 definition that needs navigation. Set the representation's exact `relatedModel`,
-not only a type name or a prose mention. Every representation-only model needed
-on the service landing needs an explicit `processLinks` item for that service
-and `section-entities`; a domain model instead needs its exact entity association
-and retained service relation. Do not guess association from class names.
+not only a type name or a prose mention. Give representation-only models relevant
+operation/process navigation with `processLinks` or an exact payload owner that
+reuses their canonical fields. Do not place every DTO in `section-entities` to
+pass a navigation check. A domain dictionary model needs its exact entity
+association and retained service relation. Do not guess association from class names.
 This checks label presence and selected inventory/navigation only. Repair findings through
 the assigned author, then run native export and independent rendered review;
 neither this check nor an export success approves language or business meaning.
