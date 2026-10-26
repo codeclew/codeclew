@@ -46,13 +46,17 @@ pub(super) fn render(
         ));
         if rows(&view["fields"]).next().is_some() {
             body.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n| --- | --- | --- | --- | --- |\n",
+                "| {} | {} |\n| --- | --- |\n",
+                md(t("Field or observed path")),
+                md(t("Meaning and mapping"))
+            ));
+            let mut constraints = format!(
+                "| {} | {} | {} | {} |\n| --- | --- | --- | --- |\n",
                 md(t("Field or observed path")),
                 md(t("Type")),
                 md(t("Representation presence")),
-                md(t("Representation nullability")),
-                md(t("Meaning"))
-            ));
+                md(t("Representation nullability"))
+            );
             for field in rows(&view["fields"]) {
                 let readable_name = field["readableName"]["text"]
                     .as_str()
@@ -66,25 +70,36 @@ pub(super) fn render(
                 if readable_name.is_some() {
                     field_label.push_str(&format!("<br/>{}", md(text(&field["path"]))));
                 }
+                let mut meaning = md(text(&field["meaning"]["text"])).replace('\n', "<br/>");
+                let mapping = text(&field["mapping"]["text"]);
+                if !mapping.is_empty() && mapping != text(&field["meaning"]["text"]) {
+                    meaning.push_str(&format!(
+                        "<br/>**{}:** {}",
+                        md(t("Representation mapping")),
+                        md(mapping).replace('\n', "<br/>")
+                    ));
+                }
+                body.push_str(&format!("| {field_label} | {meaning} |\n"));
                 let type_label = if let Some(target) = field["relatedModel"].as_str() {
                     format!(
                         "[{}](../data-model/{}.mdx#fields-and-representations)",
-                        md(text(&field["typeLabel"])),
+                        md(text(&field["typeLabel"])).replace('\n', "<br/>"),
                         target
                     )
                 } else {
-                    md(text(&field["typeLabel"]))
+                    md(text(&field["typeLabel"])).replace('\n', "<br/>")
                 };
-                body.push_str(&format!(
-                    "| {} | {} | {} | {} | {} |\n",
-                    field_label,
+                constraints.push_str(&format!(
+                    "| {}<br/>{} | {} | {} | {} |\n",
+                    md(text(&field["path"])),
+                    md(text(&field["representation"])).replace('\n', "<br/>"),
                     type_label,
-                    md(text(&field["requiredness"])),
-                    md(text(&field["nullability"])),
-                    md(text(&field["meaning"]["text"])).replace('\n', "<br/>")
+                    md(text(&field["requiredness"])).replace('\n', "<br/>"),
+                    md(text(&field["nullability"])).replace('\n', "<br/>")
                 ));
             }
             body.push('\n');
+            body.push_str(&details(t("Types, requiredness and null"), &constraints));
         }
         let mut evidence = format!("{}\n\n", md(text(&view["coverage"]["claim"]["text"])));
         for field in rows(&view["fields"]) {
@@ -147,6 +162,38 @@ mod tests {
         assert!(body.contains("{#cpv-quote-failure}"));
         assert!(body.contains("../data-model/vehicle.mdx#field-year"));
         assert!(!body.contains("No body declared"));
+        assert_eq!(page, original);
+    }
+
+    #[test]
+    fn payload_overview_preserves_each_constraint_in_one_secondary_table() {
+        let page = json!({"payloadViews":[{"id":"input","operation":"apply","title":"Local input","coverage":{"status":"observed-fields","scope":"Two selected mappings, not a wire schema"},"fields":[
+            {"model":"measurement","field":"value","path":"request.value","readableName":{"text":"Measured value"},"meaning":{"text":"Value used by the calculation"},"mapping":{"text":"Forwards input.value"},"representation":"Input.value","typeLabel":"Imported type definition unavailable","requiredness":"Wire presence is not established","nullability":"Type nullability is not established","relatedModel":"nested"},
+            {"model":"measurement","field":"offset","path":"request.offset","readableName":{"text":"Selected offset"},"meaning":{"text":"Adjustment for this calculation"},"mapping":{"text":"Uses zero when absent"},"representation":"Input.offset","typeLabel":"Decimal","requiredness":"Only when adjustment is enabled","nullability":"Non-null source type; wire nullability unknown"}
+        ]}]});
+        let original = page.clone();
+        let body = render(&page, "apply", "###", "en").unwrap();
+        let split = body
+            .find("<summary>Types, requiredness and null</summary>")
+            .unwrap();
+        let (primary, technical) = body.split_at(split);
+        assert_eq!(
+            body.matches("<summary>Types, requiredness and null</summary>")
+                .count(),
+            1
+        );
+        assert!(primary.contains("| Field or observed path | Meaning and mapping |"));
+        for field in rows(&page["payloadViews"][0]["fields"]) {
+            for key in ["meaning", "mapping"] {
+                assert!(primary.contains(text(&field[key]["text"])));
+            }
+            for key in ["typeLabel", "requiredness", "nullability"] {
+                assert!(!primary.contains(text(&field[key])));
+                assert!(technical.contains(text(&field[key])));
+            }
+        }
+        assert!(primary.contains("../data-model/measurement.mdx#field-value"));
+        assert!(technical.contains("../data-model/nested.mdx#fields-and-representations"));
         assert_eq!(page, original);
     }
 

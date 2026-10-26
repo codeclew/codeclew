@@ -103,6 +103,18 @@ a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;
 .inline-contract-table th{font-weight:650;color:#42516a}
 .inline-contract-table td code{font-size:12px;white-space:normal;overflow-wrap:anywhere}
 .inline-contract-table td p{margin:0 0 5px}.inline-contract-table td p:last-child{margin-bottom:0}
+.cpv-field-overview th:first-child{width:34%}.cpv-field-path{color:var(--muted);margin-top:4px}.cpv-field-mapping{margin-top:8px}.cpv-representation-details{margin:14px 0}.cpv-representation-details>summary{cursor:pointer;padding:8px 0}
+@media(max-width:760px){
+ .cpv .table-wrap{overflow:visible}
+ .cpv .inline-contract-table,.cpv .inline-contract-table tbody,.cpv .inline-contract-table tr,.cpv .inline-contract-table td{display:block;width:100%;box-sizing:border-box;min-width:0}
+ .cpv .inline-contract-table thead{position:absolute;width:1px;height:1px;margin:-1px;clip-path:inset(50%);overflow:hidden}
+ .cpv .inline-contract-table tr{border:1px solid var(--line);border-radius:6px;margin:10px 0}
+ .cpv .inline-contract-table td{border:0;border-bottom:1px solid var(--line)}
+ .cpv .inline-contract-table td::before{content:attr(data-label);display:block;font-weight:650;margin-bottom:4px}
+ .cpv .cpv-field-overview td::before{display:none}
+ .cpv .cpv-field-overview td:first-child{border-bottom:0;padding-bottom:4px}
+ .cpv .cpv-field-overview td:last-child{padding-top:0}
+}
 .contract-evidence{margin-top:16px}.contract-raw[id^="contract-source-"]{scroll-margin-top:90px}
 @media(max-width:760px){
  .contract-declaration .table-wrap{overflow:visible}

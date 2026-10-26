@@ -2336,6 +2336,20 @@ function semanticPayloadFixture(language='en'){
  const year={model:'vehicle',field:'manufacture-year',path:'manufactureYear',representation:'AssetInput.manufactureYear',typeLabel:'integer',requiredness:'Constructor parameter; wire presence unknown',nullability:'Nullable source property; wire nullability unknown',meaning:fragment('Calendar year of manufacture.'),mapping:fragment('Named request property; no serialization rule is inferred.')};
  data.payloadViews=[view('request','request-body','incoming',[year]),view('response','response-body','outgoing',[{...year,model:'quote',field:'premium',path:'premium',representation:'PriceResponse.premium',nullability:'Non-null type; wire property presence separate',meaning:fragment('Quoted price.')}],'200'),view('error','error-response-body','outgoing',[],'502'),view('message','message-value','outgoing',[])];return data;
 }
+function compactPayloadFixture(language='en'){
+ const data=semanticPayloadFixture(language),view=data.payloadViews[0],ru=language==='ru';
+ view.title=ru?'Локальные измерения':'Local measurements';view.direction='local';view.format='Source representation';
+ view.coverage.scope=ru?'Четыре выбранных значения из преобразования; не схема обмена.':'Four selected mapper values; not a wire schema.';
+ view.fields=Array.from({length:4},(_,i)=>({model:'measurement',field:'value-'+i,path:'request.values['+i+']',representation:'Input.value'+i,
+  readableName:fragment(ru?'Измерение '+(i+1):'Measurement '+(i+1)),
+  meaning:fragment(ru?'Значение для выбранного измерения '+(i+1)+'.':'Value for the selected measurement '+(i+1)+'.'),
+  mapping:fragment(ru?'Передаётся соответствующее значение входного объекта.':'Forwards the corresponding input value.'),
+  typeLabel:i===3?'Decimal':(ru?'Определение импортированного типа отсутствует в выбранном исходном коде; конкретный тип значения не установлен.':'The imported definition is absent from the selected source; the concrete value type has not been established.'),
+  requiredness:i===3?(ru?'Нужно при включённом расчёте.':'Required when calculation is enabled.'):(ru?'Наличие свойства при сериализации не установлено; обращение к значению не доказывает обязательность свойства.':'Wire property presence has not been established; accessing a value does not establish required property presence.'),
+  nullability:i===3?(ru?'Null в реализации запрещён; правила обмена не установлены.':'Non-null implementation type; wire rules are not established.'):(ru?'Nullability неизвестного типа не установлена; правила сериализации не следуют из вызова преобразования.':'The missing type nullability is not established; mapper invocation does not establish serialization rules.'),
+  relatedModel:i===0?'nested-measurement':null}));
+ data.payloadViews=[view];return data;
+}
 test('source payload views separate incoming request response error and unknown Avro shape without inventing wire rules',()=>{
  const data=semanticPayloadFixture(),original=JSON.stringify(data),r=load(data),op=data.operations[0],html=r.run(`contract({id:${JSON.stringify(op.id)}})`);
  for(const title of ['Price request','Price response','Remote failure response','Produced Avro value'])assert.ok(html.includes(title));assert.match(html,/request-body|Request body/);assert.match(html,/502/);assert.match(html,/manufactureYear/);assert.match(html,/Constructor parameter; wire presence unknown/);assert.match(html,/Nullable source property; wire nullability unknown/);assert.match(html,/Field definition unavailable/);assert.match(html,/No empty or complete payload schema is asserted/);assert.doesNotMatch(html,/No body declared|Interface contract is not documented/);assert.match(html,/data-label="Representation nullability"/);assert.equal((html.match(/class="cpvlegend"/g)||[]).length,1);assert.equal((html.match(/Source-derived representation shape/g)||[]).length,1);assert.ok(html.indexOf('class="cpvlegend"')<html.indexOf('Source-derived representation shape'));assert.equal(JSON.stringify(data),original);
@@ -2365,7 +2379,22 @@ test('payload table leads with the sourced readable name and links its exact can
  assert.match(fallback,/href="\.\.\/data-model\/measurement.html#field-value"><strong>request.measuredValue<\/strong><\/a>/);
  assert.doesNotMatch(fallback,/Измеренное значение/);
 });
-if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));}
+test('payload overview keeps meanings and mappings primary with all literal type constraints in one closed disclosure',()=>{
+ const data=compactPayloadFixture('ru'),before=JSON.stringify(data),r=load(data),html=r.run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`);
+ const split=html.indexOf('<details class="cpv-representation-details">'),primary=html.slice(0,split),technical=html.slice(split);
+ assert.ok(split>0);assert.equal((html.match(/class="cpv-representation-details"/g)||[]).length,1);
+ assert.match(technical,/<summary>Типы, обязательность и null<\/summary>/);assert.doesNotMatch(technical,/cpv-representation-details" open/);
+ assert.equal((primary.match(/<th scope="col">/g)||[]).length,2);assert.match(primary,/Значение и преобразование/);
+ for(const field of data.payloadViews[0].fields){
+  assert.ok(primary.includes(field.readableName.text));assert.ok(primary.includes(field.path));
+  assert.ok(primary.includes(field.meaning.text));assert.ok(primary.includes(field.mapping.text));
+  for(const key of ['typeLabel','requiredness','nullability']){assert.ok(!primary.includes(field[key]),key);assert.ok(technical.includes(field[key]),key);}
+  assert.ok(primary.includes('../data-model/'+field.model+'.html#field-'+field.field));
+ }
+ assert.match(technical,/href="\.\.\/data-model\/nested-measurement.html#fields-and-representations"/);
+ assert.equal(JSON.stringify(data),before);
+});
+if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru']){fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));fs.writeFileSync(path.join(output,'payload-compact-'+language+'.html'),renderReaderFixture(compactPayloadFixture(language)));}}
 
 test('profile payload deep link opens an actual zero-event service egress catalogue without inventing a process',()=>{
  const data=fixture(),op={...data.operations[0],id:'section-egress',title:'Outgoing messages',summary:fragment('Retained outgoing message catalogue'),events:[],visuals:[]};

@@ -1,4 +1,7 @@
 {
+  "Types, requiredness and null": "Типы, обязательность и null",
+  "Meaning and mapping": "Значение и преобразование",
+  "Representation mapping": "Преобразование в представлении",
   "Payload descriptions and declarations": "Описания данных и декларации",
   "Payload description": "Описание данных",
   "Service data description": "Описание данных сервиса",
