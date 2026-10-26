@@ -2774,6 +2774,33 @@ mod tests {
     }
 
     #[test]
+    fn payload_fields_keep_validated_canonical_name_claims_without_reauthoring() {
+        let (mut plan, files, guides, checked) = fixture();
+        let mut name = plan["models"][0]["purpose"].clone();
+        name["text"] = json!("Measured value");
+        plan["models"][0]["fields"][0]["readableName"] = name.clone();
+        name["text"] = json!("row.value");
+        plan["models"][0]["fields"][0]["originalName"] = name;
+        plan["payloadViews"] = json!([{"id":"input","title":"Local input","subject":"scenario:example","operation":"saved","component":"request-body","direction":"local","format":"Source representation","coverage":{"status":"observed-fields","scope":"Selected mapper field","claim":plan["models"][0]["purpose"]},"fields":[{"model":"record","field":"value","representation":"row","path":"request.value"}]}]);
+        let original = plan.clone();
+        let projected = read(&plan, &files, &guides, &checked).unwrap();
+        for key in ["readableName", "originalName"] {
+            assert_eq!(
+                projected["payloadViews"][0]["fields"][0][key],
+                projected["models"][0]["fields"][0][key]
+            );
+        }
+        assert_eq!(
+            projected["payloadViews"][0]["fields"][0]["path"],
+            "request.value"
+        );
+        assert_eq!(plan, original);
+        plan["models"][0]["fields"][0]["readableName"]["evidence"][0]["textDigest"] =
+            json!("changed");
+        assert!(read(&plan, &files, &guides, &checked).is_err());
+    }
+
+    #[test]
     fn payload_nested_type_preserves_only_an_exact_validated_model_reference() {
         let (mut plan, files, guides, checked) = fixture();
         let mut nested = plan["models"][0].clone();

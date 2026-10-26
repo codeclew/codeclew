@@ -2350,6 +2350,21 @@ test('source payload nested type links use only explicit projected identities',(
  delete data.payloadViews[0].fields[0].relatedModel;
  assert.doesNotMatch(load(data).run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`),/nested-record/);
 });
+test('payload table leads with the sourced readable name and links its exact canonical field',()=>{
+ const data=semanticPayloadFixture('ru'),field=data.payloadViews[0].fields[0];
+ field.model='measurement';field.field='value';field.path='request.measuredValue';
+ field.readableName=fragment('Измеренное значение <literal>');field.originalName=fragment('Input.measuredValue');
+ const before=JSON.stringify(data),html=load(data).run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`);
+ const firstRow=html.split('<tbody>')[1].split('</tr>')[0];
+ assert.match(firstRow,/href="\.\.\/data-model\/measurement.html#field-value"><strong>Измеренное значение &lt;literal&gt;<\/strong><\/a>/);
+ assert.ok(firstRow.indexOf('Измеренное значение')<firstRow.indexOf('request.measuredValue'));
+ assert.match(firstRow,/<code>request.measuredValue<\/code>/);assert.doesNotMatch(firstRow,/<literal>/);
+ assert.equal(JSON.stringify(data),before);
+ delete field.readableName;
+ const fallback=load(data).run(`sourcePayloadViews({id:${JSON.stringify(data.operations[0].id)}})`);
+ assert.match(fallback,/href="\.\.\/data-model\/measurement.html#field-value"><strong>request.measuredValue<\/strong><\/a>/);
+ assert.doesNotMatch(fallback,/Измеренное значение/);
+});
 if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'payload-'+language+'.html'),renderReaderFixture(semanticPayloadFixture(language)));}
 
 test('profile payload deep link opens an actual zero-event service egress catalogue without inventing a process',()=>{

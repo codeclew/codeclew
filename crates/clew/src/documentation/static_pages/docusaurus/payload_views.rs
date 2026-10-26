@@ -54,6 +54,18 @@ pub(super) fn render(
                 md(t("Meaning"))
             ));
             for field in rows(&view["fields"]) {
+                let readable_name = field["readableName"]["text"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty());
+                let mut field_label = format!(
+                    "[{}](../data-model/{}.mdx#field-{})",
+                    md(readable_name.unwrap_or_else(|| text(&field["path"]))),
+                    text(&field["model"]),
+                    text(&field["field"])
+                );
+                if readable_name.is_some() {
+                    field_label.push_str(&format!("<br/>{}", md(text(&field["path"]))));
+                }
                 let type_label = if let Some(target) = field["relatedModel"].as_str() {
                     format!(
                         "[{}](../data-model/{}.mdx#fields-and-representations)",
@@ -65,7 +77,7 @@ pub(super) fn render(
                 };
                 body.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
-                    md(text(&field["path"])),
+                    field_label,
                     type_label,
                     md(text(&field["requiredness"])),
                     md(text(&field["nullability"])),
@@ -136,6 +148,24 @@ mod tests {
         assert!(body.contains("../data-model/vehicle.mdx#field-year"));
         assert!(!body.contains("No body declared"));
         assert_eq!(page, original);
+    }
+
+    #[test]
+    fn payload_field_label_links_to_its_exact_canonical_field_and_preserves_path() {
+        let mut page = json!({"payloadViews":[{"id":"input","operation":"apply","title":"Local input","fields":[{"path":"request.value","readableName":{"text":"Measured value"},"model":"measurement","field":"value"}],"coverage":{"status":"observed-fields"}}]});
+        let original = page.clone();
+        let body = render(&page, "apply", "###", "en").unwrap();
+        assert!(body.contains(
+            "[Measured value](../data-model/measurement.mdx#field-value)<br/>request.value"
+        ));
+        assert_eq!(page, original);
+        page["payloadViews"][0]["fields"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("readableName");
+        let body = render(&page, "apply", "###", "en").unwrap();
+        assert!(body.contains("[request.value](../data-model/measurement.mdx#field-value)"));
+        assert!(!body.contains("Measured value"));
     }
 
     #[test]

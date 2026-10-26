@@ -193,7 +193,7 @@ pub(super) fn validate_and_project(
             }
             let representation = representations[0];
             selected.entry(&model.id).or_default().insert(&field.id);
-            fields.push(json!({"model":model.id,"field":field.id,"path":reference.path,"representation":representation.label,"typeLabel":representation.type_label,"relatedModel":representation.related_model,"requiredness":representation.requiredness,"nullability":representation.nullability,"meaning":field.meaning,"mapping":representation.mapping}));
+            fields.push(json!({"model":model.id,"field":field.id,"path":reference.path,"readableName":field.readable_name,"originalName":field.original_name,"representation":representation.label,"typeLabel":representation.type_label,"relatedModel":representation.related_model,"requiredness":representation.requiredness,"nullability":representation.nullability,"meaning":field.meaning,"mapping":representation.mapping}));
         }
         if view.coverage.status == "complete-definition" {
             for (id, fields) in selected {
