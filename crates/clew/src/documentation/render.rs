@@ -372,6 +372,22 @@ pub(super) fn required_sequence_flows<'a>(
                 .services
                 .get(id)
                 .ok_or_else(|| invalid("service evidence is unresolved"))?;
+            if let Some(root) =
+                super::process_graph::internal_operation_root(checked, id, operation_id)
+            {
+                return Ok(evidence
+                    .observations
+                    .values()
+                    .filter(|flow| {
+                        flow.kind == "FLOW"
+                            && flow.belongs_to_declaration(root)
+                            && flow.normalized["scope"] == root.normalized["scope"]
+                            && flow.normalized["kind"]
+                                .as_str()
+                                .is_some_and(is_required_flow)
+                    })
+                    .collect());
+            }
             let entry = evidence
                 .entrypoints
                 .iter()
@@ -435,7 +451,7 @@ pub(super) fn validate_with_retained(
     if !store::valid_id(id) {
         return Err(invalid("invalid narrative subject"));
     }
-    let (expected, allowed): (BTreeSet<String>, BTreeSet<String>) = match kind {
+    let (mut expected, allowed): (BTreeSet<String>, BTreeSet<String>) = match kind {
         "service" => {
             let _service = checked
                 .services
@@ -458,6 +474,15 @@ pub(super) fn validate_with_retained(
         }
         _ => return Err(invalid("unsupported narrative subject")),
     };
+    if kind == "service" {
+        // Only authored internal roots enter this optional view. They neither
+        // change the capture nor turn every callable into required coverage.
+        for operation in &n.operations {
+            if super::process_graph::internal_operation_root(checked, id, &operation.id).is_some() {
+                expected.insert(operation.id.clone());
+            }
+        }
+    }
     let mut covered = BTreeSet::new();
     for (operation_index, o) in n.operations.iter().enumerate() {
         super::language::validate(o.documentation_language.as_deref())?;
@@ -1330,6 +1355,19 @@ fn make_bindings_with_retained(
     for (subject, n) in &narratives {
         for o in &n.operations {
             let prefix = format!("{subject}/{}", o.id);
+            if let Some(root) = subject.strip_prefix("service:").and_then(|service| {
+                super::process_graph::internal_operation_root(checked, service, &o.id)
+            }) {
+                add_binding(
+                    &mut fragments,
+                    format!("{prefix}/root"),
+                    subject,
+                    &root.id,
+                    std::slice::from_ref(&root.id),
+                    &root.source_ids,
+                    checked,
+                )?;
+            }
             add_binding(
                 &mut fragments,
                 format!("{prefix}/{}", o.summary.id),
@@ -1819,10 +1857,20 @@ fn page_data(
     activity_transitions: Option<&str>,
 ) -> Value {
     let service_id = subject.strip_prefix("service:");
-    let catalogue = service_id
+    let mut catalogue = service_id
         .and_then(|id| checked.services.get(id))
         .map(|s| s.entrypoints.clone())
         .unwrap_or_default();
+    if let Some(service) = service_id {
+        for operation in &n.operations {
+            if !catalogue.iter().any(|entry| entry.id == operation.id)
+                && let Some(root) =
+                    super::process_graph::internal_operation_root(checked, service, &operation.id)
+            {
+                catalogue.push(super::process_graph::internal_operation_entry(root));
+            }
+        }
+    }
     let selected_services: BTreeSet<_> = if let Some(id) = service_id {
         BTreeSet::from([id.to_owned()])
     } else {
@@ -2339,6 +2387,14 @@ fn root_flow_events<'a>(
     operation: &Operation,
     service: Option<&str>,
 ) -> Option<ResolvedFlow<'a>> {
+    if let Some(root) = service.and_then(|service| {
+        super::process_graph::internal_operation_root(checked, service, &operation.id)
+    }) {
+        return Some(ResolvedFlow {
+            observation: root,
+            events: root.normalized.pointer("/documentation/events")?,
+        });
+    }
     let mut candidates: Vec<&str> = Vec::new();
     if let Some(service) = service
         && let Some(entry) = checked

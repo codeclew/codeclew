@@ -412,6 +412,21 @@ pub(super) fn evidence_reference_allowed(handle: &work::Handle) -> bool {
 }
 
 pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) -> bool {
+    if handle.kind == "DEPENDENCY" {
+        let selected = work
+            .subject
+            .strip_prefix("service:")
+            .and_then(|service| work.checked.services.get(service))
+            .zip(work.request.root_declaration.as_deref())
+            .and_then(|(evidence, declaration)| {
+                super::declaration_migration::canonical(evidence, declaration).ok()
+            });
+        if selected.as_deref() != Some(handle.id.as_str()) {
+            return false;
+        }
+        return super::process_graph::selected_internal_operation(work)
+            .is_some_and(|root| root.id == handle.id);
+    }
     if !matches!(
         handle.kind.as_str(),
         "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
@@ -446,6 +461,10 @@ pub(super) fn operation_target_id(
     let handle = handle?;
     if !operation_reference_allowed(work, handle) {
         return None;
+    }
+    if handle.kind == "DEPENDENCY" {
+        return super::process_graph::selected_internal_operation(work)
+            .map(super::process_graph::internal_operation_id);
     }
     match handle.kind.as_str() {
         "NOTE" => handle.id.strip_prefix("note:").map(super::notes::root),
@@ -1530,7 +1549,11 @@ pub(super) fn materialize(
 }
 pub(super) fn expected(work: &Work) -> BTreeSet<String> {
     if let Some(service) = work.subject.strip_prefix("service:") {
-        super::notes::expected(&work.checked, service)
+        let mut expected = super::notes::expected(&work.checked, service);
+        if let Some(root) = super::process_graph::selected_internal_operation(work) {
+            expected.insert(super::process_graph::internal_operation_id(root));
+        }
+        expected
     } else {
         super::processes::expected(&work.checked, &work.subject[9..])
     }

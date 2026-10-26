@@ -249,6 +249,104 @@ fn owner_identity(observation: &Observation) -> Option<&str> {
         .filter(|owner| !owner.trim().is_empty())
 }
 
+/// Optional internal operation over an exact retained declaration. This is a
+/// consumer view, never a captured framework entrypoint or a public boundary.
+fn internal_declaration<'a>(
+    checked: &'a super::check::Check,
+    service: &str,
+    id: &str,
+) -> Option<&'a Observation> {
+    let evidence = checked.services.get(service)?;
+    let root = evidence.observations.get(id)?;
+    if root.service != service
+        || root.kind != "SYMBOL"
+        || checked.dependencies.get(id) != Some(root)
+        || root.source_ids.is_empty()
+        || !root.source_ids.iter().all(|id| {
+            evidence.sources.get(id).is_some_and(|source| {
+                source.service == service && source.revision == evidence.revision
+            })
+        })
+    {
+        return None;
+    }
+    let capable = |root: &Observation| {
+        callable_observation(root) && exact_scope(root).is_some() && owner_identity(root).is_some()
+    };
+    // Preserve the SOURCE producer ID and evidence even when a frozen overlay
+    // supplies callable capability. No live capture or spelling lookup occurs.
+    let admitted = match super::semantic_overlay::view(evidence).ok()? {
+        Some(view) => view.observations.get(id).is_some_and(capable),
+        None => capable(root),
+    };
+    admitted.then_some(root)
+}
+
+pub(super) fn internal_operation_id(root: &Observation) -> String {
+    let hash = crate::canonical::hash_bytes(format!("{}\0{}", root.service, root.id).as_bytes());
+    format!("method-{}", hash.strip_prefix("sha256:").unwrap_or(&hash))
+}
+
+pub(super) fn internal_operation_root<'a>(
+    checked: &'a super::check::Check,
+    service: &str,
+    operation: &str,
+) -> Option<&'a Observation> {
+    if !operation.starts_with("method-") {
+        return None;
+    }
+    let root = checked
+        .services
+        .get(service)?
+        .observations
+        .values()
+        .find(|root| root.kind == "SYMBOL" && internal_operation_id(root) == operation)?;
+    internal_declaration(checked, service, &root.id)
+}
+
+pub(super) fn selected_internal_operation(work: &Work) -> Option<&Observation> {
+    if work.request.context_profile.as_deref() != Some("process-graph-v1")
+        || work.request.entrypoint.is_some()
+        || work
+            .request
+            .question
+            .as_deref()
+            .is_none_or(|question| question.trim().is_empty())
+    {
+        return None;
+    }
+    let service = work.subject.strip_prefix("service:")?;
+    let evidence = work.checked.services.get(service)?;
+    let selected = super::declaration_migration::canonical(
+        evidence,
+        work.request.root_declaration.as_deref()?,
+    )
+    .ok()?;
+    internal_declaration(&work.checked, service, &selected)
+}
+
+pub(super) fn internal_operation_entry(root: &Observation) -> super::model::Entrypoint {
+    super::model::Entrypoint {
+        id: internal_operation_id(root),
+        service: root.service.clone(),
+        symbol: root.symbol.clone(),
+        kind: "SOURCE_PROCESS_ROOT".into(),
+        trigger: json!({
+            "authority":"RETAINED_DECLARATION",
+            "name":root.normalized["name"],
+            "owner":root.normalized["ownerIdentity"],
+            "scope":root.normalized["scope"],
+            "declaration":root.id,
+        }),
+        source_ids: root.source_ids.clone(),
+        dependency_ids: vec![root.id.clone()],
+        boundaries: vec![
+            "INTERNAL_METHOD_NOT_A_PUBLIC_ROUTE".into(),
+            "RUNTIME_BEHAVIOR_UNOBSERVED".into(),
+        ],
+    }
+}
+
 /// Rebuild the full audit graph from Work's already hydrated retained snapshot.
 /// This path performs no repository reads or source capture.
 pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {

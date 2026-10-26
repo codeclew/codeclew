@@ -304,6 +304,260 @@ fn parts(repo: &Repository, work: &Work) -> work::ReadState {
 }
 
 #[test]
+fn exact_internal_method_target_publishes_without_inventing_a_framework_route() {
+    let (_temp, repo, mut work, _) = fixture();
+    let root_id = "orders:symbol:selected-method";
+    let service = work.checked.services.get_mut("orders").unwrap();
+    service.entrypoints.clear();
+    let mut root = service.observations.remove("symbol-reserve").unwrap();
+    root.id = root_id.into();
+    root.normalized["scope"] = json!(":/main");
+    root.normalized["ownerIdentity"] = json!("class:Orders");
+    root.normalized["documentation"] = json!({"events":[{"kind":"RETURN"}]});
+    root.digest = digest(&root.normalized).unwrap();
+    service.observations.insert(root.id.clone(), root.clone());
+    work.checked.dependencies.remove("symbol-reserve");
+    work.checked
+        .dependencies
+        .insert(root.id.clone(), root.clone());
+    work.request.context_profile = Some("process-graph-v1".into());
+    work.request.root_declaration = Some(root.id.clone());
+    work.request.question = Some("Explain the selected method and its result.".into());
+    work.handles.insert(
+        "selected".into(),
+        work::Handle {
+            kind: "DEPENDENCY".into(),
+            id: root.id.clone(),
+        },
+    );
+    let target = super::super::process_graph::internal_operation_id(&root);
+    assert!(store::valid_id(&target));
+    assert!(expected(&work).contains(&target));
+    assert_eq!(
+        operation_target_id(&work, "selected", work.handles.get("selected")),
+        Some(target.clone())
+    );
+    let mut state = work::ReadState::default();
+    state.receipts.insert(
+        "selected-read".into(),
+        work::ReadReceipt {
+            selection: Default::default(),
+            requested_selection: None,
+            result_digest: "fixture".into(),
+            supplied: vec!["selected".into()],
+            membership_digest: "fixture".into(),
+            omitted: vec![],
+            next_cursor: None,
+        },
+    );
+    let input: Proposal = serde_json::from_value(json!({
+        "schema":"codeclew-documentation-proposal/1.0",
+        "operations":[{"entrypoint":"selected", "title":"Return the selected quantity",
+            "summary":{"text":"The selected method returns the supplied quantity.","evidence":["selected"]},
+            "steps":[{"kind":"return","from":"orders","to":"caller", "meaning":{"text":"Return the supplied quantity.","evidence":["selected"]}}]}]
+    })).unwrap();
+    assert!(
+        materialize(&work, &input, &work::ReadState::default())
+            .unwrap_err()
+            .message
+            .contains("recorded work read")
+    );
+    work.checked.refresh_digest().unwrap();
+    work.influence = work
+        .checked
+        .dependencies
+        .iter()
+        .map(|(id, observation)| (id.clone(), observation.digest.clone()))
+        .collect();
+    work.snapshot = Some(work.checked.save_snapshot(&repo).unwrap());
+    let frozen = bytes(&work.checked).unwrap();
+    let (narrative, claims, diagnostics) = materialize(&work, &input, &state).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(narrative.operations[0].id, target);
+    let summary_id = narrative.operations[0].summary.id.clone();
+    assert!(work.checked.services["orders"].entrypoints.is_empty());
+    let proposal = artifact(&work, input, narrative, claims);
+    let result = publish(&repo, &work, &proposal);
+    assert_eq!(result["updateFailures"], json!({}));
+    let (bundle, binding) = bindings::baseline(&repo).unwrap().unwrap();
+    let prefix = format!("service:orders/{target}");
+    assert!(
+        binding.fragments[&format!("{prefix}/root")]
+            .dependencies
+            .contains_key(root_id)
+    );
+    assert_eq!(
+        binding.fragments[&format!("{prefix}/root")].sources["source-reserve"]["revision"],
+        root_revision(&work)
+    );
+    let page: Value = serde_json::from_slice(
+        &fs::read(
+            repo.path(&format!("docs/generated/{bundle}/services/orders.json"))
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page["operations"][0]["id"], target);
+    assert_eq!(page["publicBoundaryIds"], json!([]));
+    assert_eq!(page["catalogue"][0]["kind"], "SOURCE_PROCESS_ROOT");
+    assert_eq!(page["catalogue"][0]["trigger"]["declaration"], root_id);
+    assert!(page["catalogue"][0]["trigger"].get("path").is_none());
+    assert_eq!(bytes(&work.checked).unwrap(), frozen);
+
+    // The operation ID is portable through model/payload export and its exact
+    // return link, rather than stopping at a materialized proposal.
+    let claim = json!({"title":"Selected quantity", "text":"The supplied quantity is returned.",
+        "evidence":[{"kind":"RETAINED","subject":"service:orders","operation":target,
+        "fragmentId":summary_id,"textDigest":crate::canonical::hash_bytes(b"The selected method returns the supplied quantity.")}]});
+    let model_plan = json!({"schema":"codeclew-data-model-plan/1.0","publication":bundle,"snapshot":work.snapshot,
+        "models":[{"id":"quantity","title":"Quantity","kind":"VALUE_OBJECT","purpose":claim,"identity":claim,
+            "fields":[{"id":"value","path":"quantity","readableName":claim,"meaning":claim,
+                "representations":[{"label":"argument","typeLabel":"int","requiredness":"Wire presence unknown","nullability":"Primitive source value","mapping":claim}],"usage":[]}],
+            "processLinks":[{"subject":"service:orders","anchor":target,"label":"Return quantity"}]}],
+        "payloadViews":[{"id":"return-value","title":"Local return value","subject":"service:orders","operation":target,
+            "component":"response-body","direction":"local","format":"Source value; wire unknown",
+            "coverage":{"status":"observed-fields","scope":"Selected return value only","claim":claim},
+            "fields":[{"model":"quantity","field":"value","representation":"argument","path":"quantity"}]}]});
+    let model_path = _temp.path().join("model-plan.json");
+    fs::write(&model_path, bytes(&model_plan).unwrap()).unwrap();
+    let output = _temp.path().join("export");
+    super::super::static_pages::export_historical_publication(
+        &repo,
+        &work.checked,
+        work.snapshot.as_deref().unwrap(),
+        &bundle,
+        super::super::static_pages::HistoricalInputs {
+            language: Some("en"),
+            data_model: Some(&model_path),
+            reading_plan: None,
+        },
+        &super::super::source_export::Policy::default(),
+        &output,
+    )
+    .unwrap();
+    let projected: Value =
+        serde_json::from_slice(&fs::read(output.join("data-model.json")).unwrap()).unwrap();
+    assert_eq!(projected["payloadViews"][0]["operation"], target);
+    let html = fs::read_to_string(output.join("data-model/quantity.html")).unwrap();
+    assert!(html.contains(&format!("../services/orders.html#{target}")));
+    let owner = fs::read_to_string(output.join("services/orders.html")).unwrap();
+    assert!(owner.contains("return-value"));
+    assert!(owner.contains(&target));
+
+    // A read reference grants evidence use, not the right to switch the root.
+    for (id, kind, service, declaration_kind) in [
+        ("other-method", "SYMBOL", "orders", "METHOD"),
+        ("field", "SYMBOL", "orders", "FIELD"),
+        ("type", "SYMBOL", "orders", "CLASS"),
+        ("foreign-method", "SYMBOL", "foreign", "METHOD"),
+        ("dependency", "CALL_RELATION", "orders", "METHOD"),
+    ] {
+        let mut other = root.clone();
+        other.id = id.into();
+        other.kind = kind.into();
+        other.service = service.into();
+        other.normalized["declarationKind"] = json!(declaration_kind);
+        other.digest = digest(&other.normalized).unwrap();
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(id.into(), other.clone());
+        work.checked.dependencies.insert(id.into(), other);
+        let handle = work::Handle {
+            kind: "DEPENDENCY".into(),
+            id: id.into(),
+        };
+        assert!(!operation_reference_allowed(&work, &handle), "{id}");
+        if declaration_kind != "METHOD" || service != "orders" || kind != "SYMBOL" {
+            let mut selected_invalid = work.clone();
+            selected_invalid.request.root_declaration = Some(id.into());
+            assert!(
+                !operation_reference_allowed(&selected_invalid, &handle),
+                "selected {id}"
+            );
+        }
+    }
+    let mut stale = work.clone();
+    stale.checked.dependencies.get_mut(root_id).unwrap().digest = "stale".into();
+    assert!(!operation_reference_allowed(
+        &stale,
+        &work.handles["selected"]
+    ));
+    let mut stale = work.clone();
+    stale
+        .checked
+        .services
+        .get_mut("orders")
+        .unwrap()
+        .sources
+        .get_mut("source-reserve")
+        .unwrap()
+        .revision = "another-revision".into();
+    assert!(!operation_reference_allowed(
+        &stale,
+        &work.handles["selected"]
+    ));
+    work.request.context_profile = None;
+    assert!(!operation_reference_allowed(
+        &work,
+        &work.handles["selected"]
+    ));
+}
+
+fn root_revision(work: &Work) -> &str {
+    &work.checked.services["orders"].revision
+}
+
+#[test]
+fn internal_method_flow_requirements_keep_exact_owner_and_scope() {
+    let mut work = work::api_contract_tests::endpoint_context_fixture();
+    let root_id = "service-method-0";
+    let evidence = work.checked.services.get_mut("orders").unwrap();
+    evidence.entrypoints.clear();
+    let root = evidence.observations.get_mut(root_id).unwrap();
+    root.normalized["documentationIdentity"] = json!(root_id);
+    root.digest = digest(&root.normalized).unwrap();
+    let root = root.clone();
+    work.checked
+        .dependencies
+        .insert(root.id.clone(), root.clone());
+    for (id, owner, scope) in [
+        (
+            "owned-branch",
+            root_id,
+            root.normalized["scope"].as_str().unwrap(),
+        ),
+        (
+            "other-owner",
+            "another-declaration",
+            root.normalized["scope"].as_str().unwrap(),
+        ),
+        ("other-scope", "another-declaration", ":/test"),
+    ] {
+        let mut flow = root.clone();
+        flow.id = id.into();
+        flow.kind = "FLOW".into();
+        flow.normalized = json!({"kind":"IF","scope":scope,"ownerDeclarationId":owner});
+        flow.digest = digest(&flow.normalized).unwrap();
+        evidence.observations.insert(id.into(), flow.clone());
+        work.checked.dependencies.insert(id.into(), flow);
+    }
+    let target = super::super::process_graph::internal_operation_id(&root);
+    let required =
+        render::required_sequence_flows(&work.checked, "service:orders", &target).unwrap();
+    assert_eq!(
+        required
+            .iter()
+            .map(|flow| flow.id.as_str())
+            .collect::<Vec<_>>(),
+        ["owned-branch"]
+    );
+}
+
+#[test]
 fn title_edit_preserves_large_operation_and_requires_exact_parts_and_review() {
     let (_temp, repo, mut work, narrative) = fixture();
     work.retained = Some(narrative.clone());
