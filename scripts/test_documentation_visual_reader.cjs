@@ -2002,7 +2002,7 @@ test('payload behavior descriptions never count as schemas or erase known local 
  assert.match(html,/Описания данных и декларации · 1/);assert.match(html,/Описание данных/);
  assert.doesNotMatch(html,/1 schemas|1 схем|Схема данных/);assert.match(html,/Construct a local result/);
  assert.equal(JSON.stringify(data),before);
- assert.equal(r.run("t('Business ownership has not been declared for this object.')"),'Владелец этого объекта в бизнес-системе не определён.');
+ assert.equal(r.run("t('These documentation mappings do not establish business ownership.')"),'Эти описания связей данных не определяют владельца в бизнес-системе.');
 });
 
 test('new inline declaration chrome localizes while schema values stay literal',()=>{
@@ -2126,7 +2126,16 @@ test('domain catalogue leads preserved prose, binds only explicit models and lab
  assert.ok(html.indexOf('domain-catalogue')<html.indexOf('original-service-description'));
  assert.match(html,/Only selected field uses/);assert.match(html,/result.value/);assert.match(html,/Итоговое значение/);assert.match(html,/Unrecorded actions are unknown/);
  assert.doesNotMatch(html,/grouped-egress|declared-relationships/);assert.equal(JSON.stringify(data),before);
- data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.match(other.e('scenario-content').innerHTML,/Computed selected result/);assert.match(other.e('scenario-content').innerHTML,/Business ownership has not been declared/);data.readerModels[0].processLinks=[];assert.doesNotMatch(load(data).run('domainCatalogue()'),/Computed selected result/);
+ data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.match(other.e('scenario-content').innerHTML,/Computed selected result/);assert.match(other.e('scenario-content').innerHTML,/These documentation mappings do not establish business ownership/);data.readerModels[0].processLinks=[];assert.doesNotMatch(load(data).run('domainCatalogue()'),/Computed selected result/);
+});
+test('representation catalogue shares generic ownership limits once outside object cards',()=>{
+ const data=taskReaderFixture();data.entities=[];data.readerModels[0].entity=undefined;
+ data.readerModels.push({...structuredClone(data.readerModels[0]),id:'other-record',title:'Other local result'});
+ const r=load(data),html=r.run('domainCatalogue()');
+ assert.equal((html.match(/class="domain-data-scope"/g)||[]).length,1);
+ assert.equal((html.match(/These documentation mappings do not establish business ownership/g)||[]).length,1);
+ for(const card of html.split('class="domain-data-object"').slice(1))assert.doesNotMatch(card,/Business ownership|Service role and ownership|documentation mappings do not establish/);
+ assert.match(html,/Other local result/);assert.match(html,/Computed selected result/);
 });
 test('egress groups profiles as explicit hypothesis, rejects grouping without rewriting IDs and hides self calls',()=>{
  const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('section-egress')");let html=r.e('scenario-content').innerHTML;

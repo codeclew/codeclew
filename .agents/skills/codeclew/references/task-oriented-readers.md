@@ -31,6 +31,11 @@ sentence is a content defect even when its field path is correctly English.
 Long repeated uncertainty paragraphs are also a defect: keep one compact evidence
 legend and essential local conditions, with provenance and full originals in
 secondary details. Do not strip text heuristically to manufacture a short label.
+Keep mode/global limitations and generic identity/ownership bounds in one shared
+secondary scope disclosure. Do not repeat them on every technical data-object
+card. Keep a specific uncertainty in primary meaning only when it changes that
+object's interpretation or the reader's decision; preserve the complete authored
+description and provenance rather than heuristically stripping caveats.
 
 - Keep `entity/1.0` IDs and relations. Optional relation `role` is `master`,
   `consumer`, `enricher` or `unknown`; action kinds also include `deleted` and

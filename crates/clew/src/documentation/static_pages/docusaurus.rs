@@ -1480,6 +1480,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                     prose(summary)
                 ));
             }
+            let mut has_unbound_models = false;
             for model in rows(&page["serviceModelLinks"]) {
                 if model["fieldSummary"].is_object() {
                     out.push_str(&format!(
@@ -1500,13 +1501,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                                 && rows(&record["normalized"]["entity"]["relations"])
                                     .any(|relation| relation["service"] == id)
                         }) {
-                            out.push_str(&format!(
-                                "\n\n{}\n\n",
-                                md(crate::documentation::language::label(
-                                    language,
-                                    "Business ownership has not been declared for this object."
-                                ))
-                            ));
+                            has_unbound_models = true;
                         }
                     }
                     out.push_str(&super::data_model::service_field_table(
@@ -1532,6 +1527,15 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                         "Field descriptions"
                     )),
                     text(&model["id"])
+                ));
+            }
+            if has_unbound_models {
+                out.push_str(&details(
+                    crate::documentation::language::label(language, "Evidence and scope"),
+                    &md(crate::documentation::language::label(
+                        language,
+                        "These documentation mappings do not establish business ownership.",
+                    )),
                 ));
             }
         }
@@ -3316,11 +3320,27 @@ mod tests {
             "A sample supplied for calibration.",
             "Measured level",
             "Level supplied for calibration",
-            "Business ownership has not been declared for this object.",
+            "These documentation mappings do not establish business ownership.",
         ] {
             assert!(body.find(meaning).unwrap() < provenance);
         }
         assert_eq!(page, original);
+        let mut repeated = page;
+        let mut other = repeated["readerModels"][0].clone();
+        other["id"] = json!("other-sample");
+        repeated["readerModels"].as_array_mut().unwrap().push(other);
+        let mut other = repeated["serviceModelLinks"][0].clone();
+        other["id"] = json!("other-sample");
+        repeated["serviceModelLinks"]
+            .as_array_mut()
+            .unwrap()
+            .push(other);
+        let body = service_page(&repeated, "calibration").unwrap();
+        assert_eq!(
+            body.matches("These documentation mappings do not establish business ownership.")
+                .count(),
+            1
+        );
     }
 
     #[test]
