@@ -241,7 +241,7 @@
   "Content:": "Описание:",
   "Mixed source versions; inspect each operation.": "Смешаны версии кода; проверьте каждую операцию.",
   "Target:": "Целевая версия:",
-  "Recent update gaps": "Пробелы последнего обновления",
+  "Recent update gaps": "Ошибки последнего обновления",
   "What needs attention": "Что требует внимания",
   "No entrypoints available": "Доступных точек входа нет",
   "Inspect coverage and the service evidence gaps.": "Проверьте полноту анализа и пробелы в подтверждениях по сервису.",
@@ -1384,5 +1384,12 @@
   "Open service profile": "Открыть профиль сервиса",
   "View connection": "Посмотреть связь",
   "Read": "Читается",
-  "Reads field": "Читает поле"
+  "Reads field": "Читает поле",
+  "Find on page": "Поиск на странице",
+  "Clear search": "Очистить поиск",
+  "Copy HTTP path": "Копировать HTTP-путь",
+  "Copy path": "Копировать путь",
+  "Path copied": "Путь скопирован",
+  "Could not copy. Select the path and copy it manually.": "Не удалось скопировать. Выделите путь и скопируйте вручную.",
+  "Update failed": "Ошибка обновления"
 }

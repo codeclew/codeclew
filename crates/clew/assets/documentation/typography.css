@@ -15,3 +15,6 @@ body :where(main,.dm-page) :where(h1,h2,h3,h4,h5,h6,section,details,[tabindex="-
 
 body svg text{font-family:var(--clew-sans)!important;font-size:14px!important;font-weight:400!important;letter-spacing:normal!important}
 body svg :is(.actor-label,.branch-title){font-weight:600!important}
+
+/* An exact route used as the page heading keeps its heading type role. */
+body .route-heading .http-route-paths,body .route-heading .http-route-paths code{font-size:inherit!important;line-height:inherit!important;font-weight:inherit!important}

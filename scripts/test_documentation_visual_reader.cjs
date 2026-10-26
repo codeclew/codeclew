@@ -11,6 +11,70 @@ const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'
 const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/markdown.js'),'utf8')+'\n'+localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 
+test('polish route heading has one transport identity and preserves a distinct authored title',()=>{
+ for(const language of ['en','ru']){
+  const data=httpNavigationFixture();data.language=language;const before=JSON.stringify(data),r=load(data);
+  const plain=r.run('operationIdentity(entries.find(e=>e.id==="health"))');
+  assert.equal((plain.match(/<code>\/health<\/code>/g)||[]).length,1);assert.equal((plain.match(/>GET<\/span>/g)||[]).length,1);
+  assert.doesNotMatch(plain,/<h2>GET \/health/);assert.match(plain,/data-copy-http-path="health"/);
+  const named=r.run('operationIdentity(entries.find(e=>e.id==="named"))');assert.match(named,/<h2>List named places<\/h2>/);assert.equal((named.match(/<code>\/places\/named<\/code>/g)||[]).length,1);
+  assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('polish section navigation and search recovery retain current selection and input focus',()=>{
+ for(const language of ['en','ru']){
+  const data=fixture();data.language=language;const before=JSON.stringify(data),r=load(data);
+  const overview=r.e('scenario-nav').innerHTML.match(/<button[^>]*data-entry="section-overview"[^>]*>[\s\S]*?<\/button>/)[0];
+  assert.match(overview,/aria-current="page"/);assert.doesNotMatch(overview,/nav-icon|SECTION|РАЗДЕЛ/);
+  assert.equal(r.e('clear-search').hidden,true);r.e('search').value='no-such-route';r.run('nav()');
+  assert.equal(r.e('clear-search').hidden,false);assert.match(r.e('scenario-nav').innerHTML,/data-clear-search/);
+  r.click({clearSearch:''});assert.equal(r.e('search').value,'');assert.equal(r.document.activeElement,r.e('search'));assert.equal(r.e('clear-search').hidden,true);
+  assert.match(r.e('scenario-nav').innerHTML,/aria-current="page"/);assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('polish unknown source status stays distinct from stale and actual update failures',()=>{
+ for(const language of ['en','ru'])for(const freshness of ['UNVERIFIED','STALE']){
+  const data=fixture();data.language=language;data.sectionState={freshness,verification:'UNASSESSED',reasons:[{reason:'SOURCE_MISSING'}]};
+  const before=JSON.stringify(data),r=load(data),html=r.e('freshness-status').innerHTML;
+  assert.match(html,new RegExp('freshness-'+freshness.toLowerCase()));assert.doesNotMatch(html,/freshness-error/);assert.match(html,/SOURCE_MISSING/);assert.equal(JSON.stringify(data),before);
+ }
+ const data=fixture();data.updateFailures={sample:{error:'Synthetic source read failed'}};const before=JSON.stringify(data),r=load(data),html=r.e('freshness-status').innerHTML;
+ assert.match(html,/freshness-error/);assert.match(html,/Update failed/);assert.match(html,/Recent update gaps/);assert.match(html,/Synthetic source read failed/);assert.equal(JSON.stringify(data),before);
+});
+
+test('polish exact HTTP path copy reports success and honest failure without guessing paths',async()=>{
+ for(const language of ['en','ru']){
+  const data=httpNavigationFixture();data.language=language;data.catalogue.push({id:'unknown-path',kind:'HTTP_ENDPOINT',symbol:'unknown',trigger:{methods:['GET'],paths:[]},sourceIds:[]});
+  const before=JSON.stringify(data),r=load(data);r.run('globalThis.copied=[];navigator.clipboard.writeText=async value=>copied.push(value)');
+  assert.equal(await r.run('copyHttpPath({dataset:{copyHttpPath:"refresh",pathIndex:"0"}})'),true);assert.equal(r.run('copied[0]'),'/places/{id}/refresh');
+  assert.equal(r.e('http-copy-status').textContent,language==='ru'?'Путь скопирован':'Path copied');
+  r.run('navigator.clipboard.writeText=async()=>{throw new Error("denied")}');assert.equal(await r.run('copyHttpPath({dataset:{copyHttpPath:"health",pathIndex:"0"}})'),false);
+  assert.match(r.e('http-copy-status').textContent,/\/health/);assert.doesNotMatch(r.e('http-copy-status').textContent,/Path copied|Путь скопирован/);
+  assert.equal(await r.run('copyHttpPath({dataset:{copyHttpPath:"unknown-path",pathIndex:"0"}})'),false);
+  assert.doesNotMatch(r.run('operationIdentity(entries.find(e=>e.id==="unknown-path"))'),/data-copy-http-path/);
+  r.run('showEntry("refresh")');assert.equal(r.e('http-copy-status').textContent,'');assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('polish compact external summaries preserve all grouped operations keys and profile links',()=>{
+ const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data),html=r.run('groupedEgress()');
+ assert.match(html,/egress-config-keys/);assert.match(html,/class="egress-chevron" aria-hidden="true"/);assert.match(html,/provider.endpoint/);assert.match(html,/external-services\/provider.html/);assert.match(html,/external-services\/renewal.html/);assert.match(html,/external-services\/store.html/);
+ assert.match(html,/Compute selected result/);assert.match(html,/Compute renewal result/);assert.match(html,/Attempt result write/);assert.equal(JSON.stringify(data),before);
+});
+
+test('polish path controls retain multiple exact paths and ignore an obsolete copy completion',async()=>{
+ const data=httpNavigationFixture(),route=data.catalogue.find(e=>e.id==='health');route.trigger.paths=['/health','/health/{detail}'];
+ const before=JSON.stringify(data),r=load(data),html=r.run('operationIdentity(entries.find(e=>e.id==="health"))');
+ assert.equal((html.match(/data-copy-http-path="health"/g)||[]).length,2);
+ r.run('globalThis.copied=[];navigator.clipboard.writeText=async value=>copied.push(value)');
+ await r.run('copyHttpPath({dataset:{copyHttpPath:"health",pathIndex:"1"}})');assert.equal(r.run('copied[0]'),'/health/{detail}');
+ r.run('navigator.clipboard.writeText=()=>new Promise(resolve=>globalThis.completeCopy=resolve)');
+ const pending=r.run('copyHttpPath({dataset:{copyHttpPath:"health",pathIndex:"0"}})');r.run('showEntry("refresh");completeCopy()');await pending;assert.equal(r.e('http-copy-status').textContent,'');
+ route.trigger.pathResolution='UNRESOLVED';const unknown=load(data);assert.doesNotMatch(unknown.run('operationIdentity(entries.find(e=>e.id==="health"))'),/data-copy-http-path/);delete route.trigger.pathResolution;assert.equal(JSON.stringify(data),before);
+});
+
 test('HTTP navigation shows transport methods once and retains exact routes and meaningful titles',()=>{
  for(const mobile of [false,true]){
   const data=httpNavigationFixture(),before=JSON.stringify(data),reader=load(data,mobile);
@@ -42,7 +106,9 @@ test('HTTP navigation preserves search matches, entry selection and original hea
   assert.doesNotMatch(reader.e('scenario-nav').innerHTML,/data-entry="health"/);
   reader.click({entry:'refresh'});
   assert.equal(reader.run('current.id'),'refresh');
-  assert.match(reader.e('scenario-content').innerHTML,/<h2>POST \/places\/\{id\}\/refresh<\/h2>/);
+  assert.match(reader.e('scenario-content').innerHTML,/<h2 class="operation-label route-heading">/);
+  assert.equal((reader.e('scenario-content').innerHTML.match(/<code>\/places\/\{id\}\/refresh<\/code>/g)||[]).length,1);
+  assert.equal(data.operations.find(op=>op.id==='refresh').title,'POST /places/{id}/refresh');
   assert.equal(JSON.stringify(data),before);
  }
 });
@@ -1036,7 +1102,7 @@ test('Russian locale translates reader chrome, policies and source controls whil
  assert.match(html,/Documented responsibilities/);
  assert.match(html,/Dispatch work/);
  assert.doesNotMatch(html,/Source freshness:|Meaning review:|Complete diagram as text/);
- assert.match(r.e('scenario-nav').innerHTML,/РАЗДЕЛ/);
+ assert.doesNotMatch(r.e('scenario-nav').innerHTML,/РАЗДЕЛ/);assert.match(r.e('scenario-nav').innerHTML,/Обзор/);
  r.run("showEntry(visualKey('section-responsibilities','rules'))");
  const table=r.e('scenario-content').innerHTML;
  assert.match(table,/Строки проверяются сверху вниз/);
@@ -1381,7 +1447,7 @@ test('pinned-only freshness presents a saved snapshot without hiding the origina
  const data=fixture();data.sectionState={freshness:'UNVERIFIED',verification:'VERIFIED_WITH_LIMITATIONS',contentRevisions:{sample:'abc'},targetRevisions:{sample:'abc'},reasons:[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED',snapshot:'saved'}]};
  const original=JSON.stringify(data.sectionState),r=load(data),html=r.e('freshness-status').innerHTML;
  assert.match(html,/freshness-snapshot/);assert.match(html,/Saved source snapshot/);assert.match(html,/Current checkout freshness was not rechecked/);
- assert.match(html,/^<details[^>]+><summary>UNVERIFIED · Source and review details<\/summary>/);assert.doesNotMatch(html,/^<details[^>]*\bopen(?:\s|=|>)/);
+ assert.match(html,/^<details[^>]+><summary>Source · UNVERIFIED<\/summary>/);assert.doesNotMatch(html,/^<details[^>]*\bopen(?:\s|=|>)/);
  assert.match(html,/Source freshness: <b>UNVERIFIED<\/b>/);assert.match(html,/PINNED_SNAPSHOT_NOT_REVERIFIED/);assert.match(html,/Model approved with limitations/);
  assert.doesNotMatch(html,/freshness-unverified|retained with a gap/);assert.equal(JSON.stringify(r.data.sectionState),original);
  const ru=load({...data,language:'ru'}).e('freshness-status').innerHTML;assert.match(ru,/Сохранённая версия исходного кода/);assert.match(ru,/Не проверено/);
@@ -2194,6 +2260,36 @@ function taskReaderFixture(language='en',view='domain'){
  }
  if(view==='process'){const behavior=behaviorFixture();behavior.language=language;for(const [index,event] of behavior.operations[0].events.entries())if(event.kind!=='end')event.reader={overview:index<5,label:fragment(event.kind==='declared'?'Compute result':event.kind==='return'?'Return prepared result':event.kind==='alt'?'When validation succeeds':'Inspect selected branch'),execution:event.kind==='declared'?{mode:'parallel-await',meaning:fragment('Wait for all required calculations')}:undefined};return behavior;}
  return data;
+}
+function polishFixture(language='en',state='unknown'){
+ const data=taskReaderFixture(language),routes=httpNavigationFixture();
+ data.title=language==='ru'?'Синтетический сервис мест':'Synthetic Places service';
+ data.subtitle=language==='ru'?'Тест интерфейса; это не документация реального сервиса.':'Synthetic interface fixture, not documentation of a real service.';
+ data.catalogue=routes.catalogue;data.operations.push(...routes.operations);
+ if(language==='ru'){
+  data.operations.find(o=>o.id==='named').title='Просмотр именованных мест';
+  data.operations.find(o=>o.id==='natural-title').title='Получить отчёт о состоянии';
+ }
+ data.catalogue.push({id:'unknown-path',kind:'HTTP_ENDPOINT',symbol:'unresolvedHandler',trigger:{methods:['GET'],paths:[]},sourceIds:[]});
+ data.operations.push({...routes.operations[0],id:'unknown-path',title:language==='ru'?'Путь не определён':'Path not established'});
+ data.boundaryInventory={publicBoundaries:data.catalogue.filter(e=>e.kind==='HTTP_ENDPOINT'),gaps:[]};
+ data.externalServices.queue={title:language==='ru'?'Очередь обновлений':'Refresh queue',category:'queue'};
+ data.declaredRelationships.edges.push({id:'queue-send',from:'service:sample',to:'external-service:queue',title:'Publish refresh request',transport:{kind:'kafka',topic:'places.refresh.requested',destinationConfigKey:'places.refresh.messaging.destination.configuration.key'}});
+ data.declaredRelationships.edges[0].transport.destinationConfigKey='places.providers.selection.remote.baseUrl';
+ const freshness=state==='stale'?'STALE':'UNVERIFIED';
+ const status={freshness,verification:'UNASSESSED',contentRevisions:{sample:'a'.repeat(40)},targetRevisions:{sample:'b'.repeat(40)},reasons:[{reason:state==='stale'?'SOURCE_CHANGED':'SOURCE_MISSING',service:'sample'}]};
+ data.sectionState=status;data.operationStates=Object.fromEntries(data.operations.map(o=>[o.id,status]));
+ if(state==='error')data.updateFailures={sample:{error:'Synthetic source read failed',scope:'Selected source check'}};
+ return data;
+}
+if(process.env.CODECLEW_POLISH_FIXTURE_OUT){
+ const out=path.resolve(process.env.CODECLEW_POLISH_FIXTURE_OUT);fs.mkdirSync(out,{recursive:true});
+ const sharedStyle=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.css'),'utf8');
+ const sharedReader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ for(const language of ['en','ru'])for(const state of ['unknown','stale','error']){
+  const html=renderReaderFixture(polishFixture(language,state)).replace('</style>',()=>sharedStyle+'</style>').replace('</body>',()=>'<script>'+sharedReader+'</script></body>');
+  fs.writeFileSync(path.join(out,state+'-'+language+'.html'),html);
+ }
 }
 if(process.env.CODECLEW_TASK_READER_FIXTURE_OUT){
  const output=path.resolve(process.env.CODECLEW_TASK_READER_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
