@@ -512,7 +512,10 @@ def _open_private_tree(path: Path) -> int:
             try:
                 child = os.open(component, _directory_flags(), dir_fd=descriptor)
             except FileNotFoundError:
-                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass  # A concurrent initializer won; reopen without following links.
                 child = os.open(component, _directory_flags(), dir_fd=descriptor)
             except NotADirectoryError as error:
                 raise BootstrapError(
@@ -549,7 +552,10 @@ def _ensure_private_descendant(root_fd: int, relative: str) -> None:
             try:
                 child = os.open(component, _directory_flags(), dir_fd=descriptor)
             except FileNotFoundError:
-                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass  # Validate the winning directory through the descriptor below.
                 child = os.open(component, _directory_flags(), dir_fd=descriptor)
             metadata = os.fstat(child)
             if (

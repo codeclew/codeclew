@@ -2040,6 +2040,49 @@ class BootstrapAuthorityTest(unittest.TestCase):
             artifact.write_bytes(b"binary with /codeclew/source only")
             bootstrap.verify_capsule_has_no_private_paths(capsule, [private])
 
+    def test_private_tree_initialization_accepts_concurrent_directory_creator(self) -> None:
+        mkdir = os.mkdir
+
+        def other_process_created(path, *args, **kwargs):
+            mkdir(path, *args, **kwargs)
+            raise FileExistsError(errno.EEXIST, "concurrent directory creator")
+
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            with mock.patch.object(bootstrap.os, "mkdir", side_effect=other_process_created):
+                descriptor = bootstrap._open_private_tree(parent / "fresh/nested")
+            try:
+                self.assertEqual(stat.S_IMODE(os.fstat(descriptor).st_mode), 0o700)
+                with mock.patch.object(bootstrap.os, "mkdir", side_effect=other_process_created):
+                    bootstrap._ensure_private_descendant(descriptor, "objects/sha256")
+                self.assertEqual(stat.S_IMODE((parent / "fresh/nested/objects/sha256").stat().st_mode), 0o700)
+            finally:
+                os.close(descriptor)
+
+    def test_concurrent_directory_winner_cannot_substitute_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            foreign = parent / "foreign"
+            foreign.mkdir(mode=0o700)
+
+            def symlink_won(path, *args, **kwargs):
+                os.symlink(str(foreign), path, dir_fd=kwargs.get("dir_fd"))
+                raise FileExistsError(errno.EEXIST, "concurrent unsafe creator")
+
+            with mock.patch.object(bootstrap.os, "mkdir", side_effect=symlink_won):
+                with self.assertRaises(OSError) as failure:
+                    bootstrap._open_private_tree(parent / "unsafe-root")
+            self.assertIn(failure.exception.errno, {errno.ENOTDIR, errno.ELOOP})
+            descriptor = bootstrap._open_private_tree(parent)
+            try:
+                with mock.patch.object(bootstrap.os, "mkdir", side_effect=symlink_won):
+                    with self.assertRaises(OSError) as failure:
+                        bootstrap._ensure_private_descendant(descriptor, "unsafe-child")
+                self.assertIn(failure.exception.errno, {errno.ENOTDIR, errno.ELOOP})
+            finally:
+                os.close(descriptor)
+            self.assertEqual(list(foreign.iterdir()), [])
+
     def test_state_root_is_preopened_private_and_rejects_symlink_component(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()

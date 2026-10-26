@@ -37,6 +37,8 @@ secondary details. Do not strip text heuristically to manufacture a short label.
   `enriched`. Existing origin/confidence/rationale/dependency IDs retain authority.
   A DTO is a representation, not an ownership declaration. Missing actions mean
   unknown, never proven absence. An uncertain master role must remain a hypothesis.
+  Unknown ownership does not block a supported business concept, source-proven
+  consumption or an explicitly bound field glossary; follow [domain authoring](domain-entities.md).
 - Reuse `data-model-plan/1.0`, its exact publication/snapshot/source claims,
   `readableName`, `originalName`, `meaning`, representations and usage states.
   Optional model `entity` explicitly names a selected declared `entity:<id>`.

@@ -879,3 +879,105 @@ fn java_checkpoint_mismatch_and_corruption_are_not_cache_misses() {
         "checkpoint is invalid",
     );
 }
+
+#[test]
+fn resource_only_changes_invalidate_generation_key_and_snapshot_text_even_with_same_facts() {
+    use crate::repository_snapshot::{WorktreeEntry, WorktreeKind};
+    for java in [true, false] {
+        let fixture = fixture_for_language(java);
+        let code = fixture
+            .store
+            .put("test-source/1", b"unchanged source")
+            .unwrap();
+        let mut previous_key = None;
+        for text in [Some("enabled: false\n"), Some("enabled: true\n"), None] {
+            let (mut value, _) = snapshot(&fixture.store, 'a');
+            value.worktree.push(WorktreeEntry {
+                path: "src/main/source/Unchanged.txt".into(),
+                kind: WorktreeKind::Regular,
+                mode: 0o100644,
+                content: Some(code.clone()),
+            });
+            if let Some(text) = text {
+                let content = fixture
+                    .store
+                    .put("test-resource/1", text.as_bytes())
+                    .unwrap();
+                value.worktree.push(WorktreeEntry {
+                    path: "src/main/resources/application.yml".into(),
+                    kind: WorktreeKind::Regular,
+                    mode: 0o100644,
+                    content: Some(content),
+                });
+            }
+            value.worktree.sort_by(|a, b| a.path.cmp(&b.path));
+            value.snapshot_id.clear();
+            value.snapshot_id = canonical::hash(&value).unwrap();
+            value.verify().unwrap();
+            let object = fixture
+                .store
+                .put(SNAPSHOT_SCHEMA, &canonical::bytes(&value).unwrap())
+                .unwrap();
+            let key = final_generation_key(
+                &fixture.ready.runtime_key,
+                &fixture.ready.base_revision,
+                &object,
+                &fixture.ready.compilation,
+                &fixture.ready.derived_input_manifest,
+                false,
+            )
+            .unwrap();
+            if let Some(previous) = &previous_key {
+                assert_ne!(
+                    &key, previous,
+                    "resource-only change must not hit an old exact-generation checkpoint"
+                );
+            }
+            previous_key = Some(key.clone());
+            let mut compilation = fixture.ready.clone();
+            compilation.generation_key = key;
+            compilation.repository_snapshot = object.clone();
+            // Compiler output is deliberately reused. Only its current snapshot
+            // projection changes, as for an unchanged semantic input contour.
+            assert_eq!(compilation.generation, fixture.ready.generation);
+            let ready = ReadyGenerationSet {
+                schema: READY_GENERATION_SET_SCHEMA.into(),
+                generation_key: "test-set".into(),
+                runtime_key: compilation.runtime_key.clone(),
+                base_revision: compilation.base_revision.clone(),
+                repository_snapshot: object,
+                compilations: vec![compilation],
+                completeness: fixture.ready.completeness.clone(),
+                coverage: fixture.ready.coverage.clone(),
+                certainty: fixture.ready.certainty.clone(),
+                obligations: fixture.ready.obligations.clone(),
+                transformed_source: None,
+            };
+            let loaded = load_snapshot(&fixture.store, &ready).unwrap();
+            let resource = loaded
+                .worktree
+                .iter()
+                .find(|entry| entry.path == "src/main/resources/application.yml");
+            match text {
+                Some(expected) => {
+                    let lease = fixture
+                        .store
+                        .read(resource.unwrap().content.as_ref().unwrap(), 1024)
+                        .unwrap();
+                    assert_eq!(lease.bytes(), expected.as_bytes());
+                }
+                None => assert!(
+                    resource.is_none(),
+                    "removed resource must not survive reused facts"
+                ),
+            }
+            let mut mismatched = ready;
+            mismatched.compilations[0].repository_snapshot =
+                fixture.ready.repository_snapshot.clone();
+            expect_state_corrupt(
+                load_snapshot(&fixture.store, &mismatched),
+                "snapshot authority is inconsistent",
+            );
+        }
+    }
+}

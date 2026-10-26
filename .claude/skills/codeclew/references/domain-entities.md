@@ -5,6 +5,42 @@ exact copy of the supported product contract. Use schema
 `codeclew-documentation-entity/1.0`; `domain-entity` is not a supported namespace.
 This is a catalogue declaration, not a Work Proposal or an operation answer.
 
+## Describe supported objects even when their owner is unknown
+
+Unknown master ownership is a local gap, not a reason to leave business data
+undocumented. Establish a concept from the selected behavior and field meanings;
+keep its business identity or lifecycle unknown where the evidence does not
+establish them. Do not equate equal class names with the same business object.
+A source-proven read can use relation `kind:"read"`, `role:"unknown"`,
+`origin:"agent-proposal"` and `confidence:"supported"`; explain the exact read and
+unknown ownership in its rationale. Use `owned` or `master` only with evidence.
+Register that concept with `docs entity put`, recompose the captured snapshot,
+and explicitly bind its canonical model using `entity:"entity:<id>"`.
+
+If only a representation is established, describe it as such instead of inventing
+an entity. An explicitly authored VALUE_OBJECT or READ_MODEL may use a
+`processLinks` item with the exact service subject and `anchor:"section-entities"`
+without an `entity` association. Its business meaning and fields remain visible;
+its service role/ownership stay unknown. A DTO catalogue alone is not a business
+catalogue: group justified aliases as representations of one scoped attribute;
+keep copied objects, historical versions and derived values separate, with their
+specific mapping or unresolved relationship. Bind models deliberately; do not
+promote every discovered type or group fields by spelling.
+
+Use the current frozen publication and snapshot in a data-model plan, then render
+through the supported command:
+
+```sh
+clew docs recompose --root ROOT --snapshot SOURCE_SNAPSHOT
+# Use the returned snapshot and matching publication identity below.
+clew docs render --root ROOT --snapshot SNAPSHOT --publication PUBLICATION \
+  --data-model MODEL_PLAN.json --output NEW_EXPORT
+```
+
+Open the service's domain landing and an object. Verify that business meaning,
+fields and their source representations are reachable. An empty landing while
+supported authored objects exist is a failed reader task, even if export succeeds.
+
 The six required fields are `schema`, `id`, `title`, `description`, `relations`
 and `limitations`. `relatedEntities` is optional and defaults to an empty list.
 Every object is closed: additional fields such as `identifiers`, `declaration`,
@@ -46,7 +82,7 @@ Each relation requires all five fields below:
 }
 ```
 
-- `kind`: `created`, `changed`, `read`, `stored-copy`, or `owned`.
+- `kind`: `created`, `changed`, `read`, `stored-copy`, `owned`, `deleted`, or `enriched`. Optional `role` is `master`, `consumer`, `enricher`, or `unknown`.
 - `origin`: `human` or `agent-proposal`. Use `agent-proposal` for a relation
   authored or inferred by the agent, including when its source or business brief
   came from a human. Use `human` only for an exact relation declaration actually

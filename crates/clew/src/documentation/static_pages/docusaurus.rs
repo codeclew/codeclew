@@ -1464,6 +1464,22 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
         }
         if sid == "section-entities" {
+            if rows(&page["serviceModelLinks"]).next().is_none()
+                && !rows(&page["entities"]).any(|record| {
+                    rows(&record["normalized"]["entity"]["relations"])
+                        .any(|relation| relation["service"] == id)
+                })
+                && let Some(summary) = section["content"]["summary"]["text"].as_str()
+            {
+                out.push_str(&format!(
+                    "### {}\n\n{}\n\n",
+                    md(crate::documentation::language::label(
+                        language,
+                        "Service data description"
+                    )),
+                    prose(summary)
+                ));
+            }
             for model in rows(&page["serviceModelLinks"]) {
                 if model["fieldSummary"].is_object() {
                     out.push_str(&format!(
@@ -1471,6 +1487,22 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                         md(text(&model["title"])),
                         text(&model["id"])
                     ));
+                    if let Some(reader) =
+                        rows(&page["readerModels"]).find(|reader| reader["id"] == model["id"])
+                    {
+                        out.push_str(&prose(text(&reader["purpose"]["text"])));
+                        if !rows(&page["entities"]).any(|record| {
+                            reader["entity"].as_str()
+                                == Some(&format!(
+                                    "entity:{}",
+                                    text(&record["normalized"]["entity"]["id"])
+                                ))
+                                && rows(&record["normalized"]["entity"]["relations"])
+                                    .any(|relation| relation["service"] == id)
+                        }) {
+                            out.push_str(&format!("\n\n{}\n\n", md(crate::documentation::language::label(language, "Service role and ownership have not been declared for this object."))));
+                        }
+                    }
                     out.push_str(&super::data_model::service_field_table(
                         &model["fieldSummary"],
                         language,
@@ -3253,6 +3285,36 @@ mod tests {
         assert!(body.contains("../data-model/record.mdx#field-value"));
         assert_eq!(page, original);
         assert_eq!(page["operations"][0]["events"], json!([]));
+    }
+
+    #[test]
+    fn domain_description_and_explicit_model_survive_unknown_ownership_in_portable_reader() {
+        let operation = json!({"id":"section-entities","summary":{"text":"Observed calibration samples are mapped into a result; ownership is unknown."},"events":[]});
+        let mut page = json!({"subject":"service:calibration","title":"Calibration","language":"en","entities":[],"sections":[{"id":"section-entities","title":"Business objects","content":operation}],"operations":[operation]});
+        let body = service_page(&page, "calibration").unwrap();
+        assert!(
+            body.find("Observed calibration samples").unwrap()
+                < body
+                    .find("Original service data description and provenance")
+                    .unwrap()
+        );
+        page["readerModels"] =
+            json!([{"id":"sample","purpose":{"text":"A sample supplied for calibration."}}]);
+        page["serviceModelLinks"] = json!([{"id":"sample","title":"Calibration sample","fieldSummary":{"id":"sample","title":"Calibration sample","fields":[{"id":"level","path":"sample.level","readableName":{"text":"Measured level"},"meaning":{"text":"Level supplied for calibration"}}]}}]);
+        let original = page.clone();
+        let body = service_page(&page, "calibration").unwrap();
+        let provenance = body
+            .find("Original service data description and provenance")
+            .unwrap();
+        for meaning in [
+            "A sample supplied for calibration.",
+            "Measured level",
+            "Level supplied for calibration",
+            "Service role and ownership have not been declared for this object.",
+        ] {
+            assert!(body.find(meaning).unwrap() < provenance);
+        }
+        assert_eq!(page, original);
     }
 
     #[test]

@@ -35,7 +35,11 @@
   for(const child of children){
    if(child===first||child.matches('.question-return,h2,.scenario-heading'))nodes.push(child);else break;
   }
-  if(nodes.length<index+2)return;
+  if(nodes.length<index+2){
+   const title=live.querySelector('h2,h3');
+   const heading=document.createElement('h1');heading.textContent=title?.textContent||first.textContent;
+   lead.replaceChildren(first,heading);focusTopicContext();return;
+  }
   lead.replaceChildren(...nodes);
   const old=lead.querySelector('h2');
   if(old){const heading=document.createElement('h1');for(const attr of old.attributes)heading.setAttribute(attr.name,attr.value);heading.innerHTML=old.innerHTML;if(location.hash==='#section-overview')heading.textContent=first.textContent;old.replaceWith(heading);}

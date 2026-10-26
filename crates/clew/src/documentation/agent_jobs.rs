@@ -1590,7 +1590,7 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
                     ),
                     "section-entities" => (
                         "Which business objects does this service create, change or consume, and what proves each role?",
-                        "Explain business meaning separately from DTO/storage representation. Trace identifiers, creation/update/read/send sites, triggering scenario and persistence or remote boundary; state ownership only when established.",
+                        "Explain supported business objects and attributes separately from DTO/storage representations. Unknown master ownership does not prevent describing a supported business concept, read, mapping, or bounded fields. Trace identifiers, creation/update/read/send sites, triggering scenario and persistence or remote boundary; state ownership only when established.",
                         "new X() or a mapper output proves an in-memory object, not a committed business entity. A request id does not prove this service creates or owns it. If only DTO fields are supplied, describe that representation and leave lifecycle or ownership unknown.",
                     ),
                     "section-ingress" => (

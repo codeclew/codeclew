@@ -14,6 +14,25 @@ updates the runtime, while `clew skill install` installs its bundled skill; use
 `clew skill install --help` for the chosen agent/destination. Do not substitute a
 source runtime or a private converter when a released capability is unavailable.
 
+For a broad documentation request, preserve the whole requested surface before
+selecting an operation: service purpose, responsibilities/processes, business
+objects and fields, ingress, egress and relevant configuration. Use the same scope
+in normal and debug modes; debug adds diagnostics, not a narrower task. A focused
+operation draft completes only that operation. Continue the requested remaining
+surfaces through their supported section/catalogue/data-model routes, or report a
+specific unfinished scope with its evidence gap. Do not call the broad task PASS
+while supported requested sections remain unprepared.
+
+For business data, execute [the domain catalogue route](domain-entities.md),
+including explicit object/model service bindings and a rendered landing check.
+Ownership unknown does not mean no describable object. Lead summaries with the
+practical input, action and outcome. Name each branch's actual condition and
+positive/negative outcome; avoid ambiguous phrases such as a guard "not passing"
+when they can refer to either rejecting data or continuing after a rejection test.
+Keep consequential preparation/call/handler failure boundaries beside the action.
+Use concise edge meanings that retain the guard and result; move supporting code
+detail to disclosure, without dropping the condition from the visible diagram.
+
 Use the existing [Work start route](service-documentation.md#authoring-start-route)
 for the requested public operations; a section summary is not their completion.
 For a complete thread, continue through [thread preparation](thread-preparation.md).

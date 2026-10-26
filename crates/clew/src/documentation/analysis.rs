@@ -33,6 +33,9 @@ use std::{
 const MAX_EVIDENCE: u64 = 256 * 1024 * 1024;
 const MAX_FACTS: usize = 524_288;
 
+#[path = "configuration_sources.rs"]
+mod configuration_sources;
+
 pub fn git(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
     let result = isolated_git_command(repo)
         .args(args)
@@ -499,6 +502,33 @@ fn capture_session(
         &known,
     )?;
     let source_repository = session.target_repository_path().ok();
+    // Static resources use regular versioned files from this immutable snapshot;
+    // a symlink target string or an arbitrary local file is not resource content.
+    let tracked = snapshot
+        .index
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let configuration_text = snapshot
+        .worktree
+        .iter()
+        .filter(|entry| {
+            entry.kind == crate::repository_snapshot::WorktreeKind::Regular
+                && tracked.contains(entry.path.as_str())
+        })
+        .filter_map(|entry| {
+            snapshot_text
+                .get(&entry.path)
+                .map(|text| (entry.path.clone(), Arc::clone(text)))
+        })
+        .collect();
+    configuration_sources::retain(
+        service,
+        &mut evidence,
+        &snapshot.snapshot_id,
+        &configuration_text,
+        &wanted,
+    )?;
     super::thread_inventory::attach_compiler(
         &mut evidence,
         service,

@@ -57,20 +57,23 @@ function visualGraph(owner,visual){
  let tail=Math.max(-1,...queue.map(id=>rank.get(id)))+1;
  for(const node of nodes)if(!queue.includes(node.id))rank.set(node.id,tail++);
  const rows=new Map();for(const node of nodes){const r=rank.get(node.id);if(!rows.has(r))rows.set(r,[]);rows.get(r).push(node);}
- const width=Math.max(760,Math.max(...Array.from(rows.values(),r=>r.length))*320+140),positions=new Map();let y=24;
- for(const [,row] of [...rows].sort((a,b)=>a[0]-b[0])){
+ const width=Math.max(760,Math.max(...Array.from(rows.values(),r=>r.length))*320+140),positions=new Map(),edgeLabels=new Map();let y=24;
+ for(const [rowRank,row] of [...rows].sort((a,b)=>a[0]-b[0])){
   const height=Math.max(...row.map(n=>Math.max(88,wrap(n.meaning.text,32).length*18+44+(owner.visuals||[]).filter(v=>v.parent?.artifact===visual.id&&v.parent.node===n.id).length*18)));
-  row.forEach((node,i)=>positions.set(node.id,{x:(width-row.length*320)/2+i*320+20,y,w:280,h:height}));y+=height+135;
+  row.forEach((node,i)=>positions.set(node.id,{x:(width-row.length*320)/2+i*320+20,y,w:280,h:height}));
+  let gap=26;
+  edges.forEach((edge,i)=>{if(rank.get(edge.from)!==rowRank||!(rank.get(edge.to)>rowRank))return;const lines=sequenceWrap(`${i+1}. ${edge.meaning.text}`,30);edgeLabels.set(i,{bus:y+height+gap,lines});gap+=lines.length*15+24;});
+  y+=height+Math.max(135,gap+25);
  }
  const marker=visualKey(owner.id,visual.id)+'-arrow';
  let svg=chromeHtml`<svg class="artifact-svg" viewBox="0 0 ${width} ${y}" style="min-width:${Math.min(width,900)}px" role="img" aria-label="${esc(visualKind(visual.kind)+': '+visual.title)}"><title>${esc(visual.title)}</title><desc>Arrows carry the documented relationships. Node position alone does not establish order. A complete node and connection table follows.</desc><defs><marker id="${marker}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#376d83"/></marker></defs>`;
  edges.forEach((edge,i)=>{
   const a=positions.get(edge.from),b=positions.get(edge.to);if(!a||!b)return;
   let path,x,y;
-  if(b.y>a.y){const x1=a.x+a.w/2,x2=b.x+b.w/2,bus=a.y+a.h+35+(i%3)*22;path=chromeHtml`M${x1} ${a.y+a.h} V${bus} H${x2} V${b.y-3}`;x=(x1+x2)/2+10;y=bus+15;}
+  if(b.y>a.y){const x1=a.x+a.w/2,x2=b.x+b.w/2,bus=edgeLabels.get(i)?.bus??a.y+a.h+35;path=chromeHtml`M${x1} ${a.y+a.h} V${bus} H${x2} V${b.y-3}`;x=(x1+x2)/2;y=bus+16;}
   else{const lane=width-15-(i%4)*16;path=chromeHtml`M${a.x+a.w} ${a.y+a.h/2} H${lane} V${b.y+22} H${b.x+b.w+3}`;x=lane-10;y=(a.y+a.h/2+b.y+22)/2;}
-  const lines=wrap(chromeHtml`${i+1}. ${edge.meaning.text}`,36),shown=lines.slice(0,3);if(lines.length>3)shown[2]+='…';
-  svg+=chromeHtml`<g><title>${esc(edge.meaning.text)}</title><path d="${path}" class="artifact-edge" marker-end="url(#${marker})"/>${shown.map((line,j)=>chromeHtml`<text class="artifact-edge-label" x="${x}" y="${y+j*15}" text-anchor="${b.y>a.y?'start':'end'}">${esc(line)}</text>`).join('')}</g>`;
+  const shown=edgeLabels.get(i)?.lines||sequenceWrap(`${i+1}. ${edge.meaning.text}`,30);
+  svg+=chromeHtml`<g data-artifact-edge="${esc(edge.id)}"><title>${esc(edge.meaning.text)}</title><path d="${path}" class="artifact-edge" marker-end="url(#${marker})"/>${shown.map((line,j)=>chromeHtml`<text class="artifact-edge-label" x="${x}" y="${y+j*15}" text-anchor="${b.y>a.y?'middle':'end'}">${esc(line)}</text>`).join('')}</g>`;
  });
  for(const node of nodes){
   const p=positions.get(node.id),decisions=(owner.visuals||[]).filter(v=>v.parent?.artifact===visual.id&&v.parent.node===node.id),nodeId=visualNodeKey(owner.id,visual.id,node.id);
@@ -106,10 +109,14 @@ function modelFieldRecords(model,subject=D.subject,expandedUsage=false){
 }
 function domainCatalogue(){
  const entities=(D.entities||[]).filter(d=>d.normalized.entity.relations.some(r=>r.service===D.subject.slice(8))),models=D.readerModels||[];
+ const unbound=models.filter(m=>(m.processLinks||[]).some(l=>l.subject===D.subject&&l.anchor==='section-entities')&&!entities.some(d=>m.entity==='entity:'+d.normalized.entity.id));
+ const operation=D.operations.find(o=>o.id==='section-entities');
+ const description=!entities.length&&!unbound.length&&operation?.summary?.text?chromeHtml`<section class="domain-description"><h4>${esc(t('Service data description'))}</h4><div class="clew-markdown">${prose(operation.summary.text)}</div></section>`:'';
+ const documented=unbound.length?chromeHtml`<section class="domain-data-objects"><h4>${esc(t('Documented data objects'))}</h4>${unbound.map(m=>chromeHtml`<details class="domain-data-object"><summary>${esc(m.title)}</summary><div class="clew-markdown">${prose(m.purpose?.text||'')}</div><p>${esc(t('Service role and ownership have not been declared for this object.'))}</p>${modelFieldCoverage(m)}${modelFieldRecords(m)}</details>`).join('')}</section>`:'';
  return chromeHtml`<section class="domain-catalogue" aria-label="${esc(t('Domain catalogue'))}"><h3>${esc(t('Domain catalogue'))}</h3>${entities.length?chromeHtml`<div class="domain-column-labels" aria-hidden="true"><span>${esc(t('Domain concept and service role'))}</span><span>${esc(t('Meaning'))}</span><span>${esc(t('Details'))}</span></div>${entities.map(d=>{
   const entity=d.normalized.entity,relations=entity.relations.filter(r=>r.service===D.subject.slice(8)),bound=models.filter(m=>m.entity==='entity:'+entity.id),representations=[...new Set(relations.flatMap(r=>r.representations||[]))],roles=[...new Set(relations.map(r=>t(r.kind)))],proposed=relations.filter(r=>r.confidence==='uncertain');
   return chromeHtml`<details class="domain-object"><summary><span class="domain-object-name"><strong>${esc(entity.title)}</strong><small>${roles.map(esc).join(' · ')}</small></span><span class="domain-object-comment">${esc(entity.description)}</span><span class="domain-open-label" title="${esc(t('Fields and service usage'))}">${esc(t('Fields'))}${proposed.length?chromeHtml`<small>${esc(t('Proposed relationships'))} · ${proposed.length}</small>`:''}</span></summary><div class="domain-object-detail">${proposed.length?chromeHtml`<details class="domain-interpretations"><summary>${esc(t('Proposed relationships'))} · ${proposed.length}</summary>${proposed.map(r=>chromeHtml`<p><b>${esc(t(r.role||'unknown'))} · ${esc(t(r.kind))}</b>: ${esc(r.rationale)}</p>`).join('')}<p>${esc(t('Review the specific relationship; its confidence does not change separate observed source facts.'))}</p></details>`:''}${bound.length?bound.map(m=>chromeHtml`<section><h4>${esc(m.title)}</h4>${modelFieldCoverage(m)}${modelFieldRecords(m)}<p><a href="../data-model/${esc(m.id)}.html">${esc(t('Model details and sources'))} ↗</a></p></section>`).join(''):chromeHtml`<p>${esc(t('No evidence-bound field glossary is associated with this concept yet.'))}</p>`}${relatedViews('entity:'+entity.id)}<details class="technical-evidence"><summary>${esc(t('Identity and evidence'))}</summary><div class="clew-markdown">${prose(entity.description)}</div><ul class="domain-code-term">${representations.map(r=>chromeHtml`<li><code>${esc(r)}</code></li>`).join('')}</ul><h4>${esc(t('Service actions and scope'))}</h4>${relations.map(r=>chromeHtml`<p><b>${esc(t(r.role||'unknown'))} · ${esc(t(r.kind))}${r.confidence==='uncertain'?' · '+esc(t('Proposed relationship')):''}</b>: ${esc(r.rationale)}</p>`).join('')}<p>${esc(t('Unrecorded actions are unknown, not confirmed absent.'))}</p><p>${entity.limitations.map(esc).join(' · ')}</p>${claimButton(d,t('Entity evidence'),true)}<pre>${pretty({identity:entity.id,relations})}</pre>${relatedNotes('entity:'+entity.id)}</details></div></details>`;
- }).join('')}`:chromeHtml`<p>${esc(t('No domain ownership declarations have been recorded.'))}</p>`}</section>`;
+ }).join('')}`:chromeHtml`<p>${esc(t('No structured business-object catalogue has been authored.'))}</p>`}${documented}${description}</section>`;
 }
 function egressGroups(){
  const origin=D.subject?.startsWith('service:')?D.subject:'',edges=(D.declaredRelationships?.edges||[]).filter(e=>e.from===origin&&e.to!==origin),external=D.externalServices||{},nodes=new Map((D.declaredRelationships?.nodes||[]).map(n=>[n.id,n]));

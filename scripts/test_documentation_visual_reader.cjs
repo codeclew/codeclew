@@ -1911,7 +1911,7 @@ test('operation links expose retained processes and existing data descriptions w
  assert.match(html,/Saved process: Saved item journey/);assert.match(html,/Service data and domain context/);assert.match(html,/Retained explanation/);
  r.click({entry:'section-entities'});html=r.e('scenario-content').innerHTML;
  assert.match(html,/The item row stores an identifier and a value/);
- assert.match(html,/Domain catalogue/);assert.match(html,/No domain ownership declarations have been recorded/);
+ assert.match(html,/Domain catalogue/);assert.match(html,/No structured business-object catalogue has been authored/);
  assert.doesNotMatch(html,/No domain entity identities have been declared/);
  assert.equal(r.run('JSON.stringify(D.operations)'),original);
 });
@@ -2116,7 +2116,7 @@ test('domain catalogue leads preserved prose, binds only explicit models and lab
  assert.ok(html.indexOf('domain-catalogue')<html.indexOf('original-service-description'));
  assert.match(html,/Only selected field uses/);assert.match(html,/result.value/);assert.match(html,/Итоговое значение/);assert.match(html,/Unrecorded actions are unknown/);
  assert.doesNotMatch(html,/grouped-egress|declared-relationships/);assert.equal(JSON.stringify(data),before);
- data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.doesNotMatch(other.e('scenario-content').innerHTML,/Computed selected result/);
+ data.readerModels[0].entity=undefined;const other=load(data);other.run("showEntry('section-entities')");assert.match(other.e('scenario-content').innerHTML,/Computed selected result/);assert.match(other.e('scenario-content').innerHTML,/Service role and ownership have not been declared/);data.readerModels[0].processLinks=[];assert.doesNotMatch(load(data).run('domainCatalogue()'),/Computed selected result/);
 });
 test('egress groups profiles as explicit hypothesis, rejects grouping without rewriting IDs and hides self calls',()=>{
  const data=taskReaderFixture(),before=JSON.stringify(data),r=load(data);r.run("showEntry('section-egress')");let html=r.e('scenario-content').innerHTML;
@@ -2338,4 +2338,44 @@ test('profile payload deep link opens an actual zero-event service egress catalo
  assert.ok(html.indexOf('id="'+anchor+'"')<html.indexOf('class="original-service-description"'));
  assert.match(html,/Mapped.value only; imported Avro definition unavailable/);assert.match(html,/input.value \(mapper access\)/);
  assert.doesNotMatch(html,/class="process-thread"|class="sequence-trace"/);assert.equal(r.e('source-panel').hidden,true);assert.equal(JSON.stringify(data),original);
+});
+
+
+test('domain fallback keeps authored meaning primary without inventing objects or ownership',()=>{
+ const data=taskReaderFixture();data.entities=[];data.readerModels=[];
+ const op=data.operations.find(o=>o.id==='section-entities');op.summary=fragment('Measured samples describe a calibration session; record ownership is unknown.');
+ const original=JSON.stringify(data),r=load(data);r.run("showEntry('section-entities')");const html=r.e('scenario-content').innerHTML;
+ assert.ok(html.indexOf('Measured samples describe')<html.indexOf('original-service-description'));
+ assert.match(html,/No structured business-object catalogue has been authored/);assert.doesNotMatch(html,/No domain ownership declarations|class="domain-object"/);assert.equal(JSON.stringify(data),original);
+});
+test('artifact branch labels occupy separate lanes and retain full guard meaning',()=>{
+ const data=taskReaderFixture(),r=load(data),claim=text=>({text,sourceIds:[]});
+ const visual={id:'branch',kind:'flow',title:'Calibration decisions',nodes:['start','reject','continue'].map(id=>({id,meaning:claim(id)})),edges:[{id:'rejection',from:'start',to:'reject',meaning:claim('If calibration is rejected, return the rejection result before preparing any message')},{id:'continuation',from:'start',to:'continue',meaning:claim('If calibration is accepted, prepare a message and continue with the supported submission path')}]};
+ const html=r.run(`visualGraph(D.operations[0],${JSON.stringify(visual)})`),groups=[...html.matchAll(/<g data-artifact-edge="[^"]+">([\s\S]*?)<\/g>/g)];assert.equal(groups.length,2);
+ const ranges=groups.map(g=>[...g[1].matchAll(/<text [^>]*y="([0-9.]+)"[^>]*>([^<]*)<\/text>/g)].map(m=>({y:Number(m[1]),text:m[2]})));
+ assert.ok(Math.max(...ranges[0].map(x=>x.y))+15<Math.min(...ranges[1].map(x=>x.y)));
+ for(let i=0;i<2;i++)assert.equal(ranges[i].map(x=>x.text).join(' '),`${i+1}. ${visual.edges[i].meaning.text}`);assert.doesNotMatch(groups.map(g=>g[1]).join(''),/…/);
+});
+
+test('reader lead follows section to nested visual heading and back without stale H1',()=>{
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');let changed;
+ function node(tag,cls='',text=''){
+  const n={tagName:tag.toUpperCase(),className:cls,children:[],parent:null,hidden:false,attributes:[],innerHTML:text,_text:text};
+  n.classList={contains:value=>n.className.split(' ').includes(value)};
+  n.matches=selector=>selector.split(',').some(part=>part.trim().startsWith('.')?n.classList.contains(part.trim().slice(1)):n.tagName===part.trim().toUpperCase());
+  n.querySelector=selector=>{if(selector===':scope > .question-reader')return n.children.find(c=>c.matches('.question-reader'))||null;for(const child of n.children){if(child.matches(selector))return child;const nested=child.querySelector(selector);if(nested)return nested;}return null;};
+  n.replaceChildren=(...children)=>{for(const child of n.children)child.parent=null;n.children=[];for(const child of children){if(child.parent)child.parent.children=child.parent.children.filter(c=>c!==child);child.parent=n;n.children.push(child);}};
+  n.replaceWith=other=>{const parent=n.parent,index=parent.children.indexOf(n);parent.children[index]=other;other.parent=parent;n.parent=null;};
+  n.setAttribute=()=>{};Object.defineProperty(n,'textContent',{get:()=>n._text||n.innerHTML||n.children.map(c=>c.textContent).join(''),set:value=>{n._text=value;n.innerHTML=value;}});return n;
+ }
+ const live=node('div'),lead=node('div'),location={hash:'#section-entities',search:'',pathname:'/services/calibration.html'};
+ const showSection=()=>live.replaceChildren(node('div','breadcrumb','Calibration service'),node('h2','','Business objects'),node('section','','Retained meaning'));
+ showSection();const document={documentElement:{lang:'en'},querySelector:()=>null,querySelectorAll:()=>[],getElementById:id=>({'scenario-content':live,'reader-lead':lead}[id]||null),createElement:tag=>node(tag)};
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location,MutationObserver:class{constructor(fn){changed=fn;}observe(){}}});
+ assert.equal(lead.querySelector('h1').textContent,'Business objects');
+ const visual=node('article','visual-artifact'),visualTitle=node('h3','','Calibration decision flow');visual.replaceChildren(visualTitle,node('div','','Full retained graph'));
+ live.replaceChildren(node('div','breadcrumb','Calibration service · Processes'),visual);location.hash='#visual-calibration';changed();
+ assert.equal(lead.querySelector('h1').textContent,'Calibration decision flow');assert.equal(visual.querySelector('h3').textContent,'Calibration decision flow');assert.ok(live.children.includes(visual));
+ showSection();location.hash='#section-entities';changed();assert.equal(lead.querySelector('h1').textContent,'Business objects');
+ live.replaceChildren(node('div','question-reader'));changed();assert.equal(lead.children.length,0);
 });
