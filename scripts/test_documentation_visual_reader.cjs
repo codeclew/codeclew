@@ -2765,3 +2765,33 @@ if(process.env.CODECLEW_REVIEW_FOLLOWUP_FIXTURE_OUT){
  fs.writeFileSync(path.join(out,'index.html'),'<!doctype html><meta charset="utf-8"><title>Synthetic reader review</title><h1>Synthetic renderer review</h1><p>Development renderer only; no official package or private content.</p><a href="services/sample.html#submit-record">English</a> · <a href="services/sample-ru.html#submit-record">Русский</a>');
  fs.writeFileSync(path.join(out,'external-services/archive.html'),'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Archive provider</title><h1>Archive provider</h1><p>Synthetic declared external profile.</p><p><a href="../services/sample.html#cpv-submit-record-event">Observed publication data</a></p>');
 }
+
+function externalProfileFixture(language='en'){
+ const d=reviewFollowupFixture(language),op=d.operations[0];op.id='saved';d.subject='service:owner';d.title=language==='ru'?'Синтетический сервис обработки публикаций и ответов с длинным названием':'Synthetic publication service';
+ d.operationSources={saved:d.sources};d.operationStates={saved:{freshness:'UNVERIFIED',verification:'UNASSESSED'}};
+ d.catalogue=[{...d.catalogue[0],id:'saved'}];d.externalServices={provider:{title:'Synthetic provider'}};
+ op.participants=[{id:'app',label:'Owned service',service:'owner'},{id:'provider',label:'Synthetic provider',externalService:'provider'}];
+ op.events=[{id:'request',kind:'declared-boundary',interaction:'request-price',from:'app',to:'provider',text:'Request synthetic price',sourceIds:[],dependencyIds:[]},{id:'publish',kind:'declared-boundary',interaction:'publish-record',from:'app',to:'provider',text:'Publish synthetic record',sourceIds:[],dependencyIds:[]}];
+ d.operationExternalCalls={saved:op.events.map(e=>({eventId:e.id,interactionId:e.interaction,to:'provider',title:e.text,transport:{kind:'logical'},addresses:[],contract:null,declaration:{origin:'human',rationale:'Exact synthetic interaction'}}))};
+ const message={...d.payloadViews[0],id:'message',operation:'saved',subject:d.subject,interaction:'publish-record',title:language==='ru'?'Наблюдаемые данные публикации':'Observed publication data'};
+ message.constructorArguments[0].expression='input.syntheticPayloadWithAnIntentionallyLongUnbrokenName.selectedPropertyWithAnotherDeliberatelyLongName';
+ d.payloadViews=[{...message,id:'request',interaction:'request-price',title:'Price request',component:'request-body',constructorArguments:[]},{...message,id:'response',interaction:'request-price',title:'Price response',component:'response-body',direction:'incoming',constructorArguments:[]},message];
+ return d;
+}
+test('external profile boundary links use exact operation and interaction and retain the profile route',()=>{
+ const d=externalProfileFixture(),before=JSON.stringify(d),html=load(d).run('interactionOverview(D.operations[0])');
+ for(const id of ['request','response','message'])assert.match(html,new RegExp('href="#cpv-saved-'+id+'"'));
+ assert.equal((html.match(/href="..\/external-services\/provider.html"/g)||[]).length,2);assert.equal(JSON.stringify(d),before);
+ d.payloadViews.push({...d.payloadViews[2],id:'foreign',operation:'other',title:'Foreign operation payload'});
+ d.operationExternalCalls.saved[1].bindingStatus='MULTIPLE_DECLARED_INTERACTIONS';
+ const guarded=load(d).run('interactionOverview(D.operations[0])');assert.doesNotMatch(guarded,/#cpv-saved-message|Foreign operation payload|#cpv-other/);
+ d.operationExternalCalls.saved=[];d.operations[0].events[1].interaction='unbound';assert.doesNotMatch(load(d).run('interactionOverview(D.operations[0])'),/#cpv-saved-message/);
+});
+if(process.env.CODECLEW_EXTERNAL_SERVICE_FIXTURE_OUT){
+ const out=path.resolve(process.env.CODECLEW_EXTERNAL_SERVICE_FIXTURE_OUT);fs.mkdirSync(out,{recursive:true});
+ for(const language of ['en','ru']){
+  let html=renderReaderFixture(externalProfileFixture(language));
+  html=html.replace('</head>','<style>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.css'),'utf8')+'</style></head>').replace('</body>','<script>'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8')+'</script></body>');
+  fs.writeFileSync(path.join(out,'owner-'+language+'.html'),html);
+ }
+}

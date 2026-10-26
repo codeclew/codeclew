@@ -705,7 +705,11 @@ function interactionOverview(o){
  return chromeHtml`<section class="interaction-overview" aria-label="${esc(t('Service links'))}"><h3>${esc(t('Service links'))}</h3><div class="interaction-links">${links.map(e=>{
   const receiver=participant(e.to),row=(D.operationExternalCalls?.[o.id]||[]).find(r=>r.eventId===e.id),profile=receiver?.externalService||row?.to,href=profile&&D.externalServices?.[profile]?'../external-services/'+encodeURIComponent(profile)+'.html':receiver?.service&&Object.prototype.hasOwnProperty.call(D.sourceAuthorities||{},receiver.service)?participantHref(receiver):'';
   const content=chromeHtml`<span>${esc(name(e.from))}</span><span class="connection-arrow" aria-hidden="true">→</span><span>${esc(name(e.to))}</span><small>${esc(e.text)}</small><small class="interaction-action">${esc(t(href?'Open service profile':'View connection'))} ↗</small>`;
-  if(href)return chromeHtml`<a class="interaction-link" href="${esc(href)}">${content}</a>`;
+  if(href){
+   const interaction=row?.interactionId||e.interaction,views=row?.bindingStatus==='MULTIPLE_DECLARED_INTERACTIONS'?[]:(D.payloadViews||[]).filter(v=>v.operation===o.id&&interaction&&v.interaction===interaction);
+   const card=chromeHtml`<a class="interaction-link" href="${esc(href)}">${content}</a>`;
+   return views.length?chromeHtml`<div class="interaction-connection">${card}<div class="interaction-payload-links">${views.map(v=>chromeHtml`<a href="#cpv-${esc(v.operation)}-${esc(v.id)}">${esc(v.title)} ↗</a>`).join('')}</div></div>`:card;
+  }
   return chromeHtml`<details class="interaction-disclosure"><summary class="interaction-link">${content}</summary><div class="interaction-details"><h4>${esc(e.text)}</h4>${externalCallDetails(o,e)}<details><summary>${esc(t('Declaration and provenance'))}</summary><pre>${pretty({interaction:e.interaction,event:e})}</pre></details>${e.sourceIds?.some(id=>D.sources?.[id])?stepEvidence(o,e):''}</div></details>`;
  }).join('')}</div></section>`;
 }

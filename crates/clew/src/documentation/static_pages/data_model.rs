@@ -2974,7 +2974,8 @@ mod tests {
         );
         files.insert(
             "external-services/provider.html".into(),
-            b"<html><body>Retained profile</body></html>".to_vec(),
+            b"<html><body><main class=\"reader-guide\">Retained profile</main></body></html>"
+                .to_vec(),
         );
         attach_external_payloads(Some(&projected), &mut files, "en").unwrap();
         let profile: Value =
@@ -2989,6 +2990,84 @@ mod tests {
             String::from_utf8_lossy(&files["external-services/provider.html"])
                 .contains("../services/owner.html#cpv-saved-request")
         );
+        let html = String::from_utf8_lossy(&files["external-services/provider.html"]);
+        let shape_heading = html.find("id=\"profile-payload-shapes\"").unwrap();
+        assert!(html.find("<main").unwrap() < shape_heading);
+        assert!(shape_heading < html.find("</main>").unwrap());
+        assert_eq!(html.matches("profile-payload-shapes").count(), 1);
+        if let Some(output) = std::env::var_os("CODECLEW_EXTERNAL_PROFILE_FIXTURE_OUT") {
+            let output = std::path::PathBuf::from(output);
+            std::fs::create_dir_all(&output).unwrap();
+            let inputs = &mut checked.source_inputs.as_mut().unwrap().inputs;
+            inputs.external_services.insert("provider".into(), serde_json::from_value(json!({
+                "schema":"codeclew-documentation-external-service/1.0","id":"provider",
+                "title":"Synthetic external publication and response processing provider with a deliberately long title",
+                "description":"Synthetic fixture only. Declared provider; implementation and runtime not captured.",
+                "declaration":{"origin":"human","rationale":"Owned synthetic navigation example"},
+                "limitations":["The wire schema and runtime routing are not established."],
+                "configurationReferences":[{"id":"endpoint","key":"synthetic.provider.publication.processing.endpoint.with.a.deliberately.long.configuration.key","binding":"unresolved-reference","scope":"Synthetic selected configuration","sources":[{"service":"owner","sourceId":"missing-synthetic-source","textDigest":format!("sha256:{}", "0".repeat(64))}],"declaration":{"origin":"human","rationale":"Static name only; no resolved value is claimed"}}]
+            })).unwrap());
+            let mut second = inputs.interactions["request-price"].clone();
+            second.id = "publish-record".into();
+            second.title = "Publish synthetic record".into();
+            inputs.interactions.insert(second.id.clone(), second);
+            let mut payloads = projected.clone();
+            payloads["payloadViews"][0]["coverage"]["status"] = json!("unknown");
+            payloads["payloadViews"][0]["fields"] = json!([]);
+            let mut response = payloads["payloadViews"][0].clone();
+            response["id"] = json!("response");
+            response["title"] = json!("Price response");
+            response["component"] = json!("response-body");
+            response["direction"] = json!("incoming");
+            let mut message = response.clone();
+            message["id"] = json!("message");
+            message["title"] = json!("Observed publication data");
+            message["component"] = json!("message-value");
+            message["direction"] = json!("outgoing");
+            message["interaction"] = json!("publish-record");
+            payloads["payloadViews"]
+                .as_array_mut()
+                .unwrap()
+                .extend([response, message]);
+            for language in ["en", "ru"] {
+                if language == "ru" {
+                    checked.source_inputs.as_mut().unwrap().inputs.external_services.get_mut("provider").unwrap().title = "Синтетическая внешняя система обработки публикаций и ответов с намеренно длинным названием".into();
+                }
+                let mut preview = BTreeMap::new();
+                crate::documentation::external_services::publication(
+                    &checked,
+                    &mut preview,
+                    &mut String::new(),
+                    language,
+                )
+                .unwrap();
+                std::fs::write(
+                    output.join(format!("profile-base-{language}.html")),
+                    &preview["external-services/provider.html"],
+                )
+                .unwrap();
+                attach_external_payloads(Some(&payloads), &mut preview, language).unwrap();
+                let profile =
+                    String::from_utf8(preview["external-services/provider.html"].clone()).unwrap();
+                let navigation = crate::documentation::reader::navigation_language(
+                    "../",
+                    "../index.html",
+                    None,
+                    &[],
+                    language,
+                );
+                std::fs::write(
+                    output.join(format!("profile-{language}.html")),
+                    crate::documentation::reader::decorate(&profile, &navigation),
+                )
+                .unwrap();
+                std::fs::write(
+                    output.join(format!("profile-{language}.json")),
+                    &preview["external-services/provider.json"],
+                )
+                .unwrap();
+            }
+        }
     }
 
     #[test]

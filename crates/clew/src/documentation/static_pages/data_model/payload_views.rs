@@ -294,7 +294,7 @@ pub(super) fn attach_external_links(
         let html_name = name.trim_end_matches(".json").to_owned() + ".html";
         if let Some(raw) = files.get_mut(&html_name) {
             let mut section = format!(
-                "<section class=\"profile-payloads\"><h2>{}</h2><ul>",
+                "<section class=\"profile-payloads\"><h2 id=\"profile-payload-shapes\">{}</h2><ul>",
                 super::super::super::language::label(language, "Payload shapes")
             );
             for link in &links {
@@ -314,7 +314,7 @@ pub(super) fn attach_external_links(
             }
             section += "</ul></section>";
             let html = String::from_utf8(raw.clone()).map_err(super::super::super::io_error)?;
-            *raw = html.replace("</body>", &(section + "</body>")).into_bytes();
+            *raw = html.replace("</main>", &(section + "</main>")).into_bytes();
         }
     }
     Ok(())
