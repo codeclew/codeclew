@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.55 — 2026-10-27
+
+- Show one HTTP method and route identity, with exact-path copy feedback and
+  consistent search recovery, document titles and source-status presentation.
+- Inspect a canonical field's own representations and uses, then return focus
+  to its original row. Ambiguous identities and missing evidence stay explicit.
+- Include retained payload shapes in external-profile contents and link boundary
+  cards through exact operation/interaction identities. Short position headings
+  remain readable while long source expressions wrap.
+- Expand existing sequence diagrams in place with bounded panning, live source
+  links, source-first Escape handling and return to the same process position.
+- Recover editorial question searches without adding local search to sequential
+  reading. Preserve authored content, source bindings and authority boundaries.
+
 ## 0.13.54 — 2026-10-26
 
 - Present authored domain attributes by readable business name, with exact code
