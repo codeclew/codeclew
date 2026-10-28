@@ -17,6 +17,138 @@ use support::{Fixture, read};
 
 const SOURCE_PART_REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
 
+#[test]
+fn kotlin_whole_file_cli_selects_exact_offline_bytes_and_preserves_existing_queries() {
+    let f = Fixture::new();
+    let source_repo = f.temp.path().join("orders");
+    fs::create_dir(&source_repo).unwrap();
+    let original = format!(
+        "package owned\r\n{}class Ledger {{ fun read() = \"ok\" }}\r\n",
+        "// λ☕ original whitespace retained    \r\n".repeat(240)
+    );
+    fs::write(source_repo.join("Ledger.kt"), &original).unwrap();
+    fs::write(source_repo.join("Empty.kt"), "").unwrap();
+    support::git(&source_repo, &["init", "-q"]);
+    support::git(
+        &source_repo,
+        &["remote", "add", "origin", "https://example.invalid/orders"],
+    );
+    support::commit(&source_repo);
+    let config = f.input(
+        "orders.json",
+        &json!({"schema":"codeclew-documentation-service/1.0","id":"orders",
+            "title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders",
+            "language":"kotlin","profile":"source-syntax","targetRef":"HEAD",
+            "source":{"roots":["."],"dialect":"1.9"}}),
+    );
+    let baseline = f.ok(&["docs", "service", "list"]);
+    f.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        config.to_str().unwrap(),
+        "--expected-input-digest",
+        baseline["inputDigest"].as_str().unwrap(),
+    ]);
+    f.ok(&[
+        "docs",
+        "bind",
+        "--service",
+        "orders",
+        "--repo",
+        source_repo.to_str().unwrap(),
+    ]);
+    f.checked();
+    let (work, _) = prepare_work(&f, 4_096);
+    let latest = f.docs.join(".codeclew/cache/latest-check.json");
+    let latest_before = fs::read(&latest).unwrap();
+    fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
+    let select = |query: Value| {
+        let input = f.input("whole-file-selection.json", &json!({"query":query}));
+        f.run(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            &work,
+            "--input",
+            input.to_str().unwrap(),
+        ])
+    };
+    let (code, selected) =
+        select(json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":"Ledger.kt"}));
+    assert_eq!(code, 0, "{selected}");
+    let row = &selected["items"][0]["record"];
+    assert_eq!(row["wholeFileCapture"], "EXACT_RETAINED_FILE");
+    assert_eq!(row["textDelivered"], false);
+    assert!(row["source"].get("text").is_none());
+    let reference = row["fullRecordReference"].as_str().unwrap();
+    let mut recovered = String::new();
+    let mut cursor: Option<String> = None;
+    let mut parts = 0;
+    loop {
+        let request = f.input(
+            "whole-file-part.json",
+            &serde_json::to_value(request_value(reference, cursor.as_deref())).unwrap(),
+        );
+        let output = f.run_raw(&[
+            "docs",
+            "work",
+            "read-part",
+            "--work",
+            &work,
+            "--input",
+            request.to_str().unwrap(),
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(output.stdout.len() <= 4_096);
+        let part: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            part["startByte"].as_u64().unwrap() as usize,
+            recovered.len()
+        );
+        recovered.push_str(part["text"].as_str().unwrap());
+        cursor = part["nextCursor"].as_str().map(str::to_owned);
+        parts += 1;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(parts < 100);
+    }
+    assert!(parts > 1);
+    assert_eq!(recovered.as_bytes(), original.as_bytes());
+    let (default_code, default) = select(json!({"kind":"SOURCE"}));
+    let (raw_code, raw) = select(json!({"kind":"SOURCE","projection":"RAW"}));
+    assert_eq!((default_code, raw_code), (0, 0));
+    for field in ["items", "omitted", "nextCursor"] {
+        assert_eq!(default[field], raw[field], "{field}");
+    }
+    let (code, declarations) = select(json!({"kind":"SYMBOL","projection":"NAVIGATION"}));
+    assert_eq!(code, 0, "{declarations}");
+    assert!(!declarations["items"].as_array().unwrap().is_empty());
+    for file in ["Empty.kt", "Missing.kt"] {
+        let (code, refused) =
+            select(json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":file}));
+        assert_ne!(code, 0, "{refused}");
+        assert!(refused.to_string().contains("WHOLE_FILE_NOT_RETAINED"));
+    }
+    for query in [
+        json!({"kind":"SOURCE","file":"Ledger.kt"}),
+        json!({"kind":"SOURCE","projection":"WHOLE_FILE"}),
+        json!({"kind":"SYMBOL","projection":"WHOLE_FILE","file":"Ledger.kt"}),
+        json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":""}),
+        json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":"Ledger.kt","symbolContains":"Ledger"}),
+    ] {
+        assert_ne!(select(query).0, 0);
+    }
+    assert_eq!(fs::read(latest).unwrap(), latest_before);
+}
+
 fn hydrated_work(f: &Fixture, id: &str) -> Value {
     let repo = Repository::open(&f.docs).unwrap();
     serde_json::to_value(work::load(&repo, id).unwrap()).unwrap()

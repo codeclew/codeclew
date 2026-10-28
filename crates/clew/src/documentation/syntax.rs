@@ -41,7 +41,7 @@ pub(super) fn take_file_cache_stats() -> FileCacheStats {
 fn budget() -> ClewError {
     ClewError::new(
         ErrorCode::SliceBudgetExceeded,
-        "source documentation exceeds its bounded scope; narrow source roots",
+        "source documentation exceeds its bounded scope, including complete original Kotlin file records: shared text limit 32 MiB, fact/source limit 32768; narrow source roots",
     )
 }
 
@@ -195,6 +195,15 @@ fn capture_with_store_selected(
             source_bytes: &source_bytes,
             recipes: None,
         };
+        // Preserve original committed Kotlin file bytes independently of syntax
+        // recipes. This also runs on a file-cache hit; declarations stay intact.
+        if supported
+            && service.language == "kotlin"
+            && file.generated_origin.is_none()
+            && !text.is_empty()
+        {
+            file.source(&mut e, &format!("file:{}", entry.path), 0, text.len())?;
+        }
         if supported {
             if let Some(output) = output {
                 let key = syntax_file_cache::producer_key(service, &entry.path, text)?;
@@ -1292,6 +1301,82 @@ mod tests {
     const PYTHON: &str = include_str!("../../../../fixtures/durable-docs-source/python/orders.py");
     fn service(language: &str) -> Service {
         serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":language,"profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":if language=="kotlin"{"1.9"}else{"declared"}}})).unwrap()
+    }
+    #[test]
+    fn kotlin_whole_file_shared_text_budget_refuses_before_mutating_evidence() {
+        let selected = service("kotlin");
+        let text = "package owned\r\n// π☀\r\nclass A\r\n";
+        let mut evidence = fixture("kotlin", text);
+        let count = evidence.sources.len();
+        let charged = Cell::new(32 * 1024 * 1024 - text.len() + 1);
+        let file = File {
+            service: &selected,
+            path: "A.kt",
+            text,
+            snapshot: "snapshot",
+            blob: "blob",
+            source_bytes: &charged,
+            recipes: None,
+            generated_origin: None,
+        };
+        let error = file
+            .source(&mut evidence, "file:A.kt", 0, text.len())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::SliceBudgetExceeded);
+        assert!(
+            error
+                .message
+                .contains("complete original Kotlin file records")
+        );
+        assert_eq!(charged.get(), 32 * 1024 * 1024 - text.len() + 1);
+        assert_eq!(evidence.sources.len(), count);
+        charged.set(32 * 1024 * 1024 - text.len());
+        file.source(&mut evidence, "file:A.kt", 0, text.len())
+            .unwrap();
+        assert_eq!(charged.get(), 32 * 1024 * 1024);
+        assert_eq!(evidence.sources.len(), count + 1);
+    }
+    #[test]
+    fn committed_kotlin_whole_file_keeps_headers_utf8_crlf_and_original_revision() {
+        let repo = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let cas =
+            CasStore::open(&StateAuthority::open(state.path().join("state")).unwrap()).unwrap();
+        let text = "package owned\r\n\r\nimport kotlin.String\r\n// π☀ original\r\nclass Owned { fun read(): String = \"ok\" }\r\n";
+        git(repo.path(), &["init", "-q"]);
+        git(repo.path(), &["config", "core.autocrlf", "false"]);
+        fs::write(repo.path().join("Owned.kt"), text).unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-qm", "Original"]);
+        let revision = git(repo.path(), &["rev-parse", "HEAD"]);
+        fs::write(
+            repo.path().join("Owned.kt"),
+            "dirty checkout must not replace retained bytes",
+        )
+        .unwrap();
+        let evidence =
+            capture_with_store(&service("kotlin"), repo.path(), &revision, &cas).unwrap();
+        let id = analysis::source_id("orders", "file:Owned.kt").unwrap();
+        let source = &evidence.sources[&id];
+        assert_eq!(source.text.as_bytes(), text.as_bytes());
+        assert_eq!(source.revision, revision);
+        assert_eq!(source.authority, "EXACT_SNAPSHOT_TEXT");
+        assert_eq!(source.start_line, 1);
+        assert_eq!(source.end_line, text.lines().count() as u64);
+        let occurrence = source.occurrence.as_ref().unwrap();
+        assert_eq!(
+            (occurrence.start_byte, occurrence.end_byte),
+            (0, text.len())
+        );
+        assert_eq!(
+            occurrence.blob,
+            git(repo.path(), &["rev-parse", &format!("{revision}:Owned.kt")])
+        );
+        assert!(
+            evidence
+                .boundaries
+                .contains(&"CALL_TARGETS_UNRESOLVED".into())
+        );
     }
     #[test]
     fn kotlin_compact_class_members_preserve_inventory_without_rewriting_source() {

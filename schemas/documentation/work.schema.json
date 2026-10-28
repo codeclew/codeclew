@@ -428,10 +428,14 @@
                   "maxLength": 512,
                   "description": "Case-sensitive substring of captured dependency symbols or method names. SOURCE has no symbol field and requires this field omitted or empty; nonempty SOURCE filters are rejected."
                 },
+                "file": {
+                  "type": "string", "minLength": 1, "maxLength": 4096,
+                  "description": "Exact retained Kotlin SOURCE file for WHOLE_FILE only."
+                },
                 "projection": {
                   "type": "string",
-                  "enum": ["RAW", "NAVIGATION"],
-                  "description": "Optional query view. RAW is the default. NAVIGATION is valid only when kind is SYMBOL."
+                  "enum": ["RAW", "NAVIGATION", "WHOLE_FILE"],
+                  "description": "RAW is the default. NAVIGATION requires SYMBOL. WHOLE_FILE requires SOURCE and an exact file."
                 }
               },
               "required": [
@@ -443,12 +447,18 @@
                     "kind": {"const": "SYMBOL"},
                     "projection": {"const": "NAVIGATION"}
                   },
-                  "required": ["projection"]
+                  "required": ["projection"],
+                  "not": {"required": ["file"]}
+                },
+                {
+                  "properties": {"kind":{"const":"SOURCE"},"projection":{"const":"WHOLE_FILE"}},
+                  "required": ["projection", "file"]
                 },
                 {
                   "properties": {
                     "projection": {"const": "RAW"}
-                  }
+                  },
+                  "not": {"required": ["file"]}
                 }
               ]
             },

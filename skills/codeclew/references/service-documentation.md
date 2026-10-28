@@ -1308,3 +1308,31 @@ authority, legacy sourceMapping, conditions, scope and UNKNOWN boundaries.
 `wireConformance` remains `UNVERIFIED`; a missing captured match never proves a
 missing production endpoint. This command does not recapture or require Work
 preparation. Read the report summary, then the exact finding/source references.
+
+## Human HTML with addressable private metadata
+
+Use the [exact reader export and query route](reader-metadata.md) for an explicit
+human-only HTML profile. Existing evidence-bearing exports remain available.
+
+## Exact complete retained Kotlin files
+
+Fresh Kotlin SOURCE_SYNTAX captures preserve nonempty committed `.kt`/`.kts`
+files including package/import headers, comments, whitespace and original bytes.
+Use the existing saved Work with this exact selection:
+
+```json
+{"query":{"kind":"SOURCE","projection":"WHOLE_FILE","file":"src/main/kotlin/example/Service.kt"}}
+```
+
+Submit it through `docs work read --root DOCS --work WORK --input selection.json`.
+The result is metadata (`SOURCE_NAVIGATION`) with `wholeFileCapture:
+EXACT_RETAINED_FILE` and `fullRecordReference`; it is not body delivery. Read that
+reference through ordinary `docs work read-part`, continuing until its cursor is
+null. Declarations and default raw SOURCE queries keep their existing behavior.
+
+Old snapshots lacking the complete record refuse with `WHOLE_FILE_NOT_RETAINED`.
+No current-checkout/Git fallback or historical snapshot upgrade occurs. Empty or
+generated files and Java compiler inputs are not added by this route. Complete
+records share the existing 2 MiB per-file, 32 MiB aggregate text and 32768 record
+limits; a near-limit capture may explicitly refuse and require narrower roots.
+Exact retained bytes establish no compiler resolution or runtime correctness.

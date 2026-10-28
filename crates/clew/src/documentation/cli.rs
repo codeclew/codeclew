@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Human-only exports with exact retained metadata lookup.
+    Reader {
+        #[command(subcommand)]
+        command: super::reader_address::Command,
+    },
     /// Compare declared HTTP routes and OpenAPI operations in an explicit saved snapshot.
     Contract {
         #[command(subcommand)]
@@ -378,6 +383,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Reader { command } => super::reader_address::run(command),
         Command::External { command } => super::external_services::run(command),
         Command::Storage { command } => super::storage::run(command),
         Command::Endpoint { command } => super::endpoint_publication::run(command),

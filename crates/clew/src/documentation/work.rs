@@ -442,6 +442,8 @@ pub struct Query {
     pub kind: String,
     #[serde(default)]
     pub symbol_contains: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
     #[serde(default, skip_serializing_if = "QueryProjection::is_raw")]
     pub projection: QueryProjection,
 }
@@ -452,6 +454,7 @@ pub enum QueryProjection {
     #[default]
     Raw,
     Navigation,
+    WholeFile,
 }
 
 impl QueryProjection {
@@ -479,6 +482,18 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
         query.projection == QueryProjection::Navigation && query.kind != "SYMBOL"
     }) {
         return Err(invalid("NAVIGATION query projection requires kind SYMBOL"));
+    }
+    if selection.query.as_ref().is_some_and(|q| {
+        (q.projection == QueryProjection::WholeFile && (q.kind != "SOURCE" || q.file.is_none()))
+            || (q.file.is_some()
+                && (q.projection != QueryProjection::WholeFile
+                    || q.file
+                        .as_ref()
+                        .is_some_and(|f| f.is_empty() || f.len() > 4096)))
+    }) {
+        return Err(invalid(
+            "WHOLE_FILE requires kind SOURCE and one exact file; file is not a generic query filter",
+        ));
     }
     if selection
         .query
@@ -766,6 +781,9 @@ pub struct ReadState {
     pub source_part_receipts: BTreeMap<String, SourcePartReceipt>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retained_part_receipts: BTreeMap<String, RetainedPartReceipt>,
+    /// Immutable human-export metadata objects retained by this existing Work ledger.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reader_exports: BTreeMap<String, super::cache::ObjectRef>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -862,6 +880,13 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
         &work.checked,
     )?;
     Ok(work)
+}
+
+/// Validate exact immutable Work identity without hydrating source bodies.
+/// Reader receipts use this for bounded metadata lookup; source delivery still
+/// goes through the existing Work read/read-part APIs.
+pub(super) fn retained_manifest_identity(repo: &Repository, id: &str) -> Result<String, ClewError> {
+    digest(&load_stored(repo, id)?)
 }
 
 pub fn read_state(repo: &Repository, id: &str) -> Result<ReadState, ClewError> {
@@ -2836,7 +2861,11 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
         if matches!(query.kind.as_str(), "THREAD_INVENTORY" | "THREAD_CONTEXT") {
             super::thread_context::query(work, &query.kind, &query.symbol_contains)?
         } else if query.kind == "SOURCE" {
-            source_inventory_rows(work)?
+            if query.projection == QueryProjection::WholeFile {
+                vec![whole_file_row(work, query)?]
+            } else {
+                source_inventory_rows(work)?
+            }
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {
                 (kind != "service" || dependency.in_service_scope(id))
@@ -2849,6 +2878,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
                         json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency})
                     })
                     .collect(),
+                QueryProjection::WholeFile => return Err(invalid("WHOLE_FILE requires SOURCE")),
                 QueryProjection::Navigation => {
                     let reverse = reverse_handles(work);
                     matches
@@ -3096,6 +3126,69 @@ fn source_inventory_evidence(work: &Work) -> Result<&ServiceEvidence, ClewError>
 
 pub(super) fn source_inventory_available(work: &Work) -> bool {
     source_inventory_evidence(work).is_ok()
+}
+
+fn whole_file_row(work: &Work, query: &Query) -> Result<Value, ClewError> {
+    let evidence = source_inventory_evidence(work)?;
+    let scope = work
+        .checked
+        .dependencies
+        .values()
+        .find(|d| d.service == evidence.service && d.kind == "SOURCE_SCOPE")
+        .ok_or_else(|| invalid("WHOLE_FILE requires source scope"))?;
+    if scope.normalized["language"] != "kotlin" {
+        return Err(invalid(
+            "WHOLE_FILE is supported for retained Kotlin SOURCE_SYNTAX files and their registered non-code inputs",
+        ));
+    }
+    let file = query
+        .file
+        .as_deref()
+        .ok_or_else(|| invalid("WHOLE_FILE requires an exact file"))?;
+    let id = super::analysis::source_id(&evidence.service, &format!("file:{file}"))?;
+    let source = evidence.sources.get(&id).ok_or_else(|| invalid("WHOLE_FILE_NOT_RETAINED: this immutable snapshot has no complete original file record; capture explicitly, without upgrading historical evidence"))?;
+    let valid = source.authority == "EXACT_SNAPSHOT_TEXT"
+        && source.revision == evidence.revision
+        && query.file.as_deref() == Some(source.file.as_str())
+        && source.start_line == 1
+        && source.end_line == source.text.lines().count() as u64
+        && !source.text.is_empty()
+        && source.text_digest == crate::canonical::hash_bytes(source.text.as_bytes());
+    let occurrence = source
+        .occurrence
+        .as_ref()
+        .ok_or_else(|| invalid("WHOLE_FILE_BINDING_INVALID: missing byte occurrence"))?;
+    if !valid
+        || occurrence.generated_origin.is_some()
+        || occurrence.start_byte != 0
+        || occurrence.end_byte != source.text.len()
+        || occurrence
+            .snapshot
+            .strip_prefix("sha256:")
+            .is_none_or(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+        || !matches!(occurrence.blob.len(), 40 | 64)
+        || !occurrence.blob.bytes().all(|b| b.is_ascii_hexdigit())
+        || source.evidence_digest
+            != digest(&(
+                SOURCE_EXTRACTOR,
+                &occurrence.snapshot,
+                &occurrence.blob,
+                0usize,
+                source.text.len(),
+            ))?
+    {
+        return Err(invalid(
+            "WHOLE_FILE_BINDING_INVALID: original file bytes/provenance differ",
+        ));
+    }
+
+    let reverse = reverse_handles(work);
+    let mut metadata = serde_json::to_value(source).map_err(io_error)?;
+    metadata.as_object_mut().unwrap().remove("text");
+    Ok(json!({"kind":"SOURCE_NAVIGATION","id":id,"record":{
+        "source":metadata,"recordDigest":digest(source)?,
+        "fullRecordReference":reverse.get(&("SOURCE",id.as_str())).copied(),
+        "authority":"NAVIGATION_ONLY","textDelivered":false,"wholeFileCapture":"EXACT_RETAINED_FILE"}}))
 }
 
 fn source_inventory_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
@@ -3930,6 +4023,7 @@ mod section_context_tests {
 
         let raw = Selection {
             query: Some(Query {
+                file: None,
                 kind: "SYMBOL".into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Raw,
@@ -3950,6 +4044,7 @@ mod section_context_tests {
 
         let navigation = Selection {
             query: Some(Query {
+                file: None,
                 kind: "SYMBOL".into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Navigation,
@@ -4066,6 +4161,7 @@ mod section_context_tests {
         }
         let select = |kind: &str| Selection {
             query: Some(Query {
+                file: None,
                 kind: kind.into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Raw,
@@ -4122,6 +4218,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "SYMBOL".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4138,6 +4235,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "SOURCE".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4156,6 +4254,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "SYMBOL".into(),
                     symbol_contains: "missing".into(),
                     projection: QueryProjection::Raw,
@@ -4170,6 +4269,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "*".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4225,6 +4325,119 @@ mod section_context_tests {
 
     fn source_inventory_selection() -> Selection {
         serde_json::from_value(json!({"query":{"kind":"SOURCE"}})).unwrap()
+    }
+
+    fn exact_kotlin_file_fixture() -> Work {
+        let mut work = exact_retained_file_proposal_fixture("SYNTAX");
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        let old = evidence.sources.keys().next().unwrap().clone();
+        let mut source = evidence.sources.remove(&old).unwrap();
+        source.file = "src/fixture.kt".into();
+        source.text = "package owned\r\n// λ☕\r\nclass Ledger { fun read() = \"ok\" }\r\n".into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count() as u64;
+        source.occurrence.as_mut().unwrap().end_byte = source.text.len();
+        source.id = super::super::analysis::source_id("orders", "file:src/fixture.kt").unwrap();
+        work.handles
+            .values_mut()
+            .filter(|h| h.id == old)
+            .for_each(|h| h.id = source.id.clone());
+        let scope = evidence
+            .observations
+            .get_mut("orders:source-scope")
+            .unwrap();
+        scope.normalized["language"] = json!("kotlin");
+        scope.normalized["roots"] = json!([source.file]);
+        scope.normalized["inventory"] = json!({source.file.clone():{"coverage":"SYNTAX","digest":super::super::syntax::retained_file_fingerprint("kotlin", &source.text).unwrap()}});
+        scope.digest = digest(&scope.normalized).unwrap();
+        work.checked
+            .dependencies
+            .insert(scope.id.clone(), scope.clone());
+        work.influence
+            .insert(scope.id.clone(), scope.digest.clone());
+        evidence.sources.insert(source.id.clone(), source);
+        work
+    }
+
+    #[test]
+    fn whole_file_selection_preserves_exact_metadata_and_refuses_legacy_or_mismatch() {
+        let selection: Selection = serde_json::from_value(
+            json!({"query":{"kind":"SOURCE","projection":"WHOLE_FILE","file":"src/fixture.kt"}}),
+        )
+        .unwrap();
+        validate_selection(&selection).unwrap();
+        let mut work = exact_kotlin_file_fixture();
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .values_mut()
+            .next()
+            .unwrap();
+        source.occurrence.as_mut().unwrap().snapshot = format!("sha256:{}", "a".repeat(64));
+        let occurrence = source.occurrence.as_ref().unwrap();
+        source.evidence_digest = digest(&(
+            SOURCE_EXTRACTOR,
+            &occurrence.snapshot,
+            &occurrence.blob,
+            0usize,
+            source.text.len(),
+        ))
+        .unwrap();
+        let output = rows(&work, &selection).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(
+            output[0]["record"]["wholeFileCapture"],
+            "EXACT_RETAINED_FILE"
+        );
+        assert!(output[0]["record"]["source"].get("text").is_none());
+        let mut legacy = work.clone();
+        let evidence = legacy.checked.services.get_mut("orders").unwrap();
+        let mut source = evidence.sources.values().next().unwrap().clone();
+        let old = source.id.clone();
+        source.id = "legacy-fragment".into();
+        evidence.sources.clear();
+        evidence.sources.insert(source.id.clone(), source);
+        legacy
+            .handles
+            .values_mut()
+            .filter(|h| h.id == old)
+            .for_each(|h| h.id = "legacy-fragment".into());
+        assert!(
+            rows(&legacy, &selection)
+                .unwrap_err()
+                .message
+                .contains("WHOLE_FILE_NOT_RETAINED")
+        );
+        for field in ["range", "authority", "snapshot", "digest", "revision"] {
+            let mut bad = work.clone();
+            let source = bad
+                .checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .values_mut()
+                .next()
+                .unwrap();
+            match field {
+                "range" => source.occurrence.as_mut().unwrap().start_byte = 1,
+                "authority" => source.authority = "SOURCE_SYNTAX".into(),
+                "snapshot" => source.occurrence.as_mut().unwrap().snapshot = "unbound".into(),
+                "revision" => source.revision = "wrong-revision".into(),
+                _ => source.text_digest = "incorrect".into(),
+            }
+            assert!(rows(&bad, &selection).is_err(), "{field}");
+        }
+        for query in [
+            json!({"kind":"SOURCE","projection":"WHOLE_FILE"}),
+            json!({"kind":"SYMBOL","projection":"WHOLE_FILE","file":"src/fixture.kt"}),
+        ] {
+            let invalid: Selection = serde_json::from_value(json!({"query":query})).unwrap();
+            assert!(validate_selection(&invalid).is_err());
+        }
     }
 
     #[test]
@@ -5415,6 +5628,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
                     projection: QueryProjection::Raw,
@@ -5480,6 +5694,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
                     projection: QueryProjection::Raw,
@@ -5565,6 +5780,7 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "SYMBOL".into(),
                     symbol_contains: "Handler19999".into(),
                     projection: QueryProjection::Raw,

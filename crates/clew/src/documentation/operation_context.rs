@@ -704,6 +704,7 @@ mod tests {
             &work,
             Selection {
                 query: Some(Query {
+                    file: None,
                     kind: "SYMBOL".into(),
                     symbol_contains: "Frontier".into(),
                     projection: QueryProjection::Navigation,
