@@ -412,39 +412,6 @@ fn label_lines(text: &str, width: usize, limit: usize) -> Vec<String> {
     rows
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn note_keeps_headings_and_authored_boundaries_without_generic_disclaimers() {
-        let mut document = Document::new("Manual".into());
-        document.sections.push(Section::markdown("Refresh".into(),
-            "# Weather\n\n## Refresh `cityId`\n\nHTTP 304 returns before outbox creation.\n\n```text\n# Literal code\n```".into()));
-        let html = render(&document).unwrap();
-        assert!(html.contains("<h1><span data-clew-inline>Weather</span></h1>"));
-        assert!(html.contains("<h2><span data-clew-inline>Refresh `cityId`</span></h2>"));
-        assert!(html.contains("HTTP 304 returns before outbox creation."));
-        assert!(html.contains("```text\n# Literal code\n```"));
-        assert!(!html.contains("<h1><span data-clew-inline>Literal code"));
-        assert!(!html.contains("Human/imported prose is unassessed"));
-        assert!(!html.contains("current behavior is not reverified by this copy"));
-        assert!(!html.contains("What remains uncertain"));
-    }
-
-    #[test]
-    fn graph_labels_wrap_at_words_and_signal_truncation() {
-        assert_eq!(
-            label_lines("Otherwise read fixture or fetch live data", 30, 3),
-            vec!["Otherwise read fixture or", "fetch live data"]
-        );
-        assert_eq!(
-            label_lines("one two three four five six", 8, 2),
-            vec!["one two", "three…"]
-        );
-    }
-}
-
 fn sequence(sequence: &Sequence, section: usize, index: usize) -> String {
     let prefix = format!("sequence-{section}-{index}");
     let width = sequence.actors.len().max(2) * 240;
@@ -682,4 +649,37 @@ document.addEventListener('keydown',function(e){{const expanded=document.querySe
     );
     // Keep the fallible result contract shared with other native publishers.
     String::from_utf8(html.into_bytes()).map_err(io_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_keeps_headings_and_authored_boundaries_without_generic_disclaimers() {
+        let mut document = Document::new("Manual".into());
+        document.sections.push(Section::markdown("Refresh".into(),
+            "# Weather\n\n## Refresh `cityId`\n\nHTTP 304 returns before outbox creation.\n\n```text\n# Literal code\n```".into()));
+        let html = render(&document).unwrap();
+        assert!(html.contains("<h1><span data-clew-inline>Weather</span></h1>"));
+        assert!(html.contains("<h2><span data-clew-inline>Refresh `cityId`</span></h2>"));
+        assert!(html.contains("HTTP 304 returns before outbox creation."));
+        assert!(html.contains("```text\n# Literal code\n```"));
+        assert!(!html.contains("<h1><span data-clew-inline>Literal code"));
+        assert!(!html.contains("Human/imported prose is unassessed"));
+        assert!(!html.contains("current behavior is not reverified by this copy"));
+        assert!(!html.contains("What remains uncertain"));
+    }
+
+    #[test]
+    fn graph_labels_wrap_at_words_and_signal_truncation() {
+        assert_eq!(
+            label_lines("Otherwise read fixture or fetch live data", 30, 3),
+            vec!["Otherwise read fixture or", "fetch live data"]
+        );
+        assert_eq!(
+            label_lines("one two three four five six", 8, 2),
+            vec!["one two", "three…"]
+        );
+    }
 }
