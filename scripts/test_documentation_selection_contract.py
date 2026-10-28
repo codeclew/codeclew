@@ -676,6 +676,28 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             [],
         )
 
+    def test_public_work_whole_file_requires_source_and_exact_file(self) -> None:
+        valid = [
+            {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": "src/Ledger.kt"},
+            {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": "x" * 4096},
+        ]
+        invalid = [
+            {"kind": "SOURCE", "projection": "WHOLE_FILE"},
+            {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": ""},
+            {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": "x" * 4097},
+            {"kind": "SYMBOL", "projection": "WHOLE_FILE", "file": "src/Ledger.kt"},
+            {"kind": "SOURCE", "file": "src/Ledger.kt"},
+            {"kind": "SOURCE", "projection": "RAW", "file": "src/Ledger.kt"},
+            {"kind": "SYMBOL", "projection": "NAVIGATION", "file": "src/Ledger.kt"},
+        ]
+        for queries, accepted in [(valid, True), (invalid, False)]:
+            for query in queries:
+                with self.subTest(query=query):
+                    errors = selection_errors(
+                        {"query": query}, WORK_SELECTION_SCHEMA, WORK_SCHEMA["$defs"]
+                    )
+                    self.assertEqual(errors == [], accepted, errors)
+
     def test_existing_bounds_and_registered_only_contract_remain(self) -> None:
         self.assertEqual(selection_errors({"references": [f"d{i}" for i in range(8)]}), [])
         self.assertEqual(selection_errors({"symbols": [f"s{i}" for i in range(8)]}), [])

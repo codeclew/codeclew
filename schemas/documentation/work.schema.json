@@ -394,7 +394,7 @@
     },
     "selection": {
       "type": "object",
-      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE requires RAW and omitted/empty symbolContains; nonempty filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE supports default RAW inventory or WHOLE_FILE with an exact file, and requires omitted/empty symbolContains; nonempty filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -445,10 +445,11 @@
                 {
                   "properties": {
                     "kind": {"const": "SYMBOL"},
-                    "projection": {"const": "NAVIGATION"}
+                    "projection": {"const": "NAVIGATION"},
+                    "symbolContains": {}
                   },
-                  "required": ["projection"],
-                  "not": {"required": ["file"]}
+                  "additionalProperties": false,
+                  "required": ["projection"]
                 },
                 {
                   "properties": {"kind":{"const":"SOURCE"},"projection":{"const":"WHOLE_FILE"}},
@@ -456,9 +457,11 @@
                 },
                 {
                   "properties": {
+                    "kind": {},
+                    "symbolContains": {},
                     "projection": {"const": "RAW"}
                   },
-                  "not": {"required": ["file"]}
+                  "additionalProperties": false
                 }
               ]
             },
