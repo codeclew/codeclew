@@ -38,6 +38,7 @@ pub mod fact_index;
 pub mod flow_dsl;
 mod generated_source;
 pub mod history;
+mod input_diagnostics;
 #[cfg(test)]
 mod interaction_work_tests;
 mod job_context;

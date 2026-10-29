@@ -85,7 +85,7 @@ pub fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, ClewError
         .map_err(|_| invalid("documentation input violates its closed JSON/YAML schema"))
 }
 
-fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
+pub(super) fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
     let metadata = fs::symlink_metadata(path).map_err(io_error)?;
     if !metadata.is_file() || metadata.len() > limit {
         return Err(invalid("documentation input is not a bounded regular file"));

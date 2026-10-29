@@ -55,7 +55,7 @@ pub(super) fn validate_and_project(
     }
     let mut ids = BTreeSet::new();
     let mut result = Vec::new();
-    for view in views {
+    for (view_index, view) in views.iter_mut().enumerate() {
         text(&view.title)?;
         text(&view.format)?;
         if view.format.len() > 128 {
@@ -90,9 +90,9 @@ pub(super) fn validate_and_project(
             || (view.coverage.status == "unknown" && !view.fields.is_empty())
             || (view.coverage.status != "unknown" && view.fields.is_empty())
         {
-            return Err(invalid(
-                "payload view identity, component, coverage or field bounds are invalid",
-            ));
+            return Err(invalid(format!(
+                "payload view identity, component, coverage or field bounds are invalid; $.payloadViews[{view_index}]: fields need exact canonical model/field/representation/path references (at most 128). coverage.status observed-fields requires at least one observed field; unknown requires fields:[]. Source DTOs do not establish a wire schema"
+            )));
         }
         if let Some(status) = &view.status
             && (!matches!(
@@ -194,7 +194,7 @@ pub(super) fn validate_and_project(
         let mut paths = BTreeSet::new();
         let mut fields = Vec::new();
         let mut selected: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for reference in &view.fields {
+        for (field_index, reference) in view.fields.iter().enumerate() {
             text(&reference.path)?;
             if !paths.insert(&reference.path) {
                 return Err(invalid(
@@ -204,21 +204,21 @@ pub(super) fn validate_and_project(
             let model = models
                 .iter()
                 .find(|m| m.id == reference.model)
-                .ok_or_else(|| invalid("payload model is unavailable"))?;
+                .ok_or_else(|| invalid(format!("payload model is unavailable; $.payloadViews[{view_index}].fields[{field_index}].model: expected an exact id from this plan's models array; define the evidence-bound model before referencing it")))?;
             let field = model
                 .fields
                 .iter()
                 .find(|f| f.id == reference.field)
-                .ok_or_else(|| invalid("payload canonical field is unavailable"))?;
+                .ok_or_else(|| invalid(format!("payload canonical field is unavailable; $.payloadViews[{view_index}].fields[{field_index}].field: expected an exact field id declared in the selected model; if its definition is unavailable use coverage.status unknown with fields:[], never invent a wire field")))?;
             let representations = field
                 .representations
                 .iter()
                 .filter(|r| r.label == reference.representation)
                 .collect::<Vec<_>>();
             if representations.len() != 1 {
-                return Err(invalid(
-                    "payload field needs one exact existing representation label",
-                ));
+                return Err(invalid(format!(
+                    "payload field needs one exact existing representation label; $.payloadViews[{view_index}].fields[{field_index}].representation: copy the label from that model field's representations array"
+                )));
             }
             let representation = representations[0];
             selected.entry(&model.id).or_default().insert(&field.id);

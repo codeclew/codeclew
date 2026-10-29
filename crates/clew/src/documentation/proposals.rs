@@ -321,7 +321,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Submit { root, work, input } => submit(
             &Repository::open(&root)?,
             &work,
-            store::read(&input, store::MAX_RECORD)?,
+            super::input_diagnostics::read(
+                &input,
+                store::MAX_RECORD,
+                super::input_diagnostics::Input::Proposal,
+            )?,
         ),
         Command::Show {
             root,
@@ -678,7 +682,10 @@ impl Builder<'_> {
         }
         let (deps, sources) = self
             .evidence(&claim.evidence)
-            .map_err(|e| invalid(format!("{slot}: {}", e.message)))?;
+            .map_err(|mut error| {
+                error.message = format!("{slot}: {} Expected claim.evidence with 1..32 references supplied by this Work's completed reads; foreign or unreceived IDs cannot establish field meaning. {}", error.message, super::input_diagnostics::Input::Proposal.guidance());
+                error
+            })?;
         let mut results = Vec::new();
         for (index, assertion) in claim.checks.iter().enumerate() {
             if !claim.evidence.contains(&assertion.evidence) {
@@ -1788,6 +1795,30 @@ mod storage_tests {
 mod operation_input_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn diagnostic_proposal_contract_row_names_missing_evidence_path() {
+        use crate::documentation::input_diagnostics::{self, Input};
+        let claim = json!({"text":"Observed value meaning","evidence":["RETURNED_EVIDENCE_ID"]});
+        let mut input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{
+            "entrypoint":"WORK_OPERATION_REFERENCE","title":"Observed operation","summary":claim,"steps":[],
+            "contracts":[{"title":"Observed payload","kind":"payload","rows":[{"label":"value","description":claim}]}]
+        }]});
+        assert!(input_diagnostics::from_value::<Proposal>(input.clone(), Input::Proposal).is_ok());
+        input["operations"][0]["contracts"][0]["rows"][0]["description"]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence");
+        let error = input_diagnostics::from_value::<Proposal>(input, Input::Proposal).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("$.operations[0].contracts[0].rows[0].description.evidence"),
+            "{error}"
+        );
+        assert!(error.message.contains("this Work's supported reads"));
+        assert!(error.message.contains("do not establish a wire schema"));
+    }
 
     #[test]
     fn nested_groups_preserve_branch_return_placement_and_specific_evidence() {

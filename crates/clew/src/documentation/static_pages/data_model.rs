@@ -400,7 +400,11 @@ pub(super) fn load(
     let Some(path) = path else {
         return Ok(None);
     };
-    let mut plan: Plan = store::read(path, 1024 * 1024)?;
+    let mut plan: Plan = super::super::input_diagnostics::read(
+        path,
+        1024 * 1024,
+        super::super::input_diagnostics::Input::DataModel,
+    )?;
     super::super::language::validate(plan.documentation_language.as_deref())?;
     for language in plan
         .models
@@ -428,27 +432,37 @@ pub(super) fn load(
         || plan.process_views.len() > 32
         || plan.interface_bindings.len() > 128
     {
-        return Err(invalid("data-model schema, binding or bounds are invalid"));
+        let path = if plan.schema != "codeclew-data-model-plan/1.0" {
+            "$.schema"
+        } else if plan.publication != publication {
+            "$.publication"
+        } else if plan.snapshot != snapshot {
+            "$.snapshot"
+        } else {
+            "$.models / $.contracts / $.payloadViews / $.processViews / $.interfaceBindings"
+        };
+        return Err(invalid(format!("data-model schema, binding or bounds are invalid; {path}: expected codeclew-data-model-plan/1.0 bound to the selected publication/snapshot, at least one model, contract or payload view, at most 32 models/contracts/processViews and 128 interfaceBindings. Copy identities from the selected export, not another run. {}", super::super::input_diagnostics::Input::DataModel.guidance())).with_snapshot(snapshot));
     }
     let mut ids = BTreeSet::new();
     let mut bytes = super::question_reading::EvidenceBudget::default();
     let mut contracts = Vec::new();
-    for c in &plan.contracts {
+    for (index, c) in plan.contracts.iter().enumerate() {
         if !store::valid_id(&c.id) || !ids.insert(c.id.clone()) {
             return Err(invalid("data-model contract ID repeats or is invalid"));
         }
-        let source = checked
+        let evidence = checked
             .services
             .get(&c.service)
-            .and_then(|s| s.sources.get(&c.source_id))
-            .ok_or_else(|| invalid("data-model contract source is unavailable"))?;
+            .ok_or_else(|| invalid(format!("data-model contract source is unavailable; $.contracts[{index}].service: expected a service selected in this snapshot; inspect the selected export and copy its service identity")).with_snapshot(snapshot))?;
+        let source = evidence.sources.get(&c.source_id)
+            .ok_or_else(|| invalid(format!("data-model contract source is unavailable; $.contracts[{index}].sourceId: expected an exact retained source in the selected snapshot; discover it with clew docs context --root ROOT --service SERVICE --snapshot SNAPSHOT --format compact --limit 20. Source DTO properties do not establish a wire schema")).with_snapshot(snapshot))?;
         if source.text_digest != c.text_digest {
-            return Err(invalid("data-model contract source changed"));
+            return Err(invalid(format!("data-model contract source changed; $.contracts[{index}].textDigest: stale identity; copy the exact digest from the same selected snapshot source, do not substitute a live file or another snapshot")).with_snapshot(snapshot));
         }
-        let schema: Value = serde_json::from_str(&source.text).map_err(io_error)?;
+        let schema: Value = serde_json::from_str(&source.text).map_err(|_| invalid(format!("documentation input/output is unavailable; $.contracts[{index}].sourceId: malformed retained JSON; a contract requires actual JSON schema text. Use observed source payload fields when no schema is retained")).with_snapshot(snapshot))?;
         let branch = schema
             .pointer(&c.branch_pointer)
-            .ok_or_else(|| invalid("data-model contract branch is unavailable"))?;
+            .ok_or_else(|| invalid(format!("data-model contract branch is unavailable; $.contracts[{index}].branchPointer: expected a JSON Pointer into this retained JSON schema source; inspect its saved text rather than guessing a source type name")))?;
         let mut rows = Vec::new();
         leaves(branch, "", &c.branch_pointer, true, &mut rows);
         let declaration =
@@ -457,7 +471,7 @@ pub(super) fn load(
     }
     validate_interface_bindings(&plan.interface_bindings, &contracts, files)?;
     ids.clear();
-    for model in &mut plan.models {
+    for (index, model) in plan.models.iter_mut().enumerate() {
         if !store::valid_id(&model.id)
             || !ids.insert(model.id.clone())
             || !matches!(
@@ -469,7 +483,10 @@ pub(super) fn load(
             || model.process_links.len() > 32
             || model.related_models.len() > 32
         {
-            return Err(invalid("data-model identity, kind or fields are invalid"));
+            return Err(invalid(format!(
+                "data-model identity, kind or fields are invalid; $.models[{index}]: expected a unique valid id, kind ENTITY/VALUE_OBJECT/READ_MODEL and 1..128 fields; at most 32 processLinks/relatedModels. A missing field definition cannot be replaced with guessed wire fields. {}",
+                super::super::input_diagnostics::Input::DataModel.guidance()
+            )));
         }
         if let Some(entity) = &model.entity
             && (!entity.starts_with("entity:")
@@ -1947,6 +1964,52 @@ mod tests {
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
     #[test]
+    fn diagnostic_field_shape_and_foreign_plan_binding_are_distinct() {
+        let (plan, files, guides, check) = fixture();
+        let mut missing = plan.clone();
+        missing["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("fields");
+        let error = read(&missing, &files, &guides, &check).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("$.models[0].fields: required field is missing"),
+            "{error}"
+        );
+        assert!(error.message.contains("do not establish a wire schema"));
+        println!(
+            "DIAGNOSTIC_FIELD={}",
+            serde_json::to_string(&error).unwrap()
+        );
+        let mut wrong_type = plan.clone();
+        wrong_type["models"][0]["fields"] = json!("not-an-array");
+        assert!(
+            read(&wrong_type, &files, &guides, &check)
+                .unwrap_err()
+                .message
+                .contains("$.models[0].fields: expected a sequence")
+        );
+        let mut empty = plan.clone();
+        empty["models"][0]["fields"] = json!([]);
+        assert!(
+            read(&empty, &files, &guides, &check)
+                .unwrap_err()
+                .message
+                .contains("$.models[0]")
+        );
+        for name in ["publication", "snapshot"] {
+            let mut foreign = plan.clone();
+            foreign[name] = json!("other-run");
+            let error = read(&foreign, &files, &guides, &check).unwrap_err();
+            assert!(error.message.contains(&format!("$.{name}")), "{error}");
+            assert_eq!(error.snapshot_id.as_deref(), Some("snap"));
+        }
+        assert!(read(&plan, &files, &guides, &check).is_ok());
+    }
+
+    #[test]
     fn usage_reader_claims_are_bound_separately_from_machine_unknowns() {
         let (mut plan, files, guides, checked) = fixture();
         let claim = plan["models"][0]["purpose"].clone();
@@ -2157,8 +2220,29 @@ mod tests {
         let mut empty = plan.clone();
         empty["contracts"] = json!([]);
         assert!(read(&empty, &files, &guides, &checked).is_err());
+        let mut foreign = plan.clone();
+        foreign["contracts"][0]["sourceId"] = json!("foreign-source");
+        let error = read(&foreign, &files, &guides, &checked).unwrap_err();
+        assert!(error.message.contains("$.contracts[0].sourceId"));
+        assert!(error.message.contains("source is unavailable"));
+        let mut malformed = checked.clone();
+        malformed
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .get_mut("decl-source")
+            .unwrap()
+            .text = "not JSON".into();
+        let error = read(&plan, &files, &guides, &malformed).unwrap_err();
+        assert!(error.message.contains("malformed retained JSON"));
         plan["contracts"][0]["textDigest"] = json!("sha256:wrong");
-        assert!(read(&plan, &files, &guides, &checked).is_err());
+        let error = read(&plan, &files, &guides, &checked).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("$.contracts[0].textDigest: stale identity")
+        );
     }
 
     #[test]

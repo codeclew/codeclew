@@ -198,10 +198,12 @@ pub(super) fn resolve_work_root<'a>(
     ) || matches.len() != 1
     {
         return Err(invalid(format!(
-            "PROCESS_GRAPH_SCENARIO_ROOT_{}: saved selector for {subject} did not resolve to one retained callable; candidates={}; details={}; limitations=exact selector scope is honored, missing or ambiguous overloads are never guessed",
+            "PROCESS_GRAPH_SCENARIO_ROOT_{}: saved selector for {subject} did not resolve to one retained callable; candidates={}; details={}; matchedCandidates={}; expected exactly one retained callable with exact scope and owner. {} Update the saved scenario root selector to the exact returned scope/symbol and recompose; rootDeclaration cannot override an unresolved frozen selector. General multi-entry process graphs are unsupported: prepare a separate Work for each real root; an authored process overview may link them when a saved process definition supports it. limitations=exact selector scope is honored, missing or ambiguous overloads are never guessed",
             resolution.status,
             serde_json::to_string(&resolution.candidates).unwrap_or_else(|_| "[]".into()),
             serde_json::to_string(&resolution.details).unwrap_or_else(|_| "[]".into()),
+            matches.len(),
+            super::input_diagnostics::SELECTOR_GUIDANCE,
         )));
     }
     let declaration = matches[0];
@@ -1542,6 +1544,13 @@ mod tests {
         .expect("missing scope must fail")
         .to_string();
         assert!(missing_scope.contains("candidates=[]"), "{missing_scope}");
+        assert!(
+            missing_scope.contains("matchedCandidates=0"),
+            "{missing_scope}"
+        );
+        assert!(missing_scope.contains("expected exactly one retained callable"));
+        assert!(missing_scope.contains("multi-entry process graphs are unsupported"));
+        println!("DIAGNOSTIC_ROOT_ZERO={missing_scope}");
 
         let ambiguous = resolve_work_root(
             "scenario:flow",
@@ -1554,6 +1563,8 @@ mod tests {
         assert!(ambiguous.contains("candidates="), "{ambiguous}");
         assert!(ambiguous.contains("root-main"), "{ambiguous}");
         assert!(ambiguous.contains("root-worker"), "{ambiguous}");
+        assert!(ambiguous.contains("matchedCandidates=2"), "{ambiguous}");
+        println!("DIAGNOSTIC_ROOT_MULTIPLE={ambiguous}");
     }
 
     fn add_source(evidence: &mut ServiceEvidence, id: &str, text: &str) {

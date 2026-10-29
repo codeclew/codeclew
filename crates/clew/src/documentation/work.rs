@@ -2199,9 +2199,10 @@ pub fn prepare_with_snapshot(
             BTreeSet::new()
         }
         _ => {
-            return Err(invalid(
-                "unknown work subject or unsupported scenario entrypoint",
-            ));
+            return Err(invalid(format!(
+                "unknown work subject or unsupported scenario entrypoint; expected an existing service:ID or saved scenario:ID. Ordinary scenario Work does not accept a service endpoint as its entrypoint; a saved process/view may select its supported overview/data-flow root. {}",
+                super::input_diagnostics::SELECTOR_GUIDANCE
+            )));
         }
     };
     let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;

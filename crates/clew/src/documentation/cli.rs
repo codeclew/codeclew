@@ -1134,7 +1134,44 @@ pub(super) fn context_items(
             .filter(|entry| args.entrypoint.as_ref().is_none_or(|id| &entry.id == id))
             .collect();
         if args.entrypoint.is_some() && entries.is_empty() {
-            return Err(invalid("unknown entrypoint"));
+            let requested = args.entrypoint.as_deref().unwrap_or_default();
+            // Only exact identity matches or known HTTP boundaries are useful
+            // hints. Never choose a fuzzy match or dump configuration symbols.
+            let mut candidates: BTreeSet<_> = e
+                .entrypoints
+                .iter()
+                .filter(|entry| {
+                    entry.service == *id
+                        && (entry.symbol == requested
+                            || entry.dependency_ids.iter().any(|d| d == requested))
+                })
+                .map(|entry| entry.id.clone())
+                .collect();
+            if candidates.is_empty() {
+                candidates.extend(
+                    e.entrypoints
+                        .iter()
+                        .filter(|entry| {
+                            entry.service == *id
+                                && entry.kind == "HTTP_ENDPOINT"
+                                && super::process_candidates::public_boundary(entry)
+                        })
+                        .map(|entry| entry.id.clone()),
+                );
+            }
+            let mut error = invalid(format!(
+                "unknown entrypoint; {} Candidate entrypoint IDs from this selected service/snapshot (at most 8): {}",
+                super::input_diagnostics::SELECTOR_GUIDANCE,
+                serde_json::to_string(&candidates.iter().take(8).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            ));
+            for candidate in candidates.into_iter().take(8) {
+                error = error.with_relevant(candidate);
+            }
+            if let Some(snapshot) = &args.snapshot {
+                error = error.with_snapshot(snapshot);
+            }
+            return Err(error);
         }
         if args.dependency_ids.len() > 8 {
             return Err(invalid("select at most eight dependencies"));
@@ -2039,6 +2076,107 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_unknown_work_subject_explains_scenario_and_selector_namespaces() {
+        let dir = tempfile::tempdir().unwrap();
+        Repository::init(dir.path(), "Diagnostic fixture").unwrap();
+        let repo = Repository::open(dir.path()).unwrap();
+        let request = serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Engineer","entrypoint":"qualified.method"})).unwrap();
+        let error = super::super::work::prepare_with_snapshot(
+            &repo,
+            "scenario:missing".into(),
+            request,
+            Some("selected-snapshot"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message
+                .starts_with("unknown work subject or unsupported scenario entrypoint")
+        );
+        assert!(
+            error
+                .message
+                .contains("existing service:ID or saved scenario:ID")
+        );
+        assert!(error.message.contains("does not accept a service endpoint"));
+        assert!(error.message.contains("docs endpoint list"));
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn diagnostic_discovery_and_help_commands_parse_on_the_public_cli() {
+        use clap::Parser;
+        #[derive(Debug, clap::Parser)]
+        struct Docs {
+            #[command(subcommand)]
+            command: Command,
+        }
+        for args in [
+            "docs endpoint list --root ROOT --service SERVICE --snapshot SNAPSHOT",
+            "docs context --root ROOT --service SERVICE --snapshot SNAPSHOT --format compact --limit 20",
+        ] {
+            assert!(
+                Docs::try_parse_from(args.split_whitespace()).is_ok(),
+                "{args}"
+            );
+        }
+        for args in [
+            "docs work run --help",
+            "docs proposal submit --help",
+            "docs render --help",
+        ] {
+            assert_eq!(
+                Docs::try_parse_from(args.split_whitespace())
+                    .unwrap_err()
+                    .kind(),
+                clap::error::ErrorKind::DisplayHelp,
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_unknown_entrypoint_returns_only_bounded_selected_candidates() {
+        let mut checked = scoped_call_context(false);
+        let mut args = entrypoint_context_args();
+        args.entrypoint = Some("missing".into());
+        args.snapshot = Some("saved-snapshot".into());
+        let evidence = checked.services.get_mut("orders").unwrap();
+        let mut config = evidence.entrypoints[0].clone();
+        config.id = "configuration-noise".into();
+        config.kind = "SPRING_BEAN".into();
+        evidence.entrypoints.push(config);
+        for n in 0..12 {
+            let mut entry = evidence.entrypoints[0].clone();
+            entry.id = format!("entry-{n:02}");
+            evidence.entrypoints.push(entry);
+        }
+        let error = context_items(&checked, &args, None).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert_eq!(error.snapshot_id.as_deref(), Some("saved-snapshot"));
+        assert_eq!(error.relevant_anchors_or_symbols.len(), 8);
+        assert!(!error.message.contains("configuration-noise"));
+        assert!(error.message.contains("docs endpoint list"));
+        assert!(error.message.contains("qualified method name"));
+        println!(
+            "DIAGNOSTIC_ENTRYPOINT={}",
+            serde_json::to_string(&error).unwrap()
+        );
+        // An exact retained callable identity may point to its registration;
+        // it is a hint only, never silently accepted as an entrypoint selector.
+        args.entrypoint = Some("root-main".into());
+        assert!(context_items(&checked, &args, None).is_err());
+        checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .entrypoints
+            .clear();
+        let empty = context_items(&checked, &args, None).unwrap_err();
+        assert!(empty.relevant_anchors_or_symbols.is_empty());
+    }
 
     #[test]
     fn source_export_options_are_available_on_public_render_commands() {

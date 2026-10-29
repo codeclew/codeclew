@@ -66,12 +66,20 @@ enum Action {
 }
 
 fn config(value: Value) -> Result<(ContextConfig, Config), ClewError> {
-    let selected: ContextConfig = serde_json::from_value(value)
-        .map_err(|e| invalid(format!("OPERATION_DRAFT_CONFIG_UNSUPPORTED: {e}")))?;
+    let selected: ContextConfig = crate::documentation::input_diagnostics::from_value(
+        value,
+        crate::documentation::input_diagnostics::Input::DraftContext,
+    )?;
     if selected.schema != CONFIG_SCHEMA || selected.author_calls == 0 {
-        return Err(invalid(
-            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: execution/1.1 requires positive explicit authorCalls",
-        ));
+        let path = if selected.schema != CONFIG_SCHEMA {
+            "$.schema"
+        } else {
+            "$.authorCalls"
+        };
+        return Err(invalid(format!(
+            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: {path}: execution/1.1 requires positive explicit authorCalls. {}",
+            crate::documentation::input_diagnostics::Input::DraftContext.guidance()
+        )));
     }
     validate_config(&DraftConfig {
         schema: super::CONFIG_SCHEMA.into(),
@@ -1252,6 +1260,30 @@ mod tests {
     use super::*;
     use crate::documentation::{agent_jobs::Amount, work::Handle};
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn diagnostic_expanding_example_and_author_calls_path_validate_without_a_driver() {
+        let mut example = crate::documentation::input_diagnostics::draft_example(true);
+        let (selected, _) = config(example.clone()).unwrap();
+        assert_eq!(selected.author_calls, 2);
+        example["authorCalls"] = json!(0);
+        assert!(
+            config(example.clone())
+                .err()
+                .unwrap()
+                .message
+                .contains("$.authorCalls")
+        );
+        example["authorCalls"] = json!("private-value");
+        let error = config(example).err().unwrap();
+        assert!(
+            error
+                .message
+                .starts_with("OPERATION_DRAFT_CONFIG_UNSUPPORTED")
+        );
+        assert!(error.message.contains("$.authorCalls"));
+        assert!(!error.message.contains("private-value"));
+    }
 
     #[test]
     fn answer_reuse_policy_comparison_detects_changes_to_current_author_inputs() {

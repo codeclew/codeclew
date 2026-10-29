@@ -89,21 +89,22 @@ pub(super) fn run_loaded_selection(
         validate_run_id(review_run)?;
     }
     validate_work(work)?;
+    let input_kind = if work.request.authoring_contract.as_deref()
+        == Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
+    {
+        super::super::input_diagnostics::Input::DraftContext
+    } else {
+        super::super::input_diagnostics::Input::Draft
+    };
     let config_path = config_path.ok_or_else(|| {
-        if work.request.authoring_contract.as_deref()
-            == Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
-        {
-            invalid(format!(
-                "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {}, author, positive finite authorCalls and budget",
-                context_mode::CONFIG_SCHEMA
-            ))
-        } else {
-            invalid(format!(
-                "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {CONFIG_SCHEMA}, author and budget"
-            ))
-        }
+        invalid(format!(
+            "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {}. {}",
+            input_kind.schema(),
+            input_kind.guidance()
+        ))
     })?;
-    let selected_config: Value = store::read(config_path, store::MAX_RECORD)?;
+    let selected_config: Value =
+        super::super::input_diagnostics::read(config_path, store::MAX_RECORD, input_kind)?;
     if selected_config["schema"] == context_mode::CONFIG_SCHEMA {
         return context_mode::run(
             repo,
@@ -117,11 +118,13 @@ pub(super) fn run_loaded_selection(
     if work.request.authoring_contract.as_deref()
         == Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
     {
-        return Err(invalid(
-            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: authoring contract 1.6 requires operation-draft-execution/1.1 with explicit authorCalls",
-        ));
+        return Err(invalid(format!(
+            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: $.schema: authoring contract 1.6 requires operation-draft-execution/1.1 with explicit authorCalls. {}",
+            super::super::input_diagnostics::Input::DraftContext.guidance()
+        )));
     }
-    let draft_config: DraftConfig = store::read(config_path, store::MAX_RECORD)?;
+    let draft_config: DraftConfig =
+        super::super::input_diagnostics::read(config_path, store::MAX_RECORD, input_kind)?;
     validate_config(&draft_config)?;
 
     let selected_latest = latest_report(repo, &work.id)?;
@@ -1330,7 +1333,8 @@ pub(super) fn validate_work(work: &super::super::work::Work) -> Result<(), ClewE
 fn validate_config(config: &DraftConfig) -> Result<(), ClewError> {
     if config.schema != CONFIG_SCHEMA {
         return Err(invalid(format!(
-            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: config schema must be {CONFIG_SCHEMA}"
+            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: $.schema must be {CONFIG_SCHEMA}. {}",
+            super::super::input_diagnostics::Input::Draft.guidance()
         )));
     }
     let budget = &config.budget;
@@ -1341,9 +1345,17 @@ fn validate_config(config: &DraftConfig) -> Result<(), ClewError> {
         || !budget.stop_loss.within(&budget.ceiling)
         || budget.stop_loss == budget.ceiling
     {
-        return Err(invalid(
-            "operation draft budget needs positive finite ceilings and a lower stop-loss",
-        ));
+        let path = if budget.cost_unit.trim().is_empty() || budget.cost_unit.len() > 64 {
+            "$.budget.costUnit"
+        } else if !budget.ceiling.positive() {
+            "$.budget.ceiling"
+        } else {
+            "$.budget.stopLoss"
+        };
+        return Err(invalid(format!(
+            "operation draft budget needs positive finite ceilings and a lower stop-loss; {path}: costUnit must be nonempty and at most 64 bytes; each ceiling/stopLoss amount needs positive inputTokens, outputTokens, costUnits; stopLoss must fit within and differ from ceiling. {}",
+            super::super::input_diagnostics::Input::Draft.guidance()
+        )));
     }
     Ok(())
 }
@@ -1808,6 +1820,63 @@ pub(super) fn model_ids_grouped_fixture_setup() -> (
 
 #[cfg(test)]
 pub(super) mod tests {
+    #[test]
+    fn diagnostic_draft_config_example_and_nested_errors_are_actionable() {
+        use crate::documentation::input_diagnostics::{self, Input};
+        let example = input_diagnostics::draft_example(false);
+        let parsed: super::DraftConfig =
+            input_diagnostics::from_value(example.clone(), Input::Draft).unwrap();
+        super::validate_config(&parsed).unwrap();
+        let mut malformed = example.clone();
+        malformed["author"]["cap"]["maximum"]["inputTokens"] = serde_json::json!("private-value");
+        let error = input_diagnostics::from_value::<super::DraftConfig>(malformed, Input::Draft)
+            .unwrap_err();
+        assert!(error.message.contains("$.author.cap.maximum.inputTokens"));
+        assert!(!error.message.contains("private-value"));
+        assert!(error.message.contains("not provider endpoints or API keys"));
+        println!(
+            "DIAGNOSTIC_CONFIG={}",
+            serde_json::to_string(&error).unwrap()
+        );
+        let mut missing = example;
+        missing["author"]
+            .as_object_mut()
+            .unwrap()
+            .remove("runtimeReads");
+        let error =
+            input_diagnostics::from_value::<super::DraftConfig>(missing, Input::Draft).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("$.author.runtimeReads: required field is missing")
+        );
+        let (_temporary, repo, mut work, _config) = setup("legacy");
+        for expanding in [false, true] {
+            if expanding {
+                work.request.authoring_contract = Some(
+                    crate::documentation::operation_answer::EXPANDING_AUTHORING_CONTRACT.into(),
+                );
+            }
+            let error =
+                super::run_loaded_selection(&repo, &work, None, false, None, None).unwrap_err();
+            assert!(
+                error
+                    .message
+                    .starts_with("MISSING_DRAFT_EXECUTION_CONFIGURATION"),
+                "{error}"
+            );
+            assert!(error.message.contains(if expanding {
+                Input::DraftContext.schema()
+            } else {
+                Input::Draft.schema()
+            }));
+            assert!(
+                error
+                    .message
+                    .contains("--config describes an isolated author driver")
+            );
+        }
+    }
     use super::*;
     use crate::documentation::agent_jobs::Amount;
     use std::{fs, path::PathBuf, sync::mpsc};
