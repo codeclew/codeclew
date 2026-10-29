@@ -55,6 +55,13 @@ product development or CI. Preserve historical model IDs and measured results.
 
 ## Verification
 
+For costly documentation research or qualification, first consult the
+[research record](docs/product/validation/documentation-research/README.md).
+Identify an untested material delta, pin the accepted runtime/helper/skill and
+source treatment, reuse immutable successful baselines, and preserve failed
+attempts and actual accounting. Missing evidence is not success. This applies
+to research trials; it adds no approval barrier to routine implementation.
+
 Use the pinned Rust toolchain, Python 3.11+, JDK 21, and repository Gradle
 wrapper. See `README.md` for complete source-build requirements.
 
