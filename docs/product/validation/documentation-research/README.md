@@ -3,6 +3,14 @@
 Snapshot: 2026-10-30. This is a retrospective evidence index, not a release
 qualification, new experiment, or instruction to resume a historical plan.
 
+The [final three-approach closure](three-approaches-0140.md), added on 2026-10-31,
+records the subsequent bounded research stop before 0.14.0. Both authored
+approaches failed their quality gates; no fourth approach follows. The user
+separately authorized releasing independently accepted product mechanisms after
+required CI, package acceptance and public verification. Earlier quality holds
+below remain historical checkpoints, not a new prohibition on that release or
+evidence of a quality pass. The inventory retains its dated snapshot.
+
 Start with the observed failures before proposing another costly author trial.
 The [inventory](inventory.json) preserves individual experiment IDs, compact-report
 fingerprints, reported states, available identities and measured aggregates.
@@ -11,12 +19,13 @@ next justified condition. Empty measurements mean unavailable, never zero.
 
 | Read next | Purpose |
 | --- | --- |
+| [Final approaches before 0.14.0](three-approaches-0140.md) | Three terminal dispositions, actual author/critic costs, source-semantic defects and explicit research stop |
 | [History and comparisons](history.md) | Earlier source experiments, paired trials, Forecasts N1-N10, retired transfer failures and changed criteria |
 | [Mechanisms and negative knowledge](mechanisms.md) | What capture, provenance, rendering, authoring and review repairs actually established |
 | [Measurement and future trials](method.md) | Comparable cost, author/critic boundaries, exact treatment identity and nonrepeat rules |
 | [Coverage and missing evidence](coverage.md) | Reconciliation, withheld private detail, artifact-only records and unresolved outcomes |
 
-## Current scope and acceptance boundary
+## Historical scope and acceptance boundary, October 30
 
 The active public corpus is **all actual Weather services and their interactions**.
 On 2026-10-30 the user clarified the scope as exactly **Forecasts, Places and
@@ -43,7 +52,7 @@ reconstructed for this record. Those failures do not by themselves reject the
 corrected active scope, and excluding a corpus does not convert its failure into
 a success.
 
-The current cost allowance is **net tokens <=1.5x comparable same-service Direct**,
+The October 30 cost allowance was **net tokens <=1.5x comparable same-service Direct**,
 conditional on complete, truthful and clear documentation and transfer. Time is
 not a gate. The Forecasts Direct comparator is 170,482 net; N5 is 236,792 net
 (1.389x). Reuse their immutable measurements instead of rerunning them simply
