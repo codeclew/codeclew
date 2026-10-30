@@ -36,7 +36,7 @@ An accepted service does not qualify other services or their interactions.
 | Efficiency-first interval | Some READY candidates above Direct were not sent to critics. Their quality is unassessed, not failed or passed by inference. |
 | October 29 quality-first decision | Beating Direct no longer required when complete/clear/truthful documentation passes. N5 becomes eligible as a full-meaning Forecasts reference. |
 | Explicit cost ceiling | Inclusive net<=1.5x comparable same-service Direct; keep all actual production cost and separate evaluation/engineering cost. |
-| October 30 scope/clarity correction | All actual Weather services/interactions plus local restricted case; verified Forecasts, Places and Dashboard, fourth unspecified; OpenAPI/HTTP/Kafka/scheduled surfaces. RealWorld/GraphQL/Petclinic historical only. Requested clarity 20/20 is not assumed achieved. |
+| October 30 scope/clarity correction | Exactly Forecasts, Places and Dashboard plus their interactions and the local restricted case; the earlier four-service ambiguity was resolved by the user; OpenAPI/HTTP/Kafka/scheduled surfaces. RealWorld/GraphQL/Petclinic historical only. Clarity 20/20 is an improvement target, not a retroactive absolute gate; mandatory full semantic coverage, zero material false claims, clarity >=17/20 and navigation >=10/12 remain. |
 
 These changes must not overwrite the frozen verdict or silently promote old
 unscored candidates. A cost comparator may itself have partial reader meanings;
@@ -59,6 +59,36 @@ Check every mandatory meaning, material false assertion, clarity, navigation and
 required visual behavior. Preserve critic disagreement and unavailable visual
 coverage. Runtime tests, source identity, export checks and event counts answer
 different questions. Do not replace missing evidence with a success label.
+
+The whole-Weather and later Forecasts statement diagnostic are separate scopes,
+not matched treatment arms. Do not compare whole-system author cost with the
+Forecasts-only Direct baseline. Keep different critic inventories separate,
+including the diagnostic's 34 and 40 items; their scores are not observations
+on a common denominator. A targeted diagnostic does not qualify the system.
+
+Distinguish review availability from a change in prose: a guard/effect already
+present in the first draft cannot demonstrate that a later statement projection
+caused it. Keep unresolved omissions after review, language compliance and
+rendered literal fidelity visible. An angle-bracket placeholder lost as HTML is
+an output defect even when the original Markdown retained the characters.
+These negative results justify bounded source/delivery diagnosis, not another
+unchanged prompt trial, automatic candidate adoption or release qualification.
+
+For staged v2, keep three claims separate: the sealed inputs match the admitted
+helper, all nine staged carriers reached visible tool outputs, and the author
+interpreted their meaning correctly. Only the first two were confirmed. Carrier
+delivery does not prove that a prepared inventory includes every required file;
+the host-registration gap remains under diagnosis. A source-order contradiction
+in delivered retry logic is a separate confirmed finding. Do not infer a common
+root cause for both observations.
+
+The 433,960 versus 303,490 net comparison is descriptive author cost between two
+failed whole-system runs, not an advantage result or a single-factor estimate.
+Staging, helper and contract evidence changed together. Preserve the 36- and
+33-item critic inventories separately, and do not substitute the Forecasts-only
+Direct comparator. Independent helper/proof acceptance and intended mechanical
+refusals do not establish semantic quality, authorize another paid author or
+lift the quality hold.
 
 ## Accounting and privacy
 

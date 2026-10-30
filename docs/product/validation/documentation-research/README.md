@@ -19,18 +19,22 @@ next justified condition. Empty measurements mean unavailable, never zero.
 ## Current scope and acceptance boundary
 
 The active public corpus is **all actual Weather services and their interactions**.
-Verified service names are Forecasts, Places and Dashboard. The user requested
-four services, but a fourth has not been identified; it is a clarification gap,
-not an invented service or a verified four-service system.
+On 2026-10-30 the user clarified the scope as exactly **Forecasts, Places and
+Dashboard plus their interactions**. The earlier mention of four services was
+ambiguous; this clarification resolves it. No fourth service is pending.
 The surfaces are OpenAPI, HTTP endpoints, Kafka and scheduled jobs. A separate
 restricted service remains local; no private identity, source, endpoint,
 configuration, log, screenshot or machine path is included here.
 
 **N5 is a Forecasts-only result.** It is not a pass for the other Weather
 services, cross-service behavior, a restricted deployment, or transfer generally.
-The remaining actual services and interactions are newly requested work, not an
-accomplished result in this snapshot. The latest requested clarity target is
-20/20; do not relabel N5's historical 17/20 as that target being met.
+The original whole-system trial, a separate Forecasts statement-review diagnostic
+and the later staged whole-system v2 now
+have [frozen negative terminal results](history.md#weather-system-and-statement-review-negative-results).
+None qualifies the requested services and interactions. Clarity 20/20 remains
+an improvement target, not a retroactive absolute gate. Required quality is full
+semantic coverage, zero material false claims, clarity at least 17/20 and
+navigation at least 10/12. Preserve N5's historical scores unchanged.
 
 RealWorld, GraphQL and Petclinic were removed from active research by the
 2026-10-30 scope correction. Their retained measurements and unsuccessful
@@ -45,6 +49,18 @@ not a gate. The Forecasts Direct comparator is 170,482 net; N5 is 236,792 net
 (1.389x). Reuse their immutable measurements instead of rerunning them simply
 because a policy changed. The Direct comparator itself had partial meanings
 under the terminal rubric; its cost is not proof of perfect reference quality.
+
+The first whole-system author used 303,490 net; the separate Forecasts diagnostic
+used 246,269 net. Staged whole-system v2 used 433,960 net, 43.0% more than the
+previous failed whole-system trial, and also failed terminal quality. All nine
+staged initial carriers were fully delivered, yet the prose contradicted an
+explicit pre-request retry assignment. Complete delivery is not understanding or
+semantic completeness. There is no comparable whole-system Direct baseline; the
+Forecasts-only comparator and separate diagnostic do not supply one. Staging,
+helper and contract-input changes are not a single-factor causal test. The
+independently accepted SOURCE-reference helper is a mechanical result, not a
+quality pass. The quality hold remains: no merge, full CI, official packaging or
+release follows from these results.
 
 ## Conclusions that survive the experiments
 
