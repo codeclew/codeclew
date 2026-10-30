@@ -145,6 +145,139 @@ fresh acquisition compatibility, held-out transfer or release readiness. The com
 source-acquisition/runtime origin is documented in [mechanisms.md](mechanisms.md);
 substituting a newer official runtime does not reproduce N5.
 
+## Weather system and statement-review negative results
+
+Three later frozen results retain different treatments and scopes. Each used
+one `gpt-6-luna`, Max author. Author-side preparation, failed calls, self-review
+and finalization remain charged; independent staging, evaluation and
+orchestration are separate. None of the outputs was repaired after terminal
+criticism.
+
+| Experiment ID / scope | Author net | Preserved outcome |
+| --- | ---: | --- |
+| `weather-system-authoring-20261030`: Forecasts, Places, Dashboard and interactions | 303,490 | Terminal quality FAIL; analyst 20 complete /16 partial of 36, engineer 21 complete /12 partial of 33; clarity 17/20 each, navigation 10/12 and 11/12; material false claims 0 and 1 |
+| `weather-system-statement-preflight-20261030`: separate Russian Forecasts diagnostic with statement-review candidate `66ea155ccef67967e5eda54939feec17fc0af7d5` | 246,269 | Terminal quality FAIL; analyst 23 pass /10 partial /1 contradicted of 34, engineer 22 pass /15 partial /3 contradicted of 40; clarity 16/20 and 15/20, navigation 9/12 and 10/12; material false claims 0 and 2 |
+| `weather-system-n5-staged-author-v2-20261030`: staged Forecasts, Places, Dashboard and interactions, helper `559406572d01bf9fbe56ef306d4c26f98df45d4d` and retained contract input | 433,960 | Terminal quality FAIL; analyst 27 pass /7 partial /2 contradicted of 36, engineer 22 pass /10 partial /1 contradicted of 33; clarity 16/20 and 17/20, navigation 10/12 each; material false claims 2 and 1 |
+
+Keep each critic's inventory and disagreement intact; do not average the 34- and
+40-item diagnostic inventories or turn them into a shared coverage percentage.
+The whole-system critics also used different inventories. There is no
+whole-system Direct comparator: comparing its 303,490 net to the Forecasts-only
+170,482 would change the task. The separate diagnostic is not a matched Direct
+or whole-system arm, so no cost advantage is asserted for it either.
+
+For the whole-system output, the retained result confirms that the timestamp
+guard on cache updates and the independent outbox deduplication consequence were
+omitted despite delivered source. A complete upstream destination was also
+missing. A source condition covering an absent/null database setting was
+generalized to an empty string. Critics disagreed about material severity;
+preserve the 0/1 false-claim assessments rather than resolving them by averaging.
+No context compaction was observed. A desktop render/link check passed within
+its seven-viewport scope but retained readability gaps; it did not establish
+semantic acceptance, mobile/accessibility coverage or product-renderer parity.
+
+The diagnostic still omitted the consequence of deduplicating an outbox write
+for the same provider revision, despite available source and a statement anchor.
+The cache-update guard and independent outbox effect were already described in
+the first complete draft, **before** the new review projection. Their presence
+cannot be attributed to its 44 anchors. Scheduling defaults appeared without
+their setting names. English prose from the first draft violated the required
+Russian output; the renderer had not translated it. The unescaped Markdown
+placeholder `PROVIDER_HTTP_<status>` rendered as `PROVIDER_HTTP_`, losing the
+status suffix. The visual audit also retained dense prose, filename navigation,
+paragraph-based field/configuration lookup and no active-page indication.
+
+The diagnostic critics disagreed on two material claims involving identifier
+capitalization and optional error fields. The retained result confirms the
+underlying lowercase IDs and optional schema properties while preserving the
+severity disagreement. The overall failure does not depend on resolving it.
+Statement anchors alone did not produce an acceptable sole-author result; this
+is neither a causal benefit estimate nor grounds for automatic adoption or a
+repeat paid run. The quality hold remains in effect for merge, full CI,
+official packaging and release. A bounded source/delivery diagnosis must first
+justify a concrete, nonredundant intervention.
+
+For staged v2, author net is 16,428,838 input minus 16,128,256 cached input plus
+133,378 output = **433,960**. The 86,337 reasoning tokens are already included
+in output. Self-review, failed commands and pre-READY corrections remain charged;
+independent critics are separate. This is 43.0% more author net than the previous
+**failed** whole-system result of 303,490, not a cost reduction or a comparison
+with a successful baseline. Forecasts-only Direct at 170,482 is not comparable
+to either whole-system task; no new Direct trial was run.
+
+The retained preparation records identify 71 files from helper `55940657` and a
+1,332-file input seal; the coordinator verified these exact inputs. A later
+delivery check matches all nine initial carriers to complete visible tool
+outputs. This proves delivery of the staged carriers, not completeness of the
+selected repository evidence or author understanding. Both terminal critics
+flagged the network-failure/backoff assertion: the original connected carrier
+explicitly sets `nextAttempt = now + 60` before `http.send`, while the reader
+denies that initial assignment. This is a confirmed contradiction of delivered
+source order. No post-critic repair changed the frozen output.
+
+`Program.cs` host-registration context was absent from the prepared source
+inventory/carrier. The analyst classified the qualified fragment-gap statement
+as false; the engineer did not. Availability in supported retained evidence and
+the delivery/selection cause remain under bounded diagnosis. Do not assign the
+gap to the native producer, helper or author before that diagnosis establishes
+it. Preserve the two critic inventories and their false-claim assessments.
+
+The visual audit inspected five pages and selected navigation/scroll states at
+1280x720. Contextual links worked and no overlap was observed; dense prose,
+filename navigation, absent active-page indication and field-lookup friction
+remained. All five HTML documents declared `lang="en"` despite Russian prose.
+This language-metadata defect differs from the earlier diagnostic's English
+body text. Keyboard, mobile and assistive-technology behavior were not tested.
+The language-metadata finding belongs to the benchmark renderer; it is not an
+established native product-renderer defect.
+
+Four mechanical refusals were separately diagnosed: two invocations misused
+binding-update metadata, and two exports had genuinely missing or duplicate
+HTML anchors. These were intended safeguards; no helper defect was established.
+A later checked export did not establish semantic quality. The helper's
+independent native-to-page acceptance is indexed as
+`work-source-reference-binding-20261030`, a separate mechanical record, not
+another author trial or release qualification. Staging plus helper/contract
+input changes do not isolate a causal effect. Neither statement rows nor a
+generic checklist guarantees quality. This result alone authorizes no new paid
+author, product repair, full CI, merge, package or release.
+
+### Composition-root source follow-up
+
+Later bounded delivery evidence confirmed that the host-registration source was
+neither prepared nor delivered. Root therefore treats the narrow caveat that
+registration was not shown in the available fragment as truthful about that
+local evidence, rather than a claim that the real service is unregistered.
+The frozen analyst and engineer verdicts and counts above remain unchanged;
+full lifecycle coverage is still incomplete. The separate pre-send retry
+assignment was delivered correctly, and the contradictory explanation was
+introduced during same-author revision. These are different failure mechanisms.
+
+`csharp-original-compilation-unit-source-20261030` localizes a generic source
+availability gap. Independent review matched 16 historical code excerpts and
+three exact Work responses. The compiler adapter creates sealed `SOURCE_FILE`
+membership, but documentation projection drops it before wanted-source selection
+and has no general retention path for full original compilation units. The
+admitted Work returned zero `SOURCE_FILE`, zero `SOURCE_SCOPE` and one
+`MODULE_SCOPE`, with no omitted rows or continuation. This does not prove absence
+of bytes throughout global storage or independently recover the historical
+MSBuild membership of an individual file. No original bootstrap SOURCE handle
+was established and no checkout text was inserted into a manifest.
+
+A scoped source-preservation change and nine new focused test methods are
+prepared. They preserve real file membership and exact snapshot text, expose
+genuine references through the existing Work query, reuse helper559 and retain
+the unsupported semantic boundary for entirely declaration-free projects.
+Empty files are explicit metadata without fabricated source bodies. The review
+correction uses identical bytes for a same-path, two-compilation positive through
+snapshot binding, verification and cache roundtrip; different bytes for one
+original path are a separate rejecting negative. Both checkpoints are retained.
+This is implementation intent, not an accepted behavior result: Rust compilation,
+focused tests and the neutral native capture/Work/helper roundtrip remain
+unexecuted while disk admission is blocked. The supported bootstrap requires
+6 GiB free; the observed volume had less than 1 GiB. No build, recapture or
+quality/release qualification was attempted by bypassing that limit.
+
 ## Retired public Java transfer
 
 Historical RealWorld used 139 text files /247,407 bytes at revision

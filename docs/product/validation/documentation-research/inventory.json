@@ -41,12 +41,12 @@
     "single-author-weather": {
       "question": "Can one Luna Max author explain all mandatory Forecasts meanings before READY?",
       "baselineAndTreatment": "N1-N10 vary one delivery/guidance/review/finalization mechanism; same public source16 and reader question.",
-      "nextConditionAndNonrepeatRule": "N5 is Forecasts-only; validate all actual Weather services and interactions. Verified: Forecasts, Places, Dashboard; requested fourth unspecified. No unchanged prompt-only repeat."
+      "nextConditionAndNonrepeatRule": "N5 remains Forecasts-only. The whole-system run (303,490 net), separate statement diagnostic (246,269 net) and staged whole-system v2 (433,960 net) all failed terminal quality. Preserve exactly Forecasts, Places, Dashboard and interactions. Staged delivery and mechanical helper acceptance do not prove quality; diagnose the confirmed pre-send retry contradiction separately from the open host-registration delivery question before a concrete material delta. No unchanged prompt repeat or release admission."
     },
     "lexical-review": {
       "question": "Can compact native structural/lexical review expose omissions without inventing execution semantics?",
       "baselineAndTreatment": "Kotlin statement/condition review and Java saved lexical adapter; exact source spans and explicit prefixes.",
-      "nextConditionAndNonrepeatRule": "Mechanical row conservation must be followed by independent semantic assessment; never prune nested events for cost."
+      "nextConditionAndNonrepeatRule": "Mechanical row conservation does not prove semantic coverage. The 44-anchor Forecasts diagnostic failed; guard/effect prose predates review and same-revision deduplication remains absent. Preserve separate critic inventories; no demonstrated causal benefit or automatic candidate adoption."
     },
     "retired-transfer": {
       "question": "Do the same mechanisms transfer to a held-out public Java service?",
@@ -10051,9 +10051,600 @@
       "id": "weather-system-authoring-20261030",
       "era": "0140",
       "family": "authoring-mechanics",
-      "coverage": "no-top-level-compact-report",
-      "reports": [],
-      "evidenceLimit": "Report metadata and selected aggregates only; raw source/prompts/sessions not copied. Missing fields remain unavailable."
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "result",
+          "sha256": "2bf9660788ceec4ecd459e4fe4f1b86478b8c6fe0773c94a92aff58d4523c34c",
+          "facts": {
+            "status": "TERMINAL_QUALITY_FAIL",
+            "authorNet": 303490,
+            "scope": [
+              "Forecasts",
+              "Places",
+              "Dashboard",
+              "interactions"
+            ],
+            "authorOutputFrozen": true,
+            "postCriticRepair": false,
+            "noComparableWholeSystemDirect": true,
+            "critics": {
+              "analyst": {
+                "complete": 20,
+                "partial": 16,
+                "total": 36,
+                "clarity": 17,
+                "navigation": 10,
+                "materialFalse": 0
+              },
+              "engineer": {
+                "complete": 21,
+                "partial": 12,
+                "total": 33,
+                "clarity": 17,
+                "navigation": 11,
+                "materialFalse": 1
+              }
+            },
+            "clarityDenominator": 20,
+            "navigationDenominator": 12,
+            "criticInventoriesComparable": false,
+            "confirmedFindings": [
+              "Timestamp-guarded cache update and independent outbox deduplication omitted despite delivered source.",
+              "Complete upstream destination absent despite delivered source.",
+              "Absent/null database-setting condition generalized to empty string; critics disagree on material severity."
+            ],
+            "noContextCompactionObserved": true,
+            "releaseAcceptance": false
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "accounting",
+          "sha256": "ab5c69d8b31eec00d90e870ef1a8d8af3c6aebac5d85df1e56b83673672e7e92",
+          "facts": {
+            "status": "TERMINAL_SESSION_TOTALS_RECONCILED",
+            "usage": {
+              "input_tokens": 8700250,
+              "cached_input_tokens": 8493696,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 96936,
+              "reasoning_output_tokens": 63580,
+              "total_tokens": 8797186
+            },
+            "net": 303490,
+            "usageEventCount": 62,
+            "countersMonotonic": true,
+            "models": [
+              {
+                "model": "gpt-6-luna",
+                "effort": "max"
+              }
+            ],
+            "metric": "input_tokens - cached_input_tokens + output_tokens",
+            "reasoning": "Already a subset of output; not added twice",
+            "scope": "Complete whole-Weather author session including failed calls, preparation, self-review and finalization.",
+            "excluded": "Independent critics, orchestration and source capture remain separate."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "visual-audit",
+          "sha256": "e6554140fba665b3d6a38c23117603ad9b3fc8be170d0854dff1b2e81dc47b1f",
+          "facts": {
+            "status": "DESKTOP_RENDER_AND_LINKS_PASS_WITH_READABILITY_GAPS",
+            "viewport": {
+              "width": 1280,
+              "height": 720
+            },
+            "viewportsInspected": 7,
+            "scope": "Seven top viewports and actual cross-page navigation; no full-page/mobile/keyboard/accessibility certification",
+            "semanticQualityAtVisualAudit": "Independent terminal experts running",
+            "productRendererParityEstablished": false
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Report metadata and selected aggregates only; raw source/prompts/sessions not copied. Missing fields remain unavailable.",
+      "safeFinding": "Frozen whole-system quality failure at 303,490 net. Delivered evidence and successful bounded desktop rendering did not produce complete reader meaning. No comparable whole-system Direct baseline; no same-service ratio inferred.",
+      "doNotRepeatUnchanged": "Preserve this failure and quality hold. Diagnose confirmed source/delivery-to-prose loss before another paid trial; no full CI, merge, official packaging or publication from this result."
+    },
+    {
+      "id": "weather-system-statement-preflight-20261030",
+      "era": "0140",
+      "family": "lexical-review",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "result",
+          "sha256": "fefaa3b36dbdd5bb6e1da0bd53e15aaabbd68974b484e1a6286ae1980e015f8b",
+          "facts": {
+            "status": "TERMINAL_QUALITY_FAIL",
+            "authorNet": 246269,
+            "scope": "Separate Russian Forecasts diagnostic, not whole-system qualification.",
+            "candidateReviewCommit": "66ea155ccef67967e5eda54939feec17fc0af7d5",
+            "statementAnchors": 44,
+            "frozen": true,
+            "postCriticRepair": false,
+            "critics": {
+              "analyst": {
+                "pass": 23,
+                "partial": 10,
+                "contradicted": 1,
+                "total": 34,
+                "clarity": 16,
+                "navigation": 9,
+                "materialFalse": 0
+              },
+              "engineer": {
+                "pass": 22,
+                "partial": 15,
+                "contradicted": 3,
+                "total": 40,
+                "clarity": 15,
+                "navigation": 10,
+                "materialFalse": 2
+              }
+            },
+            "clarityDenominator": 20,
+            "navigationDenominator": 12,
+            "criticInventoriesComparable": false,
+            "confirmedFindings": [
+              "English reader prose from the first complete draft violated the Russian task; no renderer translation occurred.",
+              "Scheduling defaults stated without their setting names.",
+              "Same-provider-revision outbox deduplication consequence still absent despite source and statement anchor availability.",
+              "Cache-update guard and independent outbox effect already present in the first draft before statement review; their presence cannot be attributed to that projection.",
+              "Unescaped Markdown status placeholder lost its suffix in HTML."
+            ],
+            "criticDisagreement": "Analyst 0 versus engineer 2 material false claims; identifier capitalization and optional error-field facts confirmed, material-severity interpretation differs. Overall failure does not depend on resolving it.",
+            "hypothesisDisposition": "Statement anchors alone did not yield a complete acceptable sole-author result. No causal quality benefit demonstrated or automatic adoption justified.",
+            "comparability": "Not a matched Direct or whole-system arm; no token advantage asserted. Keep 34- and 40-item critic inventories separate.",
+            "releaseAccepted": false
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "accounting",
+          "sha256": "d78ff24a6f7c537dbe9af29414df799b7634a111c8b1883dcc48eb2a1ea076c4",
+          "facts": {
+            "status": "TERMINAL_TOTALS_RECONCILED",
+            "usage": {
+              "input_tokens": 6148999,
+              "cached_input_tokens": 5993984,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 91254,
+              "reasoning_output_tokens": 61758,
+              "total_tokens": 6240253
+            },
+            "net": 246269,
+            "usageEvents": 58,
+            "countersMonotonic": true,
+            "models": [
+              {
+                "model": "gpt-6-luna",
+                "effort": "max"
+              }
+            ],
+            "reasoningAlreadyInOutput": true,
+            "scope": "Complete Russian Forecasts diagnostic; no automatically comparable paired Direct or whole-system baseline",
+            "criticAndRootExcluded": true
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "visual-audit",
+          "sha256": "17bfdadc5d9d3b241832595d32926ca4eaeefc3380fe2ce88b9eca4c07575d94",
+          "facts": {
+            "status": "VISUAL_REVIEW_COMPLETE_WITH_TASK_FAILURE",
+            "languageRequirement": "Russian",
+            "observed": "English reader body across all4pages; first draft0Cyrillic",
+            "viewport": [
+              1280,
+              720
+            ],
+            "viewportsInspected": 6,
+            "renderTextLoss": {
+              "markdown": "PROVIDER_HTTP_<status>",
+              "visible": "PROVIDER_HTTP_",
+              "cause": "Unescaped placeholder interpreted as HTML"
+            },
+            "polish": [
+              "dense prose",
+              "filename navigation",
+              "field/configuration lookup in paragraphs",
+              "no active page indication"
+            ],
+            "noPostReadyRepair": true,
+            "semanticCriticsSeparate": true
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Selected public terminal/accounting/visual facts and compact-report fingerprints only; no raw sessions, prompts, source code, local paths or private identities copied. This is a separate diagnostic, not whole-system or matched Direct qualification.",
+      "safeFinding": "Frozen failure at 246,269 net; clarity 16/20 and 15/20. Same-revision deduplication remains missing. Guard/independent-outbox prose predates review, so 44 anchors have no demonstrated causal quality benefit. Russian-language and rendered-placeholder requirements also failed.",
+      "doNotRepeatUnchanged": "Bounded source/delivery diagnosis must justify a concrete nonredundant delta before a new paid author. Do not average critic inventories or automatically integrate the candidate. Keep the current quality hold."
+    },
+    {
+      "id": "weather-system-n5-staged-author-v2-20261030",
+      "era": "0140",
+      "family": "single-author-weather",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "result",
+          "sha256": "0469e05b4178c1a05d1a2d09af438204618615e8d2b80e546a10d15e9a664fb3",
+          "facts": {
+            "status": "TERMINAL_QUALITY_FAIL",
+            "authorNet": 433960,
+            "authorOutputFrozen": true,
+            "noPostCriticRepair": true,
+            "scope": [
+              "Forecasts",
+              "Places",
+              "Dashboard",
+              "interactions"
+            ],
+            "all9InitialCarriersActuallyDelivered": true,
+            "comparableWholeSystemDirect": null,
+            "previousFailedWholeSystemAuthorNet": 303490,
+            "costVsPreviousFailedTrialPercent": 43.0,
+            "critics": {
+              "analyst": {
+                "counts": {
+                  "PASS": 27,
+                  "PARTIAL": 7,
+                  "MISSING": 0,
+                  "CONTRADICTED": 2
+                },
+                "total": 36,
+                "clarity": 16,
+                "navigation": 10,
+                "materialFalse": 2
+              },
+              "engineer": {
+                "counts": {
+                  "PASS": 22,
+                  "PARTIAL": 10,
+                  "MISSING": 0,
+                  "CONTRADICTED": 1
+                },
+                "total": 33,
+                "clarity": 17,
+                "navigation": 10,
+                "materialFalse": 1
+              }
+            },
+            "clarityDenominator": 20,
+            "navigationDenominator": 12,
+            "criticInventoriesComparable": false,
+            "confirmedFinding": "Connected initial source assigns nextAttempt=now+60 before http.send; the reader denies that initial assignment and misstates network-failure/backoff behavior. Delivered source order was contradicted.",
+            "openDiagnosis": "Program.cs host-registration context absent from prepared source inventory/carrier. Retained availability and delivery/selection cause remain under bounded diagnosis; analyst and engineer differ in classification. No premature producer/helper/author root cause.",
+            "releaseAcceptance": false
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "accounting",
+          "sha256": "4308822b28a4ee390380bf28ade7d215322ef2f51baa39b804445185753e85a6",
+          "facts": {
+            "status": "TERMINAL_SESSION_CUMULATIVE_USAGE",
+            "models": [
+              {
+                "model": "gpt-6-luna",
+                "effort": "max"
+              }
+            ],
+            "usage": {
+              "input_tokens": 16428838,
+              "cached_input_tokens": 16128256,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 133378,
+              "reasoning_output_tokens": 86337,
+              "total_tokens": 16562216
+            },
+            "net": 433960,
+            "reasoningOutput": "Subset of output; not added twice",
+            "criticUsageNotIncluded": true,
+            "scope": "Three-service Weather author, including self-review, failed commands and corrections before READY.",
+            "comparableDirect": null,
+            "forecastOnlyDirectNotComparable": 170482
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "delivery-check",
+          "sha256": "203f5eead3d3b0175ac939a9d52d71d69fa1c1381c4029a790d9efec52593507",
+          "facts": {
+            "status": "ALL_INITIAL_CARRIERS_FULLY_MATCH_VISIBLE_TOOL_OUTPUTS",
+            "count": 9,
+            "meaningUnderstood": null,
+            "semanticQualityNotAssessed": true,
+            "criticFeedbackSent": false,
+            "limit": "Complete delivery of these staged carriers does not establish complete selection of repository evidence."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "visual-audit",
+          "sha256": "7f28c55c19523044ec60f31b67dd94114e1bb57332e08449ca320f2949894988",
+          "facts": {
+            "status": "BROWSER_AUDIT_COMPLETED_WITH_FINDINGS",
+            "viewport": [
+              1280,
+              720
+            ],
+            "pages": 5,
+            "viewportsInspected": 7,
+            "pagesWithReportedLanguageMetadataMismatch": 5,
+            "actualInteractions": 6,
+            "observedLayoutOverlap": false,
+            "mobileAndKeyboardAudited": false,
+            "frozenOutputModified": false
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "visual-review",
+          "sha256": "241014e90613cbe5255af246182555bbff0f0bc9f256ca8a65b32868902da078",
+          "facts": {
+            "confirmedLanguageMetadata": "All five HTML documents declare lang=en despite Russian prose; this is distinct from the earlier diagnostic English-body failure.",
+            "readability": "Dense prose, filename navigation, no active-page marker and field lookup in paragraphs remain. Contextual links worked and no overlap was observed at the captured desktop viewport.",
+            "scope": "Five pages and selected anchor/lower states; no keyboard, mobile or assistive-technology verification."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "mechanical-diagnosis",
+          "sha256": "e23215fb997485e20a4fc0cad1f3444b5fa330708953b71e4b2ecfce95e112b6",
+          "facts": {
+            "status": "BOUNDED_ROOT_ONLY_MECHANICAL_DIAGNOSIS_COMPLETE",
+            "caseCount": 4,
+            "helperCommit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "confirmedHelperDefects": 0,
+            "cases": [
+              {
+                "status": "REPAIR_REQUIRES_PREVIOUS_MAP",
+                "classification": "AUTHOR_INVOCATION_ERROR_WITH_INTENDED_SAFEGUARD",
+                "defectEstablished": false
+              },
+              {
+                "status": "EXPORT_FRAGMENT_MISSING",
+                "classification": "ACTUAL_RENDERED_LINK_ERROR_INTENDED_SAFEGUARD_WITH_GUIDANCE_CLARITY_GAP",
+                "defectEstablished": false
+              },
+              {
+                "status": "AMBIGUOUS_EXPORT_ANCHOR",
+                "classification": "ACTUAL_DUPLICATE_HTML_ID_INTENDED_SAFEGUARD",
+                "defectEstablished": false
+              },
+              {
+                "status": "EXPLICIT_CLAIM_REMOVAL_OR_REBIND_REQUIRED",
+                "classification": "AUTHOR_UPDATE_METADATA_ERROR_WITH_INTENDED_EXACT_DELTA_SAFEGUARD",
+                "defectEstablished": false
+              }
+            ],
+            "observedPatterns": [
+              "Two invocations misused exact binding-update metadata.",
+              "Two rendered exports had genuinely missing/duplicate anchor targets."
+            ],
+            "noProductOrAuthorEdits": true,
+            "noNewCommandsTestsOrExperimentsRun": true,
+            "limits": [
+              "No phase-token or causal time cost attributed from these receipts.",
+              "Mechanical pass is not READY, semantic quality or release acceptance.",
+              "No diagnosis of renderer implementation beyond observed HTML structure."
+            ]
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "preparation",
+          "sha256": "c29100b90c538cd75a414efea07e848eadc63317dd8e2a08f5e6bf67e3c757b3",
+          "facts": {
+            "status": "MECHANICALLY_READY_FOR_ROOT_AUTHOR_DISPATCH_NOT_QUALITY_ACCEPTED",
+            "helper": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "helperTreatment": "Scoped binding-only successor; not byte-identical originalN5.",
+            "initialCarriers": 9,
+            "initialCarrierBytes": 123539,
+            "allCarrierAndNativeSidecarBytes": 288518,
+            "sourceBindingChoices": 213,
+            "originalForecastsInitialConnectedComplementsAndReviewByteIdentical": true,
+            "priorGeneratedProseCriticOrRubricCopied": false,
+            "limit": "Preparation report precedes generation and does not qualify quality; later delivery and terminal reports remain separate."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "input-seal",
+          "sha256": "ad16a446bca3759959f3b2f06da5bffd94a1c6ae98bb4448894b6a0ac7f22c9b",
+          "facts": {
+            "status": "READY_PREPARED_INPUTS_NOT_YET_DELIVERED",
+            "fileCount": 1332,
+            "helperCommit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "authorStartedAtSeal": false,
+            "qualityAcceptedAtSeal": false,
+            "limit": "Recorded preparation seal, not proof of reading or complete repository selection; coordinator later verified exact admitted inputs."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "helper-identity",
+          "sha256": "99769e84766a24580aa15adca854e8cb35fc09772f99717a021a07be17cd1948",
+          "facts": {
+            "commit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "tree": "feee201c75cf9337486f6903e4e726a95998586c",
+            "fileCount": 71,
+            "treatment": "Scoped binding-helper successor; not byte-identical original N5. Original Forecasts initial connected/complement carriers and141684 optional review preserved.",
+            "originalN5Helpers": "141684b17a355dcdb0ebe54c72d9b625b3da66b8",
+            "sourceRuntime": "254fc37905e4b0a5621b9006b9c983c60ecd70c6",
+            "connectedRuntime": "cec70dc3f958c1cef80819494840719223ad3caf",
+            "qualityAccepted": false
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Selected public terminal/accounting/delivery/preparation/visual/mechanical facts and report hashes only; no local paths, private names, raw sessions, prompts, source files or screenshots copied. Staging plus helper/contract input delta is not a single-factor causal test.",
+      "safeFinding": "Frozen quality FAIL at 433,960 author net, 43.0% above the previous failed whole-system run at 303,490. All nine staged carriers were delivered; both critics flag false network-failure/backoff prose despite the explicit pre-send retry assignment. Keep the 36- and 33-item inventories separate. Host-registration availability/delivery remains under diagnosis. No semantic-quality or cost-reduction pass.",
+      "doNotRepeatUnchanged": "Preserve frozen failures and accepted mechanical helper. Diagnose source-order contradiction separately from open host-registration input gap. No new paid author, product fix, Direct rerun or release gate opened by this result; full CI/merge/package/publication remain held."
+    },
+    {
+      "id": "work-source-reference-binding-20261030",
+      "era": "0140",
+      "family": "source-provenance",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "independent-acceptance",
+          "sha256": "318ee0f1b1c7f4646d7ef3605e18d75f4829ed89ad38f03f9245174b1a413bac",
+          "facts": {
+            "status": "ACCEPTED_SCOPED_SOURCE_REFERENCE_HELPER_NOT_RELEASE",
+            "commit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "tree": "feee201c75cf9337486f6903e4e726a95998586c",
+            "mirrors": "identical",
+            "independentEvidence": {
+              "sourceBytes": 6754,
+              "sourceLines": 263,
+              "nativeSourceIdentity": "places-770e53d99edf681987e1",
+              "sourceAuthority": "DECLARED_OPENAPI",
+              "sourceReference": "s864",
+              "pipeline": "Fresh native read -> inspect -> compose -> bind/finalize",
+              "result": "CHECKED_PAGES_FINALIZED",
+              "exportStatus": "EXPORT_CHECKED",
+              "finalSourceBindingComparedToFreshNative": true,
+              "focusedNewTests": 8,
+              "focusedNewTestsStatus": "PASS"
+            },
+            "semanticQualityAccepted": false,
+            "officialPackageQualified": false,
+            "releaseAccepted": false
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Public scoped helper acceptance and exact report fingerprint only. Historical supported producer plus changed helper; no official one-launcher package or semantic-quality qualification.",
+      "safeFinding": "Native Work SOURCE references reach ordinary citation manifests and checked pages without fabricated SYMBOL/SOURCE_NAVIGATION. Independent fresh native read, exact final source bindings and eight focused tests passed. This mechanical acceptance remains valid alongside staged author quality failure.",
+      "doNotRepeatUnchanged": "Reuse accepted exact helper mechanics; do not promote them to whole-system quality, an author experiment, or CI/merge/package/release authorization."
+    },
+    {
+      "id": "csharp-original-compilation-unit-source-20261030",
+      "era": "0140",
+      "family": "source-provenance",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "diagnosis",
+          "sha256": "6867bc4dd55edd61d2c0f68474c83ed01987a3d5694e3427c30eee68e599e21f",
+          "facts": {
+            "status": "DOCUMENTATION_COMPILATION_UNIT_PROJECTION_GAP_LOCALIZED_READ_ONLY",
+            "producerCommit": "254fc37905e4b0a5621b9006b9c983c60ecd70c6",
+            "acceptedHelperCommit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "nativeReads": 3,
+            "nativeResults": [
+              {
+                "kind": "SOURCE_FILE",
+                "exitCode": 0,
+                "total": 0,
+                "items": 0,
+                "nextCursor": null,
+                "omitted": []
+              },
+              {
+                "kind": "SOURCE_SCOPE",
+                "exitCode": 0,
+                "total": 0,
+                "items": 0,
+                "nextCursor": null,
+                "omitted": []
+              },
+              {
+                "kind": "MODULE_SCOPE",
+                "exitCode": 0,
+                "total": 1,
+                "items": 1,
+                "nextCursor": null,
+                "omitted": []
+              }
+            ],
+            "supportedBootstrapSourceHandleEstablished": false,
+            "codeConclusion": "C# compiler SOURCE_FILE membership is discarded before wanted-source filtering; documentation has no general full original compilation-unit retention path.",
+            "retentionLimit": "No global CAS byte-absence claim or independently recovered historical MSBuild file membership.",
+            "criticInterpretation": {
+              "frozenCountsPreserved": true,
+              "analystMaterialFalse": 2,
+              "engineerMaterialFalse": 1,
+              "rootHostCaveatAssessment": "Truthful narrow statement about the available fragment; registration was not delivered, while full lifecycle explanation remains incomplete.",
+              "separateRetryFailure": "Correct pre-send nextAttempt assignment was delivered; the false explanation was introduced during same-author revision per coordinator trace."
+            },
+            "benchmarkRendererBoundary": "The v2 HTML lang=en finding belongs to the benchmark renderer. It is not an established native product-renderer defect and is independent of compilation-unit retention."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "independent-diagnosis-review",
+          "sha256": "d2be1384507a01b9f7e54430c1f34b4eda4911da22135e9b89d9e63f580288db",
+          "facts": {
+            "status": "CONFIRMED_DOCUMENTATION_PROJECTION_SOURCE_MEMBERSHIP_GAP",
+            "historicalCommit": "254fc37905e4b0a5621b9006b9c983c60ecd70c6",
+            "codeExcerptsVerifiedAgainstGit": 16,
+            "exactWorkResponsesVerified": 3,
+            "conclusion": "C# SOURCE_FILE facts are dropped before wanted snapshot-text selection; retained source creation has no general compilation-unit file path. The exact Work has no SOURCE_FILE or SOURCE_SCOPE records."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "implementation-checkpoint",
+          "sha256": "e769ee85aed2ddd4a115801cb7ee5af081ca869410e3d8ab32f3903c5a1e017d",
+          "facts": {
+            "status": "SCOPED_IMPLEMENTATION_PREPARED_FOCUSED_BUILD_AND_NATIVE_BLOCKED_FOR_DISK",
+            "baseCommit": "5c3536c3f7427a6dccecf188c1249bf4259c229c",
+            "newTestMethods": 8,
+            "newTestsExecuted": false,
+            "rustCompilationEstablished": false,
+            "nativeCaptureExecuted": false,
+            "formatterSyntaxCheck": "cargo fmt --all --check passed; not a Rust type/test check.",
+            "emptyFilePolicy": "SOURCE_FILE metadata with EMPTY_SOURCE_FILE and no invented nonempty SOURCE body.",
+            "declarationFreePolicy": "Existing IncompleteSemanticAnalysis retained; diagnostic now names unsupported top-level-only semantic projects.",
+            "helperAndMirrorsChanged": false,
+            "notReleaseAccepted": true,
+            "limit": "Prepared source and tests are unqualified until focused Rust and native roundtrip checks execute. No accepted repair outcome asserted."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "disk-admission",
+          "sha256": "9b48b08c9da55fc5f78ea15acf5cd1976491a2cd797bcf17d152ae67a0f959e5",
+          "facts": {
+            "status": "NATIVE_RUNTIME_BUILD_HELD_FOR_DISK",
+            "supportedBootstrapMinimumFreeGiB": 6,
+            "observedFreeBelowOneGiB": true,
+            "sharedCargoPreserved": true,
+            "buildOrCleanupStarted": false,
+            "bootstrapCapacityGateBypassed": false,
+            "limit": "Storage blocker only; no semantic quality or test pass follows from prepared code. Cleanup needs independent coordination."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "review-correction-checkpoint",
+          "sha256": "2a3fee12be52d9a8b0ab07076e09281c4e5fbfb1c71c053d6222045ebee3569a",
+          "facts": {
+            "status": "REVIEW_DELTA_PREPARED_FOCUSED_BUILD_AND_NATIVE_STILL_DISK_HELD",
+            "baseCommit": "5c3536c3f7427a6dccecf188c1249bf4259c229c",
+            "newTestMethods": 9,
+            "newTestsExecuted": false,
+            "rustCompilationEstablished": false,
+            "nativeCaptureExecuted": false,
+            "formatterSyntaxCheck": "cargo fmt --all --check passed; not a Rust type/test check.",
+            "reviewDelta": "Shared original path positive uses identical bytes, binds one snapshot, verifies two distinct source IDs/scopes and cache roundtrip. Different bytes under one original snapshot are a separate rejecting negative. Unit intent only, not an executed native E2E proof.",
+            "helperAndMirrorsChanged": false,
+            "notReleaseAccepted": true
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Public code/native-read diagnosis and prepared implementation checkpoints only. No raw stores, source imports, private paths/names, sessions or screenshots copied. Focused compilation/tests and the neutral native capture/Work/helper roundtrip have not run because disk admission is blocked.",
+      "safeFinding": "Independent diagnosis confirms a documentation source-selection gap distinct from same-author semantic revision. Preserve actual compiler-file membership and original text; no fake declarations or runtime proof. Scoped code and nine new test methods are prepared but not qualified. The narrow missing-registration-fragment caveat is truthful about delivered input; frozen critic verdicts remain unchanged.",
+      "doNotRepeatUnchanged": "First complete focused Rust and neutral native checks after actual supported disk admission. Preserve old immutable evidence and helper559. No paid author, full CI, merge, official package or release follows automatically."
     },
     {
       "id": "whole-file-comparison-execution-v1",
@@ -12827,5 +13418,15 @@
       ],
       "evidenceLimit": "Preserved historical metric and bounded fixture scope; no new execution or rescoring."
     }
-  ]
+  ],
+  "scopeClarification20261030": {
+    "services": [
+      "Forecasts",
+      "Places",
+      "Dashboard"
+    ],
+    "interactions": true,
+    "fourthServicePending": false,
+    "history": "Earlier four-service ambiguity resolved by direct user clarification; historical result metadata unchanged."
+  }
 }

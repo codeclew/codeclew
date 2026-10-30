@@ -39,6 +39,8 @@ identity mappings remain local; this record preserves only generic lessons.
 | `4a258cc3748e89a38ab9987e3adb84ff111cf52b` | Restored existing FILES/NAVIGATION route and Java original-file retention; 139 public files /247,407 bytes replayed exactly | No Java semantic or whole-service quality pass |
 | Author citation roundtrip and body-free binding | Preserved source/citation/revision identities without manually copying unchanged bodies | Binding consistency does not establish a reader claim's meaning |
 | Guarded Markdown reconciliation | Existing prose and provenance can be reconciled with controlled preservation checks | An old accepted render cannot validate later prose or renderer changes |
+| `559406572d01bf9fbe56ef306d4c26f98df45d4d`, `work-source-reference-binding-20261030` | Genuine Work SOURCE references reach ordinary citations without fake SYMBOL/SOURCE_NAVIGATION; independent fresh native read, exact final claim binding, checked export and eight focused tests passed | Mechanical helper acceptance only; staged whole-system v2 still failed reader quality; not official-package or release acceptance |
+| `csharp-original-compilation-unit-source-20261030` | Independently confirmed loss of C# SOURCE_FILE membership before documentation source selection; scoped full-unit preservation and focused tests prepared | Rust type/test checks and native capture/Work/helper proof blocked by disk admission; no accepted repair or retroactive recovery of old immutable bytes |
 
 The historical Java capture had 5,341 actually missing bytes across 116 Java
 files, including 3,650 non-ASCII-whitespace bytes. The absence of a whole-file
@@ -87,12 +89,20 @@ experimental restriction into a missing product feature. The separate editor
 arm did not complete cheaply enough and was not evidence for a production
 multi-author repair workflow.
 
+The staged Weather v2 mechanical diagnosis retained four intended refusals:
+replacement metadata without a previous checked map, a missing rendered target,
+a duplicate HTML ID, and unnecessary replacement declarations for unchanged
+bindings. Source claim IDs and renderer anchors are different namespaces; prose
+edits alone do not imply source rebinding. No helper defect was established and
+no causal token/time price was assigned to these cases. Possible guidance gaps
+do not justify weakening exact-delta or export checks.
+
 ## Self-review and source delivery
 
 | Candidate | Scoped mechanical result | Semantic/economic limit |
 | --- | --- | --- |
 | `141684b17a355dcdb0ebe54c72d9b625b3da66b8` | Optional saved Kotlin structural self-review; source/context facts stay explicit | N5 supplies one Forecasts outcome, not universal efficacy |
-| `66ea155ccef67967e5eda54939feec17fc0af7d5` | 44 statement anchors added; previous 66 facts/gaps preserved; explicit PREFIX-ONLY with exact full-source pointer | Does not retroactively repair N10 or prove new author coverage |
+| `66ea155ccef67967e5eda54939feec17fc0af7d5` | 44 statement anchors added; previous 66 facts/gaps preserved; explicit PREFIX-ONLY with exact full-source pointer | Later Forecasts diagnostic failed at 246,269 net, clarity 16/20 and 15/20; same-revision outbox deduplication still omitted; no demonstrated causal quality benefit |
 | `c0ae31049a8cadbd5c83b4915ce9ddf0cc4f0f2e` | Java lexical review: 454 owners, 3,177 events, 2,757 CALLs; FLOW/SYMBOL duplicates emitted once | Parent means nearest retained lexical event; no CFG/call/return/runtime proof |
 | `38f6d9b3e931afc1f3e97edfe748ae16e1005f5e` | Exact prior-source reuse: 264,609 to161,502 display bytes, all owners/events and unchanged sidecar retained | Later author v2 still exceeded cost and failed meaning/false-assertion gates |
 | `bfb7139723bdd980f9d4f4a046f122d8c8ba967b` | Existing finalizer extended to ordinary Markdown and explicit evidence associations | Mechanical finalization cannot certify semantic completeness |
@@ -130,10 +140,32 @@ The v3 retired transfer improved some coverage while still costing more and
 failing quality. Preserve that negative result; do not keep repeating an
 unchanged hypothesis under new workflow names.
 
-The next justified public qualification is the corrected Weather system scope,
-with exact admitted treatment and full fixed question. A new engine, semantic
-prepass, reviewer model, persistent delivery ledger or broad planner is not
-authorized merely by this retrospective.
+The [whole-Weather trial and separate statement diagnostic](history.md#weather-system-and-statement-review-negative-results)
+now preserve additional negative evidence. Delivered SQL conditions did not
+guarantee complete prose. In the diagnostic, the guard and independent outbox
+effect were present before the new review, while same-revision deduplication
+remained absent afterwards. Row conservation and source availability therefore
+do not establish meaning coverage or isolate a causal benefit of 44 anchors.
+The English-for-Russian task failure and lost Markdown status placeholder also
+show that source/provenance checks alone do not certify the requested output.
+
+Staged whole-system v2 adds another confirmed delivered-source failure: all
+nine initial carriers were fully visible, but the reader contradicted the
+connected source's retry assignment before the HTTP send. A 1,332-file seal and
+exact 71-file helper identity establish input consistency, not complete selected
+evidence or correct interpretation. The missing host-registration input remains
+under diagnosis; do not collapse that open delivery question into the separately
+confirmed contradiction. Staging, helper and retained-contract input changed
+together, so neither the 43.0% author-cost increase nor any coverage difference
+isolates an individual mechanism. Statement rows and generic checklists still
+have no demonstrated guarantee of reader quality.
+
+The next justified step is bounded diagnosis of the confirmed source/delivery
+and prose losses. A new whole-system qualification needs a concrete material
+delta, exact admitted treatment and the full fixed question. A new engine,
+semantic prepass, reviewer model, persistent delivery ledger or broad planner is
+not authorized merely by this retrospective. The quality hold remains; these
+failures do not authorize merge, full CI, packaging or publication.
 
 ## Proposals that must not be mistaken for completed experiments
 
