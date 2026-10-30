@@ -72,6 +72,14 @@ quality score or causal error-prevention result. See the qualified
 [display](history.md#static-compact-display-and-namespace-failure) and
 [local revision](history.md#bounded-dashboard-local-revision-diagnostic) records.
 
+The later [SOURCE acquisition study](history.md#source-batch-acquisition-and-bounded-native-proof)
+confirms a different mechanism: source-union runs after acquisition, whereas
+bounded native reference batches reduce SOURCE command starts. Independent
+retained checks accepted helper `fad222a7` only for its tested mechanical scope.
+Observed calls were 16 to 1 for read-sources, 16 to 9 for declaration READ and
+6 to 5 with pagination/size omission. No token, reader-quality or protected-run
+speedup follows, and the helper itself remains outside the main product merge.
+
 ## Conclusions that survive the experiments
 
 1. Exact evidence, valid citations, complete event inventories and successful

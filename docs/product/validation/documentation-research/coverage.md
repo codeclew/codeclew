@@ -3,8 +3,8 @@
 Snapshot: 2026-10-30. The [inventory](inventory.json) reconciles **250 retained
 top-level experiment/substudy directories**, **101 central root records**,
 **41 retired compact reports**, **4 earlier repository records**, **1 sanitized
-configuration incident** and **6 nested follow-up records**: 403 entries.
-Entries are not 403 independent paid trials. There are 999 report references /991
+configuration incident** and **7 nested follow-up records**: 404 entries.
+Entries are not 404 independent paid trials. There are 1,004 report references /996
 unique report fingerprints; duplicates remain visible rather than counted as
 independent evidence. The earlier 397-entry snapshot left whole-system Weather
 pending; its terminal result and the separate statement diagnostic added six
@@ -17,6 +17,9 @@ entry and five compact references; prepared tests are not counted as executed.
 The static compact-display and bounded Dashboard local-revision studies add two
 entries and ten compact reports. All previous 401 experiment objects and their
 historical failures remain unchanged; the display variants are not paid trials.
+The acquisition diagnosis, batch-helper checks and independent native acceptance
+add one record and five compact reports. All prior 403 experiment objects remain
+unchanged; this is another mechanical study, not an author or release trial.
 
 The directory/catalog scan and a second compact-handoff pass were performed
 without reading private source, caches, dumps or raw author sessions. Central
@@ -30,7 +33,7 @@ with stable restricted-study aliases.
 
 | Label | Entries | Meaning |
 | --- | ---: | --- |
-| compact-metadata-indexed | 350 | Compact result/protocol/acceptance/accounting/review or handoff fingerprint and selected safe reported facts retained |
+| compact-metadata-indexed | 351 | Compact result/protocol/acceptance/accounting/review or handoff fingerprint and selected safe reported facts retained |
 | existing-repository-record | 4 | Earlier public repository evidence linked with original metric/limits |
 | artifact-container-not-an-independent-trial | 24 | Blind reader packages, acceptance copies or retained-report containers; not new treatments |
 | restricted-withheld | 5 | No private contents inspected; public details withheld |
@@ -137,6 +140,16 @@ handles in reader prose. Root observed notes before application; the critic did
 not inspect chronology and left that question unestablished within its review.
 No full-document score, paired baseline, held-out result or error-prevention
 causal effect is available. Frozen output was not repaired after critique.
+
+`n5-source-batch-acquisition-20261030` retains the code-only diagnosis, 169 focused
+helper checks, exact committed public comparisons, development corrections and
+independent mechanical acceptance. Root reproduced the 1/9/5-call candidates
+with equal source text/metadata and final bindings, rejected seven rehashed-page
+corruptions and reused eight declaration bindings with zero new native calls.
+Its initial rendered claim-location comparison was too broad: generic control
+and candidate prose differ, so declaration reader-text byte equality is not
+claimed. Native whole-file end-to-end, minimum Python 3.11 execution, author
+quality, model-token savings and protected-run speedup remain unestablished.
 
 ## Known major families reconciled
 

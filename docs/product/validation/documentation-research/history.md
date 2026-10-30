@@ -343,6 +343,61 @@ after critique. No whole-document completeness, clarity or navigation score,
 causal error-prevention advantage, reduced false-claim rate, token advantage,
 held-out transfer, native integration or release readiness was established.
 
+## SOURCE batch acquisition and bounded native proof
+
+`n5-source-batch-acquisition-20261030` distinguished display from transport.
+Code-only inspection of helper `141684b17a355dcdb0ebe54c72d9b625b3da66b8`
+confirmed that source-union follows every selected SOURCE acquisition. Different
+overlapping source IDs/references are distinct cache entries; zero repeated
+identical requests does not imply a retry storm, and overlapping bytes do not
+prove arbitrary truncation of a large source into tiny parts. A whole-file record
+cannot silently substitute for all original fragment proofs.
+
+The helper-only successor `fad222a70bfe7cba245c720e5aad29445760fba0`, based on
+accepted helper `559406572d01bf9fbe56ef306d4c26f98df45d4d`, uses the existing
+serialized reference-read API in batches of at most eight. Complete SOURCE rows
+carry explicit native batch-row proof; native size omissions retain actual part
+streams. Every original binding, authority, occurrence, range and digest remains
+distinct. Malformed or non-progressing data refuses. Old part-only proofs and
+own-run repair/reuse remain supported; source-union and author guidance did not
+change. The canonical skill and both packaged mirrors contain 72 identical files;
+169 focused methods passed, including eight new methods.
+
+Committed public retained comparisons used the same historical admitted runtime:
+
+| Route / sources | Old native calls | New native calls | Old / new helper wall seconds |
+| --- | ---: | ---: | ---: |
+| read-sources /8 | 16 | 1 | 2.931 /0.251 |
+| declaration READ /8 | 16 | 9 | 2.870 /1.669 |
+| small-budget reference READ /2 | 6 | 5 | 1.172 /0.964 |
+
+Eight declaration-proof calls remain in the ordinary READ route; eight SOURCE
+part calls become one batch. The read-sources result is not its overall speedup.
+The small Work used maxItems 2/maxBytes 3,072: three pages, one actual native
+omission and two fallback parts, without rereading the complete neighbor.
+Additional shared fixture preparation cost one Work preparation and 62
+discovery/proof commands, excluded from this acquisition table rather than free.
+These are individual ordered warm observations, not a timing distribution,
+isolated startup price, model-token saving or private-study performance result.
+
+Source text/metadata and final native bindings matched the accepted 559 controls,
+through inspection, composition/binding and checked export. Root independently
+read all 72 helper files, repeated the three candidate cases in separate retained
+roots at 1/9/5 calls, rejected seven rehashed-page corruptions and reused eight
+declaration bindings with zero native calls. An initial comparison of rendered
+claim locations was corrected: control and candidate generic prose and headings
+differ. Source objects, occurrences and claim IDs match, while declaration
+reader-text byte equality is not claimed. Development fixture/assertion failures
+were also retained instead of labeled native product failures.
+
+This is accepted mechanical scope only. New batch proofs require the successor
+validator; older part-only packets remain valid. Native whole-file end-to-end and
+minimum Python 3.11 execution were not established. Caller-trusted artifacts
+establish consistency, not producer authentication. No author, semantic-quality
+or token result, new capture, runtime build, product merge or release follows.
+The qualification did not alter another admitted treatment, and C# candidate `00115d3f`
+still has its separate unexecuted Rust/native gate.
+
 ## Retired public Java transfer
 
 Historical RealWorld used 139 text files /247,407 bytes at revision

@@ -13640,6 +13640,225 @@
       "evidenceLimit": "Selected safe aggregates from one public-service diagnostic, not an author transcript, full draft, source copy or native integration check. Root visible chronology and critic access limits remain distinct; no post-critic repair was performed.",
       "safeFinding": "Luna Max used 51,874 net for one draft and revision pass. Both factual changes are supported narrowings with no observed new material false assertion in those changes. One source-basis paraphrase is inaccurate and raw citation IDs leak into reader prose. Root observed notes before application; the critic correctly left chronology unestablished within its final-artifact-only review. No whole-document quality, prevented-error causal advantage, token advantage or release readiness is established.",
       "doNotRepeatUnchanged": "Preserve the frozen episode and actual cost; do not rerun it as a success demonstration. Any later materially different diagnostic must distinguish exact source evidence from author inference and keep raw technical identifiers out of reader prose. No new author, full-system qualification or product promotion follows automatically."
+    },
+    {
+      "id": "n5-source-batch-acquisition-20261030",
+      "era": "0140",
+      "family": "source-provenance",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "acquisition-code-diagnosis",
+          "sha256": "4b39f44d5a091cca2c56dd247c2b930d959d5a755b69c41cb7e007414e5eaf03",
+          "facts": {
+            "status": "PUBLIC_CODE_ONLY_DIAGNOSIS_COMPLETE",
+            "inspectedHelperCommit": "141684b17a355dcdb0ebe54c72d9b625b3da66b8",
+            "sourceUnionPhase": "After all selected source acquisition and verification; not a first-read optimization.",
+            "cacheIdentity": [
+              "work",
+              "snapshot",
+              "service",
+              "sourceId",
+              "reference"
+            ],
+            "conclusion": "Different overlapping source records are different cache entries. Zero repeated identical requests does not imply a retry storm, and repeated source bytes do not establish arbitrary part truncation.",
+            "nativePrimitive": "Existing Work reference reads accept up to eight returned SOURCE references; first acquisition originally used per-source part streams.",
+            "codeOnlyLimit": "No native calls, author, source capture or private source/log inspection occurred in this diagnosis. No public details of a protected active study are retained."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "focused-helper-checks",
+          "sha256": "20f657e1e28d6054640c0f6457fbe884ce5635435233d5961997aafe9ea5835a",
+          "facts": {
+            "status": "PASS",
+            "testsPassed": 169,
+            "newTestMethods": 8,
+            "helperCommit": "fad222a70bfe7cba245c720e5aad29445760fba0",
+            "helperTree": "55cfb56a5470d9b02304acb5f9a81dcab3ee0f4c",
+            "baseHelperCommit": "559406572d01bf9fbe56ef306d4c26f98df45d4d",
+            "canonicalAndTwoMirrorsIdenticalFiles": 72,
+            "scope": "Six canonical helper scripts and their mirrors, plus three existing test files; no Rust, worker, schema, bootstrap, author-guidance or source-union change.",
+            "proofKinds": [
+              "NATIVE_SOURCE_BATCH_ROW",
+              "NATIVE_SOURCE_BATCH_OMISSION"
+            ],
+            "transport": "Serialized bounded reference batches; complete rows keep real page receipts, native size omissions retain actual part streams. Wrong scope/digests, missing members and malformed/non-progressing pages refuse.",
+            "compatibility": "Old part-only proofs and same-Work repair/reuse remain supported. Completed neighbors survive an omitted member failure without being reread; an incomplete packet is not successful evidence.",
+            "limit": "New batch proofs need the successor validator; minimum Python3.11 execution and native whole-file qualification are not established by focused checks."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "committed-public-native-comparison",
+          "sha256": "9dad6e8731700724a0571c06a56a438ff648a969893a05ffdeca7f5770bc92b9",
+          "facts": {
+            "status": "PASS_ALL_THREE_PUBLIC_RETAINED_CASES_ON_EXACT_COMMIT",
+            "commit": "fad222a70bfe7cba245c720e5aad29445760fba0",
+            "tree": "55cfb56a5470d9b02304acb5f9a81dcab3ee0f4c",
+            "comparisons": [
+              {
+                "route": "read-sources",
+                "sources": 8,
+                "legacy559Control": {
+                  "nativeCommands": 16,
+                  "wallSeconds": 2.9311280422843993,
+                  "nativeSeconds": 2.861832330469042,
+                  "nativeStdoutBytes": 37678
+                },
+                "committedHelper": {
+                  "nativeCommands": 1,
+                  "sourcePartCommands": 0,
+                  "sourceBatchCommands": 1,
+                  "wallSeconds": 0.25065812515094876,
+                  "nativeSeconds": 0.17677308293059468,
+                  "nativeStdoutBytes": 12171
+                },
+                "sourceTextAndNativeBindingIdentityEqual": true,
+                "finalNativeBindingsPreserved": true,
+                "exportStatus": "EXPORT_CHECKED"
+              },
+              {
+                "route": "declaration READ",
+                "sources": 8,
+                "legacy559Control": {
+                  "nativeCommands": 16,
+                  "wallSeconds": 2.869661542121321,
+                  "nativeSeconds": 2.8023503734730184,
+                  "nativeStdoutBytes": 182686
+                },
+                "committedHelper": {
+                  "nativeCommands": 9,
+                  "sourcePartCommands": 0,
+                  "sourceBatchCommands": 1,
+                  "wallSeconds": 1.6693883752450347,
+                  "nativeSeconds": 1.5931203747168183,
+                  "nativeStdoutBytes": 179381
+                },
+                "sourceTextAndNativeBindingIdentityEqual": true,
+                "finalNativeBindingsPreserved": true,
+                "exportStatus": "EXPORT_CHECKED"
+              },
+              {
+                "route": "small-budget reference READ",
+                "sources": 2,
+                "legacy559Control": {
+                  "nativeCommands": 6,
+                  "wallSeconds": 1.172317000105977,
+                  "nativeSeconds": 1.1058943765237927,
+                  "nativeStdoutBytes": 12162
+                },
+                "committedHelper": {
+                  "nativeCommands": 5,
+                  "sourcePartCommands": 2,
+                  "sourceBatchCommands": 3,
+                  "wallSeconds": 0.9639789168722928,
+                  "nativeSeconds": 0.8885667491704226,
+                  "nativeStdoutBytes": 10257
+                },
+                "sourceTextAndNativeBindingIdentityEqual": true,
+                "finalNativeBindingsPreserved": true,
+                "exportStatus": "EXPORT_CHECKED"
+              }
+            ],
+            "declarationRouteInterpretation": "Eight declaration-proof calls remain. Eight source-part calls become one batch, so original READ total 16 becomes 9; read-sources16-to1 is a different route.",
+            "smallWork": {
+              "maxItems": 2,
+              "maxBytes": 3072,
+              "batchPages": 3,
+              "nativeOmittedSources": 1,
+              "fallbackParts": 2,
+              "completedMemberRereadThroughParts": false
+            },
+            "additionalSharedFixturePreparation": {
+              "supportedWorkPrepareCalls": 1,
+              "discoveryAndProofCalls": 62,
+              "newSourceCapture": false,
+              "includedInAcquisitionTable": false
+            },
+            "scope": "Historical admitted supported runtime and public retained inputs. Actual selected bytes, source identities, references, authority, occurrence, ranges and digests remain equal; final source maps preserve native bindings.",
+            "controls": "Unchanged accepted559 controls were reused. New arms replayed the exact committed helper; their packets equal earlier successful development packets.",
+            "limits": [
+              "Single ordered warm observations, not a timing distribution or isolated startup attribution.",
+              "All selected overlapping records still transfer; this is not interval-only acquisition.",
+              "Proof-specific citation manifests differ; every original native binding has a bijection and no pre-existing author citation is rewritten.",
+              "No model-token, author-quality or protected private-run speedup inference."
+            ]
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "development-failures-and-corrections",
+          "sha256": "efbaa1a2468fee7319599f60501db306a4ec8f3ab8a5cb761e1d090d168cca56",
+          "facts": {
+            "status": "DEVELOPMENT_ATTEMPTS_PRESERVED",
+            "retainedFailures": [
+              "A duplicate-row unit mutation changed a temporary list instead of the returned page; the test was corrected and refusal verified.",
+              "A unit fixture expected author citations while requesting packet output; the output mode was corrected.",
+              "Public setup initially assumed file-bound rather than declaration-bound saved inputs; corrected before native calls.",
+              "A pipeline assertion expected READY instead of CHECKED_PAGES_FINALIZED with EXPORT_CHECKED; the successful old result was reused without rerunning it."
+            ],
+            "scope": "These fixture/assertion errors remain recorded as failed attempts, not native product failures or suppressed negative evidence. Final hardening adds completed-neighbor preservation, non-progress refusal and mixed reuse checks."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "independent-mechanical-acceptance",
+          "sha256": "80e7a4292622371ebdce73ca988b3579c5f64dad0231dc535a7333ef2d2ff64f",
+          "facts": {
+            "status": "ROOT_ACCEPTED_SCOPED_BATCH_ACQUISITION_NOT_RELEASE",
+            "commit": "fad222a70bfe7cba245c720e5aad29445760fba0",
+            "tree": "55cfb56a5470d9b02304acb5f9a81dcab3ee0f4c",
+            "helperFilesVerified": 72,
+            "freshRetainedReadCases": [
+              {
+                "case": "source",
+                "sources": 8,
+                "nativeCommands": 1,
+                "sourceTextAndRecordMetadataEqualToLegacy": true,
+                "finalSourceBindingsAndOccurrenceEqualToLegacy": true,
+                "export": "EXPORT_CHECKED"
+              },
+              {
+                "case": "declaration",
+                "sources": 8,
+                "nativeCommands": 9,
+                "sourceTextAndRecordMetadataEqualToLegacy": true,
+                "finalSourceBindingsAndOccurrenceEqualToLegacy": true,
+                "export": "EXPORT_CHECKED"
+              },
+              {
+                "case": "small",
+                "sources": 2,
+                "nativeCommands": 5,
+                "sourceTextAndRecordMetadataEqualToLegacy": true,
+                "finalSourceBindingsAndOccurrenceEqualToLegacy": true,
+                "export": "EXPORT_CHECKED"
+              }
+            ],
+            "negativeRehashedPageCasesRejected": 7,
+            "declarationReuse": {
+              "bindings": 8,
+              "observedNativeCommands": 0,
+              "inspectionPassed": true
+            },
+            "rootComparisonCorrection": "Initial equality of rendered claim locations was too broad: declaration-control generic prose and heading differ from candidate prose. Source-binding objects, occurrence and claim IDs match; source text/ranges are independently equal, but reader-text byte equality is not claimed for declaration export.",
+            "limits": [
+              "Historical admitted supported runtime and public retained SOURCE fixture; not an official release package.",
+              "Whole-file native end-to-end and minimum Python3.11 execution not established here.",
+              "No author semantic quality, model-token saving or private-run speedup inference.",
+              "Caller-trusted artifacts establish internal consistency, not producer authentication."
+            ],
+            "newAuthorAuthorized": false,
+            "productMergeOrReleaseAccepted": false,
+            "otherTreatmentUnchangedDuringQualification": true
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Public code diagnosis, focused helper checks and independent retained native mechanics only. Selected aggregate facts and exact report fingerprints are retained; private identities, raw source, source paths, full reports, sessions and native logs are not published. The broader product quality hold remains.",
+      "safeFinding": "Source-union cannot remove first-acquisition calls. Helper fad222a7 adds genuine bounded batch-row proofs while preserving every native source binding and old part fallback. Public observed call counts are 16-to-1 for read-sources, 16-to-9 for declaration READ and 6-to-5 under a small Work budget. Independent fresh reads, checked exports, corruption refusals and zero-call own-run reuse confirm only the tested mechanical scope. Setup costs and the rendered-prose comparison correction remain explicit; no token, semantic-quality or private-run performance benefit is inferred.",
+      "doNotRepeatUnchanged": "Reuse the accepted public receipts, pinned helper and original scopes. Do not transplant a successor into a separately admitted treatment, infer interval-only or token savings, promote the product, repeat unchanged qualification or start another author from this mechanical result alone."
     }
   ],
   "scopeClarification20261030": {

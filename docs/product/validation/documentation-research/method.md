@@ -104,6 +104,14 @@ audit. Two supported changes without new material false claims do not qualify
 unchanged prose or the complete document. A non-held-out, unpaired diagnostic
 cannot supply a causal or token advantage; do not repair it after critique.
 
+For acquisition measurements, distinguish SOURCE transport from unchanged
+declaration-proof commands and shared fixture preparation. A full-row batch is
+not a part-stream receipt, and display union after retrieval cannot save first
+reads. Preserve every selected native binding and explicit omissions. Compare
+source text and source maps separately from generic rendered prose; different
+test wording cannot establish reader-text byte equality. Warm command counts and
+elapsed observations do not supply model-token or semantic-quality evidence.
+
 ## Accounting and privacy
 
 Reconcile actual response usage, including in-flight usage settled after a stop.
