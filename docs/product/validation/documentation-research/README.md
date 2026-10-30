@@ -62,6 +62,16 @@ independently accepted SOURCE-reference helper is a mechanical result, not a
 quality pass. The quality hold remains: no merge, full CI, official packaging or
 release follows from these results.
 
+Two bounded follow-ups add evidence without lifting that hold. The independently
+lossless compact display reduced displayed bytes by 6.09%; a variant preserving
+native citations reduced them by 5.77% without a new resolver. Neither measured
+model tokens or author quality. A separate Dashboard local-revision episode used
+51,874 net for two supported narrowings, but retained an inaccurate source-basis
+paraphrase and raw citation handles in human prose. It supplies no whole-document
+quality score or causal error-prevention result. See the qualified
+[display](history.md#static-compact-display-and-namespace-failure) and
+[local revision](history.md#bounded-dashboard-local-revision-diagnostic) records.
+
 ## Conclusions that survive the experiments
 
 1. Exact evidence, valid citations, complete event inventories and successful
