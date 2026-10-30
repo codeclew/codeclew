@@ -15,7 +15,7 @@ import uuid
 
 SCHEMA = "codeclew-skill-install/1.0"
 SKILL_NAME = "codeclew"
-MAX_FILES = 64
+MAX_FILES = 128
 MAX_TOTAL_BYTES = 1024 * 1024
 
 

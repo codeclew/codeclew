@@ -1336,3 +1336,5 @@ generated files and Java compiler inputs are not added by this route. Complete
 records share the existing 2 MiB per-file, 32 MiB aggregate text and 32768 record
 limits; a near-limit capture may explicitly refuse and require narrower roots.
 Exact retained bytes establish no compiler resolution or runtime correctness.
+
+For a selected Kotlin computation with retained parent/body/origin links, see the optional [connected computation view](connected-computation.md).

@@ -19,6 +19,7 @@ pub mod composition;
 pub mod contracts;
 mod csharp;
 pub mod dataflow;
+mod declaration_components;
 mod declaration_migration;
 mod declared_diagrams;
 mod endpoint_context;

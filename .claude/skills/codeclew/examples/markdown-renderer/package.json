@@ -1,0 +1,12 @@
+{
+  "name": "codeclew-markdown-renderer-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "marked": "16.4.2"
+  }
+}

@@ -63,7 +63,7 @@ fn nullability(s: &Value, openapi30: bool) -> &'static str {
 fn project(schema: &Value, pointer: &str) -> Result<Value, ClewError> {
     project_document(schema, pointer, &Value::Null)
 }
-pub(super) fn project_document(
+pub(in crate::documentation) fn project_document(
     schema: &Value,
     pointer: &str,
     document: &Value,
@@ -257,10 +257,24 @@ fn visit(
 pub(super) fn table(declaration: &Value, language: &str) -> String {
     table_at(declaration, language, true)
 }
-pub(super) fn table_html(declaration: &Value, language: &str) -> String {
+pub(in crate::documentation) fn table_html(declaration: &Value, language: &str) -> String {
     table_at(declaration, language, false)
 }
+pub(in crate::documentation) fn table_html_without_presence(
+    declaration: &Value,
+    language: &str,
+) -> String {
+    table_with_presence(declaration, language, false, false)
+}
 fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
+    table_with_presence(declaration, language, portable, true)
+}
+fn table_with_presence(
+    declaration: &Value,
+    language: &str,
+    portable: bool,
+    show_presence: bool,
+) -> String {
     if declaration["kind"] == "OPENAPI_DOCUMENT" {
         return openapi::table(declaration, language, portable);
     }
@@ -277,6 +291,9 @@ fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
         "<div {attribute}=\"clew-table-scroll contract-declaration\"><table {attribute}=\"clew-schema-table inline-contract-table\"><thead><tr>"
     );
     for h in headers {
+        if h == "Presence" && !show_presence {
+            continue;
+        }
         out.push_str(&format!(
             "<th scope=\"col\">{}</th>",
             lit(label(language, h))
@@ -289,6 +306,9 @@ fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
             .into_iter()
             .enumerate()
         {
+            if key == "presence" && !show_presence {
+                continue;
+            }
             let value = n[key].as_str().unwrap_or("");
             let cell = if key == "field" {
                 format!("<code>{}</code>", lit(value))
@@ -314,6 +334,17 @@ fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
                 lit(&value.to_string())
             ));
         }
+        // DDL expressions are already exact source literals. JSON quoting would
+        // turn now() into a misleading string default in the human table.
+        for (key, value) in n["literalConstraints"].as_object().into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                out.push_str(&format!(
+                    "<p><code>{}</code>: <code>{}</code></p>",
+                    lit(key),
+                    lit(value)
+                ));
+            }
+        }
         out.push_str("</td></tr>");
     }
     out.push_str("</tbody></table></div>\n\n");
@@ -323,6 +354,28 @@ fn table_at(declaration: &Value, language: &str, portable: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optional_presence_display_keeps_schema_presence_and_other_columns_intact() {
+        let projection = project(
+            &json!({"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}}),
+            "",
+        )
+        .unwrap();
+        let regular = table_html(&projection, "en");
+        let ddl = table_html_without_presence(&projection, "en");
+        assert!(regular.contains("<th scope=\"col\">Presence</th>"));
+        assert!(regular.contains("Required in parent"));
+        assert!(!ddl.contains("<th scope=\"col\">Presence</th>"));
+        assert_eq!(regular.matches("<tr>").count(), ddl.matches("<tr>").count());
+        for header in [
+            "Field",
+            "Type",
+            "Accepts null",
+            "Declared constraints / description",
+        ] {
+            assert!(ddl.contains(&format!("<th scope=\"col\">{header}</th>")));
+        }
+    }
     #[test]
     fn nested_required_nullable_and_container_constraints_remain_separate() {
         let schema = json!({"type":"object","additionalProperties":false,"required":["periods"],"properties":{

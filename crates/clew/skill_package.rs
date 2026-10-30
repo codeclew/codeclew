@@ -25,7 +25,7 @@ pub(crate) fn digest(root: &Path) -> io::Result<String> {
                 "bundled skill entry is not a regular file",
             ));
         }
-        if metadata.len() > 1024 * 1024 || rows.len() >= 64 {
+        if metadata.len() > 1024 * 1024 || rows.len() >= 128 {
             return Err(io::Error::other("bundled skill exceeds package limits"));
         }
         let relative = entry
@@ -129,6 +129,19 @@ mod tests {
         }
         fs::remove_file(nested).unwrap();
         assert_eq!(digest(root).unwrap(), original);
+    }
+
+    #[test]
+    fn expanded_package_keeps_a_shared_bounded_file_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("SKILL.md"), "Owned bounded fixture\n").unwrap();
+        for index in 1..128 {
+            fs::write(root.join(format!("part-{index}.md")), "fixture\n").unwrap();
+        }
+        assert_eq!(digest(root).unwrap(), installer_digest(root));
+        fs::write(root.join("one-too-many.md"), "fixture\n").unwrap();
+        assert!(digest(root).is_err());
     }
 
     #[cfg(unix)]

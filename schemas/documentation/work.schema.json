@@ -18,8 +18,12 @@
     {
       "$ref": "#/$defs/sourcePart"
     },
-    {"$ref": "dependency-part-request.schema.json"},
-    {"$ref": "dependency-part.schema.json"}
+    {
+      "$ref": "dependency-part-request.schema.json"
+    },
+    {
+      "$ref": "dependency-part.schema.json"
+    }
   ],
   "$defs": {
     "sourcePartRequest": {
@@ -227,11 +231,128 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "not": {
-            "required": ["maintainedParagraph", "maintainedFromBundle"],
+          "if": {
+            "required": [
+              "sourceDataMaxDepth"
+            ]
+          },
+          "then": {
+            "required": [
+              "sourceDataContext"
+            ],
             "properties": {
-              "maintainedParagraph": {"type": "object"},
-              "maintainedFromBundle": {"type": "object"}
+              "sourceDataContext": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "contextProfile": {
+                "const": "process-graph-v1"
+              }
+            },
+            "required": [
+              "contextProfile"
+            ]
+          },
+          "then": {
+            "required": [
+              "rootDeclaration",
+              "question"
+            ],
+            "properties": {
+              "entrypoint": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "rootDeclaration"
+            ]
+          },
+          "then": {
+            "required": [
+              "contextProfile"
+            ],
+            "properties": {
+              "contextProfile": {
+                "const": "process-graph-v1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "question"
+            ]
+          },
+          "then": {
+            "required": [
+              "contextProfile",
+              "rootDeclaration"
+            ],
+            "properties": {
+              "contextProfile": {
+                "const": "process-graph-v1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "authoringContract"
+            ],
+            "properties": {
+              "authoringContract": {
+                "const": "codeclew-operation-draft-authoring/1.5"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "contextProfile",
+              "sourceDataContext",
+              "question"
+            ],
+            "properties": {
+              "contextProfile": {
+                "const": "process-graph-v1"
+              },
+              "sourceDataContext": {
+                "const": true
+              },
+              "question": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "authoringContract"
+            ]
+          },
+          "then": {
+            "required": [
+              "contextProfile"
+            ],
+            "properties": {
+              "contextProfile": {
+                "enum": [
+                  "endpoint-context-v3",
+                  "process-graph-v1"
+                ]
+              }
             }
           }
         }
@@ -312,89 +433,48 @@
           ],
           "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
         },
-        "sourceDataContext": {"type": "boolean", "default": false, "description": "Opt-in bounded exact callable source-syntax data context, only process-graph-v1; omitted false preserves legacy identity. No runtime or compiler dataflow proof."},
-        "sourceDataMaxDepth": {"type": "integer", "minimum": 0, "maximum": 2, "description": "Explicit source-data expansion depth, only with sourceDataContext=true. Zero retains the complete root and explicit helper frontiers. Omitted preserves the legacy depth-two packet."},
+        "sourceDataContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in bounded exact callable source-syntax data context, only process-graph-v1; omitted false preserves legacy identity. No runtime or compiler dataflow proof."
+        },
+        "sourceDataMaxDepth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Explicit source-data expansion depth, only with sourceDataContext=true. Zero retains the complete root and explicit helper frontiers. Omitted preserves the legacy depth-two packet."
+        },
         "maintainedParagraph": {
-          "oneOf": [{"$ref": "#/$defs/maintainedParagraphSelector"}, {"type": "null"}],
+          "oneOf": [
+            {
+              "$ref": "#/$defs/maintainedParagraphSelector"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Explicit frozen human paragraph for new service endpoint process-graph-v1 Work; no latest fallback, automatic ID mapping or compiler-proof promotion."
         },
         "maintainedFromBundle": {
-          "oneOf": [{"$ref": "#/$defs/maintainedFromBundleSelector"}, {"type": "null"}],
+          "oneOf": [
+            {
+              "$ref": "#/$defs/maintainedFromBundleSelector"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "New Work input only: resolve one unique authored paragraph at the exact selected endpoint in this frozen bundle; conflicts with maintainedParagraph and normalizes to the exact selector before storage."
         }
       },
       "required": [
         "schema",
         "audience"
-      ],
-      "allOf": [
-        {
-          "if": { "required": ["sourceDataMaxDepth"] },
-          "then": {
-            "required": ["sourceDataContext"],
-            "properties": { "sourceDataContext": { "const": true } }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "contextProfile": { "const": "process-graph-v1" }
-            },
-            "required": ["contextProfile"]
-          },
-          "then": {
-            "required": ["rootDeclaration", "question"],
-            "properties": {
-              "entrypoint": { "type": "null" }
-            }
-          }
-        },
-        {
-          "if": { "required": ["rootDeclaration"] },
-          "then": {
-            "required": ["contextProfile"],
-            "properties": {
-              "contextProfile": { "const": "process-graph-v1" }
-            }
-          }
-        },
-        {
-          "if": { "required": ["question"] },
-          "then": {
-            "required": ["contextProfile", "rootDeclaration"],
-            "properties": {
-              "contextProfile": { "const": "process-graph-v1" }
-            }
-          }
-        },
-        {
-          "if": {
-            "required": ["authoringContract"],
-            "properties": { "authoringContract": { "const": "codeclew-operation-draft-authoring/1.5" } }
-          },
-          "then": {
-            "required": ["contextProfile", "sourceDataContext", "question"],
-            "properties": {
-              "contextProfile": { "const": "process-graph-v1" },
-              "sourceDataContext": { "const": true },
-              "question": { "type": "string", "pattern": "\\S" }
-            }
-          }
-        },
-        {
-          "if": { "required": ["authoringContract"] },
-          "then": {
-            "required": ["contextProfile"],
-            "properties": {
-              "contextProfile": { "enum": ["endpoint-context-v3", "process-graph-v1"] }
-            }
-          }
-        }
       ]
     },
     "selection": {
       "type": "object",
-      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE supports default RAW inventory or WHOLE_FILE with an exact file, and requires omitted/empty symbolContains; nonempty filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE supports RAW, NAVIGATION, FILES grouping or WHOLE_FILE with an exact file, and requires omitted/empty symbolContains; nonempty symbol filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION supports SOURCE metadata and SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -429,41 +509,113 @@
                   "description": "Case-sensitive substring of captured dependency symbols or method names. SOURCE has no symbol field and requires this field omitted or empty; nonempty SOURCE filters are rejected."
                 },
                 "file": {
-                  "type": "string", "minLength": 1, "maxLength": 4096,
-                  "description": "Exact retained Kotlin SOURCE file for WHOLE_FILE only."
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "description": "Exact retained SOURCE path; WHOLE_FILE selects one complete original committed Kotlin file or registered non-code input."
+                },
+                "fileContains": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "description": "Case-sensitive retained SOURCE path substring; omit with WHOLE_FILE."
                 },
                 "projection": {
                   "type": "string",
-                  "enum": ["RAW", "NAVIGATION", "WHOLE_FILE"],
-                  "description": "RAW is the default. NAVIGATION requires SYMBOL. WHOLE_FILE requires SOURCE and an exact file."
+                  "enum": [
+                    "RAW",
+                    "NAVIGATION",
+                    "FILES",
+                    "WHOLE_FILE"
+                  ],
+                  "description": "NAVIGATION supports SYMBOL/SOURCE; FILES is SOURCE navigation grouping only; WHOLE_FILE requires SOURCE and exact file."
                 }
               },
               "required": [
                 "kind"
               ],
-              "oneOf": [
+              "anyOf": [
                 {
                   "properties": {
-                    "kind": {"const": "SYMBOL"},
-                    "projection": {"const": "NAVIGATION"},
+                    "kind": {
+                      "const": "SYMBOL"
+                    },
+                    "projection": {
+                      "const": "NAVIGATION"
+                    },
                     "symbolContains": {}
                   },
                   "additionalProperties": false,
-                  "required": ["projection"]
+                  "required": [
+                    "projection"
+                  ]
                 },
                 {
-                  "properties": {"kind":{"const":"SOURCE"},"projection":{"const":"WHOLE_FILE"}},
-                  "required": ["projection", "file"]
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "enum": [
+                        "RAW",
+                        "NAVIGATION",
+                        "FILES"
+                      ]
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    },
+                    "file": {},
+                    "fileContains": {}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "const": "WHOLE_FILE"
+                    },
+                    "file": {},
+                    "fileContains": {
+                      "const": ""
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection",
+                    "file"
+                  ]
                 },
                 {
                   "properties": {
                     "kind": {},
                     "symbolContains": {},
-                    "projection": {"const": "RAW"}
+                    "projection": {
+                      "const": "RAW"
+                    }
                   },
                   "additionalProperties": false
                 }
-              ]
+              ],
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "SOURCE"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "symbolContains": {
+                    "const": ""
+                  }
+                }
+              }
             },
             {
               "type": "null"
@@ -593,11 +745,21 @@
               "recovery": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["command", "input", "continueUntil"],
+                "required": [
+                  "command",
+                  "input",
+                  "continueUntil"
+                ],
                 "properties": {
-                  "command": {"const": "docs work read-dependency-part"},
-                  "input": {"$ref": "dependency-part-request.schema.json"},
-                  "continueUntil": {"const": "nextCursor is null"}
+                  "command": {
+                    "const": "docs work read-dependency-part"
+                  },
+                  "input": {
+                    "$ref": "dependency-part-request.schema.json"
+                  },
+                  "continueUntil": {
+                    "const": "nextCursor is null"
+                  }
                 }
               }
             },
@@ -661,8 +823,15 @@
     "maintainedFromBundleSelector": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {"bundle": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
-      "required": ["bundle"]
+      "properties": {
+        "bundle": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "bundle"
+      ]
     },
     "maintainedParagraphSelector": {
       "type": "object",

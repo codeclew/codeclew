@@ -1,4 +1,5 @@
 //! Project retained K2 descriptors and compiler-linked PSI flow into documentation.
+mod semantic_inputs;
 use super::local_cfg::{LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA, LocalCfgBoundaryEvidence};
 use super::{digest, invalid};
 use crate::error::ClewError;
@@ -289,6 +290,10 @@ pub(super) fn project_facts(
                             .into_iter().flatten().filter(|key|file.is_none_or(|file|key.1==file)).take(2).collect();
                         match candidates.as_slice() { [key]=>Some((**key).clone()), _=>None }
                     }.ok_or_else(||invalid("Kotlin documentation flow lacks one exact scope/file/declaration owner"))?;
+                    if let Some(metadata) = flow.get("semanticInputs") {
+                        semantic_inputs::validate(metadata, &key, fact["contentHash"].as_str())?;
+                        semantic_inputs::validate_event_carriers(flow)?;
+                    }
                     if flows.insert(key, (flow.clone(), binding.clone())).is_some() {
                         return Err(invalid(
                             "Kotlin documentation repeats a compiler declaration flow owner",
@@ -660,6 +665,7 @@ pub(super) fn project_facts(
                             .ok_or_else(|| invalid("Kotlin documentation flow lacks boundaries"))?
                             .push(json!("KOTLIN_CALL_DECLARATION_IDENTITY_NOT_UNIQUE"));
                     }
+                    semantic_inputs::quarantine(&mut flow, &scope, owner_ambiguous, &ambiguous);
                     fact["documentation"] = flow;
                     digest(&json!([binding, flow_binding]))?
                 } else {

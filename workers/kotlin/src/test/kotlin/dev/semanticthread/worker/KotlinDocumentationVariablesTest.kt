@@ -21,6 +21,234 @@ import org.jetbrains.org.objectweb.asm.Opcodes
 
 /** Real K2 2.4 compiler occurrences; no manufactured name-to-symbol bindings. */
 class KotlinDocumentationVariablesTest {
+    @Test
+    fun loopBindingsKeepExactReturnControls() {
+        val source = """
+            package docs
+            fun refresh(values: List<String>) {
+                if (values.isEmpty()) return
+                for (point in values.take(6)) {
+                    val id = point
+                    require(id.isNotBlank())
+                }
+                if (values.size == 1) return
+            }
+        """.trimIndent()
+        val rows = compileAll(source)
+        System.getenv("CODECLEW_TEST_LOOP_REPORT")?.let { output -> Files.writeString(Path.of(output), JsonArray(rows).toString() + "\n") }
+        val projected = extractDataSources(mapOf("Variables.kt" to source), "Variables.kt", "semanticInputs")["refresh"]!!
+        assertEquals("COMPILER_METADATA_NOT_EXECUTION_PROOF", projected["resolution"]!!.jsonPrimitive.content, projected.toString())
+        assertEquals(2, projected["returns"]!!.jsonArray.size)
+        val ambiguous = projected["calls"]!!.jsonArray.map { it.jsonObject }.single {
+            it["boundaries"]!!.jsonArray.any { code -> code.jsonPrimitive.content == "COMPILER_CALL_SOURCE_OCCURRENCE_AMBIGUOUS" }
+        }
+        assertEquals("UNKNOWN", ambiguous["resolution"]!!.jsonPrimitive.content)
+        assertTrue(ambiguous["arguments"]!!.jsonArray.isEmpty())
+        assertTrue(ambiguous["candidateTargetIdentities"]!!.jsonArray.size > 1)
+    }
+
+    @Test
+    fun javaSamCallbackRetainsActualLocalAndCompilerReturnTarget() {
+        val sources = mapOf(
+            "Tx.java" to "package docs; public class Tx { public void executeWithoutResult(java.util.function.Consumer<String> callback) {} }",
+            "Variables.kt" to """
+                package docs
+                fun refresh(place: String) {}
+                fun consume(event: Map<String, String>) {
+                    Tx().executeWithoutResult {
+                        val place = event["place"] ?: return@executeWithoutResult
+                        refresh(place)
+                    }
+                }
+            """.trimIndent(),
+        )
+        val rows = compileSources(sources)
+        System.getenv("CODECLEW_TEST_SAM_REPORT")?.let { output -> Files.writeString(Path.of(output), JsonArray(rows).toString() + "\n") }
+        val projected = extractDataSources(sources, "Variables.kt", "semanticInputs")["consume"]!!
+        assertEquals("COMPILER_METADATA_NOT_EXECUTION_PROOF", projected["resolution"]!!.jsonPrimitive.content, projected.toString())
+        val delivered = projected["calls"]!!.jsonArray.map { it.jsonObject }.single { it["targetIdentity"]?.jsonPrimitive?.content?.startsWith("callable:docs/refresh#") == true }
+        assertTrue(delivered["arguments"]!!.jsonArray.single().jsonObject["actualVariableIdentity"]!!.jsonPrimitive.content.contains("/local-source/"))
+        val sam = projected["calls"]!!.jsonArray.map { it.jsonObject }.single { it["targetIdentity"]?.jsonPrimitive?.content?.contains("Tx.executeWithoutResult#") == true }
+        assertEquals("UNKNOWN",sam["resolution"]!!.jsonPrimitive.content)
+        assertEquals("COMPILER_ACTUAL_SOURCE_WRAPPER_UNSUPPORTED",sam["boundaries"]!!.jsonArray.single().jsonPrimitive.content)
+        val call = rows.single { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && it["target"]?.jsonPrimitive?.content?.startsWith("callable:docs/refresh#") == true }
+        val actual = call["dataArgumentToParameter"]!!.jsonArray.single().jsonObject
+        val variable = rows.single { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_LEXICAL_VARIABLE" && it["kind"]?.jsonPrimitive?.content == "VARIABLE_ACCESS" && it["start"]==actual["actualStart"] && it["end"]==actual["actualEnd"] }
+        assertEquals("place", variable["name"]!!.jsonPrimitive.content)
+        assertEquals(call["lexicalRegion"],variable["lexicalRegion"])
+        val control=rows.single { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_RETURN_CONTROL" }
+        assertEquals("COMPILER_EXACT",control["resolution"]!!.jsonPrimitive.content)
+        assertEquals(call["lexicalRegion"],control["targetRegion"])
+    }
+
+    @Test
+    fun returnControlDoesNotRelaxDirectReturnedValueProofs() {
+        val rows = compileAll("""
+            package docs
+            fun callee(): String = "value"
+            fun direct(): String { return callee() }
+            fun multiple(flag: Boolean): String { if (flag) return callee(); return callee() }
+            fun unit() { return }
+        """.trimIndent())
+        val values = rows.filter { it["kind"]?.jsonPrimitive?.content == "RETURNS_VALUE_FROM" }
+        assertEquals(1, values.count { it["owner"]?.jsonPrimitive?.content == "docs/direct" }, values.toString())
+        assertTrue(values.none { it["owner"]?.jsonPrimitive?.content in setOf("docs/multiple", "docs/unit") })
+        assertTrue(rows.any { it["owner"]?.jsonPrimitive?.content == "docs/multiple" && it["code"]?.jsonPrimitive?.content == "NON_LINEAR_OR_MULTIPLE_RETURN_FLOW" })
+        val controls = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_RETURN_CONTROL" }
+        assertEquals(2, controls.count { it["ownerSymbolIdentity"]!!.jsonPrimitive.content.startsWith("callable:docs/multiple#") })
+        assertEquals(1, controls.count { it["ownerSymbolIdentity"]!!.jsonPrimitive.content.startsWith("callable:docs/unit#") })
+    }
+
+    @Test
+    fun semanticInputProjectionRetainsUtf8ScopesActualsAndControlWithoutAdmittingDefaultsOrExtensions() {
+        val source = "\uFEFF" + """
+            package docs
+            // π🙂 before compiler ranges
+            class Runner { fun executeWithoutResult(block: (Int) -> Unit) { block(1) } }
+            fun refresh(place: String) { if (place.isEmpty()) return; return }
+            fun consume(event: Map<String, String>) {
+                Runner().executeWithoutResult {
+                    val place = event["place"] ?: return@executeWithoutResult
+                    refresh(place)
+                }
+            }
+            fun side(): String = "effect"
+            fun mix(first: String, second: String) {}
+            fun defaulted(first: String, second: String = "x") {}
+            fun String.extension(first: String) {}
+            fun order() { mix(second = side(), first = side()); defaulted(side()); "x".extension(side()) }
+        """.trimIndent().replace("\n", "\r\n")
+        val projected = extractDataSources(mapOf("Variables.kt" to source), "Variables.kt", "semanticInputs")
+        val consume = projected["consume"]!!
+        System.getenv("CODECLEW_TEST_SEMANTIC_REPORT")?.let { output ->
+            Files.writeString(Path.of(output), buildJsonObject {
+                put("source", source); put("semanticInputs", consume)
+                put("symbolIdentity", consume["ownerSymbolIdentity"]!!)
+                put("file", "src/Variables.kt"); put("compilationScope", ":/main")
+                put("byteStart", consume["ownerByteStart"]!!); put("byteEnd", consume["ownerByteEnd"]!!)
+                put("contentHash", consume["fullCompilationSourceDigest"]!!)
+            }.toString() + "\n")
+        }
+        assertEquals("COMPILER_METADATA_NOT_EXECUTION_PROOF", consume["resolution"]!!.jsonPrimitive.content, consume.toString())
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        val call = consume["calls"]!!.jsonArray.map { it.jsonObject }.single { it["targetIdentity"]?.jsonPrimitive?.content?.startsWith("callable:docs/refresh#") == true }
+        assertEquals("refresh(place)", bytes.copyOfRange(call["byteStart"]!!.jsonPrimitive.int,call["byteEnd"]!!.jsonPrimitive.int).decodeToString())
+        val argument = call["arguments"]!!.jsonArray.single().jsonObject
+        assertEquals("place", bytes.copyOfRange(argument["actualByteStart"]!!.jsonPrimitive.int,argument["actualByteEnd"]!!.jsonPrimitive.int).decodeToString())
+        assertEquals("callable:docs/refresh#jvm:(Ljava/lang/String;)V/parameter/0", argument["formalIdentity"]!!.jsonPrimitive.content)
+        val declaration = consume["variables"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "VARIABLE_DECLARATION" && it["variableIdentity"] == argument["actualVariableIdentity"] }
+        val initializer = declaration["initializerSpan"]!!.jsonObject
+        assertTrue(bytes.copyOfRange(initializer["byteStart"]!!.jsonPrimitive.int,initializer["byteEnd"]!!.jsonPrimitive.int).decodeToString().startsWith("event["))
+        assertEquals("DEFERRED", call["lexicalRegion"]!!.jsonObject["execution"]!!.jsonPrimitive.content)
+        assertEquals("UNKNOWN", call["receiverObjectIdentity"]!!.jsonPrimitive.content)
+        val returned = consume["returns"]!!.jsonArray.single().jsonObject
+        assertEquals("ANONYMOUS_FUNCTION", returned["targetRegion"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        assertEquals(2, projected["refresh"]!!["returns"]!!.jsonArray.size)
+        val ordered = projected["order"]!!["calls"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf(1,0), ordered.single { it["targetIdentity"]?.jsonPrimitive?.content?.startsWith("callable:docs/mix#") == true }["arguments"]!!.jsonArray.map { it.jsonObject["parameterIndex"]!!.jsonPrimitive.int })
+        assertTrue(ordered.single { it["targetIdentity"]?.jsonPrimitive?.content?.startsWith("callable:docs/defaulted#") == true }["boundaries"]!!.jsonArray.any { it.jsonPrimitive.content == "DEFAULT_ARGUMENT_EVALUATION_UNSUPPORTED" })
+        assertEquals("UNKNOWN", ordered.single { it["targetIdentity"]?.jsonPrimitive?.content?.startsWith("callable:docs/extension#") == true }["resolution"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun semanticVarargSpreadAndSuspendMappingsRemainUnsupported() {
+        val source = """
+            package docs
+            fun many(vararg items: String) {}
+            suspend fun paused(input: String) {}
+            fun spread(items: Array<String>) { many(*items) }
+            suspend fun awaiting(input: String) { paused(input) }
+        """.trimIndent()
+        val rows = compileAll(source).filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" }
+        val many = rows.single { it["target"]?.jsonPrimitive?.content?.startsWith("callable:docs/many#") == true }
+        assertEquals("VARARG_ARGUMENT_MAPPING_UNSUPPORTED", many["dataArgumentBoundary"]!!.jsonPrimitive.content)
+        assertNull(many["dataArgumentToParameter"])
+        val suspend = rows.single { it["dataArgumentBoundary"]?.jsonPrimitive?.content == "SUSPEND_ARGUMENT_MAPPING_UNSUPPORTED" }
+        assertNull(suspend["dataArgumentToParameter"])
+    }
+
+    @Test
+    fun callbackActualsUseScopedSymbolsAndKeepNamedEvaluationOccurrences() {
+        val source = """
+            package docs
+            class Runner { fun executeWithoutResult(block: (Int) -> Unit) { block(1) } }
+            fun refresh(place: String) {}
+            fun consume(event: Map<String, String>) {
+                val place = "outer"
+                Runner().executeWithoutResult {
+                    val place = event["place"] ?: return@executeWithoutResult
+                    refresh(place)
+                    run { val place = "shadow"; refresh(place) }
+                }
+            }
+            fun side(): String = "effect"
+            fun mix(first: String, second: String) {}
+            fun order() { mix(second = side(), first = side()) }
+        """.trimIndent()
+        val rows = compileAll(source)
+        val lexical = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_LEXICAL_VARIABLE" }
+        val declarations = lexical.filter { it["kind"]!!.jsonPrimitive.content == "VARIABLE_DECLARATION" && it["name"]!!.jsonPrimitive.content == "place" }
+        assertEquals(4, declarations.size, declarations.toString()) // refresh formal + three local symbols
+        assertEquals(4, declarations.map { it["variableIdentity"] }.toSet().size)
+        val calls = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && it["target"]?.jsonPrimitive?.content?.startsWith("callable:docs/refresh#") == true }
+        assertEquals(2, calls.size)
+        for (call in calls) {
+            val argument = call["dataArgumentToParameter"]!!.jsonArray.single().jsonObject
+            assertEquals(0, argument["parameterIndex"]!!.jsonPrimitive.int)
+            assertEquals("place", argument["parameter"]!!.jsonPrimitive.content)
+            val access = lexical.single { it["kind"]!!.jsonPrimitive.content == "VARIABLE_ACCESS" && it["start"] == argument["actualStart"] && it["end"] == argument["actualEnd"] }
+            assertEquals(call["lexicalRegion"], access["lexicalRegion"])
+            assertEquals("place", access["name"]!!.jsonPrimitive.content)
+            assertEquals("DEFERRED", access["lexicalRegion"]!!.jsonObject["execution"]!!.jsonPrimitive.content)
+            val declaration = declarations.single { it["variableIdentity"] == access["variableIdentity"] }
+            assertEquals(declaration["declarationRegion"], access["declarationRegion"])
+        }
+        val capture = lexical.single { it["kind"]!!.jsonPrimitive.content == "VARIABLE_ACCESS" && it["name"]!!.jsonPrimitive.content == "event" }
+        assertTrue(capture["captured"]!!.jsonPrimitive.boolean)
+        assertEquals("DEFERRED", capture["lexicalRegion"]!!.jsonObject["execution"]!!.jsonPrimitive.content)
+        val initialized = declarations.single { it["initializerStart"]?.jsonPrimitive?.intOrNull?.let { offset -> source.startsWith("event[", offset) } == true }
+        assertTrue(source.substring(initialized["initializerStart"]!!.jsonPrimitive.int, initialized["initializerEnd"]!!.jsonPrimitive.int).contains("event[\"place\"]"))
+        assertNotEquals(capture["variableIdentity"], initialized["variableIdentity"])
+        val order = rows.single { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && it["target"]?.jsonPrimitive?.content?.startsWith("callable:docs/mix#") == true }["dataArgumentToParameter"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf(1,0), order.map { it["parameterIndex"]!!.jsonPrimitive.int })
+        assertEquals(listOf(0,1), order.map { it["evaluationIndex"]!!.jsonPrimitive.int })
+        assertEquals(2, order.map { it["actualStart"] }.toSet().size)
+        assertEquals(listOf("side()", "side()"), order.map { source.substring(it["actualStart"]!!.jsonPrimitive.int,it["actualEnd"]!!.jsonPrimitive.int) })
+    }
+
+    @Test
+    fun returnControlUsesCompilerTargetsForCallbacksLocalAndInlineNonlocalUnitReturns() {
+        val source = """
+            package docs
+            inline fun gate(block: () -> Unit) { block() }
+            class Runner { fun executeWithoutResult(block: (Int) -> Unit) { block(1) } }
+            fun refresh(place: String) { if (place.isEmpty()) return; return }
+            fun consume(event: Map<String, String>) {
+                Runner().executeWithoutResult {
+                    val place = event["place"] ?: return@executeWithoutResult
+                    refresh(place)
+                }
+            }
+            fun nonlocal(flag: Boolean) { gate { if (flag) return } }
+            fun locals() { fun nested() { return }; nested() }
+        """.trimIndent()
+        val all = compileAll(source)
+        val controls = all.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_RETURN_CONTROL" }
+        assertEquals(5, controls.size, controls.toString())
+        assertTrue(controls.all { it["resolution"]?.jsonPrimitive?.content == "COMPILER_EXACT" }, controls.toString())
+        fun owner(name: String) = controls.filter { it["ownerSymbolIdentity"]!!.jsonPrimitive.content.startsWith("callable:docs/$name#") }
+        val callback = owner("consume").single()
+        assertEquals("ANONYMOUS_FUNCTION", callback["targetRegion"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        assertEquals(callback["lexicalRegion"], callback["targetRegion"])
+        assertEquals("DEFERRED", callback["lexicalRegion"]!!.jsonObject["execution"]!!.jsonPrimitive.content)
+        assertEquals(2, owner("refresh").size)
+        assertTrue(owner("refresh").all { it["targetRegion"]!!.jsonObject["identity"] == it["ownerSymbolIdentity"] })
+        assertTrue(owner("nonlocal").single()["nonLocal"]!!.jsonPrimitive.boolean)
+        assertEquals("NAMED_FUNCTION", owner("nonlocal").single()["targetRegion"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        assertEquals("LOCAL_FUNCTION", owner("locals").single()["targetRegion"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        assertTrue(controls.all { it["returnValueProof"]!!.jsonPrimitive.content == "SEPARATE_NOT_ASSERTED" })
+    }
+
     private fun compile(source: String): List<JsonObject> = compileAll(source).filter {
         it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_DATA_BOUNDARY")
     }
@@ -49,7 +277,7 @@ class KotlinDocumentationVariablesTest {
     }
 
     private fun extractData(source: String): Map<String, JsonObject> = extractDataSources(mapOf("Variables.kt" to source), "Variables.kt")
-    private fun extractDataSources(sources: Map<String, String>, selectedFile: String): Map<String, JsonObject> {
+    private fun extractDataSources(sources: Map<String, String>, selectedFile: String, projection: String = "dataInput"): Map<String, JsonObject> {
         val source = sources[selectedFile]!!
         val rows = compileSources(sources)
         val descriptors = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }.map { row ->
@@ -64,10 +292,10 @@ class KotlinDocumentationVariablesTest {
             val file = KtPsiFactory(environment.project, markGenerated = false).createFile(selectedFile, source)
             val documentation = KotlinDocumentationSource("src/$selectedFile", file, source, ":/main", descriptors.filter { it["file"]!!.jsonPrimitive.content == "src/$selectedFile" },
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile },
-                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY") && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile }, descriptors)
+                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY", "DOCUMENTATION_LEXICAL_VARIABLE", "DOCUMENTATION_LEXICAL_RECEIPT", "DOCUMENTATION_RETURN_CONTROL") && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile }, descriptors)
             return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).filter { it.name != null && it.bodyExpression != null && it.receiverTypeReference == null }.associate { function ->
                 val enriched = documentation.enrich(function, buildJsonObject { put("name", function.name) })
-                function.name!! to assertNotNull(enriched["documentation"]?.jsonObject?.get("dataInput"), enriched.toString()).jsonObject
+                function.name!! to assertNotNull(enriched["documentation"]?.jsonObject?.get(projection), enriched.toString()).jsonObject
             }
         } finally { Disposer.dispose(disposable) }
     }

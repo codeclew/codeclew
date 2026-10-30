@@ -5,7 +5,7 @@ mod data_model;
 mod data_state;
 mod docusaurus;
 mod full;
-mod inline_contract;
+pub(super) mod inline_contract;
 mod linked;
 mod markdown;
 pub mod model;

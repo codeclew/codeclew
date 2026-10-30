@@ -444,6 +444,8 @@ pub struct Query {
     pub symbol_contains: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_contains: String,
     #[serde(default, skip_serializing_if = "QueryProjection::is_raw")]
     pub projection: QueryProjection,
 }
@@ -454,6 +456,7 @@ pub enum QueryProjection {
     #[default]
     Raw,
     Navigation,
+    Files,
     WholeFile,
 }
 
@@ -466,10 +469,14 @@ impl QueryProjection {
 pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError> {
     if selection.references.len() > 8
         || selection.symbols.len() > 8
-        || selection
-            .query
-            .as_ref()
-            .is_some_and(|q| q.kind.len() > 100 || q.symbol_contains.len() > 512)
+        || selection.query.as_ref().is_some_and(|q| {
+            q.kind.len() > 100
+                || q.symbol_contains.len() > 512
+                || q.file
+                    .as_ref()
+                    .is_some_and(|f| f.is_empty() || f.len() > 4096)
+                || q.file_contains.len() > 1024
+        })
         || (!selection.references.is_empty() && !selection.symbols.is_empty())
         || (selection.query.is_some()
             && (!selection.references.is_empty() || !selection.symbols.is_empty()))
@@ -479,20 +486,19 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
         ));
     }
     if selection.query.as_ref().is_some_and(|query| {
-        query.projection == QueryProjection::Navigation && query.kind != "SYMBOL"
-    }) {
-        return Err(invalid("NAVIGATION query projection requires kind SYMBOL"));
-    }
-    if selection.query.as_ref().is_some_and(|q| {
-        (q.projection == QueryProjection::WholeFile && (q.kind != "SOURCE" || q.file.is_none()))
-            || (q.file.is_some()
-                && (q.projection != QueryProjection::WholeFile
-                    || q.file
-                        .as_ref()
-                        .is_some_and(|f| f.is_empty() || f.len() > 4096)))
+        query.projection == QueryProjection::Navigation
+            && !matches!(query.kind.as_str(), "SYMBOL" | "SOURCE")
     }) {
         return Err(invalid(
-            "WHOLE_FILE requires kind SOURCE and one exact file; file is not a generic query filter",
+            "NAVIGATION query projection requires kind SYMBOL or SOURCE",
+        ));
+    }
+    if selection.query.as_ref().is_some_and(|q| {
+        (q.projection == QueryProjection::Files || q.file.is_some() || !q.file_contains.is_empty())
+            && q.kind != "SOURCE"
+    }) {
+        return Err(invalid(
+            "file selection and FILES projection require kind SOURCE",
         ));
     }
     if selection
@@ -502,6 +508,14 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     {
         return Err(invalid(
             "SOURCE inventory has no symbol field; omit symbolContains or use an empty string, then select a returned source reference",
+        ));
+    }
+    if selection.query.as_ref().is_some_and(|q| {
+        q.projection == QueryProjection::WholeFile
+            && (q.kind != "SOURCE" || q.file.is_none() || !q.file_contains.is_empty())
+    }) {
+        return Err(invalid(
+            "WHOLE_FILE requires kind SOURCE and one exact file; omit fileContains",
         ));
     }
     Ok(())
@@ -2864,7 +2878,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
             if query.projection == QueryProjection::WholeFile {
                 vec![whole_file_row(work, query)?]
             } else {
-                source_inventory_rows(work)?
+                source_inventory_rows(work, query)?
             }
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {
@@ -2878,6 +2892,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
                         json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency})
                     })
                     .collect(),
+                QueryProjection::Files => return Err(invalid("FILES projection requires SOURCE")),
                 QueryProjection::WholeFile => return Err(invalid("WHOLE_FILE requires SOURCE")),
                 QueryProjection::Navigation => {
                     let reverse = reverse_handles(work);
@@ -3191,12 +3206,48 @@ fn whole_file_row(work: &Work, query: &Query) -> Result<Value, ClewError> {
         "authority":"NAVIGATION_ONLY","textDelivered":false,"wholeFileCapture":"EXACT_RETAINED_FILE"}}))
 }
 
-fn source_inventory_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
-    Ok(source_inventory_evidence(work)?
+fn source_inventory_rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> {
+    let evidence = source_inventory_evidence(work)?;
+    let sources: Vec<_> = evidence
         .sources
         .iter()
-        .map(|(id, source)| json!({"kind":"SOURCE","id":id,"record":source}))
-        .collect())
+        .filter(|(_, s)| {
+            query.file.as_ref().is_none_or(|f| &s.file == f)
+                && s.file.contains(&query.file_contains)
+        })
+        .collect();
+    if query.projection == QueryProjection::Files {
+        let mut files: BTreeMap<&str, Vec<&Source>> = BTreeMap::new();
+        for (_, source) in sources {
+            files.entry(&source.file).or_default().push(source);
+        }
+        return Ok(files.into_iter().map(|(file, records)| json!({
+            "kind":"SOURCE_FILE","id":file,"record":{
+                "service":evidence.service,"revision":evidence.revision,"file":file,
+                "sourceRecords":records.len(),
+                "startLine":records.iter().map(|s|s.start_line).min(),
+                "endLine":records.iter().map(|s|s.end_line).max(),
+                "authorities":records.iter().map(|s|s.authority.as_str()).collect::<BTreeSet<_>>(),
+                "authority":"NAVIGATION_ONLY","wholeFileCapture":"NOT_ESTABLISHED_BY_GROUPING"
+            }
+        })).collect());
+    }
+    let reverse = reverse_handles(work);
+    sources
+        .into_iter()
+        .map(|(id, source)| {
+            if query.projection == QueryProjection::Raw {
+                return Ok(json!({"kind":"SOURCE","id":id,"record":source}));
+            }
+            let mut metadata = serde_json::to_value(source).map_err(io_error)?;
+            metadata.as_object_mut().unwrap().remove("text");
+            Ok(json!({"kind":"SOURCE_NAVIGATION","id":id,"record":{
+                "source":metadata,"recordDigest":digest(source)?,
+                "fullRecordReference":reverse.get(&("SOURCE",id.as_str())).copied(),
+                "authority":"NAVIGATION_ONLY","textDelivered":false
+            }}))
+        })
+        .collect()
 }
 
 fn callable_navigation_row(
@@ -4024,6 +4075,7 @@ mod section_context_tests {
         let raw = Selection {
             query: Some(Query {
                 file: None,
+                file_contains: String::new(),
                 kind: "SYMBOL".into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Raw,
@@ -4045,6 +4097,7 @@ mod section_context_tests {
         let navigation = Selection {
             query: Some(Query {
                 file: None,
+                file_contains: String::new(),
                 kind: "SYMBOL".into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Navigation,
@@ -4162,6 +4215,7 @@ mod section_context_tests {
         let select = |kind: &str| Selection {
             query: Some(Query {
                 file: None,
+                file_contains: String::new(),
                 kind: kind.into(),
                 symbol_contains: String::new(),
                 projection: QueryProjection::Raw,
@@ -4219,6 +4273,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "SYMBOL".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4236,6 +4291,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "SOURCE".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4255,6 +4311,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "SYMBOL".into(),
                     symbol_contains: "missing".into(),
                     projection: QueryProjection::Raw,
@@ -4270,6 +4327,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "*".into(),
                     symbol_contains: "helper".into(),
                     projection: QueryProjection::Raw,
@@ -4357,6 +4415,95 @@ mod section_context_tests {
             .insert(scope.id.clone(), scope.digest.clone());
         evidence.sources.insert(source.id.clone(), source);
         work
+    }
+
+    #[test]
+    fn source_files_navigation_and_whole_file_remain_coherent() {
+        let mut work = exact_kotlin_file_fixture();
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .values_mut()
+            .next()
+            .unwrap();
+        source.occurrence.as_mut().unwrap().snapshot = format!("sha256:{}", "a".repeat(64));
+        let occurrence = source.occurrence.as_ref().unwrap();
+        source.evidence_digest = digest(&(
+            SOURCE_EXTRACTOR,
+            &occurrence.snapshot,
+            &occurrence.blob,
+            0usize,
+            source.text.len(),
+        ))
+        .unwrap();
+        for (projection, kind) in [
+            ("FILES", "SOURCE_FILE"),
+            ("NAVIGATION", "SOURCE_NAVIGATION"),
+            ("WHOLE_FILE", "SOURCE_NAVIGATION"),
+        ] {
+            let query = if projection == "FILES" {
+                json!({"kind":"SOURCE","projection":projection,"fileContains":"fixture"})
+            } else {
+                json!({"kind":"SOURCE","projection":projection,"file":"src/fixture.kt"})
+            };
+            let selection: Selection = serde_json::from_value(json!({"query":query})).unwrap();
+            validate_selection(&selection).unwrap();
+            let output = rows(&work, &selection).unwrap();
+            assert_eq!(output.len(), 1);
+            assert_eq!(output[0]["kind"], kind);
+            assert!(output[0]["record"].get("text").is_none());
+            if projection == "FILES" {
+                assert_eq!(
+                    output[0]["record"]["wholeFileCapture"],
+                    "NOT_ESTABLISHED_BY_GROUPING"
+                );
+            }
+            if projection == "WHOLE_FILE" {
+                assert_eq!(
+                    output[0]["record"]["wholeFileCapture"],
+                    "EXACT_RETAINED_FILE"
+                );
+            }
+        }
+        let whole: Selection = serde_json::from_value(
+            json!({"query":{"kind":"SOURCE","projection":"WHOLE_FILE","file":"src/fixture.kt"}}),
+        )
+        .unwrap();
+        for field in ["digest", "range", "revision"] {
+            let mut bad = work.clone();
+            let source = bad
+                .checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .values_mut()
+                .next()
+                .unwrap();
+            match field {
+                "digest" => source.text_digest = "stale".into(),
+                "range" => source.occurrence.as_mut().unwrap().end_byte -= 1,
+                _ => source.revision = "foreign".into(),
+            }
+            assert!(rows(&bad, &whole).is_err(), "{field}");
+        }
+        for query in [
+            json!({"kind":"SYMBOL","projection":"FILES"}),
+            json!({"kind":"FLOW","fileContains":"x"}),
+            json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":"src/fixture.kt","fileContains":"fixture"}),
+        ] {
+            let selection: Selection = serde_json::from_value(json!({"query":query})).unwrap();
+            assert!(validate_selection(&selection).is_err());
+        }
+        assert!(
+            serde_json::from_value::<Selection>(
+                json!({"query":{"kind":"SOURCE","projection":"FILEZ"}})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -5629,6 +5776,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
                     projection: QueryProjection::Raw,
@@ -5695,6 +5843,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
                     projection: QueryProjection::Raw,
@@ -5781,6 +5930,7 @@ mod section_context_tests {
             &Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "SYMBOL".into(),
                     symbol_contains: "Handler19999".into(),
                     projection: QueryProjection::Raw,

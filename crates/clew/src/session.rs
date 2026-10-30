@@ -573,9 +573,10 @@ impl SessionAuthority {
             repo.clone()
         } else {
             let source = root.join("source");
-            create_filtered_detached_worktree(&repo, &source, &authority.base_revision)?;
+            let project =
+                create_filtered_detached_worktree(&repo, &source, &authority.base_revision)?;
             seal_source_worktree(&source)?;
-            source
+            project
         };
         write_managed_json_create_new(&state, &root.join("authority.json"), &authority)?;
         write_managed_json_create_new(
@@ -3037,10 +3038,27 @@ fn create_filtered_detached_worktree(
     repository: &Path,
     destination: &Path,
     revision: &str,
-) -> Result<(), ClewError> {
+) -> Result<PathBuf, ClewError> {
     if destination.exists() {
         return Err(invalid("session source worktree already exists"));
     }
+    // Git creates a worktree at the repository root even when invoked from a
+    // nested project. Preserve the caller's selected project directory rather
+    // than passing the whole Git root to its build-model extractor.
+    let selected = repository.canonicalize().map_err(io_error)?;
+    let root = isolated_git_command(&selected)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(io_error)?;
+    if !root.status.success() {
+        return Err(invalid("selected project Git root is unavailable"));
+    }
+    let root = std::str::from_utf8(root.stdout.strip_suffix(b"\n").unwrap_or(&root.stdout))
+        .map_err(|_| invalid("selected project Git root is not UTF-8"))?;
+    let root = Path::new(root).canonicalize().map_err(io_error)?;
+    let relative = selected
+        .strip_prefix(&root)
+        .map_err(|_| invalid("selected project escapes its Git root"))?;
     let add = Command::new("git")
         .args([
             "-c",
@@ -3072,7 +3090,34 @@ fn create_filtered_detached_worktree(
             .status();
         return Err(invalid("session source checkout failed"));
     }
-    Ok(())
+    match source_worktree_project(destination, relative) {
+        Ok(project) => Ok(project),
+        Err(error) => {
+            let _ = isolated_git_command(repository)
+                .args(["worktree", "remove", "--force"])
+                .arg(destination)
+                .output();
+            Err(error)
+        }
+    }
+}
+
+fn source_worktree_project(source: &Path, relative: &Path) -> Result<PathBuf, ClewError> {
+    if relative
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(invalid("selected project path is not repository-relative"));
+    }
+    let root = source.canonicalize().map_err(io_error)?;
+    let project = source.join(relative);
+    let canonical = project.canonicalize().map_err(io_error)?;
+    if canonical != root.join(relative) || !canonical.is_dir() {
+        return Err(invalid(
+            "selected project escapes or aliases the source worktree",
+        ));
+    }
+    Ok(project)
 }
 
 fn seal_source_worktree(root: &Path) -> Result<(), ClewError> {
@@ -5127,6 +5172,141 @@ mod tests {
         fs::write(ledger_path, bytes).unwrap();
 
         assert!(load_run_projection(&state, &root, &run.run_id).is_err());
+    }
+
+    #[test]
+    fn detached_maven_source_preserves_selected_project_root() {
+        for selected_relative in ["", "services/selected"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let repository = temporary.path().join("repository");
+            let source = temporary.path().join("managed-source");
+            fs::create_dir(&repository).unwrap();
+            let run_git = |args: &[&str]| {
+                let result = Command::new("git")
+                    .args(args)
+                    .current_dir(&repository)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            };
+            run_git(&["init", "-q", "-b", "main"]);
+            for project in ["", "services/selected", "services/sibling"] {
+                let directory = repository.join(project);
+                fs::create_dir_all(directory.join("src/main/kotlin")).unwrap();
+                fs::write(
+                    directory.join("pom.xml"),
+                    format!("<project>{project}</project>\n"),
+                )
+                .unwrap();
+                fs::write(
+                    directory.join("src/main/kotlin/Only.kt"),
+                    format!("// {project}\nfun only() = 1\n"),
+                )
+                .unwrap();
+            }
+            run_git(&["add", "."]);
+            run_git(&[
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "Maven roots",
+            ]);
+            let revision = git_output(&repository, &["rev-parse", "HEAD"]).unwrap();
+            let selected = repository.join(selected_relative);
+            let project = create_filtered_detached_worktree(&selected, &source, &revision).unwrap();
+            assert_eq!(project, source.join(selected_relative));
+            assert_eq!(
+                fs::read(project.join("pom.xml")).unwrap(),
+                fs::read(selected.join("pom.xml")).unwrap()
+            );
+            assert_eq!(
+                git_output(&project, &["rev-parse", "HEAD"]).unwrap(),
+                revision
+            );
+            assert_eq!(
+                crate::state::repository_key(&project).unwrap(),
+                crate::state::repository_key(&selected).unwrap()
+            );
+            let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+            let store = CasStore::open(&state).unwrap();
+            let (snapshot, _) = crate::repository_snapshot::capture(&project, &store).unwrap();
+            assert!(
+                snapshot
+                    .worktree
+                    .iter()
+                    .any(|entry| entry.path == "pom.xml")
+            );
+            assert!(
+                snapshot
+                    .worktree
+                    .iter()
+                    .any(|entry| entry.path == "src/main/kotlin/Only.kt")
+            );
+            if !selected_relative.is_empty() {
+                assert!(
+                    !snapshot
+                        .worktree
+                        .iter()
+                        .any(|entry| entry.path.contains("sibling"))
+                );
+                let (sibling, _) =
+                    crate::repository_snapshot::capture(&source.join("services/sibling"), &store)
+                        .unwrap();
+                assert_ne!(
+                    snapshot.snapshot_id, sibling.snapshot_id,
+                    "same :/main selector must not mix sibling models/source"
+                );
+            }
+            seal_source_worktree(&source).unwrap();
+            remove_managed_worktree(
+                &repository,
+                &ManagedWorktreeRemoval {
+                    path: source.clone(),
+                    allow_forced_removal: true,
+                },
+            )
+            .unwrap();
+            assert!(!source.exists());
+            assert!(repository.join("services/sibling/pom.xml").is_file());
+            assert!(selected.join("src/main/kotlin/Only.kt").is_file());
+            let absent_at_revision = repository.join("not-in-revision");
+            fs::create_dir(&absent_at_revision).unwrap();
+            fs::write(absent_at_revision.join("pom.xml"), b"keep caller input\n").unwrap();
+            assert!(
+                create_filtered_detached_worktree(&absent_at_revision, &source, &revision).is_err()
+            );
+            assert!(!source.exists());
+            assert!(absent_at_revision.join("pom.xml").is_file());
+        }
+    }
+
+    #[test]
+    fn source_project_mapping_refuses_escape_and_symlink_alias() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let outside = temporary.path().join("outside");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        assert!(source_worktree_project(&source, Path::new("../outside")).is_err());
+        assert!(source_worktree_project(&source, &outside).is_err());
+        assert!(source_worktree_project(&source, Path::new("missing")).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, source.join("escape")).unwrap();
+            assert!(source_worktree_project(&source, Path::new("escape")).is_err());
+            fs::create_dir(source.join("real")).unwrap();
+            std::os::unix::fs::symlink(source.join("real"), source.join("alias")).unwrap();
+            assert!(source_worktree_project(&source, Path::new("alias")).is_err());
+        }
+        assert!(outside.is_dir());
     }
 
     #[test]

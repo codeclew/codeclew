@@ -1,0 +1,353 @@
+{
+  "source": "﻿package docs\r\n// π🙂 before compiler ranges\r\nclass Runner { fun executeWithoutResult(block: (Int) -> Unit) { block(1) } }\r\nfun refresh(place: String) { if (place.isEmpty()) return; return }\r\nfun consume(event: Map<String, String>) {\r\n    Runner().executeWithoutResult {\r\n        val place = event[\"place\"] ?: return@executeWithoutResult\r\n        refresh(place)\r\n    }\r\n}\r\nfun side(): String = \"effect\"\r\nfun mix(first: String, second: String) {}\r\nfun defaulted(first: String, second: String = \"x\") {}\r\nfun String.extension(first: String) {}\r\nfun order() { mix(second = side(), first = side()); defaulted(side()); \"x\".extension(side()) }",
+  "semanticInputs": {
+    "schema": "codeclew-kotlin-documentation-semantic-inputs/1.0",
+    "resolution": "COMPILER_METADATA_NOT_EXECUTION_PROOF",
+    "authority": "K2_LEXICAL_AND_ARGUMENT_SYMBOLS_AND_RETURN_TARGETS",
+    "coordinateDomain": "ORIGINAL_UTF8_BYTES",
+    "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+    "file": "src/Variables.kt",
+    "compilationScope": ":/main",
+    "ownerByteStart": 197,
+    "ownerByteEnd": 376,
+    "fullCompilationSourceDigest": "sha256:bc013d251d0a823601c3661149b093e3e2048847da115b2068d401f74608a71e",
+    "variables": [
+      {
+        "variableIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/parameter/0",
+        "variableKind": "PARAMETER",
+        "name": "event",
+        "variableType": "kotlin/collections/Map<kotlin/String, kotlin/String>",
+        "parameterIndex": 0,
+        "hasDefault": false,
+        "schema": "kotlin-documentation-lexical-variable/1.0",
+        "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "kind": "NAMED_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "OWNER_BODY",
+          "byteStart": 197,
+          "byteEnd": 376,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "declarationRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "kind": "NAMED_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "OWNER_BODY",
+          "byteStart": 197,
+          "byteEnd": 376,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "captured": false,
+        "kind": "VARIABLE_DECLARATION",
+        "resolution": "COMPILER_EXACT",
+        "authority": "K2_RESOLVED_VARIABLE_SYMBOL",
+        "byteStart": 209,
+        "byteEnd": 235,
+        "declarationByteStart": 209,
+        "declarationByteEnd": 235
+      },
+      {
+        "variableIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359/local-source/273:330",
+        "variableKind": "LOCAL_VARIABLE",
+        "name": "place",
+        "variableType": "kotlin/String",
+        "schema": "kotlin-documentation-lexical-variable/1.0",
+        "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "declarationRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "captured": false,
+        "kind": "VARIABLE_DECLARATION",
+        "resolution": "COMPILER_EXACT",
+        "authority": "K2_RESOLVED_VARIABLE_SYMBOL",
+        "byteStart": 285,
+        "byteEnd": 342,
+        "declarationByteStart": 285,
+        "declarationByteEnd": 342,
+        "initializerSpan": {
+          "byteStart": 297,
+          "byteEnd": 342,
+          "meaning": "SEPARATE_INITIALIZER_NOT_ACTUAL_FORMAL_BINDING"
+        }
+      },
+      {
+        "variableIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/parameter/0",
+        "variableKind": "PARAMETER",
+        "name": "event",
+        "variableType": "kotlin/collections/Map<kotlin/String, kotlin/String>",
+        "parameterIndex": 0,
+        "hasDefault": false,
+        "schema": "kotlin-documentation-lexical-variable/1.0",
+        "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "declarationRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "kind": "NAMED_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "OWNER_BODY",
+          "byteStart": 197,
+          "byteEnd": 376,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "captured": true,
+        "kind": "VARIABLE_ACCESS",
+        "accessMode": "READ",
+        "resolution": "COMPILER_EXACT",
+        "authority": "K2_RESOLVED_VARIABLE_SYMBOL",
+        "byteStart": 297,
+        "byteEnd": 302,
+        "declarationByteStart": 209,
+        "declarationByteEnd": 235
+      },
+      {
+        "variableIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359/local-source/273:330",
+        "variableKind": "LOCAL_VARIABLE",
+        "name": "place",
+        "variableType": "kotlin/String",
+        "schema": "kotlin-documentation-lexical-variable/1.0",
+        "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "declarationRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "captured": false,
+        "kind": "VARIABLE_ACCESS",
+        "accessMode": "READ",
+        "resolution": "COMPILER_EXACT",
+        "authority": "K2_RESOLVED_VARIABLE_SYMBOL",
+        "byteStart": 360,
+        "byteEnd": 365,
+        "declarationByteStart": 285,
+        "declarationByteEnd": 342,
+        "initializerSpan": {
+          "byteStart": 297,
+          "byteEnd": 342,
+          "meaning": "SEPARATE_INITIALIZER_NOT_ACTUAL_FORMAL_BINDING"
+        }
+      }
+    ],
+    "calls": [
+      {
+        "byteStart": 244,
+        "byteEnd": 373,
+        "resolution": "COMPILER_EXACT",
+        "targetIdentity": "callable:docs/Runner.executeWithoutResult#jvm:(Lkotlin/jvm/functions/Function1;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "kind": "NAMED_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "OWNER_BODY",
+          "byteStart": 197,
+          "byteEnd": 376,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "arguments": [
+          {
+            "evaluationIndex": 0,
+            "parameterIndex": 0,
+            "formalIdentity": "callable:docs/Runner.executeWithoutResult#jvm:(Lkotlin/jvm/functions/Function1;)V/parameter/0",
+            "parameterName": "block",
+            "argumentByteStart": 274,
+            "argumentByteEnd": 373,
+            "actualByteStart": 274,
+            "actualByteEnd": 373,
+            "resolution": "COMPILER_EXACT",
+            "actualKind": "EXPRESSION_OCCURRENCE_NOT_VARIABLE_BINDING"
+          }
+        ],
+        "receiverObjectIdentity": "UNKNOWN",
+        "evaluationOrderAuthority": "COMPILER_ARGUMENT_SOURCE_OCCURRENCES_NOT_CALLBACK_INVOCATION_ORDER",
+        "omittedDefaultParameterIndices": [],
+        "boundaries": []
+      },
+      {
+        "byteStart": 244,
+        "byteEnd": 252,
+        "resolution": "COMPILER_EXACT",
+        "targetIdentity": "constructor:docs/Runner.Runner#jvm:()V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "kind": "NAMED_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "OWNER_BODY",
+          "byteStart": 197,
+          "byteEnd": 376,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "arguments": [],
+        "receiverObjectIdentity": "UNKNOWN",
+        "evaluationOrderAuthority": "COMPILER_ARGUMENT_SOURCE_OCCURRENCES_NOT_CALLBACK_INVOCATION_ORDER",
+        "omittedDefaultParameterIndices": [],
+        "boundaries": []
+      },
+      {
+        "byteStart": 297,
+        "byteEnd": 311,
+        "resolution": "COMPILER_EXACT",
+        "targetIdentity": "callable:kotlin/collections/Map.get#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "arguments": [
+          {
+            "evaluationIndex": 0,
+            "parameterIndex": 0,
+            "formalIdentity": "callable:kotlin/collections/Map.get#jvm:(Ljava/lang/String;)Ljava/lang/String;/parameter/0",
+            "parameterName": "key",
+            "argumentByteStart": 303,
+            "argumentByteEnd": 310,
+            "actualByteStart": 303,
+            "actualByteEnd": 310,
+            "resolution": "COMPILER_EXACT",
+            "actualKind": "EXPRESSION_OCCURRENCE_NOT_VARIABLE_BINDING"
+          }
+        ],
+        "receiverObjectIdentity": "UNKNOWN",
+        "evaluationOrderAuthority": "COMPILER_ARGUMENT_SOURCE_OCCURRENCES_NOT_CALLBACK_INVOCATION_ORDER",
+        "omittedDefaultParameterIndices": [],
+        "boundaries": []
+      },
+      {
+        "byteStart": 352,
+        "byteEnd": 366,
+        "resolution": "COMPILER_EXACT",
+        "targetIdentity": "callable:docs/refresh#jvm:(Ljava/lang/String;)V",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "arguments": [
+          {
+            "evaluationIndex": 0,
+            "parameterIndex": 0,
+            "formalIdentity": "callable:docs/refresh#jvm:(Ljava/lang/String;)V/parameter/0",
+            "parameterName": "place",
+            "argumentByteStart": 360,
+            "argumentByteEnd": 365,
+            "actualByteStart": 360,
+            "actualByteEnd": 365,
+            "resolution": "COMPILER_EXACT",
+            "actualVariableIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359/local-source/273:330",
+            "declarationRegion": {
+              "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+              "kind": "ANONYMOUS_FUNCTION",
+              "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+              "execution": "DEFERRED",
+              "invocationCountAndOrder": "NOT_ESTABLISHED",
+              "byteStart": 274,
+              "byteEnd": 373,
+              "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+            },
+            "declarationByteStart": 285,
+            "declarationByteEnd": 342,
+            "initializerSpan": {
+              "byteStart": 297,
+              "byteEnd": 342,
+              "meaning": "SEPARATE_INITIALIZER_NOT_ACTUAL_FORMAL_BINDING"
+            },
+            "captured": false
+          }
+        ],
+        "receiverObjectIdentity": "UNKNOWN",
+        "evaluationOrderAuthority": "COMPILER_ARGUMENT_SOURCE_OCCURRENCES_NOT_CALLBACK_INVOCATION_ORDER",
+        "omittedDefaultParameterIndices": [],
+        "boundaries": []
+      }
+    ],
+    "returns": [
+      {
+        "byteStart": 315,
+        "byteEnd": 342,
+        "resolution": "COMPILER_EXACT",
+        "returnValueProof": "SEPARATE_NOT_ASSERTED",
+        "lexicalRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "targetRegion": {
+          "identity": "callable:docs/consume#jvm:(Ljava/util/Map;)V/lexical/ANONYMOUS_FUNCTION/263:359",
+          "kind": "ANONYMOUS_FUNCTION",
+          "ownerSymbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+          "execution": "DEFERRED",
+          "invocationCountAndOrder": "NOT_ESTABLISHED",
+          "byteStart": 274,
+          "byteEnd": 373,
+          "identityCoordinateDomain": "OPAQUE_COMPILER_SYMBOL_AND_UTF16_REGION"
+        },
+        "authority": "K2_SELECTED_RETURN_TARGET",
+        "nonLocal": false
+      }
+    ],
+    "boundaries": [],
+    "cfgAndExecutionProof": "SEPARATE_NOT_ASSERTED"
+  },
+  "symbolIdentity": "callable:docs/consume#jvm:(Ljava/util/Map;)V",
+  "file": "src/Variables.kt",
+  "compilationScope": ":/main",
+  "byteStart": 197,
+  "byteEnd": 376,
+  "contentHash": "sha256:bc013d251d0a823601c3661149b093e3e2048847da115b2068d401f74608a71e"
+}

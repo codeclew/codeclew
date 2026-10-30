@@ -238,6 +238,7 @@ public sealed class FactWalker : CSharpSyntaxWalker
         {
             var flowBody = body ?? initializer!;
             row["documentation"] = DocumentationFlow.Read(_model, _anchors, method, flowBody);
+            row["documentation"]!["controlRegions"] = SourceRegions.Read(_model, _anchors, method, flowBody);
         }
         _writer.Write(row);
         if (_generated)

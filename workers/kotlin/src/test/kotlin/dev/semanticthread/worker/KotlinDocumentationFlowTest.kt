@@ -294,6 +294,111 @@ class KotlinDocumentationFlowTest {
         }
     }
 
+    @Test
+    fun sourceContainmentConnectsNestedBodiesAndSyntheticOperandsWithoutExecutionClaims() {
+        val source = """
+            package docs
+            // π🙂 preserves original UTF-8, even with CRLF
+            fun connected(flag: Boolean, values: List<String?>): Int {
+                var count = 0
+                try {
+                    for (value in values) {
+                        if (flag && value != null) {
+                            val deferred = callback@ { if (flag) return@callback 1 else 2 }
+                            value?.trim() ?: continue
+                        } else { count += 1 }
+                    }
+                } catch (failure: IllegalArgumentException) { count = -1 }
+                finally { count += 2 }
+                return count
+            }
+        """.trimIndent().replace("\n", "\r\n") + "\r\n"
+        val row = extract(source).single { it["name"]!!.jsonPrimitive.content == "connected" }
+        val flow = row["documentation"]!!.jsonObject
+        val structure = flow["sourceStructure"]!!.jsonObject
+        assertEquals("SOURCE_CONTAINMENT_ONLY", structure["authority"]!!.jsonPrimitive.content)
+        assertEquals("NOT_ASSERTED", structure["execution"]!!.jsonPrimitive.content)
+        assertTrue(structure["complete"]!!.jsonPrimitive.boolean)
+        val nodes = structure["nodes"]!!.jsonArray.map { it.jsonObject }
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        fun text(node: JsonObject): String {
+            val span = node["sourceSpan"]!!.jsonObject
+            assertEquals(row["documentationSymbol"], span["ownerSymbolIdentity"])
+            assertEquals("sha256:" + java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, span["fullCompilationSourceDigest"]!!.jsonPrimitive.content)
+            return bytes.copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+        }
+        nodes.forEachIndexed { index, node ->
+            assertEquals(index, node["id"]!!.jsonPrimitive.int)
+            text(node)
+            node["parent"]!!.jsonPrimitive.intOrNull?.let { parent ->
+                assertTrue(parent < index)
+                val outer = nodes[parent]["sourceSpan"]!!.jsonObject
+                val inner = node["sourceSpan"]!!.jsonObject
+                assertTrue(inner["byteStart"]!!.jsonPrimitive.int >= outer["byteStart"]!!.jsonPrimitive.int)
+                assertTrue(inner["byteEnd"]!!.jsonPrimitive.int <= outer["byteEnd"]!!.jsonPrimitive.int)
+            }
+        }
+        fun child(parent: JsonObject, role: String) = nodes.single {
+            it["parent"]!!.jsonPrimitive.intOrNull == parent["id"]!!.jsonPrimitive.int && it["role"]!!.jsonPrimitive.content == role
+        }
+        val outerIf = nodes.single { it["kind"]!!.jsonPrimitive.content == "KtIfExpression" && text(it).startsWith("if (flag &&") }
+        assertEquals("flag && value != null", text(child(outerIf, "CONDITION")))
+        assertTrue(text(child(outerIf, "THEN")).contains("return@callback"))
+        assertEquals("{ count += 1 }", text(child(outerIf, "ELSE")))
+        val gate = child(outerIf, "CONDITION")
+        assertEquals("SYNTHETIC_SHORT_CIRCUIT_GATE", gate["origin"]!!.jsonPrimitive.content)
+        assertEquals("flag", text(child(gate, "LEFT_OPERAND")))
+        assertEquals("value != null", text(child(gate, "RIGHT_OPERAND")))
+        val safe = nodes.single { it["origin"]!!.jsonPrimitive.content == "SYNTHETIC_NULL_GATE" }
+        assertEquals("value", text(child(safe, "RECEIVER")))
+        assertEquals("trim()", text(child(safe, "SELECTOR")))
+        val loop = nodes.single { it["kind"]!!.jsonPrimitive.content == "KtForExpression" }
+        assertEquals("values", text(child(loop, "LOOP_RANGE")))
+        assertTrue(text(child(loop, "LOOP_BODY")).contains("continue"))
+        val attempt = nodes.single { it["kind"]!!.jsonPrimitive.content == "KtTryExpression" }
+        assertTrue(text(child(attempt, "TRY_BODY")).contains("for ("))
+        assertEquals("{ count += 2 }", text(child(attempt, "FINALLY_BODY")))
+        assertEquals("{ count = -1 }", text(child(child(attempt, "CATCH"), "CATCH_BODY")))
+        val callback = nodes.single { it["kind"]!!.jsonPrimitive.content == "KtLambdaExpression" }
+        val body = child(callback, "CALLBACK_BODY")
+        val returned = nodes.single { text(it) == "return@callback 1" }
+        var parent = returned["id"]!!.jsonPrimitive.int
+        while (parent != body["id"]!!.jsonPrimitive.int) parent = nodes[parent]["parent"]!!.jsonPrimitive.int
+        val events = flow["events"]!!.jsonArray.map { it.jsonObject }
+        assertTrue(events.all { it["sourceStructureId"]!!.jsonPrimitive.int in nodes.indices })
+        assertTrue(events.any { it["kind"]!!.jsonPrimitive.content == "DEFERRED" && it["invocation"]!!.jsonPrimitive.content == "NOT_ESTABLISHED" })
+    }
+
+    @Test
+    fun traversalBudgetKeepsAnExplicitSourceBoundGap() {
+        val source = "fun bounded() {\n" + (0..530).joinToString("\n") { "val n$it = $it" } + "\n}"
+        val structure = extract(source).single()["documentation"]!!.jsonObject["sourceStructure"]!!.jsonObject
+        assertFalse(structure["complete"]!!.jsonPrimitive.boolean)
+        assertTrue(structure["omittedScans"]!!.jsonPrimitive.int > 0)
+        val gap = structure["gaps"]!!.jsonArray.first().jsonObject
+        assertEquals("TRAVERSAL_BUDGET", gap["reason"]!!.jsonPrimitive.content)
+        val span = gap["sourceSpan"]!!.jsonObject
+        val text = source.toByteArray().copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+        assertTrue(text.isNotEmpty())
+    }
+
+    @Test
+    fun connectedStructurePreservesTypedKafkaSendBoundary() {
+        val source = """
+            package docs
+            import org.springframework.kafka.core.KafkaTemplate
+            fun publish(template: KafkaTemplate<String, String>) {
+                template.send("example.changed", "payload")
+            }
+        """.trimIndent()
+        val flow = extract(source).single()["documentation"]!!.jsonObject
+        val send = flow["events"]!!.jsonArray.map { it.jsonObject }.single { it.containsKey("kafka") }
+        assertEquals("example.changed", send["kafka"]!!.jsonObject["topic"]!!.jsonPrimitive.content)
+        val node = flow["sourceStructure"]!!.jsonObject["nodes"]!!.jsonArray[send["sourceStructureId"]!!.jsonPrimitive.int].jsonObject
+        val span = node["sourceSpan"]!!.jsonObject
+        assertEquals("send(\"example.changed\", \"payload\")", source.toByteArray().copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString())
+    }
+
     private fun extract(source: String): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-docs-facts").toRealPath()
         val disposable = Disposer.newDisposable("kotlin-docs-test")

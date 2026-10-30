@@ -53,7 +53,10 @@ internal class KotlinDocumentationSource(
         }).read(function, descriptor)
         val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
             coordinates, compilerCoordinates, dataFacts, dataCalls, storageDescriptors).read(function)
-        val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
+        val semantic = normalizeKotlinDocumentationSemanticInputs(dataFacts, dataCalls, descriptor,
+            file, compilationScope, compilerCoordinates, sourceDigest)
+        val scoped = attachKotlinSemanticInputs(flow, semantic)
+        val documented = if (data == null) scoped else JsonObject(scoped + mapOf("dataInput" to data))
         val values = normalizeKotlinValueProjection(dataFacts, descriptor, file, originalSource, compilerCoordinates, sourceDigest)
         val owner = buildJsonObject {
             put("file", file)
@@ -81,10 +84,15 @@ private class KotlinDocumentationFlow(
     private val calls = relations.groupBy { it["start"]?.jsonPrimitive?.intOrNull to it["end"]?.jsonPrimitive?.intOrNull }
     private val lineStarts = listOf(0) + source.text.indices.filter { source.text[it] == '\n' }.map { it + 1 }
     private var depth = 0
+    private val structures = mutableListOf<JsonObject>()
+    private val structureStack = mutableListOf<Int>()
+    private val structureGaps = mutableListOf<JsonObject>()
+    private var omittedScans = 0
 
     fun read(function: KtNamedFunction, descriptor: JsonObject): JsonObject {
-        scan(function.bodyExpression)
-        if (!function.hasBlockBody()) event("RETURN", function.bodyExpression ?: function)
+        scan(function.bodyExpression, "BODY")
+        if (!function.hasBlockBody()) event("RETURN", function.bodyExpression ?: function,
+            if (structures.isEmpty()) emptyMap() else mapOf("sourceStructureId" to JsonPrimitive(0)))
         if (function.hasModifier(KtTokens.SUSPEND_KEYWORD)) boundaries += "COROUTINE_SCHEDULING_NOT_ESTABLISHED"
         return buildJsonObject {
             put("schema", "codeclew-kotlin-documentation-flow/1.0")
@@ -93,23 +101,76 @@ private class KotlinDocumentationFlow(
                 JsonPrimitive(parameter.jsonObject["type"]!!.jsonPrimitive.content.replace('/', '.'))
             }))
             put("events", JsonArray(events))
+            put("sourceStructure", buildJsonObject {
+                put("schema", "codeclew-kotlin-source-structure/1.0")
+                put("authority", "SOURCE_CONTAINMENT_ONLY")
+                put("execution", "NOT_ASSERTED")
+                put("nodes", JsonArray(structures))
+                put("gaps", JsonArray(structureGaps))
+                put("omittedScans", omittedScans)
+                put("complete", omittedScans == 0)
+            })
             put("boundaries", JsonArray(boundaries.map(::JsonPrimitive)))
         }
     }
 
-    private fun scan(element: PsiElement?) {
+    private fun sourceSpan(element: PsiElement): JsonObject? {
+        val range = coordinates.range(element.textRange.startOffset, element.textRange.endOffset)
+            ?.takeUnless { it.isEmpty() } ?: return null
+        return buildJsonObject {
+            put("schema", "codeclew-documentation-source-span/1.0")
+            put("coordinateDomain", "ORIGINAL_UTF8_BYTES")
+            put("ownerSymbolIdentity", descriptor["symbolIdentity"]!!)
+            put("compilationScope", compilationScope)
+            put("file", file)
+            put("ownerByteStart", descriptor["start"]!!)
+            put("ownerByteEnd", descriptor["end"]!!)
+            put("byteStart", range.first)
+            put("byteEnd", range.last + 1)
+            put("fullCompilationSourceDigest", sourceDigest)
+        }
+    }
+
+    private fun scan(element: PsiElement?, role: String = "CHILD") {
         if (element == null) return
-        if (depth >= 64 || events.size >= 512) {
+        if (depth >= 64 || events.size >= 512 || structures.size >= 2048) {
             boundaries += "DOCUMENTATION_FLOW_EVENT_BUDGET"
+            omittedScans++
+            if (structureGaps.size < 32) structureGaps += buildJsonObject {
+                put("reason", "TRAVERSAL_BUDGET")
+                put("parent", structureStack.lastOrNull()?.let(::JsonPrimitive) ?: JsonNull)
+                put("role", role)
+                sourceSpan(element)?.let { put("sourceSpan", it) }
+            }
             return
+        }
+        // Record containment during the existing visitor traversal. These IDs
+        // are local to the enclosing compiler-bound documentation record.
+        val structural = element is KtExpression || element is KtCatchClause || element is KtWhenEntry || element is KtWhenCondition
+        if (structural) {
+            val id = structures.size
+            structures += buildJsonObject {
+                put("id", id)
+                put("parent", structureStack.lastOrNull()?.let(::JsonPrimitive) ?: JsonNull)
+                put("role", role)
+                put("kind", element.javaClass.simpleName.removeSuffix("Impl"))
+                put("origin", when {
+                    element is KtSafeQualifiedExpression -> "SYNTHETIC_NULL_GATE"
+                    element is KtBinaryExpression && element.operationToken in setOf(KtTokens.ELVIS, KtTokens.ANDAND, KtTokens.OROR) -> "SYNTHETIC_SHORT_CIRCUIT_GATE"
+                    else -> "SOURCE_DECLARED"
+                })
+                sourceSpan(element)?.let { put("sourceSpan", it) }
+            }
+            structureStack += id
         }
         depth++
         element.accept(this)
         depth--
+        if (structural) structureStack.removeAt(structureStack.lastIndex)
     }
 
     override fun visitElement(element: PsiElement) {
-        element.children.forEach(::scan)
+        element.children.forEach { scan(it) }
     }
 
     private fun line(offset: Int): Int {
@@ -124,6 +185,7 @@ private class KotlinDocumentationFlow(
         }
         events += buildJsonObject {
             put("kind", kind)
+            structureStack.lastOrNull()?.let { put("sourceStructureId", it) }
             put("file", file)
             put("startLine", line(element.textRange.startOffset))
             put("endLine", line((element.textRange.endOffset - 1).coerceAtLeast(element.textRange.startOffset)))
@@ -157,77 +219,88 @@ private class KotlinDocumentationFlow(
     override fun visitLambdaExpression(lambdaExpression: KtLambdaExpression) {
         boundaries += "CALLBACK_INVOCATION_ORDER_AND_COUNT_NOT_ESTABLISHED"
         event("DEFERRED", lambdaExpression, mapOf("condition" to JsonPrimitive("If this callback is invoked"), "invocation" to JsonPrimitive("NOT_ESTABLISHED")))
-        scan(lambdaExpression.bodyExpression)
+        scan(lambdaExpression.bodyExpression, "CALLBACK_BODY")
         event("END", lambdaExpression)
     }
 
     override fun visitTryExpression(expression: KtTryExpression) {
         boundaries += "EXCEPTION_TYPES_AND_DISPATCH_NOT_ESTABLISHED"
         event("TRY", expression.tryBlock, mapOf("condition" to JsonPrimitive("Normal processing or a caught failure")))
-        scan(expression.tryBlock)
+        scan(expression.tryBlock, "TRY_BODY")
         expression.catchClauses.forEach { clause ->
-            event("ELSE", clause, mapOf("condition" to JsonPrimitive("catch ${clause.catchParameter?.typeReference?.text.orEmpty()}")))
-            scan(clause.catchBody)
+            scan(clause, "CATCH")
         }
         event("END", expression)
         expression.finallyBlock?.finalExpression?.let { block ->
             event("FINALLY", block)
-            scan(block)
+            scan(block, "FINALLY_BODY")
         }
+    }
+
+    override fun visitCatchSection(catchClause: KtCatchClause) {
+        event("ELSE", catchClause, mapOf("condition" to JsonPrimitive("catch ${catchClause.catchParameter?.typeReference?.text.orEmpty()}")))
+        scan(catchClause.catchParameter, "CATCH_PARAMETER")
+        scan(catchClause.catchBody, "CATCH_BODY")
     }
 
     override fun visitBreakExpression(expression: KtBreakExpression) = event("BREAK", expression)
     override fun visitContinueExpression(expression: KtContinueExpression) = event("CONTINUE", expression)
 
     override fun visitIfExpression(expression: KtIfExpression) {
-        scan(expression.condition)
+        scan(expression.condition, "CONDITION")
         event("IF", expression.condition ?: expression, mapOf("condition" to JsonPrimitive(expression.condition?.text.orEmpty())))
-        scan(expression.then)
-        expression.`else`?.let { event("ELSE", it); scan(it) }
+        scan(expression.then, "THEN")
+        expression.`else`?.let { event("ELSE", it); scan(it, "ELSE") }
         event("END", expression)
     }
 
     override fun visitWhenExpression(expression: KtWhenExpression) {
-        scan(expression.subjectExpression)
-        expression.entries.forEachIndexed { index, entry ->
-            val condition = if (entry.isElse) "otherwise" else entry.conditions.joinToString(", ") { it.text }
-            event(if (index == 0) "IF" else "ELSE", entry, mapOf("condition" to JsonPrimitive(condition), "subject" to JsonPrimitive(expression.subjectExpression?.text.orEmpty())))
-            scan(entry.expression)
-        }
+        scan(expression.subjectExpression, "SUBJECT")
+        expression.entries.forEach { scan(it, "WHEN_ENTRY") }
         if (expression.entries.isNotEmpty()) event("END", expression)
     }
 
+    override fun visitWhenEntry(entry: KtWhenEntry) {
+        val first = (entry.parent as? KtWhenExpression)?.entries?.firstOrNull() === entry
+        val condition = if (entry.isElse) "otherwise" else entry.conditions.joinToString(", ") { it.text }
+        event(if (first) "IF" else "ELSE", entry, mapOf("condition" to JsonPrimitive(condition),
+            "subject" to JsonPrimitive((entry.parent as? KtWhenExpression)?.subjectExpression?.text.orEmpty())))
+        entry.conditions.forEach { scan(it, "CONDITION") }
+        scan(entry.expression, "WHEN_BODY")
+    }
+
     override fun visitForExpression(expression: KtForExpression) {
-        scan(expression.loopRange)
+        scan(expression.loopParameter, "LOOP_PARAMETER")
+        scan(expression.loopRange, "LOOP_RANGE")
         event("LOOP", expression, mapOf("condition" to JsonPrimitive("for each ${expression.loopParameter?.text.orEmpty()} in ${expression.loopRange?.text.orEmpty()}")))
-        scan(expression.body)
+        scan(expression.body, "LOOP_BODY")
         event("END", expression)
     }
 
     override fun visitWhileExpression(expression: KtWhileExpression) {
         event("LOOP", expression.condition ?: expression, mapOf("condition" to JsonPrimitive(expression.condition?.text.orEmpty())))
-        scan(expression.condition)
-        scan(expression.body)
+        scan(expression.condition, "CONDITION")
+        scan(expression.body, "LOOP_BODY")
         event("END", expression)
     }
 
     override fun visitDoWhileExpression(expression: KtDoWhileExpression) {
         event("LOOP", expression, mapOf("condition" to JsonPrimitive("do-while ${expression.condition?.text.orEmpty()}")))
-        scan(expression.body)
-        scan(expression.condition)
+        scan(expression.body, "LOOP_BODY")
+        scan(expression.condition, "CONDITION")
         event("END", expression)
     }
 
     override fun visitBinaryExpression(expression: KtBinaryExpression) {
         if (expression.operationToken in setOf(KtTokens.ELVIS, KtTokens.ANDAND, KtTokens.OROR)) {
-            scan(expression.left)
+            scan(expression.left, "LEFT_OPERAND")
             val condition = when (expression.operationToken) {
                 KtTokens.ELVIS -> "${expression.left?.text.orEmpty()} is null"
                 KtTokens.ANDAND -> "${expression.left?.text.orEmpty()} is true"
                 else -> "${expression.left?.text.orEmpty()} is false"
             }
             event("IF", expression, mapOf("condition" to JsonPrimitive(condition)))
-            scan(expression.right)
+            scan(expression.right, "RIGHT_OPERAND")
             event("END", expression)
         } else {
             super.visitBinaryExpression(expression)
@@ -238,14 +311,14 @@ private class KotlinDocumentationFlow(
     }
 
     override fun visitSafeQualifiedExpression(expression: KtSafeQualifiedExpression) {
-        scan(expression.receiverExpression)
+        scan(expression.receiverExpression, "RECEIVER")
         event("IF", expression, mapOf("condition" to JsonPrimitive("${expression.receiverExpression.text} is not null")))
-        scan(expression.selectorExpression)
+        scan(expression.selectorExpression, "SELECTOR")
         event("END", expression)
     }
 
     override fun visitCallExpression(expression: KtCallExpression) {
-        expression.valueArguments.mapNotNull { it.getArgumentExpression() }.filterNot { it is KtLambdaExpression }.forEach(::scan)
+        expression.valueArguments.mapNotNull { it.getArgumentExpression() }.filterNot { it is KtLambdaExpression }.forEach { scan(it, "ARGUMENT") }
         val qualified = (expression.parent as? KtQualifiedExpression)?.takeIf { it.selectorExpression === expression }
         val candidates = listOfNotNull(qualified, expression).flatMap { element ->
             val range = coordinates.range(element.textRange.startOffset, element.textRange.endOffset)
@@ -255,7 +328,7 @@ private class KotlinDocumentationFlow(
         if (target == null) boundaries += "DOCUMENTATION_CALL_TARGET_UNRESOLVED"
         event(if (candidates.any { it["kind"]?.jsonPrimitive?.content == "CONSTRUCTS" }) "CONSTRUCT" else "CALL", qualified ?: expression,
             if (target == null) emptyMap() else mapOf("target" to JsonPrimitive(target), "resolution" to JsonPrimitive("COMPILER_EXACT")) + transport(expression, target))
-        (expression.valueArguments.mapNotNull { it.getArgumentExpression() as? KtLambdaExpression } + expression.lambdaArguments.mapNotNull { it.getLambdaExpression() }).distinct().forEach(::scan)
+        (expression.valueArguments.mapNotNull { it.getArgumentExpression() as? KtLambdaExpression } + expression.lambdaArguments.mapNotNull { it.getLambdaExpression() }).distinct().forEach { scan(it, "CALLBACK") }
     }
 
     private fun transport(expression: KtCallExpression, target: String): Map<String, JsonElement> {
@@ -273,17 +346,17 @@ private class KotlinDocumentationFlow(
     }
 
     override fun visitReturnExpression(expression: KtReturnExpression) {
-        scan(expression.returnedExpression)
+        scan(expression.returnedExpression, "RETURN_VALUE")
         event("RETURN", expression)
     }
 
     override fun visitThrowExpression(expression: KtThrowExpression) {
-        scan(expression.thrownExpression)
+        scan(expression.thrownExpression, "THROWN_VALUE")
         event("THROW", expression)
     }
 
     override fun visitProperty(property: KtProperty) {
-        scan(property.initializer)
+        scan(property.initializer, "INITIALIZER")
         event("LOCAL", property)
     }
 }

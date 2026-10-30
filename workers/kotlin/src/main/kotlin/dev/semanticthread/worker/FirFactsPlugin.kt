@@ -420,6 +420,7 @@ private class FirDocumentationVariablesChecker24(
         }
         rows.distinct().forEach { appendFact(output, it) }
         boundaries.values.forEach { appendFact(output, it) }
+        emitDocumentationLexicalVariables24(output, owner, identity, file, bindings)
     }
 }
 
@@ -1076,6 +1077,12 @@ private fun resolvedArgumentMapping24(
         rows += buildJsonObject {
             put("argumentStart", argumentSource.startOffset)
             put("argumentEnd", argumentSource.endOffset)
+            if (documentationOnly) {
+                val actual = (argument as? FirNamedArgumentExpression)?.expression ?: argument
+                actual.source?.takeIf { it.kind === KtRealSourceElementKind }?.let {
+                    put("actualStart", it.startOffset); put("actualEnd", it.endOffset)
+                }
+            }
             (argument as? FirNamedArgumentExpression)?.name?.asString()?.let {
                 put("argumentName", it)
             }
@@ -1099,12 +1106,13 @@ private fun resolvedArgumentMapping24(
     if (omitted.any { function.valueParameters[it].defaultValue == null }) {
         return ResolvedArgumentMapping24(null, "UNMAPPED_NON_DEFAULT_PARAMETER")
     }
-    return ResolvedArgumentMapping24(
-        rows.sortedWith(compareBy<JsonObject> {
+    val ordered = rows.sortedWith(compareBy<JsonObject> {
             it["argumentStart"]?.let { start -> (start as JsonPrimitive).content.toInt() }
         }.thenBy {
             it["parameterIndex"]?.let { index -> (index as JsonPrimitive).content.toInt() }
-        }),
+        })
+    return ResolvedArgumentMapping24(
+        if (documentationOnly) ordered.mapIndexed { index, row -> JsonObject(row + mapOf("evaluationIndex" to JsonPrimitive(index))) } else ordered,
         null,
         omitted,
     )
@@ -1363,6 +1371,178 @@ private fun cfgReaches24(
     return false
 }
 
+/** Separate documentation occurrences; deferred captures never enter immediate dataInput. */
+private fun emitDocumentationLexicalVariables24(
+    output: String, root: FirNamedFunction, identity: String, file: String,
+    immediate: java.util.IdentityHashMap<org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>, JsonObject>,
+) {
+    val rootSource = root.source ?: return
+    val rootRegion = documentationRegion24(root, root, identity) ?: return
+    val bindings = java.util.IdentityHashMap<org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>, Pair<JsonObject, JsonObject>>()
+    val rows = mutableListOf<JsonObject>()
+    val boundaries = linkedSetOf<String>()
+    var exhausted = false
+    fun emit(binding: Pair<JsonObject, JsonObject>, source: org.jetbrains.kotlin.KtSourceElement?, region: JsonObject, kind: String, mode: String? = null) {
+        if (rows.size >= 4096) { exhausted = true; boundaries += "LEXICAL_VARIABLE_BUDGET"; return }
+        if (source == null || source.kind !== KtRealSourceElementKind || source.startOffset < rootSource.startOffset
+            || source.endOffset > rootSource.endOffset || source.startOffset >= source.endOffset) {
+            boundaries += "LEXICAL_VARIABLE_SOURCE_UNAVAILABLE"; return
+        }
+        rows += buildJsonObject {
+            binding.first.forEach { (k,v) -> put(k,v) }
+            put("recordType", "DOCUMENTATION_LEXICAL_VARIABLE"); put("schema", "kotlin-documentation-lexical-variable/1.0")
+            put("file", file); put("ownerSymbolIdentity", identity)
+            put("ownerStart", rootSource.startOffset); put("ownerEnd", rootSource.endOffset)
+            put("start", source.startOffset); put("end", source.endOffset)
+            put("coordinateDomain", "COMPILER_UTF16_OFFSETS")
+            put("lexicalRegion", region); put("declarationRegion", binding.second)
+            put("captured", region["identity"] != binding.second["identity"])
+            put("kind", kind); mode?.let { put("accessMode", it) }
+            put("resolution", "COMPILER_EXACT"); put("authority", "K2_RESOLVED_VARIABLE_SYMBOL")
+        }
+    }
+    fun bind(variable: org.jetbrains.kotlin.fir.declarations.FirVariable, slot: Int?, region: JsonObject) {
+        if (bindings.containsKey(variable.symbol)) return
+        val source = variable.source ?: return
+        if (source.kind !== KtRealSourceElementKind || !variable.origin.fromSource || variable.origin.generated) return
+        if (variable is FirProperty && (!variable.isLocal || variable.delegate != null)) {
+            boundaries += "LEXICAL_PROPERTY_STORAGE_OPAQUE"; return
+        }
+        val binding = immediate[variable.symbol] ?: buildJsonObject {
+            put("variableIdentity", if (slot == null) "${region["identity"]!!.jsonPrimitive.content}/local-source/${source.startOffset}:${source.endOffset}"
+                else "${region["identity"]!!.jsonPrimitive.content}/parameter/$slot")
+            put("variableKind", if (slot == null) "LOCAL_VARIABLE" else "PARAMETER")
+            put("name", variable.name.asString())
+            put("declarationStart", source.startOffset); put("declarationEnd", source.endOffset)
+            (variable.returnTypeRef as? FirResolvedTypeRef)?.coneType?.let { put("variableType", it.toString()) }
+            slot?.let { put("parameterIndex", it) }
+        }
+        val initialized = (variable as? FirProperty)?.initializer?.source
+        val retained = if (initialized?.kind === KtRealSourceElementKind) JsonObject(binding + mapOf(
+            "initializerStart" to JsonPrimitive(initialized.startOffset), "initializerEnd" to JsonPrimitive(initialized.endOffset),
+        )) else binding
+        val pair = retained to region
+        bindings[variable.symbol] = pair
+        emit(pair, source, region, "VARIABLE_DECLARATION")
+    }
+    fun walk(declarations: Boolean) {
+        var region = rootRegion
+        var depth = 0
+        root.body?.accept(object : FirVisitorVoid() {
+            override fun visitElement(element: org.jetbrains.kotlin.fir.FirElement) {
+                if (exhausted) return
+                if (depth >= 128) { exhausted = true; boundaries += "LEXICAL_VARIABLE_BUDGET"; return }
+                if (element is FirRegularClass || element is FirNamedFunction) {
+                    boundaries += "LEXICAL_LOCAL_FUNCTION_OR_CLASS_NOT_EXPANDED"; return
+                }
+                depth++
+                if (element is FirAnonymousFunction) {
+                    val nested = documentationRegion24(element, root, identity)
+                    if (nested == null) boundaries += "LEXICAL_ANONYMOUS_SCOPE_UNAVAILABLE"
+                    else {
+                        val previous = region; region = nested
+                        if (declarations) element.valueParameters.forEachIndexed { slot, parameter -> bind(parameter, slot, region) }
+                        element.body?.accept(this)
+                        region = previous
+                    }
+                } else if (declarations) {
+                    if (element is FirProperty) bind(element, null, region)
+                    element.acceptChildren(this)
+                } else if (element is FirVariableAssignment) {
+                    val left = element.lValue as? FirQualifiedAccessExpression
+                    val symbol = (left?.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
+                    symbol?.let(bindings::get)?.let { emit(it, left.source, region, "VARIABLE_ACCESS", "WRITE") }
+                    element.rValue.accept(this)
+                } else {
+                    if (element is FirQualifiedAccessExpression && element !is FirFunctionCall) {
+                        val symbol = (element.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
+                        symbol?.let(bindings::get)?.let { emit(it, element.source, region, "VARIABLE_ACCESS", "READ") }
+                    }
+                    element.acceptChildren(this)
+                }
+                depth--
+            }
+        })
+    }
+    root.valueParameters.forEachIndexed { slot, parameter -> bind(parameter, slot, rootRegion) }
+    walk(true); walk(false)
+    appendFact(output, buildJsonObject {
+        put("recordType", "DOCUMENTATION_LEXICAL_RECEIPT"); put("schema", "kotlin-documentation-lexical-receipt/1.0")
+        put("file", file); put("ownerSymbolIdentity", identity)
+        put("ownerStart", rootSource.startOffset); put("ownerEnd", rootSource.endOffset)
+        put("coordinateDomain", "COMPILER_UTF16_OFFSETS"); put("authority", "K2_RESOLVED_LEXICAL_SYMBOLS")
+        put("boundaries", JsonArray(boundaries.map(::JsonPrimitive)))
+    })
+    rows.forEach { appendFact(output, it) }
+}
+
+/** A compiler function object selects the scope; names/labels never select a target. */
+private fun documentationRegion24(
+    function: FirFunction,
+    root: FirNamedFunction,
+    rootIdentity: String,
+): JsonObject? {
+    val source = function.source ?: return null
+    val rootSource = root.source ?: return null
+    if (source.kind !== KtRealSourceElementKind || source.startOffset < rootSource.startOffset
+        || source.endOffset > rootSource.endOffset || source.startOffset >= source.endOffset) return null
+    val kind = when {
+        function === root -> "NAMED_FUNCTION"
+        function is FirAnonymousFunction -> "ANONYMOUS_FUNCTION"
+        function is FirNamedFunction && function.symbol.callableId.isLocal -> "LOCAL_FUNCTION"
+        else -> return null
+    }
+    return buildJsonObject {
+        put("identity", if (function === root) rootIdentity else "$rootIdentity/lexical/$kind/${source.startOffset}:${source.endOffset}")
+        put("kind", kind)
+        put("start", source.startOffset); put("end", source.endOffset)
+        put("ownerSymbolIdentity", rootIdentity)
+        put("execution", if (function === root) "OWNER_BODY" else "DEFERRED")
+        if (function !== root) put("invocationCountAndOrder", "NOT_ESTABLISHED")
+    }
+}
+
+private fun documentationLexicalOwner24(context: CheckerContext): Pair<FirNamedFunction, String>? {
+    val root = context.containingElements.filterIsInstance<FirNamedFunction>().firstOrNull {
+        !it.symbol.callableId.isLocal && it.origin.fromSource && !it.origin.generated
+    } ?: return null
+    val descriptor = compilerJvmMethodDescriptor(root, context.session) ?: return null
+    if (root.source?.kind !== KtRealSourceElementKind
+        || root.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, context.session)) return null
+    return root to "callable:${root.symbol.callableId}#jvm:$descriptor"
+}
+
+/** Return CONTROL is independent of strict returned-VALUE/linear-CFG proofs below. */
+private fun emitDocumentationReturnControl24(output: String, expression: FirReturnExpression, context: CheckerContext) {
+    val source = expression.source ?: return
+    if (source.kind !== KtRealSourceElementKind) return
+    val owner = documentationLexicalOwner24(context)
+    val lexical = context.containingElements.asReversed().filterIsInstance<FirFunction>().firstOrNull()
+    val target = expression.target.labeledElement
+    val lexicalRegion = if (owner != null && lexical != null) documentationRegion24(lexical, owner.first, owner.second) else null
+    val targetRegion = if (owner != null) documentationRegion24(target, owner.first, owner.second) else null
+    appendFact(output, buildJsonObject {
+        put("recordType", "DOCUMENTATION_RETURN_CONTROL")
+        put("schema", "kotlin-documentation-return-control/1.0")
+        put("file", context.containingFilePath.orEmpty())
+        put("start", source.startOffset); put("end", source.endOffset)
+        put("coordinateDomain", "COMPILER_UTF16_OFFSETS")
+        owner?.let {
+            put("ownerSymbolIdentity", it.second)
+            put("ownerStart", it.first.source!!.startOffset); put("ownerEnd", it.first.source!!.endOffset)
+        }
+        if (lexicalRegion != null && targetRegion != null) {
+            put("resolution", "COMPILER_EXACT")
+            put("authority", "K2_SELECTED_RETURN_TARGET")
+            put("lexicalRegion", lexicalRegion); put("targetRegion", targetRegion)
+            put("nonLocal", lexicalRegion["identity"] != targetRegion["identity"])
+        } else {
+            put("resolution", "UNKNOWN"); put("code", "RETURN_CONTROL_SCOPE_OR_TARGET_UNAVAILABLE")
+        }
+        put("returnValueProof", "SEPARATE_NOT_ASSERTED")
+    })
+}
+
 private fun emitDirectReturnValueFact24(
     output: String,
     expression: FirReturnExpression,
@@ -1592,6 +1772,7 @@ private class FirFactsExpressionChecker(
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirStatement) {
         if (expression is FirReturnExpression) {
+            emitDocumentationReturnControl24(output, expression, context)
             emitDirectReturnValueFact24(output, expression, context)
         }
         val source = expression.source ?: return
@@ -1674,6 +1855,10 @@ private class FirFactsExpressionChecker(
                         put("start", source.startOffset)
                         put("end", source.endOffset)
                         put("owner", owner)
+                        documentationLexicalOwner24(context)?.let { (root, identity) ->
+                            val lexical = context.containingElements.asReversed().filterIsInstance<FirFunction>().firstOrNull()
+                            lexical?.let { documentationRegion24(it, root, identity) }?.let { put("lexicalRegion", it) }
+                        }
                         put("kind", relationKind)
                         put("dataResultType", value.resolvedType.toString())
                         if (descriptor != null && compilerId != null && !compilerId.isLocal) {
@@ -1695,6 +1880,7 @@ private class FirFactsExpressionChecker(
                             put("dataStaticQualifierStart", qualifierSource.startOffset)
                             put("dataStaticQualifierEnd", qualifierSource.endOffset)
                         }
+                        if (function?.receiverParameter != null) put("dataSemanticBoundary", "EXTENSION_ARGUMENT_MAPPING_UNSUPPORTED")
                         val mapping = resolvedArgumentMapping24(callable, arguments, documentationOnly = true)
                         if (mapping.unknownCode == null) {
                             put("dataArgumentToParameter", JsonArray(mapping.rows.orEmpty()))

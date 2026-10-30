@@ -705,6 +705,7 @@ mod tests {
             Selection {
                 query: Some(Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "SYMBOL".into(),
                     symbol_contains: "Frontier".into(),
                     projection: QueryProjection::Navigation,

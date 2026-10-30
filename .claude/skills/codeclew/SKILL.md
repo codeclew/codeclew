@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.13.55"
+  version: "0.14.0"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -24,6 +24,14 @@ or full JSON output.
 A request to create durable documentation or a complete thread uses the authoring
 route below, even with the same prepared inputs. Choose by the requested result,
 not the shape of its root/service/snapshot arguments.
+
+## Human documentation from frozen inputs
+
+For durable human pages from an already supplied documentation root, service and
+frozen snapshot, read the [prepared authoring route](references/compose-original.md#frozen-source-to-reviewed-pages).
+One installed skill covers acquisition, selected inspection, original edits and
+checked completion. Native Work/proposal/coordinator deliverables use the routes
+below. Keep the caller's full requested scope in either route.
 
 ## Other workflows
 

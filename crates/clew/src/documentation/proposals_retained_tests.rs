@@ -1071,6 +1071,7 @@ fn context_migration_requires_exact_full_source_receipts_and_delivered_dependenc
         work::Selection {
             query: Some(work::Query {
                 file: None,
+                file_contains: String::new(),
                 kind: "SYMBOL".into(),
                 symbol_contains: String::new(),
                 projection: work::QueryProjection::Raw,

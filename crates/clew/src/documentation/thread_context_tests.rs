@@ -531,6 +531,7 @@ fn owned_fixture_real_compiler_and_source_capture() {
                 work::Selection {
                     query: Some(work::Query {
                         file: None,
+                        file_contains: String::new(),
                         kind: "THREAD_CONTEXT".into(),
                         symbol_contains: root.clone(),
                         projection: Default::default(),
@@ -609,6 +610,7 @@ fn work_resume_keeps_inventory_delivery_separate_from_source_bound_explanations(
         let selection = work::Selection {
             query: Some(work::Query {
                 file: None,
+                file_contains: String::new(),
                 kind: "THREAD_INVENTORY".into(),
                 symbol_contains: String::new(),
                 projection: Default::default(),
@@ -932,6 +934,7 @@ fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_deli
             work::Selection {
                 query: Some(work::Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "THREAD_INVENTORY".into(),
                     symbol_contains: String::new(),
                     projection: Default::default(),
@@ -969,6 +972,7 @@ fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_deli
             work::Selection {
                 query: Some(work::Query {
                     file: None,
+                    file_contains: String::new(),
                     kind: "THREAD_INVENTORY".into(),
                     symbol_contains: String::new(),
                     projection: Default::default(),
@@ -1203,6 +1207,7 @@ fn oversized_thread_scope_at_maximum_budget_reports_unavailable_without_repeatin
                 work::Selection {
                     query: Some(work::Query {
                         file: None,
+                        file_contains: String::new(),
                         kind: "THREAD_INVENTORY".into(),
                         symbol_contains: String::new(),
                         projection: Default::default(),

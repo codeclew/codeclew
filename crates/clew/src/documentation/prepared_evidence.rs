@@ -721,6 +721,15 @@ pub(super) fn compare(
     include_context: bool,
 ) -> Result<Value, ClewError> {
     let supplied: Value = store::read(input, 32 * 1024 * 1024)?;
+    compare_value(repo, supplied, snapshot, include_context)
+}
+
+pub(super) fn compare_value(
+    repo: &Repository,
+    supplied: Value,
+    snapshot: &str,
+    include_context: bool,
+) -> Result<Value, ClewError> {
     let envelope = supplied.get("evidenceSet").unwrap_or(&supplied);
     if envelope["schema"] != SCHEMA {
         return Err(invalid("input has no engine-retained SOURCE evidence set"));

@@ -71,6 +71,11 @@ that run as complete or silently drop the record. Manual recorded reads can use
 the supported dependency/retained part commands described below. `docs work
 packet` and its audit output do not record Work reads.
 
+For an already acquired caller-trusted READ manifest, use the existing
+[exact retained source view](reader-metadata.md#read-an-exact-retained-source-view)
+to read one file or line range without decoding packet internals.
+For ordinary reader pages, [review the draft before final binding and rendering](reader-metadata.md#bind-already-authored-pages-by-location).
+
 For a complete thread, save one short source-to-sequence sketch in the assigned
 output root **before** choosing nested steps: containing statements in source
 order, callback braces, early/post-call guards, named exits and output-field

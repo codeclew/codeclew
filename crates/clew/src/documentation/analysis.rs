@@ -35,6 +35,10 @@ const MAX_FACTS: usize = 524_288;
 
 #[path = "configuration_sources.rs"]
 mod configuration_sources;
+#[path = "csharp_regions.rs"]
+mod csharp_regions;
+#[path = "csharp_sources.rs"]
+mod csharp_sources;
 
 pub fn git(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
     let result = isolated_git_command(repo)
@@ -501,6 +505,7 @@ fn capture_session(
         &sources,
         &known,
     )?;
+    csharp_sources::bind_snapshot(&mut evidence, &snapshot)?;
     let source_repository = session.target_repository_path().ok();
     // Static resources use regular versioned files from this immutable snapshot;
     // a symlink target string or an arbitrary local file is not resource content.
@@ -1239,7 +1244,10 @@ fn strip_coordinates(value: &Value) -> Value {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        if k == "sourceSpan" || k == "dataInput" {
+                        if matches!(
+                            k.as_str(),
+                            "sourceSpan" | "dataInput" | "semanticInputs" | "semanticInput"
+                        ) {
                             v.clone()
                         } else {
                             strip_coordinates(v)
@@ -1725,6 +1733,10 @@ pub(crate) fn project_scoped(
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut roslyn_coordinates = BTreeMap::new();
     for (raw_fact, binding) in &facts {
+        if csharp_sources::project_file(&mut evidence, service, sources, known, raw_fact, binding)?
+        {
+            continue;
+        }
         if raw_fact["schema"] == "codeclew-rust-syntax-fact/1.2"
             && raw_fact["signature"].is_string()
         {
@@ -2265,6 +2277,7 @@ pub(crate) fn project_scoped(
             .as_array()
             .is_some_and(|events| events.iter().any(|event| event.get("sourceSpan").is_some()));
         let exact_outline_owner = has_outline_spans
+            || fact["documentation"]["controlRegions"].is_object()
             || fact["schema"] == "codeclew-rust-syntax-fact/1.2"
             || (fact["schema"] == "declaration-descriptor/0.1"
                 && (fact["documentation"]["dataInput"].is_object()
@@ -2291,6 +2304,11 @@ pub(crate) fn project_scoped(
             }
         }
         let mut normalized = strip_coordinates(fact);
+        if let Some(documentation) = normalized["documentation"].as_object_mut() {
+            // The separately validated observation retains region coordinates;
+            // legacy SYMBOL/FLOW consumers keep their existing shapes.
+            documentation.remove("controlRegions");
+        }
         if let Some(site) = &outline_owner_source {
             normalized["outlineOwnerSource"] = site.clone();
         }
@@ -2343,6 +2361,27 @@ pub(crate) fn project_scoped(
             source_ids: source_ids.clone(),
         };
         evidence.observations.insert(id.clone(), observation);
+        if fact["schema"] == super::csharp::CSHARP_FACT_SCHEMA
+            && fact["documentation"]["controlRegions"].is_object()
+        {
+            if sources.transformed.get(&scope) != Some(&false) {
+                return Err(invalid(
+                    "C# source regions require original untransformed text",
+                ));
+            }
+            let blob = sources
+                .blob(&scope, fact["file"].as_str().unwrap_or_default())
+                .ok_or_else(|| invalid("C# source-region compilation text is missing"))?;
+            csharp_regions::project(
+                &mut evidence,
+                fact,
+                binding,
+                &scope,
+                &id,
+                outline_owner_source.as_ref(),
+                &blob.text,
+            )?;
+        }
         if let Some(flow) = fact.get("documentation") {
             let events = flow["events"]
                 .as_array()
@@ -2788,6 +2827,8 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
         store::relative(&s.file)?;
     }
     for o in e.observations.values() {
+        csharp_sources::verify_file(e, o)?;
+        csharp_regions::verify(e, o)?;
         if matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION") {
             verify_variable_site(e, o)?;
         }
@@ -4826,6 +4867,51 @@ class UseTask {
             "{:?}",
             evidence.boundaries
         );
+    }
+
+    #[test]
+    fn kotlin_scoped_semantic_inputs_keep_original_coordinates_in_observations() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/kotlin-semantic-inputs/consume-k2-2.4.10.json"
+        )))
+        .unwrap();
+        let service = projection_service();
+        let file = fixture["file"].as_str().unwrap();
+        let text = fixture["source"].as_str().unwrap();
+        let sources = compile_sources(
+            vec![(":/main", BTreeMap::from([(file.into(), text.into())]), true)],
+            BTreeMap::new(),
+        );
+        let mut fact = declaration_fact(
+            &json!({"compilation":":/main"}),
+            fixture["symbolIdentity"].as_str().unwrap(),
+            file,
+            2,
+        );
+        fact.0["start"] = fixture["byteStart"].clone();
+        fact.0["end"] = fixture["byteEnd"].clone();
+        let metadata = &fixture["semanticInputs"];
+        let call = &metadata["calls"][0];
+        fact.0["documentation"]["semanticInputs"] = metadata.clone();
+        fact.0["documentation"]["events"] = json!([{
+            "kind":"CALL", "semanticInput":call
+        }]);
+        let evidence = project_scoped_ok(&service, vec![fact], &sources, &[":/main"]);
+        let owner = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL")
+            .unwrap();
+        assert_eq!(
+            owner.normalized["documentation"]["semanticInputs"],
+            *metadata
+        );
+        assert_eq!(
+            owner.normalized["documentation"]["events"][0]["semanticInput"],
+            *call
+        );
+        assert_eq!(owner.digest, digest(&owner.normalized).unwrap());
     }
 
     #[test]

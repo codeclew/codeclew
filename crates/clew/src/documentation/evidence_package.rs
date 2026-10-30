@@ -81,6 +81,20 @@ fn verify_portable_source(
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Freeze required declaration components from exact retained source selectors.
+    PrepareDeclarations {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Replay a frozen declaration component set without source capture.
+    ReadDeclarations {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// Retain an engine-owned SOURCE evidence set for Q&A without publishing docs.
     RetainSource {
         #[arg(long)]
@@ -953,6 +967,12 @@ pub(super) fn selected_with_expectation(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::PrepareDeclarations { root, input } => {
+            super::declaration_components::prepare(&Repository::open(&root)?, &input)
+        }
+        Command::ReadDeclarations { root, input } => {
+            super::declaration_components::read(&Repository::open(&root)?, &input)
+        }
         Command::RetainSource {
             root,
             service,

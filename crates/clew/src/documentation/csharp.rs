@@ -40,14 +40,14 @@ pub(super) fn project_facts(
                 }
                 output.push((fact, binding));
             }
-            Some("BOUNDARY") => output.push((fact, binding)),
+            Some("BOUNDARY" | "SOURCE_FILE") => output.push((fact, binding)),
             _ => {}
         }
     }
     if declarations == 0 {
         return Err(ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
-            "C# compiler declarations are unavailable; restore the selected projects before documenting behavior",
+            "C# semantic documentation requires an explicit compiler declaration; top-level-only projects are unsupported, and unrestored projects require restore",
         ));
     }
     output.push((
@@ -266,7 +266,16 @@ mod tests {
             projected.last().unwrap().0["code"],
             "CLR_SIGNATURE_PROJECTED_TO_JVM_DESCRIPTOR_GRAMMAR"
         );
-        assert_eq!(projected.len(), 4);
+        assert_eq!(projected[3].0["kind"], "SOURCE_FILE");
+        assert_eq!(projected.len(), 5);
         assert!(project_facts(vec![]).is_err());
+    }
+
+    #[test]
+    fn top_level_only_membership_does_not_fabricate_semantic_declarations() {
+        let file = json!({"schema":CSHARP_FACT_SCHEMA,"kind":"SOURCE_FILE",
+            "file":"Bootstrap.cs","sourceContentDigest":"retained","resolution":"SOURCE_MEMBERSHIP_EXACT"});
+        let error = project_facts(vec![(file, "binding".into())]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
     }
 }

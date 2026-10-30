@@ -38,6 +38,7 @@ RUSSIAN_LOCALIZATION_FILES = {
 # These sources contain reader-facing localized strings alongside English code
 # and comments. Only complete Rust string literals in these files are exempt.
 RUSSIAN_LOCALIZATION_STRING_FILES = {
+    "crates/clew/src/documentation/declaration_components.rs",
     "crates/clew/src/documentation/operation_answer.rs",
     "crates/clew/src/documentation/flow_dsl/language.rs",
     "crates/clew/src/documentation/flow_dsl/extract.rs",

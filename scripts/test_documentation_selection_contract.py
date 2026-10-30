@@ -652,11 +652,15 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             with self.subTest(selection=selection):
                 self.assertNotEqual(selection_errors(selection), [])
 
-    def test_public_work_projection_is_optional_raw_by_default_and_symbol_only_for_navigation(self) -> None:
+    def test_public_work_projection_is_optional_raw_and_navigation_is_kind_scoped(self) -> None:
         for selection in [
             {"query": {"kind": "SYMBOL"}},
             {"query": {"kind": "SYMBOL", "projection": "RAW"}},
             {"query": {"kind": "SYMBOL", "projection": "NAVIGATION"}},
+            {"query": {"kind": "SOURCE", "projection": "NAVIGATION", "file": "Ledger.kt"}},
+            {"query": {"kind": "SOURCE", "projection": "FILES", "fileContains": "Ledger"}},
+            {"query": {"kind": "SOURCE", "projection": "FILES", "fileContains": ""}},
+            {"query": {"kind": "SOURCE", "file": "Ledger.kt"}},
         ]:
             with self.subTest(selection=selection):
                 self.assertEqual(
@@ -686,9 +690,11 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": ""},
             {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": "x" * 4097},
             {"kind": "SYMBOL", "projection": "WHOLE_FILE", "file": "src/Ledger.kt"},
-            {"kind": "SOURCE", "file": "src/Ledger.kt"},
-            {"kind": "SOURCE", "projection": "RAW", "file": "src/Ledger.kt"},
             {"kind": "SYMBOL", "projection": "NAVIGATION", "file": "src/Ledger.kt"},
+            {"kind": "SOURCE", "projection": "FILES", "symbolContains": "Ledger"},
+            {"kind": "SOURCE", "projection": "WHOLE_FILE", "file": "src/Ledger.kt", "fileContains": "Ledger"},
+            {"kind": "SYMBOL", "projection": "FILES"},
+            {"kind": "FLOW", "fileContains": "Ledger"},
         ]
         for queries, accepted in [(valid, True), (invalid, False)]:
             for query in queries:

@@ -131,6 +131,23 @@ fn kotlin_whole_file_cli_selects_exact_offline_bytes_and_preserves_existing_quer
     let (code, declarations) = select(json!({"kind":"SYMBOL","projection":"NAVIGATION"}));
     assert_eq!(code, 0, "{declarations}");
     assert!(!declarations["items"].as_array().unwrap().is_empty());
+    let (code, files) =
+        select(json!({"kind":"SOURCE","projection":"FILES","fileContains":"Ledger"}));
+    assert_eq!(code, 0, "{files}");
+    assert_eq!(files["items"][0]["kind"], "SOURCE_FILE");
+    assert_eq!(files["items"][0]["record"]["file"], "Ledger.kt");
+    let (code, navigation) =
+        select(json!({"kind":"SOURCE","projection":"NAVIGATION","file":"Ledger.kt"}));
+    assert_eq!(code, 0, "{navigation}");
+    assert_eq!(navigation["items"][0]["kind"], "SOURCE_NAVIGATION");
+    for projection in [None, Some("RAW")] {
+        let mut query = json!({"kind":"SOURCE","file":"Ledger.kt"});
+        if let Some(projection) = projection {
+            query["projection"] = projection.into();
+        }
+        let (code, filtered) = select(query);
+        assert_eq!(code, 0, "{filtered}");
+    }
     for file in ["Empty.kt", "Missing.kt"] {
         let (code, refused) =
             select(json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":file}));
@@ -138,7 +155,6 @@ fn kotlin_whole_file_cli_selects_exact_offline_bytes_and_preserves_existing_quer
         assert!(refused.to_string().contains("WHOLE_FILE_NOT_RETAINED"));
     }
     for query in [
-        json!({"kind":"SOURCE","file":"Ledger.kt"}),
         json!({"kind":"SOURCE","projection":"WHOLE_FILE"}),
         json!({"kind":"SYMBOL","projection":"WHOLE_FILE","file":"Ledger.kt"}),
         json!({"kind":"SOURCE","projection":"WHOLE_FILE","file":""}),

@@ -945,7 +945,7 @@ fn query(
         Selection::Note{public_ranges,..}=>json!({"kind":"NOTE","publicRanges":public_ranges,"selectedSection":section.id,"scope":"Selected section metadata only; complete original request retained privately"}),
     });
     let mut items = vec![
-        json!({"kind":"SECTION","id":section.id,"origin":section.origin,"contentDigest":section.content_digest,"snapshot":record.snapshot,"subject":record.subject,"documentDigest":record.document_digest,"fileDigest":record.file_digest,"publication":record.publication,"renderPolicy":render_policy,"repairSupported":false,"repairBaseAvailable":record.source_map.is_some(),"repairLimit":"Original Markdown/map export only; no automated paragraph repair adapter"}),
+        json!({"kind":"SECTION","id":section.id,"origin":section.origin,"contentDigest":section.content_digest,"snapshot":record.snapshot,"subject":record.subject,"documentDigest":record.document_digest,"fileDigest":record.file_digest,"publication":record.publication,"renderPolicy":render_policy,"repairSupported":record.source_map.is_some(),"repairBaseAvailable":record.source_map.is_some(),"repairAdapter":record.source_map.as_ref().map(|_|"reader_metadata.py"),"repairLimit":"Explicit whole Markdown paragraph through the bundled guarded adapter; retained READ proof and caller renderer required"}),
     ];
     // Original untyped boundaries and the exact caller projection stay private.
     // One item per boundary uses the same byte/item/cursor limits as Source rows.
@@ -1074,7 +1074,7 @@ fn repair_base(
         .write_all(&bytes(map)?)
         .map_err(io_error)?;
     Ok(
-        json!({"status":"EXACT_READER_REPAIR_BASE_EXPORTED","reference":reference,"claim":section.id,"old":section.text,"baseMarkdownDigest":hash_bytes(markdown.as_bytes()),"baseMapDigest":map["mapDigest"],"base":output,"next":"Original Markdown and source map exported for caller review. No automated repair adapter or meaning approval is included.","unsupported":"List/table/code/link structural mutation; preserve existing guarded paragraph rules."}),
+        json!({"status":"EXACT_READER_REPAIR_BASE_EXPORTED","reference":reference,"claim":section.id,"old":section.text,"baseMarkdownDigest":hash_bytes(markdown.as_bytes()),"baseMapDigest":map["mapDigest"],"base":output,"next":"Original Markdown and source map exported. Use bundled reader_metadata.py with the same reference/file, caller-trusted READ manifests and renderer for guarded repair; no meaning approval is implied.","unsupported":"List/table/code/link structural mutation; preserve existing guarded paragraph rules."}),
     )
 }
 
@@ -1290,6 +1290,10 @@ mod tests {
             query(&repo, second, &file, None, 20, 12288, None).unwrap()["items"][0]["origin"]["startByte"],
             split + 2
         );
+        assert_eq!(
+            query(&repo, second, &file, None, 20, 12288, None).unwrap()["items"][0]["repairSupported"],
+            false
+        );
         assert!(repair_base(&repo, second, &file, &tmp.path().join("unsupported")).is_err());
         let html = fs::read_to_string(&file).unwrap();
         assert!(html.contains("Field | Meaning") && html.contains("Preserve `cityId`"));
@@ -1383,6 +1387,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["items"][0]["origin"]["bundle"], bundle);
+        assert_eq!(value["items"][0]["repairSupported"], false);
         assert_eq!(value["items"][0]["origin"]["operation"], "section-overview");
         assert!(
             value["items"]
@@ -1421,6 +1426,84 @@ mod tests {
             repo.path(&format!("docs/generated/{bundle}/bindings.json"))
                 .unwrap()
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn mapped_note_advertises_guarded_adapter_and_keeps_exact_repair_base() {
+        let (tmp, repo, mut saved) = fixture();
+        let source = saved.checked.sources().into_values().next().unwrap();
+        let text = "A saved response does not establish background completion.";
+        let normalized = json!({"association":{"id":"manual","service":"orders"},"original":{"text":text},"bindings":[]});
+        saved.checked.dependencies.insert(
+            "note:manual".into(),
+            Observation {
+                id: "note:manual".into(),
+                kind: "NOTE_ASSOCIATION".into(),
+                service: "orders".into(),
+                symbol: "Manual".into(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec![],
+            },
+        );
+        work::api_contract_tests::persist_operation_fixture(&repo, &mut saved);
+        let selected = handle(&repo, &saved, &source.id, None).unwrap();
+        let mut map = json!({"schema":"codeclew-authored-sources/1.0","markdownDigest":hash_bytes(text.as_bytes()),
+            "claims":[{"id":"target","text":text,"location":{"startByte":0,"endByte":text.len()},
+                "sources":[{"id":source.id,"work":saved.id,"snapshot":saved.snapshot,"revision":source.revision,
+                    "textDigest":source.text_digest,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,
+                    "sourceReference":selected.reference}]}]});
+        map["mapDigest"] = json!(digest(&map).unwrap());
+        let map_path = tmp.path().join("sources.json");
+        fs::write(&map_path, bytes(&map).unwrap()).unwrap();
+        let output = tmp.path().join("mapped");
+        let result = export(
+            &repo,
+            &saved.id,
+            Request {
+                schema: "codeclew-reader-export-request/1.0".into(),
+                title: "Mapped note".into(),
+                selection: Selection::Note {
+                    id: "manual".into(),
+                    map: Some(map_path),
+                    public_ranges: None,
+                    sections: vec![NoteSection {
+                        id: "target".into(),
+                        title: "Target".into(),
+                        start_byte: 0,
+                        end_byte: text.len(),
+                        bindings: vec![],
+                    }],
+                },
+            },
+            &output,
+        )
+        .unwrap();
+        let reference = result["sections"][0]["reference"].as_str().unwrap();
+        let page = query(
+            &repo,
+            reference,
+            &output.join("index.html"),
+            None,
+            20,
+            12288,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page["items"][0]["repairSupported"], true);
+        assert_eq!(page["items"][0]["repairAdapter"], "reader_metadata.py");
+        let recovered = tmp.path().join("base");
+        let base = repair_base(&repo, reference, &output.join("index.html"), &recovered).unwrap();
+        assert_eq!(base["claim"], "target");
+        assert_eq!(base["old"], text);
+        assert_eq!(
+            fs::read(recovered.join("index.md")).unwrap(),
+            text.as_bytes()
+        );
+        assert_eq!(
+            store::read::<Value>(&recovered.join("sources.json"), MAX_PRIVATE).unwrap(),
+            map
         );
     }
 
