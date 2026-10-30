@@ -19,6 +19,24 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_macos_release as release  # noqa: E402
+import install_agent_skill as skill_installer  # noqa: E402
+
+
+def prose_links(document: str):
+    """Code examples contain literal links, not installed-skill navigation."""
+    fence = None
+    for line in document.splitlines():
+        marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            marks, suffix = marker.groups()
+            if fence is None:
+                if marks[0] != "`" or "`" not in suffix:
+                    fence = (marks[0], len(marks))
+            elif marks[0] == fence[0] and len(marks) >= fence[1] and not suffix.strip():
+                fence = None
+            continue
+        if fence is None:
+            yield from re.findall(r"\[[^\]]+\]\(([^)]+)\)", line)
 
 
 class ReleaseVersionTest(unittest.TestCase):
@@ -35,10 +53,24 @@ class ReleaseVersionTest(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "symlink"):
                 release.minimal_source_files(root)
             link.unlink()
-            for index in range(64):
+            for index in range(skill_installer.MAX_FILES - 2):
                 (skill / f"extra-{index}.md").write_text("Public size-bound fixture")
+            release.minimal_source_files(root)
+            (skill / "overflow.md").write_text("Public overflow fixture")
             with self.assertRaisesRegex(release.ReleaseError, "invalid size"):
                 release.minimal_source_files(root)
+
+    def test_prose_links_skip_fenced_examples_but_keep_navigation(self) -> None:
+        document = '''[Real reference](references/real.md)
+```json
+{"text":"[Example page](domain.md)"}
+````
+[Broken real reference](missing.md)
+  ~~~markdown
+[Another example](example.md)
+  ~~~
+'''
+        self.assertEqual(list(prose_links(document)), ["references/real.md", "missing.md"])
 
     def test_runtime_build_failure_retains_bounded_bootstrap_stderr(self) -> None:
         detail = b"x" * 5000 + b'\n{"schema":"codeclew-bootstrap-error/1.0","error":"controlled failure"}'
@@ -387,7 +419,7 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(actual.keys(), expected.keys())
             self.assertEqual(actual, expected)
             for path in installed.rglob("*.md"):
-                for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", path.read_text()):
+                for link in prose_links(path.read_text()):
                     target = urlsplit(link)
                     if target.scheme or target.netloc or not target.path:
                         continue
