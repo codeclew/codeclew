@@ -90,6 +90,20 @@ Direct comparator. Independent helper/proof acceptance and intended mechanical
 refusals do not establish semantic quality, authorize another paid author or
 lift the quality hold.
 
+For compact presentations, verify display labels against native identifiers in
+the entire delivered context. A sidecar can preserve distinct identities while
+the reading surface still has a namespace collision. Preserve the rejected
+version and revised byte measurement; exact original citation IDs may avoid a
+new resolver, but a static projection is not an author integration result.
+
+For a local revision episode, separate source identity from what a paraphrase
+actually entails. Preserve exact-source evidence versus author inference and
+record observed changes, not hypothetical prevented errors. Keep a root event
+audit's chronology separate from a critic who intentionally did not read that
+audit. Two supported changes without new material false claims do not qualify
+unchanged prose or the complete document. A non-held-out, unpaired diagnostic
+cannot supply a causal or token advantage; do not repair it after critique.
+
 ## Accounting and privacy
 
 Reconcile actual response usage, including in-flight usage settled after a stop.

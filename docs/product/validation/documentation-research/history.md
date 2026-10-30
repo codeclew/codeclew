@@ -278,6 +278,71 @@ unexecuted while disk admission is blocked. The supported bootstrap requires
 6 GiB free; the observed volume had less than 1 GiB. No build, recapture or
 quality/release qualification was attempted by bypassing that limit.
 
+## Static compact display and namespace failure
+
+`weather-static-compact-display-20261030` starts from the nine initial carriers
+actually delivered in staged Weather v2: 123,539 bytes. Three shared source
+displays contain 8,436 redundant canonical body bytes after ignoring only terminal
+LF characters for comparison. Identical display text does not unify the original
+revision, authority, scope or citation binding. Repeated instruction reads were
+also observed; repetition alone does not prove that a reread was unnecessary.
+
+The first projection reduced displayed payload to 115,566 bytes but was rejected:
+nine new short aliases collided with native source-reference spellings in the
+unchanged inventory. Separate sidecar identities did not make that navigation
+unambiguous. The defective version is retained. A disjoint display namespace
+then produced **116,012 bytes**, a **7,527-byte /6.09% reduction** including all
+added navigation. Root independently reconstructed all nine original carriers
+from the saved view and sidecar without running the prototype, compared all 48
+aliases to original manifest entries/outcomes/scope/Work and verified unchanged
+native metadata. This acceptance is static losslessness only.
+
+The native helper did not accept the new display aliases. A separate static
+variant retained original citation IDs, without a new resolver or helper change:
+**116,408 bytes**, a **7,131-byte /5.77% reduction**. Reversing the generated label
+changes recovers the accepted parent; the nine carriers recover transitively.
+This removes a proposed resolver requirement, not the need to verify any future
+author/export integration. Neither variant was an author run, measured model
+tokens or repaired missing host source, the retry contradiction, whole-system
+meaning coverage or quality. Proof sidecars are not model input by default.
+
+## Bounded Dashboard local-revision diagnostic
+
+`weather-dashboard-local-revision-diagnostic-v1-20261030` used one Luna Max
+(`gpt-6-luna`, `max`) author for one initial Dashboard draft and one factual-revision
+pass. Dashboard was alphabetically first among the three admitted services;
+the previously evaluated corpus was not held-out or a fragment chosen by its
+known failure. Four unchanged saved carriers, 56,165 bytes, reached visible tool
+outputs intact. This episode did not use the compact projection. The same author
+recorded a source basis and disposition before factual changes; no second
+reviewing model participated in generation.
+
+Actual usage was 631,938 input minus 596,736 cached input plus 16,672 output:
+**51,874 net**. The 10,244 reasoning tokens are already included in output.
+There is no paired Direct or full-Weather comparator. The two factual changes
+were supported narrowings: server-to-service versus browser requests, and
+connection acquisition before a transaction versus SQL failures inside it and
+rejected-message persistence outside the function. Both root and the independent
+engineer found no new material false assertion within these two changes. No
+wholly unsupported new candidate was demonstrably rejected.
+
+One source-basis paraphrase was inaccurate: payload event-type strings were
+confused with Kafka topic names. Separate application source supports the final
+topic statement; an inaccurate evidence note and a false final change are
+different findings. Raw citation handles also remained in human prose despite
+the separate-evidence instruction. Correct source identity does not guarantee
+that the author's paraphrase follows from that source.
+
+Keep chronology and critic access distinct. Root's visible event audit observed
+candidate notes at sequences 20 and 22 before final application at 24. That audit
+was recorded before terminal critique. The independent critic intentionally read
+only allowed final artifacts and the four carriers, not root chronology; it
+correctly left pre-application ordering unestablished within its review. This is
+different evidence access, not one merged verdict. Frozen output was not repaired
+after critique. No whole-document completeness, clarity or navigation score,
+causal error-prevention advantage, reduced false-claim rate, token advantage,
+held-out transfer, native integration or release readiness was established.
+
 ## Retired public Java transfer
 
 Historical RealWorld used 139 text files /247,407 bytes at revision

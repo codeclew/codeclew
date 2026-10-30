@@ -13417,6 +13417,229 @@
         }
       ],
       "evidenceLimit": "Preserved historical metric and bounded fixture scope; no new execution or rescoring."
+    },
+    {
+      "id": "weather-static-compact-display-20261030",
+      "era": "0140",
+      "family": "reader-and-content",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "input-overhead-diagnosis",
+          "sha256": "caeeca07512839de60a4eb90b822cbadbc669cad0ff5185862f7405002fa1505",
+          "facts": {
+            "status": "STATIC_VISIBLE_INPUT_DIAGNOSIS_NO_AUTHOR_OR_PRODUCT_CHANGE",
+            "initialCarriers": 9,
+            "initialCarrierBytes": 123539,
+            "equalDisplayBodyGroups": 3,
+            "redundantCanonicalDisplayBodyBytes": 8436,
+            "initialCarrierByteShare": 0.06828612826718689,
+            "normalization": "Only terminal LF characters are ignored for display comparison; original bodies and all bindings remain distinct.",
+            "repeatedInstructions": "Exact large instruction/tool blocks were also repeated; repetition alone does not establish that rereading was unnecessary.",
+            "limit": "Initial carriers are not the whole session. Display bytes are not model tokens, acquisition savings or a cause of the semantic failure."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "namespace-collision-review",
+          "sha256": "32490774525b46359d8752ae5dabddf3433370550442e472d92c70b47c868952",
+          "facts": {
+            "status": "DISPLAY_ALIAS_NAMESPACE_COLLISION_REQUIRES_CORRECTION",
+            "initialAfterDisplayBytes": 115566,
+            "collisionsWithNativeSourceReferences": 9,
+            "finding": "New short display aliases reused native source-handle spellings in unchanged inventories. Navigation was ambiguous despite separate sidecar identities.",
+            "authorAdmitted": false,
+            "correction": "Use a disjoint display namespace, preserve native references, recalculate bytes and reconstruct original carriers.",
+            "initialDefectiveArtifactsPreserved": true
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "independent-static-projection-acceptance",
+          "sha256": "448327c74ad40fb57415a6026b9e1c0910e5fe788189273b4534b2758e00de30",
+          "facts": {
+            "status": "ROOT_ACCEPTED_STATIC_LOSSLESS_DISPLAY_PROJECTION_ONLY",
+            "beforeDisplayBytes": 123539,
+            "afterDisplayBytes": 116012,
+            "savedDisplayBytes": 7527,
+            "displayReduction": 0.06092812795959171,
+            "originalCarriersReconstructedExactly": 9,
+            "citationBindingsComparedToOriginalPackets": 48,
+            "nativeMetadataEqual": true,
+            "displayNamespaceCollisionFixed": true,
+            "independentVerification": "Root reconstructed saved view and sidecar without running the prototype; compared all aliases with original manifest entries, outcomes, scope and Work.",
+            "limit": "Static lossless display only. The helper did not accept display aliases; no author, token, semantic-quality or integration result."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "native-citation-static-variant",
+          "sha256": "c64fffdc9eb419fd9da565b36d38d492d749555fd94bd29f9e572e5cdd4a3154",
+          "facts": {
+            "status": "ROOT_ACCEPTED_STATIC_NATIVE_CITATION_PRESENTATION_NOT_AUTHOR_TESTED",
+            "beforeDisplayBytes": 123539,
+            "afterDisplayBytes": 116408,
+            "savedDisplayBytes": 7131,
+            "displayReduction": 0.05772266247905522,
+            "originalCitationIdentitiesPreserved": 48,
+            "bodyTextChanged": false,
+            "reverseProjectionEqualsAcceptedParent": true,
+            "originalNineCarriersRecoverTransitively": true,
+            "nativeHelperChanged": false,
+            "newAliasResolverRequired": false,
+            "authorRun": false,
+            "limit": "Retaining existing citation IDs removes the need for a new resolver, but does not establish author/export integration, model-token savings, meaning coverage or complete source availability."
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Static public-input display measurement and independent lossless/binding checks only. No raw carriers, source text, local paths, sessions or proof sidecars copied into the repository. Equal text does not merge source revisions, authority or scope.",
+      "safeFinding": "Three duplicate display bodies admit a lossless static reduction. The first compact version was rejected for nine namespace collisions; the corrected display reduced bytes by 6.09%, and a variant retaining native citations reduced them by 5.77% without a new resolver. Neither result repairs missing host source or the delivered retry-logic contradiction, nor establishes lower model usage or better documentation.",
+      "doNotRepeatUnchanged": "Reuse the accepted static reconstruction and original bindings. Keep the rejected namespace treatment visible. Do not infer author integration or token/quality benefit from byte counts, feed a full proof sidecar, or start another author merely because the display is smaller."
+    },
+    {
+      "id": "weather-dashboard-local-revision-diagnostic-v1-20261030",
+      "era": "0140",
+      "family": "single-author-weather",
+      "coverage": "compact-metadata-indexed",
+      "reports": [
+        {
+          "role": "local-revision-admission",
+          "sha256": "c751a666db022fbf92de1fa9bb7f9718dd052c8e25b1a795d5c6538f1be4c69f",
+          "facts": {
+            "schema": "research-bounded-local-revision-admission/1",
+            "scope": "Dashboard only: one initial own draft and one local factual-revision pass.",
+            "selection": "Alphabetically first admitted Weather service; previously evaluated corpus, not held-out or chosen by a known fragment failure.",
+            "model": "gpt-6-luna",
+            "reasoning": "max",
+            "inputCarriers": 4,
+            "inputBytes": 56165,
+            "treatment": "The same author records concise source basis and disposition before each factual change; editorial changes exempt. No second reviewing model in generation.",
+            "sourceTreatment": "Unchanged saved carriers and original citations, without a new compact projection or fresh capture.",
+            "limit": "Diagnostic only; no paired Direct, full Weather, general revision loops or native compose/export pipeline."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "local-revision-terminal-result",
+          "sha256": "d798243f494da19bbde08742af3e996a82c49d83411b0a31dfeaddc413b29246",
+          "facts": {
+            "status": "LOCAL_REFINEMENTS_SUPPORTED_WITH_BASIS_AND_PRESENTATION_DEFECTS",
+            "authorNetTokens": 51874,
+            "criticVerdict": "LOCAL_CHANGES_SUPPORTED_WITH_BASIS_AND_PRESENTATION_DEFECTS",
+            "counts": {
+              "actualFactualChanges": 2,
+              "loggedFactualChanges": 2,
+              "supportedFinalChanges": 2,
+              "narrow": 2,
+              "accept": 0,
+              "reject": 0,
+              "unloggedTextChanges": 0,
+              "editorialTextChanges": 0,
+              "materialFalseAssertionsIntroducedByChanges": 0,
+              "inaccurateSourceBasisItems": 1,
+              "visibleHumanTextInstructionViolations": 1
+            },
+            "sourceBasisDefect": "One evidence-note paraphrase confuses payload event-type strings with Kafka topic names. A separate application source supports the final topic statement, so an inaccurate basis is not automatically a false final change.",
+            "presentationDefect": "Raw citation handles remain in human prose despite the separate-evidence instruction.",
+            "frozenOutputUnchangedAfterCritique": true,
+            "notEstablished": [
+              "Whole-document completeness/clarity/navigation",
+              "Prevention of the prior Forecasts contradiction",
+              "Comparable token advantage over Direct or full Weather",
+              "Held-out transfer",
+              "Native compose/export integration or release readiness"
+            ]
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "author-accounting",
+          "sha256": "ad333ee0b15864d92a0b391bfaf6df5e37cb793d5696dd692cd1a5121bd16de2",
+          "facts": {
+            "status": "TERMINAL_RECORDED_SESSION_USAGE",
+            "model": "gpt-6-luna",
+            "reasoning": "max",
+            "usage": {
+              "input_tokens": 631938,
+              "cached_input_tokens": 596736,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 16672,
+              "reasoning_output_tokens": 10244,
+              "total_tokens": 648610
+            },
+            "net": 51874,
+            "reasoningAddedAgain": false,
+            "comparison": "No paired baseline, held-out transfer or full Weather comparison; descriptive diagnostic author cost only."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "independent-local-engineer-review",
+          "sha256": "d485b562253b377650e66cc08ce9ec13cb915cb4949f46c2adc6a9f74532741a",
+          "facts": {
+            "schema": "bounded-local-terminal-engineer-review/1",
+            "verdict": "LOCAL_CHANGES_SUPPORTED_WITH_BASIS_AND_PRESENTATION_DEFECTS",
+            "scope": "Only the two logged Dashboard draft-to-final factual changes; unchanged content and whole-document completeness are not certified.",
+            "counts": {
+              "actualFactualChanges": 2,
+              "loggedFactualChanges": 2,
+              "supportedFinalChanges": 2,
+              "narrow": 2,
+              "accept": 0,
+              "reject": 0,
+              "unloggedTextChanges": 0,
+              "editorialTextChanges": 0,
+              "materialFalseAssertionsIntroducedByChanges": 0,
+              "inaccurateSourceBasisItems": 1,
+              "visibleHumanTextInstructionViolations": 1
+            },
+            "sourceRecordDefinitelySavedBeforeApplication": "NOT_ESTABLISHED within this critic review: only allowed final artifacts were read, with no chronology/root-observed material.",
+            "supportedNarrowings": [
+              "Separate server-to-service HTTP calls from browser-to-server requests.",
+              "Separate connection acquisition before the transaction from SQL errors inside it and rejected-message persistence outside the function."
+            ],
+            "whollyUnsupportedNewCandidateRejected": false,
+            "qualityScoresAssigned": false,
+            "limitation": "Two supported narrowings with no observed new material false assertion in those changes do not prove a prevented error, a lower false-claim rate, whole-document quality or release readiness."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "input-delivery-audit",
+          "sha256": "9cb105d8bc817dbae307276ad43f5562025f1d0abba7eaa8c65ca968af3769e0",
+          "facts": {
+            "inputCarriers": 4,
+            "allAdmittedCarrierTextsMatchedVisibleToolOutputs": true,
+            "limit": "Exact visible delivery establishes neither comprehension nor source completeness."
+          },
+          "content": "selected compact facts"
+        },
+        {
+          "role": "root-visible-preapplication-audit",
+          "sha256": "ab8ccb6ffbdce5f1552c02f2ac3931196e7088f229d4ae25d5b48099cc6f61e6",
+          "facts": {
+            "status": "ROOT_VISIBLE_PROTOCOL_AND_EDIT_AUDIT_COMPLETE_TERMINAL_CRITIC_PENDING",
+            "recordStage": "Visible protocol/edit audit recorded before terminal critique; the later critic report remains separate.",
+            "initialDraftWriteSequence": 16,
+            "candidateWriteSequences": [
+              20,
+              22
+            ],
+            "finalApplySequence": 24,
+            "terminalReadySequence": 26,
+            "preApplicationEvidenceNotesObserved": true,
+            "allFourCarrierTextsDeliveredExactly": true,
+            "rootObservedMaterialContradictionsIntroduced": 0,
+            "authorFeedbackSent": false,
+            "limit": "Root saw chronology that the independent critic intentionally did not inspect. The two records have different evidence access; neither proves causal error prevention or whole-document quality."
+          },
+          "content": "selected compact facts"
+        }
+      ],
+      "evidenceLimit": "Selected safe aggregates from one public-service diagnostic, not an author transcript, full draft, source copy or native integration check. Root visible chronology and critic access limits remain distinct; no post-critic repair was performed.",
+      "safeFinding": "Luna Max used 51,874 net for one draft and revision pass. Both factual changes are supported narrowings with no observed new material false assertion in those changes. One source-basis paraphrase is inaccurate and raw citation IDs leak into reader prose. Root observed notes before application; the critic correctly left chronology unestablished within its final-artifact-only review. No whole-document quality, prevented-error causal advantage, token advantage or release readiness is established.",
+      "doNotRepeatUnchanged": "Preserve the frozen episode and actual cost; do not rerun it as a success demonstration. Any later materially different diagnostic must distinguish exact source evidence from author inference and keep raw technical identifiers out of reader prose. No new author, full-system qualification or product promotion follows automatically."
     }
   ],
   "scopeClarification20261030": {

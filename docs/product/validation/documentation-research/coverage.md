@@ -3,8 +3,8 @@
 Snapshot: 2026-10-30. The [inventory](inventory.json) reconciles **250 retained
 top-level experiment/substudy directories**, **101 central root records**,
 **41 retired compact reports**, **4 earlier repository records**, **1 sanitized
-configuration incident** and **4 nested follow-up records**: 401 entries.
-Entries are not 401 independent paid trials. There are 989 report references /981
+configuration incident** and **6 nested follow-up records**: 403 entries.
+Entries are not 403 independent paid trials. There are 999 report references /991
 unique report fingerprints; duplicates remain visible rather than counted as
 independent evidence. The earlier 397-entry snapshot left whole-system Weather
 pending; its terminal result and the separate statement diagnostic added six
@@ -14,6 +14,9 @@ visual/mechanical references. A helper acceptance is not another paid author.
 No earlier frozen outcome was overwritten.
 The compilation-unit diagnosis and unqualified implementation checkpoint add one
 entry and five compact references; prepared tests are not counted as executed.
+The static compact-display and bounded Dashboard local-revision studies add two
+entries and ten compact reports. All previous 401 experiment objects and their
+historical failures remain unchanged; the display variants are not paid trials.
 
 The directory/catalog scan and a second compact-handoff pass were performed
 without reading private source, caches, dumps or raw author sessions. Central
@@ -27,7 +30,7 @@ with stable restricted-study aliases.
 
 | Label | Entries | Meaning |
 | --- | ---: | --- |
-| compact-metadata-indexed | 348 | Compact result/protocol/acceptance/accounting/review or handoff fingerprint and selected safe reported facts retained |
+| compact-metadata-indexed | 350 | Compact result/protocol/acceptance/accounting/review or handoff fingerprint and selected safe reported facts retained |
 | existing-repository-record | 4 | Earlier public repository evidence linked with original metric/limits |
 | artifact-container-not-an-independent-trial | 24 | Blind reader packages, acceptance copies or retained-report containers; not new treatments |
 | restricted-withheld | 5 | No private contents inspected; public details withheld |
@@ -119,6 +122,21 @@ as truthful while preserving the original critic counts and incomplete lifecycle
 coverage. Global retained-byte absence remains unestablished. The earlier HTML
 language finding belongs to the benchmark renderer, not a proven native-renderer
 defect. No frozen output or private acquisition was modified.
+
+`weather-static-compact-display-20261030` retains the initial nine-alias namespace
+collision failure, independent lossless correction and native-citation variant.
+The 123,539 to 116,012 and 116,408 byte measurements establish display fidelity
+and reductions of 6.09% and 5.77%, respectively. They do not establish author
+integration, token savings, meaning coverage or repaired source omissions.
+
+`weather-dashboard-local-revision-diagnostic-v1-20261030` retains admission,
+terminal result, actual 51,874 net accounting, independent local critique,
+delivery audit and root visible chronology separately. Two supported narrowings
+are accompanied by one inaccurate source-basis paraphrase and raw citation
+handles in reader prose. Root observed notes before application; the critic did
+not inspect chronology and left that question unestablished within its review.
+No full-document score, paired baseline, held-out result or error-prevention
+causal effect is available. Frozen output was not repaired after critique.
 
 ## Known major families reconciled
 

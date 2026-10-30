@@ -69,6 +69,14 @@ Compact source, brief consequential gaps and small navigation structures should
 retain original code and precise drill-down in sidecars. An auxiliary view must
 not invent body roles, execution order or successful external effects.
 
+The static compact-display study preserved three shared bodies while keeping
+all source bindings distinct. Its first alias namespace collided with nine
+native source references and was rejected. A disjoint namespace passed independent
+reconstruction at 6.09% fewer display bytes; retaining original citations instead
+gave 5.77% fewer bytes without a new resolver. Neither treatment established model
+token savings, author/export integration or improved prose. Keep navigation
+namespaces unambiguous in the complete delivered context, not only the sidecar.
+
 Overviews, process steps, nearby failure explanations, collapsible details,
 Markdown in secondary sections, correct return labels, field tables, declared
 external diagrams and page queues each had separate implementation/reader
@@ -159,6 +167,15 @@ confirmed contradiction. Staging, helper and retained-contract input changed
 together, so neither the 43.0% author-cost increase nor any coverage difference
 isolates an individual mechanism. Statement rows and generic checklists still
 have no demonstrated guarantee of reader quality.
+
+The bounded Dashboard local-revision diagnostic supplied two source-supported
+narrowings at 51,874 net, with no observed new material false assertion in those
+changes. It also exposed an inaccurate source-basis paraphrase and raw citation
+IDs in human prose. Recording a source rationale does not itself establish
+entailment. Root observed the notes before application; the independent critic
+did not inspect chronology and correctly retained that limit. The episode
+does not certify unchanged content, catch a demonstrably unsupported new claim,
+establish error-prevention causality or compare token cost with another method.
 
 The next justified step is bounded diagnosis of the confirmed source/delivery
 and prose losses. A new whole-system qualification needs a concrete material
