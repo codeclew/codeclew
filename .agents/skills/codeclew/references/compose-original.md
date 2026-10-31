@@ -218,6 +218,13 @@ You perform this review; no extra model, coverage ledger or separate report is
 needed. Keep consequential uncertainty readable, without audit boilerplate.
 Intentional rereads remain allowed; smaller input is not proof of completeness.
 
+For process pages, use a brief input/outcome overview, ordered stages, titled
+branches and concise failure/commit outcomes. Put detailed contracts or runtime
+settings under subordinate headings or disclosures. Preserve each claim's source
+bindings. Fragments concatenate literally: use explicit paragraph boundaries
+between prose blocks, but keep adjacent table-row fragments in the same table.
+Do not insert blank lines between every fragment or infer a process from layout.
+
 When saved connected metadata is available, consult its optional
 [structural self-review](connected-computation.md#saved-structural-self-review)
 after drafting. Revisit referenced source and correct omitted meaning before READY;
