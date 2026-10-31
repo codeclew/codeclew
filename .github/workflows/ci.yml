@@ -64,6 +64,13 @@ jobs:
       - uses: actions/setup-node@v4
         if: matrix.suite == 'checks'
         with: { node-version: '22' }
+      - name: Verify the portable Markdown renderer
+        if: matrix.suite == 'checks'
+        run: |
+          renderer_dir=$(mktemp -d)
+          cp -R skills/codeclew/examples/markdown-renderer/. "$renderer_dir/"
+          npm ci --prefix "$renderer_dir" --ignore-scripts --no-audit --no-fund
+          npm test --prefix "$renderer_dir"
       - name: Install the required C# preview SDK
         if: matrix.suite == 'checks'
         uses: actions/setup-dotnet@v6

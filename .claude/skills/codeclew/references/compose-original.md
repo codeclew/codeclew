@@ -200,30 +200,55 @@ paths under their recorded root; no journal dump is needed. Keep all current
 pages and stable page-local IDs. Reconcile human Markdown edits into the original
 first; never replace them from a stale copy.
 
-Before finalization/READY, check request-to-source-to-reader meaning yourself,
-using the existing entry/body/resource inventory and your draft or short notes.
-For consequential alternatives, explain when each happens or is skipped, its local
-result/effect, and what failure, retry or completion changes. For domain fields,
-explain evidenced meaning, units and time interpretation; a name is not a
-definition. Use authored GFM tables for named entity fields: one row per domain
-value, readable field names, meaning/use and evidenced units or nullability.
-Keep DTO and storage aliases of the same value in that row. Use short prose for
-behavior, alternatives and failures; a renderer must not guess table rows from
-arbitrary paragraphs. Preserve each row's source associations through the same
-compose/bind/export workflow. For external participants, explain the operation, direction and what
-responses/failures mean. A heading, field list or citation alone does not establish
-that the reader received that meaning. Check reader claims back against source;
-fix omissions and contradicted visible claims without inventing unknown meanings.
-You perform this review; no extra model, coverage ledger or separate report is
-needed. Keep consequential uncertainty readable, without audit boilerplate.
-Intentional rereads remain allowed; smaller input is not proof of completeness.
+Before drafting, choose a reader structure appropriate to the question and saved
+evidence. Keep concise pages concise; a short overview needs no mandatory template.
 
-For process pages, use a brief input/outcome overview, ordered stages, titled
-branches and concise failure/commit outcomes. Put detailed contracts or runtime
-settings under subordinate headings or disclosures. Preserve each claim's source
-bindings. Fragments concatenate literally: use explicit paragraph boundaries
-between prose blocks, but keep adjacent table-row fragments in the same table.
-Do not insert blank lines between every fragment or infer a process from layout.
+- Overview: purpose, responsibilities, inputs/outputs and useful next pages.
+- Domain data: authored GFM tables for comparable named fields, one conceptual
+  value per row. Keep code/DTO/storage aliases together. Explain evidenced meaning,
+  units, time interpretation, nullability and use; a name alone is not a definition.
+- Processes: trigger/input, ordered work, consequential branches and outcomes.
+  Show what changes or is sent, when a branch happens or is skipped, and what
+  failure, retry, completion or commit/acknowledgement changes. Use titled branches
+  and concise outcome comparisons where useful, without a universal stage count.
+- HTTP/integrations: direction, endpoint/topic, payload/result and important
+  errors/timeouts. Distinguish declared contracts from visible runtime behavior.
+- Presentation: use meaningful headings, short paragraphs, numbered ordered work,
+  bullets for parallel alternatives and tables for comparable items. Long pages
+  benefit from local contents links. Keep primary behavior and key failures visible;
+  disclosures can hold detailed schemas/configuration. Avoid dense tables that
+  split identifiers into arbitrary letter fragments; combine related labels or
+  choose a simpler structure. Do not impose character caps or forced tables.
+
+Fragments concatenate literally. Author explicit paragraph boundaries between
+independent prose blocks; keep adjacent table rows and retained components intact.
+Never add blank lines between every fragment, guess structure from arbitrary
+paragraphs or transcribe retained component values. Preserve every claim's source
+associations through the existing compose/bind/export workflow.
+
+The original is the authoritative input. Generate Markdown with the supported
+compose command; do not maintain a separate final Markdown draft. Review the
+actual compose/render output. A table/list-to-prose transition needs an explicit
+block boundary; adjacent table rows do not. For example, the last row ends with
+two newlines before the next prose fragment:
+
+```json
+{"text":"| Field | Meaning |\n| --- | --- |\n"}
+{"id":"identity","text":"| `id` | Event identity. |\n\n","evidence":["RETURNED_HANDLE"]}
+{"id":"commit","text":"Commit precedes acknowledgement.\n","evidence":["RETURNED_HANDLE"]}
+```
+
+Before finalization/READY, self-check request-to-source-to-reader meaning using
+the existing entry/body/resource inventory and your draft: can a reader locate
+what arrives, what changes, what is returned/sent and what happens on failure
+without decoding a long block? Check claims against source; preserve qualifications
+that change behavior and correct omissions/contradictions without inventing missing
+facts or duplicating aliases. A heading or citation alone does not establish meaning.
+You perform this review; no extra model, critic stage, semantic lint or separate
+report is needed. Keep proof metadata and review bookkeeping outside reader prose.
+In debug work, retain observable inputs, outputs and check evidence outside published
+pages; do not request or publish hidden reasoning. Intentional rereads remain allowed;
+smaller input is not proof of completeness.
 
 When saved connected metadata is available, consult its optional
 [structural self-review](connected-computation.md#saved-structural-self-review)
