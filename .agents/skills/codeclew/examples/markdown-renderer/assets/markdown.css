@@ -1,0 +1,36 @@
+/* Layout adapter around the canonical native reader tokens and type roles. */
+.markdown-reader{overflow-wrap:anywhere}
+.markdown-reader .reader-nav{position:relative;justify-content:space-between;gap:16px}
+.reader-project{color:var(--muted);max-width:60ch}
+.markdown-reader .guide-layout{max-width:1440px}
+.markdown-reader .guide-toc{top:20px;max-height:calc(100vh - 40px)}
+.guide-local-navigation summary{color:var(--muted);margin-bottom:14px;min-height:32px}
+.guide-local-navigation nav{display:grid;gap:4px}
+.guide-local-navigation a[aria-current=page]{background:var(--green-soft);color:var(--accent);border-left:3px solid var(--accent);font-weight:600}
+.markdown-reader main{min-width:0}
+.markdown-reader .reader-guide{padding:32px 40px 40px}
+.markdown-reader h1{margin-top:0}
+.markdown-reader h2{margin-top:32px}
+.markdown-reader .reader-guide p{max-width:880px}
+.markdown-reader .table-scroll{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;margin:20px 0;background:#fffdf8;scrollbar-gutter:stable}
+.markdown-reader .reader-guide table{display:table;margin:0;min-width:620px;width:100%;border-collapse:collapse}
+.markdown-reader th,.markdown-reader td{border:0;border-bottom:1px solid var(--line);padding:12px 16px}
+.markdown-reader tbody tr:last-child td{border-bottom:0}
+.markdown-reader tbody tr:nth-child(even){background:#faf8f1}
+.markdown-reader :is(th,td):first-child{min-width:150px}
+.markdown-reader details{max-width:100%}
+.markdown-reader .table-scroll:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.markdown-reader .skip-link{position:absolute;left:12px;top:-80px;padding:10px 16px;background:#fffdf8;color:var(--ink);border:2px solid var(--accent);border-radius:6px}
+.markdown-reader .skip-link:focus{top:12px}
+.markdown-footer{display:flex;align-items:center;gap:16px;border-top:1px solid var(--line);margin-top:48px;padding-top:20px;color:var(--muted)}
+.markdown-footer svg{width:56px;height:56px;flex:none}
+@media(max-width:950px){
+ .markdown-reader .reader-project{max-width:100%;font-size:14px}
+ .markdown-reader .reader-nav{padding:14px 20px;align-items:flex-start}
+ .markdown-reader .guide-toc{padding:12px 20px;max-height:none}
+ .markdown-reader .guide-local-navigation>summary{margin:0;min-height:40px;padding-top:6px}
+ .markdown-reader .guide-local-navigation nav{padding:8px 0}
+ .markdown-reader .reader-guide{padding:26px 20px 32px}
+ .markdown-reader .reader-guide table{display:table}
+}
+@media(max-width:520px){.markdown-reader .reader-nav{flex-wrap:wrap}.reader-project{width:100%}}

@@ -12,12 +12,14 @@ import runpy
 import subprocess
 import sys
 from urllib.parse import unquote, urlsplit
+from xml.etree import ElementTree
 
 M = runpy.run_path(str(Path(__file__).with_name("page_citations.py")))
 R = runpy.run_path(str(Path(__file__).with_name("reader_markdown_repair.py")),
                  init_globals={"CITATIONS": M["C"]})
 Stop, encode, require, read, sha = (M[k] for k in ("Stop", "encode", "require", "read", "sha"))
 NATIVE_ENGINE_ARGS = []
+FAVICON = "favicon.svg"
 
 
 def configure_engine(clew=None, root=None, components=None, component_set_digest=None):
@@ -36,7 +38,7 @@ def inventory(root, suffix, *, only_pages=False):
         if path.name == ".DS_Store":
             continue
         if only_pages:
-            require(path.is_file() and not path.is_symlink() and path.suffix == suffix,
+            require(path.is_file() and not path.is_symlink() and (path.suffix == suffix or path.name == FAVICON),
                     "UNSUPPORTED_EXPORT_LAYOUT", path=str(path))
         if path.suffix == suffix:
             require(path.is_file() and not path.is_symlink(), "UNSAFE_PAGE_ARTIFACT", artifact=path.name)
@@ -49,7 +51,7 @@ class Links(HTMLParser):
     """Inspect rendered targets only; never approximate Markdown or text meaning."""
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.targets, self.links = set(), []
+        self.targets, self.links, self.favicons = set(), [], []
 
     def handle_starttag(self, tag, attrs):
         require(len(attrs) == len({key for key, _ in attrs}), "AMBIGUOUS_EXPORT_ATTRIBUTES")
@@ -64,15 +66,28 @@ class Links(HTMLParser):
         for key in ("href", "src"):
             if key in values:
                 require(values[key] is not None, "INVALID_EXPORT_LINK")
+                if (tag == "link" and key == "href" and "icon" in (values.get("rel") or "").lower().split()
+                        and values.get("type") == "image/svg+xml" and values[key] == FAVICON):
+                    self.favicons.append(FAVICON)
+                    continue
                 self.links.append(values[key])
         require("srcset" not in values, "UNSUPPORTED_EXPORT_ASSET")
 
 
-def check_links(pages):
+def check_links(pages, favicon=None):
     documents = {}
     for name, raw in pages.items():
         document = Links(); document.feed(raw.decode("utf-8")); document.close()
         documents[name] = document
+    uses_favicon = any(document.favicons for document in documents.values())
+    require(not uses_favicon or favicon is not None, "EXPORT_FAVICON_MISSING")
+    require(favicon is None or uses_favicon, "UNREFERENCED_EXPORT_FAVICON")
+    if favicon is not None:
+        try:
+            icon = ElementTree.fromstring(favicon)
+        except ElementTree.ParseError:
+            require(False, "INVALID_EXPORT_FAVICON")
+        require(icon.tag == "{http://www.w3.org/2000/svg}svg", "INVALID_EXPORT_FAVICON")
     count = 0
     for name, document in documents.items():
         for href in document.links:
@@ -110,6 +125,7 @@ def verify(manifests, index_path, authored, exported, renderer, output):
     require(inventory(authored, ".md") == names, "AUTHORED_PAGE_INVENTORY_MISMATCH")
     expected_names = {str(Path(name).with_suffix(".html")) for name in names}
     require(inventory(exported, ".html", only_pages=True) == expected_names, "EXPORT_PAGE_INVENTORY_MISMATCH")
+    favicon = read(exported, FAVICON) if (exported / FAVICON).exists() else None
     source = output / "input"; source.mkdir()
     outer, bound, actual = {}, {}, {}
     for entry in index["pages"]:
@@ -132,6 +148,8 @@ def verify(manifests, index_path, authored, exported, renderer, output):
     expected = output / "expected"
     receipt = R["run_renderer"](argv, source.resolve(), expected.resolve(), output, "expected")
     require(inventory(expected, ".html", only_pages=True) == expected_names, "RENDERED_PAGE_INVENTORY_MISMATCH")
+    expected_favicon = read(expected, FAVICON) if (expected / FAVICON).exists() else None
+    require(expected_favicon == favicon, "EXPORTED_FAVICON_MISMATCH")
     for name, body in bound.items():
         require(read(source, name) == body and read(authored, name) == outer[name], "EXPORT_INPUT_CHANGED", page=name)
     for name, raw in actual.items():
@@ -141,16 +159,19 @@ def verify(manifests, index_path, authored, exported, renderer, output):
             inventory(exported, ".html", only_pages=True) == expected_names and
             read(index_path.parent, index_path.name) == index_raw and
             Path(renderer).read_bytes() == command_raw, "EXPORT_INPUT_CHANGED")
-    links = check_links(actual)
+    require((read(exported, FAVICON) if (exported / FAVICON).exists() else None) == favicon,
+            "EXPORT_INPUT_CHANGED")
+    links = check_links(actual, favicon)
     return {"schema": "codeclew-reader-export-check/1.0", "status": "EXPORT_CHECKED",
         "pages": len(names), "claims": native["claims"], "internalLinks": links,
         "nativeCheck": "native-check.json", "indexDigest": index["indexDigest"],
         "rendererCommandDigest": sha(command_raw), "rendererReceipt": receipt,
         "authoredDigests": {name: sha(raw) for name, raw in outer.items()},
         "exportDigests": {name: sha(raw) for name, raw in actual.items()},
+        "exportAssetDigests": {FAVICON: sha(favicon)} if favicon is not None else {},
         "semanticTruthAssessed": False, "runtimeVerified": False,
         "nativePublicationApproval": False, "sourceFallbackAllowed": False,
-        "limits": "Exact full HTML bytes from the explicit trusted renderer over complete checked Markdown. Flat .md/.html pages only; local assets, nested/root-relative links, base URLs and srcset unsupported. External URL availability, renderer faithfulness, CSS/browser visibility and semantic completeness unassessed. Renderer must be deterministic and independent of input/output locations; keep inputs stable during check. Caller-trusted argv is not sandboxed."}
+        "limits": "Exact full HTML bytes from the explicit trusted renderer over complete checked Markdown, plus byte-checked local favicon.svg referenced as a typed SVG icon. Other local assets, nested/root-relative links, base URLs and srcset unsupported. External URL availability, renderer faithfulness, CSS/browser visibility and semantic completeness unassessed. Renderer must be deterministic and independent of input/output locations; keep inputs stable during check. Caller-trusted argv is not sandboxed."}
 
 
 def checked_command(argv, receipts, label, expected):

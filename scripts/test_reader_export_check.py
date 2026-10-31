@@ -41,16 +41,18 @@ for path in source.glob('*.md'):
     row=rows[path.name]
     if path.read_bytes().decode()!=row['markdown']:sys.exit(9)
     (destination/path.with_suffix('.html').name).write_text(row['html'])
+if rows.get('_favicon') is not None:
+    (destination/'favicon.svg').write_text(rows['_favicon'])
 ''')
         self.contract = self.root / "contract.json"
         self.command = self.root / "renderer.json"
         self.command.write_text(json.dumps([sys.executable, '-I', '-S', str(self.renderer), '{input}', '{output}', str(self.contract)]))
         self.prepare()
 
-    def prepare(self, guide=GUIDE, html=GUIDE_HTML, index=INDEX, index_html=INDEX_HTML):
+    def prepare(self, guide=GUIDE, html=GUIDE_HTML, index=INDEX, index_html=INDEX_HTML, favicon=None):
         self.serial += 1
         rows = {'guide.md': {'markdown': guide, 'html': html}, 'index.md': {'markdown': index, 'html': index_html}}
-        self.contract.write_text(json.dumps(rows))
+        self.contract.write_text(json.dumps({**rows, **({'_favicon': favicon} if favicon is not None else {})}))
         specs = []
         for name, row in rows.items():
             raw = row['markdown'].encode(); (self.authored / name).write_bytes(raw)
@@ -119,6 +121,28 @@ for path in source.glob('*.md'):
         self.prepare(index=INDEX + '\n[Remote](https://example.invalid/x#missing)\n',
                      index_html=INDEX_HTML.replace('guide.html#1-read', '%67uide.html#%31-read') + '<a href="https://example.invalid/x#missing">Remote</a>')
         self.assertEqual(self.verify()['status'], 'EXPORT_CHECKED')
+
+    def test_local_svg_favicon_is_byte_checked_without_allowing_asset_navigation(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+        icon = '<link rel="icon" type="image/svg+xml" href="favicon.svg">'
+        self.prepare(html=GUIDE_HTML + icon, favicon=svg)
+        self.assertEqual(self.verify()['status'], 'EXPORT_CHECKED')
+        (self.exported / 'favicon.svg').write_text(svg.replace('M0 0', 'M1 1'))
+        self.refused('EXPORTED_FAVICON_MISMATCH')
+        self.prepare(html=GUIDE_HTML + icon + '<a href="favicon.svg">Not a page</a>', favicon=svg)
+        self.refused('EXPORT_LINK_TARGET_MISSING_OR_UNSUPPORTED')
+        self.prepare(html=GUIDE_HTML + '<link rel href="favicon.svg">', favicon=svg)
+        self.refused('UNREFERENCED_EXPORT_FAVICON')
+        self.prepare(html=GUIDE_HTML + '<a href="data:image/svg+xml;base64,PHN2Zy8+">Not navigation</a>')
+        self.refused('UNSUPPORTED_EXPORT_LINK')
+        for bad in ['not XML', '<html/>']:
+            with self.subTest(bad=bad):
+                self.prepare(html=GUIDE_HTML + icon, favicon=bad)
+                self.refused('INVALID_EXPORT_FAVICON')
+        self.prepare(html=GUIDE_HTML + icon)
+        self.refused('EXPORT_FAVICON_MISSING')
+        self.prepare(favicon=svg)
+        self.refused('UNREFERENCED_EXPORT_FAVICON')
 
     def test_duplicate_ids_base_urls_and_unhandled_assets_refuse(self):
         for suffix, status in [('<p id="detail">duplicate</p>', 'AMBIGUOUS_EXPORT_ANCHOR'),

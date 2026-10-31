@@ -205,7 +205,12 @@ using the existing entry/body/resource inventory and your draft or short notes.
 For consequential alternatives, explain when each happens or is skipped, its local
 result/effect, and what failure, retry or completion changes. For domain fields,
 explain evidenced meaning, units and time interpretation; a name is not a
-definition. For external participants, explain the operation, direction and what
+definition. Use authored GFM tables for named entity fields: one row per domain
+value, readable field names, meaning/use and evidenced units or nullability.
+Keep DTO and storage aliases of the same value in that row. Use short prose for
+behavior, alternatives and failures; a renderer must not guess table rows from
+arbitrary paragraphs. Preserve each row's source associations through the same
+compose/bind/export workflow. For external participants, explain the operation, direction and what
 responses/failures mean. A heading, field list or citation alone does not establish
 that the reader received that meaning. Check reader claims back against source;
 fix omissions and contradicted visible claims without inventing unknown meanings.
@@ -258,7 +263,8 @@ Markdown changes fail. RENDERER_JSON is unchanged caller-trusted argv JSON with
 separate `{input}`/`{output}` arguments, executed with caller permissions. The
 renderer must be deterministic and independent of input/output locations.
 The optional [portable Markdown renderer example](../examples/markdown-renderer/README.md)
-retains the public research renderer's Markdown/HTML behavior. Copy it to your
+supports the Codeclew shell, readable page titles, authored tables and a retained
+neutral comparison option. Copy it to your
 own tools directory, install its pinned dependency there, and supply the explicit
 command JSON; the helper does not silently choose or install a renderer.
 
@@ -275,8 +281,10 @@ Completion is mechanical: semanticTruthAssessed stays false; full semantic/sourc
 and visual review remain required. Nothing is published. For separate bind/render/
 check operations use the manual route above. Bounds: 32 MiB original, 16,384
 fragments, 64 pages, 2 MiB/page, 16 MiB total, 1–1,024 claims/page, 4,096 total.
-Export is flat Markdown/HTML only; local assets, nested/root-relative links,
-base URLs and srcset remain unsupported. Compose itself checks no evidence.
+Export is flat Markdown/HTML with an optional byte-checked `favicon.svg` referenced
+by `<link rel="icon" type="image/svg+xml" href="favicon.svg">`. Other local assets,
+nested/root-relative links, base URLs and srcset remain unsupported. Compose
+itself checks no evidence.
 
 ## Addressed original edits
 

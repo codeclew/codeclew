@@ -33,6 +33,9 @@ RUSSIAN_LOCALIZATION_FILES = {
     "crates/clew/tests/documentation_system.rs",
     "scripts/test_documentation_visual_reader.cjs",
     "scripts/test_data_model_reader.cjs",
+    "skills/codeclew/examples/markdown-renderer/assets/ru.json",
+    ".agents/skills/codeclew/examples/markdown-renderer/assets/ru.json",
+    ".claude/skills/codeclew/examples/markdown-renderer/assets/ru.json",
 }
 
 # These sources contain reader-facing localized strings alongside English code
