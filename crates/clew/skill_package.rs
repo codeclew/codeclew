@@ -3,6 +3,9 @@ use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 use walkdir::WalkDir;
 
+const MAX_FILES: usize = 128;
+const MAX_TOTAL_BYTES: usize = 1152 * 1024;
+
 /// Matches scripts/install_agent_skill.py:package_files/digest. Keep the
 /// cross-language parity tests when the installer contract changes.
 pub(crate) fn digest(root: &Path) -> io::Result<String> {
@@ -25,7 +28,7 @@ pub(crate) fn digest(root: &Path) -> io::Result<String> {
                 "bundled skill entry is not a regular file",
             ));
         }
-        if metadata.len() > 1024 * 1024 || rows.len() >= 128 {
+        if metadata.len() > MAX_TOTAL_BYTES as u64 || rows.len() >= MAX_FILES {
             return Err(io::Error::other("bundled skill exceeds package limits"));
         }
         let relative = entry
@@ -42,7 +45,7 @@ pub(crate) fn digest(root: &Path) -> io::Result<String> {
             .join("/");
         let content = fs::read(entry.path())?;
         total += content.len();
-        if total > 1024 * 1024 {
+        if total > MAX_TOTAL_BYTES {
             return Err(io::Error::other("bundled skill exceeds package limits"));
         }
         #[cfg(unix)]
@@ -79,12 +82,16 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    fn installer_digest(root: &Path) -> String {
+    fn installer_output(root: &Path) -> std::process::Output {
         let installer =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install_agent_skill.py");
-        let result = Command::new("python3").args(["-I", "-S", "-B", "-c",
+        Command::new("python3").args(["-I", "-S", "-B", "-c",
             "import runpy,sys; from pathlib import Path; m=runpy.run_path(sys.argv[1]); print(m['digest'](m['package_files'](Path(sys.argv[2]))))"])
-            .arg(installer).arg(root).output().unwrap();
+            .arg(installer).arg(root).output().unwrap()
+    }
+
+    fn installer_digest(root: &Path) -> String {
+        let result = installer_output(root);
         assert!(
             result.status.success(),
             "{}",
@@ -144,6 +151,20 @@ mod tests {
         assert!(digest(root).is_err());
     }
 
+    #[test]
+    fn expanded_package_keeps_a_shared_bounded_byte_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let skill = b"Owned bounded fixture\n";
+        fs::write(root.join("SKILL.md"), skill).unwrap();
+        let payload = root.join("payload");
+        fs::write(&payload, vec![0u8; MAX_TOTAL_BYTES - skill.len()]).unwrap();
+        assert_eq!(digest(root).unwrap(), installer_digest(root));
+        fs::write(&payload, vec![0u8; MAX_TOTAL_BYTES - skill.len() + 1]).unwrap();
+        assert!(digest(root).is_err());
+        assert!(!installer_output(root).status.success());
+    }
+
     #[cfg(unix)]
     #[test]
     fn unsafe_package_entries_are_refused() {
@@ -158,7 +179,7 @@ mod tests {
         symlink(temp.path().join("external"), root.join("linked")).unwrap();
         assert!(digest(&root).is_err());
         fs::remove_file(root.join("linked")).unwrap();
-        fs::write(root.join("oversized"), vec![0u8; 1024 * 1024 + 1]).unwrap();
+        fs::write(root.join("oversized"), vec![0u8; MAX_TOTAL_BYTES + 1]).unwrap();
         assert!(digest(&root).is_err());
     }
 }
