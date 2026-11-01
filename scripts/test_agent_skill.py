@@ -75,6 +75,26 @@ class AgentSkillTest(unittest.TestCase):
                         visit(child)
             visit(schema)
 
+    def test_package_byte_and_file_limits_remain_enforced(self) -> None:
+        import runpy
+        installer = runpy.run_path(str(ROOT / "scripts/install_agent_skill.py"))
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            skill = b"# Fixture"
+            (root / "SKILL.md").write_bytes(skill)
+            payload = root / "payload.bin"
+            payload.write_bytes(b"x" * (installer["MAX_TOTAL_BYTES"] - len(skill)))
+            self.assertEqual(len(installer["package_files"](root)), 2)
+            with payload.open("ab") as stream:
+                stream.write(b"x")
+            with self.assertRaises(installer["InstallError"]):
+                installer["package_files"](root)
+            payload.unlink()
+            for index in range(installer["MAX_FILES"]):
+                (root / str(index)).write_bytes(b"")
+            with self.assertRaises(installer["InstallError"]):
+                installer["package_files"](root)
+
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
         skill += (CANONICAL_SKILL / "references/managed-code.md").read_text(encoding="utf-8")

@@ -305,6 +305,15 @@ neutral comparison option. Copy it to your
 own tools directory, install its pinned dependency there, and supply the explicit
 command JSON; the helper does not silently choose or install a renderer.
 
+For service-oriented reading (one or more services), that renderer accepts
+optional explicit navigation JSON. Declare service ownership, local trigger kinds
+and existing section links;
+keep the shared-route origin separate from service-local starts and participant
+roles. Titles, summaries and roles are short labels for already described bound
+sections, not new facts or delivery/order guarantees inferred from topic names.
+Retain navigation with the renderer and update it when pages or anchors change.
+Its validation checks destinations; it adds no capture, planner or binding engine.
+
 Require exit zero, `CHECKED_PAGES_FINALIZED` and `exportStatus: EXPORT_CHECKED`.
 The result gives root, original/compose/authored/rendered/index/sources, manifests,
 renderer, receipts, check and result paths; resolve relative paths under `root`.

@@ -47,6 +47,50 @@ keep behavior, conditions and failures in short prose. The renderer does not
 infer tables from paragraphs or rewrite any claims. Source bindings remain in
 their existing metadata rather than being added to the reader chrome.
 
+## Optional service navigation
+
+Supply `--navigation /path/to/navigation.json` to replace the flat menu with
+explicit service groups, local starts, data links and shared-route participation.
+Service overview pages gain entry links; shared-route pages gain participant
+links. Breadcrumbs show the current page and, with JavaScript, its linked section.
+Ordinary links and native disclosures work without JavaScript. Existing exports
+without this option retain their flat menu; neutral output remains unchanged.
+
+```json
+{
+  "schema": "codeclew-markdown-navigation/1",
+  "home": {"title":"Guide","target":"index.md"},
+  "services": [{
+    "id":"catalog", "title":"Catalog", "overview":"catalog.md",
+    "pages":["catalog.md","work.md","data.md"],
+    "starts":[{"title":"Accept request","kind":"http","target":"work.md#accept","summary":"Stores the accepted request."}],
+    "data":[{"title":"Record fields","target":"data.md"}]
+  }],
+  "routes": [{
+    "id":"add", "title":"Add record", "target":"journey.md#add",
+    "origin":{"service":"catalog","title":"Accept request","kind":"http","target":"work.md#accept"},
+    "participants":[{"service":"catalog","title":"Storage","role":"Persists the request.","target":"work.md#accept","section":"journey.md#add"}]
+  }]
+}
+```
+
+The example assumes these files and IDs exist. Targets use flat Markdown page
+names with optional existing anchors. `pages` declares ownership explicitly;
+local starts/data/participant targets must belong to that service. `section`
+links back to the participant's section on the shared-route page. `origin`
+identifies the cross-service origin separately from each local start and must
+also be represented in `participants`. One service can have several roles.
+`routes` may be `[]` for a service guide without a documented shared route.
+Kinds are `http`, `kafka`, `scheduled`, `background`, `manual` or `other`.
+These are authored labels, never inferred from filenames or shared topic names.
+
+Use short titles/summaries/roles pointing to already described bound sections;
+they introduce no new behavior, delivery or ordering guarantees. Keep navigation
+with the owned renderer command and update it when pages/sections change.
+Explicit invalid metadata fails with a property path instead of silently hiding
+destinations. Unassigned pages and extra owned pages remain reachable as Other
+pages. This is a reader index, not a graph engine or an evidence-binding scheme.
+
 No source capture, model,
 network request or application code execution is performed by this renderer;
 dependency installation is a separate explicit setup step. Keep the installed

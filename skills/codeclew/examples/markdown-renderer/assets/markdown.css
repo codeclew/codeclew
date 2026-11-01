@@ -34,3 +34,26 @@
  .markdown-reader .reader-guide table{display:table}
 }
 @media(max-width:520px){.markdown-reader .reader-nav{flex-wrap:wrap}.reader-project{width:100%}}
+.guide-toc .navigation-label{display:block;font-size:12px;font-weight:600;color:var(--muted);line-height:1.4;margin:16px 0 6px}
+.service-navigation{border-bottom:1px solid var(--line);padding:4px 0}
+.guide-local-navigation .service-navigation>summary{font-weight:600;color:var(--ink);margin:0;padding:10px 4px;min-height:44px;cursor:pointer}
+.guide-local-navigation .service-navigation.current-service>summary{color:var(--accent)}
+.navigation-category{padding-left:8px}
+.guide-toc ul{list-style:none;margin:0;padding:0}
+.navigation-role{display:block;font-size:12px;color:var(--muted);font-weight:400}
+.guide-toc .navigation-category a{font-size:14px;padding:6px 8px}
+.trigger-kind{display:inline-block;font:600 11px/1.5 system-ui,sans-serif;padding:1px 5px;margin-right:6px;background:var(--green-soft);color:var(--accent);border:1px solid var(--line);border-radius:4px;vertical-align:baseline}
+.guide-local-navigation a[aria-current=location]{background:var(--green-soft);border-left:3px solid var(--accent);color:var(--accent)}
+.reader-breadcrumb{display:flex;flex-wrap:wrap;gap:6px;font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.5}
+.reader-breadcrumb>span[aria-current=page]{color:var(--ink)}
+.breadcrumb-section[hidden]{display:none}
+.service-hub{margin:24px 0 32px;padding:20px 24px;border:1px solid var(--line);border-radius:10px;background:#fffdf8}
+.hub-columns{display:grid;grid-template-columns:1fr 1fr;gap:28px}
+.markdown-reader .service-hub h2{margin:0 0 12px;font-size:18px}
+.markdown-reader .service-hub h2:not(:first-child){margin-top:24px}
+.hub-links{list-style:none;margin:0;padding:0}
+.hub-links>li{margin:0 0 14px}
+.hub-links>li>a{font-weight:600}
+.markdown-reader .hub-links p,.markdown-reader .route-origin{font-size:14px;line-height:1.5;margin:4px 0 12px;color:var(--muted)}
+.markdown-reader :is(.guide-local-navigation,.service-hub,.reader-breadcrumb) :is(a,summary):focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:3px}
+@media(max-width:700px){.hub-columns{grid-template-columns:1fr;gap:16px}.service-hub{padding:18px}.reader-breadcrumb{font-size:12px}}
