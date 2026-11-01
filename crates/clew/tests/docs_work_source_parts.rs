@@ -18,6 +18,200 @@ use support::{Fixture, read};
 const SOURCE_PART_REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
 
 #[test]
+fn source_batch_cli_preserves_ordinary_pages_cursors_and_explicit_failures_offline() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let checked = f.checked();
+    let (id, reference) = prepare_work(&f, 2_048);
+    let manifest_path = f.docs.join(format!(".codeclew/work/{id}/work.json"));
+    let before = fs::read(&manifest_path).unwrap();
+    fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
+    let selection = json!({"references":[reference]});
+    let input = f.input("ordinary.json", &selection);
+    let ordinary = f.ok(&[
+        "docs",
+        "work",
+        "read",
+        "--work",
+        &id,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    let queries = vec![
+        selection.clone(),
+        selection.clone(),
+        json!({"references":["missing"]}),
+        json!({"query":{"kind":"SYMBOL"}}),
+    ];
+    let input = f.input(
+        "batch.json",
+        &json!({"schema":"codeclew-documentation-work-batch-request/1.0","selections":queries}),
+    );
+    let batch = f.ok(&[
+        "docs",
+        "work",
+        "read-batch",
+        "--work",
+        &id,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_eq!(batch["results"][0]["page"], ordinary);
+    assert_eq!(batch["results"][1]["page"], ordinary);
+    assert!(batch["results"][2]["error"].is_object());
+    assert!(batch["results"][3]["error"].is_object());
+    assert_eq!(batch["results"].as_array().unwrap().len(), 4);
+    let mut unsigned = batch.clone();
+    unsigned.as_object_mut().unwrap().remove("receiptDigest");
+    assert_eq!(
+        batch["receiptDigest"],
+        clew::canonical::hash(&unsigned).unwrap()
+    );
+    assert_eq!(before, fs::read(manifest_path).unwrap());
+    assert_eq!(
+        checked.context_digest,
+        work::load(&Repository::open(&f.docs).unwrap(), &id)
+            .unwrap()
+            .checked
+            .context_digest
+    );
+    for count in [0, 65] {
+        let input=f.input("bad-batch.json", &json!({"schema":"codeclew-documentation-work-batch-request/1.0","selections":vec![selection.clone();count]}));
+        assert_ne!(
+            f.run(&[
+                "docs",
+                "work",
+                "read-batch",
+                "--work",
+                &id,
+                "--input",
+                input.to_str().unwrap()
+            ])
+            .0,
+            0
+        );
+    }
+}
+
+#[test]
+fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_transport() {
+    let f = Fixture::new();
+    let launcher = f.helper_launcher();
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let artifacts = std::env::var_os("CODECLEW_SOURCE_BATCH_PROBE_ARTIFACTS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| f.temp.path().join("public-probes"));
+    let large = std::env::var_os("CODECLEW_SOURCE_BATCH_PROBE_LARGE").is_some();
+    let mut cases = vec![("representative", 1, 12, true)];
+    if large {
+        cases.push(("larger", 64, 38, false));
+    }
+    for (name, files, methods, baseline) in cases {
+        let output = artifacts.join(name);
+        let mut command = std::process::Command::new("python3");
+        command
+            .args(["-I", "-S"])
+            .arg(repository.join("tools/source_batch_probe.py"))
+            .arg("--clew")
+            .arg(&launcher)
+            .arg("--skill-dir")
+            .arg(repository.join("skills/codeclew"))
+            .arg("--output-dir")
+            .arg(&output)
+            .arg("--files")
+            .arg(files.to_string())
+            .arg("--methods")
+            .arg(methods.to_string());
+        if baseline {
+            command.arg("--baseline");
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let value = read(output.join("RESULT.json"));
+        assert_eq!(value["status"], "PASS");
+        assert!(value["metrics"]["batch"]["sourceRecords"].as_u64().unwrap() > methods as u64);
+        if baseline {
+            assert_eq!(
+                value["metrics"]["legacy"]["exactBindingDigest"],
+                value["metrics"]["batch"]["exactBindingDigest"]
+            );
+            assert!(
+                value["metrics"]["batch"]["nativeCommands"]
+                    .as_u64()
+                    .unwrap()
+                    < value["metrics"]["legacy"]["nativeCommands"]
+                        .as_u64()
+                        .unwrap()
+            );
+        }
+        println!("PUBLIC_SOURCE_BATCH_PROBE {value}");
+    }
+}
+
+#[test]
+fn source_batch_commit_bounds_and_lock_failures_leave_the_ledger_unchanged() {
+    let f = Fixture::new();
+    f.service("orders");
+    f.checked();
+    let (id, reference) = prepare_work(&f, 2_048);
+    let repo = Repository::open(&f.docs).unwrap();
+    let path = f.docs.join(format!(".codeclew/work/{id}/reads.json"));
+    let original = fs::read(&path).unwrap();
+    let selection = json!({"references":[reference]});
+    let invoke = |selections: Value| {
+        let input=f.input("atomic-batch.json",&json!({"schema":"codeclew-documentation-work-batch-request/1.0","selections":selections}));
+        f.run(&[
+            "docs",
+            "work",
+            "read-batch",
+            "--work",
+            &id,
+            "--input",
+            input.to_str().unwrap(),
+        ])
+    };
+    // A valid page is staged first; oversized echoed input then prevents the
+    // transport response from committing or returning that unrecorded page.
+    let (code, value) =
+        invoke(json!([selection,{"query":{"kind":"SOURCE","file":"x".repeat(4*1024*1024)}}]));
+    assert_ne!(code, 0);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("output exceeds")
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let mut state = work::read_state(&repo, &id).unwrap();
+    let receipt = state.receipts.values_mut().next().unwrap();
+    receipt.supplied = vec![String::new()];
+    let size = clew::canonical::bytes(&state).unwrap().len();
+    state.receipts.values_mut().next().unwrap().supplied =
+        vec!["p".repeat(16 * 1024 * 1024 - size - 64)];
+    let near_limit = clew::canonical::bytes(&state).unwrap();
+    assert_eq!(near_limit.len(), 16 * 1024 * 1024 - 64);
+    fs::write(&path, &near_limit).unwrap();
+    let (code, value) = invoke(json!([selection]));
+    assert_ne!(code, 0);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ledger exceeds")
+    );
+    assert_eq!(fs::read(&path).unwrap(), near_limit);
+    fs::write(&path, &original).unwrap();
+    let _lock = repo.lock().unwrap();
+    assert_ne!(invoke(json!([selection])).0, 0);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn kotlin_whole_file_cli_selects_exact_offline_bytes_and_preserves_existing_queries() {
     let f = Fixture::new();
     let source_repo = f.temp.path().join("orders");

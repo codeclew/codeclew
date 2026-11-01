@@ -24,13 +24,31 @@ SCHEMA = "codeclew-auto-doc-evidence/1.0"
 
 
 class Packet(Catalogue):
+    Stop = Stop
+
     def __init__(self, args):
         super().__init__(args)
         self.rows, self.omissions, self.failures, self.proofs = [], [], [], []
         self.source_cache = {}
+        self.source_cache_consumed = set()
+        self.source_batch_proofs = {}
+        self.source_batch_errors = {}
+        self.page_cache, self.page_errors = {}, {}
+        self.encode, self.digest = encode, digest
         self.reuse = None
 
+    def prefetch_sources(self, choices):
+        runpy.run_path(str(Path(__file__).with_name("source_batches.py")))["prefetch"](self, choices)
+
+    def prefetch_work_pages(self, selections):
+        runpy.run_path(str(Path(__file__).with_name("native_page_batches.py")))["prefetch"](self, selections)
+
     def work_page(self, label, selection):
+        key = encode(selection)
+        if key in self.page_errors:
+            raise self.page_errors[key]
+        if key in self.page_cache:
+            return self.page_cache[key]
         page, receipt = self.call(label, ["docs", "work", "read", "--root", self.args.root,
                                           "--work", self.work], input_value=selection)
         self.validate_page(page, "codeclew-documentation-work-page/1.0")
@@ -220,6 +238,19 @@ class Packet(Catalogue):
         rows = {r["id"]: r for r in packet["choices"]}
         if len(rows) != len(packet["choices"]):
             raise Stop("DUPLICATE_PACKET_DECLARATION", exit_code=2)
+        batch = runpy.run_path(str(Path(__file__).with_name("source_batches.py")))
+        pending = batch["selected_choices"](rows, selections)
+        if self.reuse is not None:
+            # Exclusion is only a conservative no-reread hint. The existing
+            # per-selection find() still validates the complete prior proof;
+            # a corrupt claimed prior binding is never admitted via this set.
+            prior = set()
+            for outcome in self.reuse.packet.get("outcomes", []):
+                declaration = outcome.get("declaration", {})
+                pair = (declaration.get("selectedSourceId"), declaration.get("selectedSourceReference"))
+                if all(isinstance(v, str) for v in pair):prior.add(pair)
+            pending = [c for c in pending if (c["id"], c["reference"]) not in prior]
+        self.prefetch_sources(pending)
         outcomes, texts, seen = [], {}, set()
         for selection in selections:
             try:
@@ -246,6 +277,8 @@ class Packet(Catalogue):
                         "source": {k: v for k, v in source.items() if k != "text"}, "textKey": source["textDigest"],
                         "sourceRecordDigest": digest(source), "sourceParts": reader.parts,
                         "sourceReadReused": reader.reused, "nativePages": reader.envelopes, "evidenceReused": False}
+                    if getattr(reader, "batch", None):
+                        outcome["sourceBatch"] = reader.batch
                 key = source["textDigest"]
                 if key in texts and texts[key] != source["text"]:
                     raise Stop("SOURCE_TEXT_DIGEST_COLLISION", exit_code=2)
@@ -392,15 +425,30 @@ class Selected(BoundSource):
 
     def source(self, source_id, reference):
         key = (self.work, self.args.snapshot, self.args.service, source_id, reference)
+        if key in self.owner.source_batch_errors:
+            raise self.owner.source_batch_errors[key]
         if key in self.owner.source_cache:
             source, proof = self.owner.source_cache[key]
             if source["revision"] != self.binding["revision"]:
                 raise Stop("REUSED_SOURCE_REVISION_MISMATCH", exit_code=2)
-            self.parts, self.reused = proof, True
+            self.parts, self.reused = proof, key in self.owner.source_cache_consumed
+            self.owner.source_cache_consumed.add(key)
+            self.batch = copy.deepcopy(self.owner.source_batch_proofs.get(key))
             return source
         source = super().source(source_id, reference)
         self.owner.source_cache[key] = (source, self.parts)
+        self.owner.source_cache_consumed.add(key)
+        self.batch = copy.deepcopy(self.owner.source_batch_proofs.get(key))
+        if self.batch:
+            self.batch["recordDigest"] = digest(source)
+            self.owner.source_batch_proofs[key] = copy.deepcopy(self.batch)
         return source
+
+    def read(self):
+        value = super().read()
+        if (getattr(self, "batch", None) or {}).get("kind") == "NATIVE_SOURCE_BATCH_ROW":
+            value["sourceDelivery"] = "VERIFIED_NATIVE_SOURCE_BATCH_ROW"
+        return value
 
 
 def main(argv=None):
@@ -410,6 +458,10 @@ def main(argv=None):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--work")
     parser.add_argument("--source-union", action="store_true", help="READ author view: combine exact agreeing retained byte ranges; canonical packet/citations stay unchanged")
+    parser.add_argument("--source-batch-size", type=int, choices=range(1, 9), default=8, metavar="1..8",
+                        help="Serialized native SOURCE reference batches; 1 retains the original part-only transport")
+    parser.add_argument("--native-batch-size", type=int, choices=range(1, 65), default=64, metavar="1..64",
+                        help="SOURCE page selections per native Work load; 1 uses separate invocations")
     parser.add_argument("--whole-files", action="store_true", help="read-files: require one complete original retained record per selected file; old/missing captures refuse without fallback")
     parser.add_argument("--prepare-work", action="store_true")
     parser.add_argument("--contains", default="", help="Case-sensitive native symbol substring; empty enumerates scoped declarations")

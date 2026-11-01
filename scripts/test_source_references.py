@@ -158,4 +158,145 @@ class SourceReferencesTest(unittest.TestCase):
                     with self.assertRaises(A['Stop']): A['load'](out/'citations.json')
 
 
+class SourceBatchTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name); self.requests = []; self.limit = 20
+        self.omit = set(); self.page_size = 20; self.bad = None
+        self.sources = {}
+        for n in range(1, 10):
+            text = '\ufeff// π🙂\r\nif (ready) send();\r\n'
+            source = F['source'](text if n != 2 else 'if (ready) send();\r\n')
+            source.update(id='source-'+str(n), file='Same.cs', evidenceDigest='sha256:original',
+                          authority='DECLARED_OPENAPI' if n == 3 else 'EXACT_SNAPSHOT_TEXT',
+                          occurrence={'snapshot':'sealed','blob':'original','startByte':n,'endByte':n+len(source['text'].encode())})
+            self.sources['s'+str(n)] = source
+
+    def native(self, command, **kwargs):
+        request = json.loads(Path(command[command.index('--input')+1]).read_text())
+        self.requests.append((command[3], request))
+        if command[3] == 'read-part':
+            if self.bad == 'part-error':
+                return subprocess.CompletedProcess(command,2,encode({'error':{'message':'source unavailable'}}).encode(),b'')
+            ref = request['reference']; source = self.sources[ref]; raw = source['text'].encode()
+            start = int(request.get('cursor','p:0').split(':')[1]); end = min(start+self.limit,len(raw))
+            while end < len(raw) and raw[end] & 0xc0 == 0x80:end -= 1
+            value = F['part'](source,start,end,'p:'+str(end) if end<len(raw) else None,reference=ref)
+        else:
+            refs = request['references']; self.assertLessEqual(len(refs),8)
+            rows = [{'kind':'COVERAGE','id':'owned','revision':'rev-a'}]
+            rows += [{'kind':'SOURCE','id':self.sources[r]['id'],'reference':r,
+                      'record':copy.deepcopy(self.sources[r])} for r in refs]
+            start = int(request.get('cursor','page:0').split(':')[1]); stop = min(start+self.page_size,len(rows))
+            items, omitted = [], []
+            for row in rows[start:stop]:
+                if row.get('reference') in self.omit:
+                    omitted.append({k:v for k,v in row.items() if k!='record'} | {'reason':'ITEM_EXCEEDS_WORK_BYTE_BUDGET'})
+                else:items.append(row)
+            value = {**F['page'](*items,omitted=omitted,cursor='page:'+str(stop) if stop<len(rows) else None),
+                     'total':len(rows),'membershipDigest':'members','contextDigest':'context','inputDigest':'input',
+                     'authority':'IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED'}
+            source_row = next((r for r in items if r['kind']=='SOURCE'),None)
+            if self.bad == 'work':value['work']='foreign'
+            if self.bad == 'snapshot':value['snapshot']='foreign'
+            if self.bad == 'subject':value['subject']='service:foreign'
+            if self.bad == 'total':value['total']+=1
+            if self.bad == 'missing':value['items']=[r for r in items if r['kind']=='COVERAGE']
+            if self.bad == 'continuation':value['nextCursor']='page:0'
+            if self.bad == 'empty-progress':
+                value.update(items=[],omitted=[],nextCursor='page:'+str(start+1))
+            if self.bad == 'duplicate' and source_row:value['items'].append(copy.deepcopy(source_row))
+            if source_row:
+                if self.bad == 'reference':source_row['reference']='foreign'
+                if self.bad == 'reference-type':source_row['reference']=[]
+                if self.bad == 'id':source_row['id']='foreign'
+                if self.bad == 'source-id':source_row['record']['id']='foreign'
+                if self.bad == 'revision':source_row['record']['revision']='foreign'
+                if self.bad == 'text':source_row['record']['text']+='!'
+                if self.bad == 'digest':source_row['record']['textDigest']='bad'
+                if self.bad == 'partial':source_row['record'].pop('text')
+            value['receiptDigest']=digest(value)
+            if self.bad == 'receipt':value['receiptDigest']='bad'
+        return subprocess.CompletedProcess(command,0,encode(value).encode(),b'')
+
+    def acquire(self, label='read', size=8):
+        out=self.root/label;out.mkdir();selection=self.root/(label+'.json')
+        selection.write_text(encode([{'sourceId':s['id'],'sourceReference':ref} for ref,s in self.sources.items()]))
+        args=argparse.Namespace(action='read-sources',clew='/supported/clew',root='/disposable/docs',service='owned',
+            snapshot=F['SNAPSHOT'],work='work-a',contains='',selection=selection,output_dir=out,
+            output_format='author',reuse_read=None,source_union=False,source_batch_size=size)
+        with patch('subprocess.run',side_effect=self.native):value,code=M['Packet'](args).run()
+        return out,value,code
+
+    def test_complete_mixed_batches_preserve_all_overlapping_bindings_and_inspection(self):
+        out,value,code=self.acquire();self.assertEqual(code,0)
+        self.assertEqual([x[0] for x in self.requests],['read','read'])
+        _,packet,_,entries=A['load'](out/'citations.json')
+        self.assertEqual(len(entries),9);self.assertEqual(len(packet['outcomes']),9)
+        for outcome,source in zip(packet['outcomes'],self.sources.values()):
+            self.assertEqual(outcome['source'],{k:v for k,v in source.items() if k!='text'})
+            self.assertEqual(packet['texts'][outcome['textKey']],source['text'])
+            self.assertEqual(outcome['sourceParts'],[])
+            self.assertEqual(outcome['sourceBatch']['kind'],'NATIVE_SOURCE_BATCH_ROW')
+
+    def test_pagination_and_native_size_omission_use_parts_for_only_omitted_member(self):
+        self.sources=dict(list(self.sources.items())[:3]);self.page_size=2;self.omit={'s2'}
+        out,value,code=self.acquire();self.assertEqual(code,0);A['load'](out/'citations.json')
+        part_refs={r['reference'] for verb,r in self.requests if verb=='read-part'}
+        self.assertEqual(part_refs,{'s2'})
+        packet=json.loads((out/'packet.json').read_text())
+        self.assertEqual([o['sourceBatch']['kind'] for o in packet['outcomes']],
+                         ['NATIVE_SOURCE_BATCH_ROW','NATIVE_SOURCE_BATCH_OMISSION','NATIVE_SOURCE_BATCH_ROW'])
+
+    def test_batch_and_part_only_control_have_exact_source_and_binding_identity(self):
+        self.sources=dict(list(self.sources.items())[:3])
+        old,_,code=self.acquire('old',1);self.assertEqual(code,0);old_count=len(self.requests);self.requests=[]
+        new,_,code=self.acquire('new');self.assertEqual(code,0);self.assertLess(len(self.requests),old_count)
+        before=json.loads((old/'packet.json').read_text());after=json.loads((new/'packet.json').read_text())
+        self.assertEqual(before['texts'],after['texts'])
+        for a,b in zip(before['outcomes'],after['outcomes']):
+            for field in ['source','sourceRecordDigest','selection','textKey']:self.assertEqual(a[field],b[field])
+        A['load'](old/'citations.json');A['load'](new/'citations.json')
+
+    def test_failed_omitted_member_keeps_completed_neighbor_without_rereading_it(self):
+        self.sources=dict(list(self.sources.items())[:2]);self.omit={'s1'};self.bad='part-error'
+        out,_,code=self.acquire();self.assertNotEqual(code,0)
+        packet=json.loads((out/'packet.json').read_text())
+        self.assertEqual(packet['status'],'SELECTED_SOURCES_INCOMPLETE')
+        self.assertEqual([o['status'] for o in packet['outcomes']],['NATIVE_ERROR','RETAINED_SOURCE_RETURNED'])
+        self.assertEqual([r['reference'] for verb,r in self.requests if verb=='read-part'],['s1'])
+        self.assertEqual(packet['outcomes'][1]['sourceBatch']['kind'],'NATIVE_SOURCE_BATCH_ROW')
+        with self.assertRaises(A['Stop']):A['load'](out/'citations.json')
+
+    def test_inconsistent_complete_rows_fail_closed_even_with_rehashed_page(self):
+        self.sources=dict(list(self.sources.items())[:2])
+        for bad in ['work','snapshot','subject','total','missing','duplicate','reference','reference-type','id',
+                    'source-id','revision','text','digest','partial','receipt','continuation','empty-progress']:
+            self.bad=bad
+            with self.subTest(bad=bad):
+                _,value,code=self.acquire(bad);self.assertNotEqual(code,0)
+                self.assertFalse(any(verb=='read-part' for verb,_ in self.requests))
+                self.requests=[]
+
+    def test_saved_batch_proof_corruption_refuses_after_wrapper_rehash(self):
+        self.sources=dict(list(self.sources.items())[:2])
+        for bad in ['kind','pointer','record-digest','choices','pages','fake-part','part-command','truncated-pages']:
+            self.page_size=1 if bad=='truncated-pages' else 20
+            out,_,code=self.acquire(bad);self.assertEqual(code,0)
+            packet=json.loads((out/'packet.json').read_text());outcome=packet['outcomes'][0];proof=outcome['sourceBatch']
+            if bad=='kind':proof['kind']='SOURCE_PART'
+            if bad=='pointer':proof['raw']['pointer']='/items/0'
+            if bad=='record-digest':proof['recordDigest']='bad'
+            if bad=='choices':proof['choices'][0]['reference']='other'
+            if bad=='pages':proof['pages']=[]
+            if bad=='truncated-pages':proof['pages'].pop()
+            if bad=='fake-part':outcome['sourceParts']=[{'stdout':proof['pages'][0]}]
+            C['refresh'](out,packet)
+            if bad=='part-command':
+                path=out/'evidence-receipts.json';receipts=json.loads(path.read_text())
+                next(r for r in receipts if r['stdout']==proof['pages'][0])['command'][3]='read-part'
+                path.write_text(encode(receipts))
+            with self.subTest(bad=bad),self.assertRaises(A['Stop']):A['load'](out/'citations.json')
+
+
 if __name__ == '__main__': unittest.main()

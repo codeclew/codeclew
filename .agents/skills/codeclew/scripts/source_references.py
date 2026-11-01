@@ -21,6 +21,8 @@ def read(owner):
     selections = json.loads(a.selection.read_bytes())
     if not isinstance(selections, list) or not selections:
         raise Stop("EXPLICIT_SOURCE_REFERENCE_SELECTION_REQUIRED", exit_code=2)
+    if getattr(a, "source_batch_size", 1) > 1:
+        return read_batches(owner, selections)
     outcomes, texts, choices, seen_ids, seen_refs = [], {}, [], set(), set()
     for selection in selections:
         try:
@@ -74,3 +76,46 @@ def read(owner):
         "scope":owner.scope(), "work":owner.work, "coverage":owner.coverage, "outcomes":outcomes, "texts":texts,
         "discoveryQueryComplete":not owner.failures, "inventoryEnumerated":False,
         "requestedSelections":len(selections), "inputPacketDigest":"sha256:"+hashlib.sha256(raw).hexdigest()}, 3 if owner.failures else 0
+
+
+def read_batches(owner, selections):
+    a = owner.args
+    ids, refs = set(), set()
+    for selection in selections:
+        if (not isinstance(selection, dict) or set(selection) != {"sourceId", "sourceReference"}
+                or any(not isinstance(v, str) or not v for v in selection.values())):
+            raise Stop("INVALID_SOURCE_REFERENCE_SELECTION", exit_code=2)
+        if selection["sourceId"] in ids or selection["sourceReference"] in refs:
+            raise Stop("DUPLICATE_SOURCE_REFERENCE_SELECTION", exit_code=2)
+        ids.add(selection["sourceId"]); refs.add(selection["sourceReference"])
+    owner.prefetch_sources([{"id":s["sourceId"], "reference":s["sourceReference"]} for s in selections])
+    outcomes, texts, choices = [], {}, []
+    for selection in selections:
+        try:
+            identity, reference = selection["sourceId"], selection["sourceReference"]
+            key=(owner.work,a.snapshot,a.service,identity,reference)
+            if key in owner.source_batch_errors:raise owner.source_batch_errors[key]
+            reader = F["SourceReader"](owner)
+            reader.binding = {"revision":owner.coverage["record"]["revision"]}
+            source = reader.source(identity, reference)
+            proof = reader.batch
+            row = {"kind":"SOURCE_REFERENCE", "id":identity, "reference":reference,
+                   "source":{k:v for k,v in source.items() if k != "text"}, "recordDigest":digest(source),
+                   "raw":proof["raw"], "pages":proof["pages"], "batchChoices":proof["choices"]}
+            key = source["textDigest"]
+            if key in texts and texts[key] != source["text"]:
+                raise Stop("SOURCE_TEXT_DIGEST_COLLISION", exit_code=2)
+            texts[key] = source["text"]; choices.append(row)
+            outcomes.append({"selection":selection, "status":"RETAINED_SOURCE_RETURNED", "sourceBinding":row,
+                "source":row["source"], "sourceRecordDigest":digest(source), "textKey":key,
+                "sourceParts":reader.parts, "sourceBatch":proof, "nativePages":[], "evidenceReused":False})
+        except Stop as error:
+            failure = {"selection":selection, "status":error.status, "exitCode":error.exit_code, **error.details}
+            owner.failures.append(failure); outcomes.append(failure)
+    discovery = {"schema":"codeclew-auto-doc-evidence/1.0", "kind":"SOURCE_REFERENCE_SELECTION",
+        "scope":owner.scope(), "work":owner.work, "choices":choices, "queryComplete":not owner.failures, "inventoryEnumerated":False}
+    raw = encode(discovery).encode("utf-8"); (a.output_dir/"discovery.input.json").write_bytes(raw)
+    return {"kind":"READ", "status":"SELECTED_SOURCES_INCOMPLETE" if owner.failures else "SELECTED_SOURCES_READY", "scope":owner.scope(), "work":owner.work,
+        "coverage":owner.coverage, "outcomes":outcomes, "texts":texts, "discoveryQueryComplete":not owner.failures,
+        "inventoryEnumerated":False, "requestedSelections":len(selections),
+        "inputPacketDigest":"sha256:"+hashlib.sha256(raw).hexdigest()}, 3 if owner.failures else 0

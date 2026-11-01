@@ -89,6 +89,126 @@ def source_reference_pages(pages, scope, work, source_id, reference):
     return record, coverage[0], index, pointer
 
 
+def source_batch_pages(pages, scope, work, choices):
+    """Close one actual reference selection (<=8) across all native pages.
+
+    Full rows and explicit native size omissions are different proof kinds.
+    Missing members, foreign rows, malformed/altered text and incomplete pages
+    fail closed; only a genuine size omission selects the existing part route.
+    """
+    if (not isinstance(choices, list) or not 1 <= len(choices) <= 8
+            or any(not isinstance(c, dict) or set(c) != {"id", "reference"}
+                   or any(not isinstance(v, str) or not v for v in c.values()) for c in choices)
+            or len({c["id"] for c in choices}) != len(choices)
+            or len({c["reference"] for c in choices}) != len(choices)):
+        raise Stop("INVALID_SOURCE_BATCH_SELECTION", exit_code=2)
+    expected = {c["reference"]: c["id"] for c in choices}
+    if len(pages) > len(choices) + 1:
+        raise Stop("SOURCE_BATCH_NO_PROGRESS", exit_code=2)
+    found, coverage, membership, cursors = {}, [], None, set()
+    for index, page in enumerate(pages):
+        if (not isinstance(page, dict) or page.get("schema") != "codeclew-documentation-work-page/1.0"
+                or page.get("work") != work or page.get("snapshot") != scope["snapshot"]
+                or page.get("subject") != "service:" + scope["service"]
+                or not isinstance(page.get("items"), list) or not isinstance(page.get("omitted"), list)
+                or "nextCursor" not in page
+                or page.get("receiptDigest") != digest({k:v for k,v in page.items() if k != "receiptDigest"})):
+            raise Stop("SOURCE_BATCH_PAGE_MISMATCH", exit_code=2)
+        current = {k:page.get(k) for k in ("contextDigest", "inputDigest", "membershipDigest", "total", "authority")}
+        if (type(current["total"]) is not int or current["total"] != len(choices) + 1
+                or any(not isinstance(current[k], str) or not current[k] for k in current if k != "total")
+                or membership is not None and membership != current):
+            raise Stop("SOURCE_BATCH_MEMBERSHIP_CHANGED", exit_code=2)
+        membership = current
+        if not (page["items"] or page["omitted"]):
+            raise Stop("SOURCE_BATCH_NO_PROGRESS", exit_code=2)
+        cursor = page["nextCursor"]
+        if ((index < len(pages)-1) != (cursor is not None)
+                or cursor is not None and (not isinstance(cursor, str) or not cursor or cursor in cursors)):
+            raise Stop("SOURCE_BATCH_CONTINUATION_INCOMPLETE", exit_code=2)
+        cursors.add(cursor)
+        for section in ("items", "omitted"):
+            for offset, item in enumerate(page[section]):
+                if not isinstance(item, dict):
+                    raise Stop("INVALID_SOURCE_BATCH_ROW", exit_code=2)
+                if section == "items" and item.get("kind") == "COVERAGE" and item.get("id") == scope["service"]:
+                    coverage.append(item)
+                    continue
+                ref = item.get("reference")
+                if (item.get("kind") != "SOURCE" or not isinstance(ref, str)
+                        or ref not in expected or item.get("id") != expected[ref]
+                        or ref in found or section == "omitted" and item.get("reason") != "ITEM_EXCEEDS_WORK_BYTE_BUDGET"):
+                    raise Stop("SOURCE_BATCH_ROW_IDENTITY_CHANGED", exit_code=2)
+                source = item.get("record") if section == "items" else None
+                if section == "items" and (not isinstance(source, dict) or not isinstance(source.get("text"), str)):
+                    raise Stop("INVALID_SOURCE_BATCH_RECORD", exit_code=2)
+                found[ref] = (source, index, f"/{section}/{offset}")
+    if not pages or set(found) != set(expected) or len(coverage) != 1:
+        raise Stop("SOURCE_BATCH_DELIVERY_INCOMPLETE", exit_code=2)
+    revision = coverage[0].get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise Stop("SOURCE_BATCH_COVERAGE_MISSING", exit_code=2)
+    for ref, (source, _, _) in found.items():
+        if source is None:
+            continue
+        if (source.get("id") != expected[ref] or source.get("service") != scope["service"]
+                or source.get("revision") != revision
+                or any(not isinstance(source.get(k), str) or not source[k] for k in ("file", "authority", "evidenceDigest"))
+                or type(source.get("startLine")) is not int or type(source.get("endLine")) is not int
+                or not 1 <= source["startLine"] <= source["endLine"]
+                or source.get("textDigest") != "sha256:" + hashlib.sha256(source["text"].encode("utf-8")).hexdigest()
+                or not source["text"]):
+            raise Stop("SOURCE_BATCH_RECORD_CHANGED", exit_code=2)
+    return found, coverage[0]
+
+
+def native_payload(owner, name):
+    """A #index names one exact page inside an unchanged native batch stdout."""
+    if not isinstance(name, str) or not name:
+        raise Stop("REUSE_NATIVE_PROOF_UNAVAILABLE", exit_code=2)
+    base, marker, index = name.partition("#")
+    if base not in owner.records or owner.records[base]["exitCode"] != 0:
+        raise Stop("REUSE_NATIVE_PROOF_UNAVAILABLE", exit_code=2, artifact=name)
+    value = owner.payloads[base]
+    if (not isinstance(value, dict) or value.get("work") != owner.work
+            or value.get("snapshot") != owner.scope["snapshot"]):
+        raise Stop("REUSE_NATIVE_SCOPE_MISMATCH", exit_code=2)
+    owner.used.add(base)
+    if marker:
+        validated = getattr(owner, "validated_native_batches", None)
+        if validated is None:
+            validated = owner.validated_native_batches = set()
+        if (owner.records[base]["command"][1:4] != ["docs", "work", "read-batch"]
+                or value.get("schema") != "codeclew-documentation-work-batch/1.0"
+                or (base, owner.records[base]["stdoutSha256"]) not in validated and value.get("receiptDigest") != digest({k:v for k,v in value.items() if k != "receiptDigest"})
+                or len(index) > 2 or not index.isascii() or not index.isdecimal() or str(int(index)) != index
+                or not isinstance(value.get("results"), list) or not 1 <= len(value["results"]) <= 64
+                or int(index) >= len(value["results"])):
+            raise Stop("REUSE_NATIVE_BATCH_POINTER_INVALID", exit_code=2)
+        validated.add((base, owner.records[base]["stdoutSha256"]))
+        item = value["results"][int(index)]
+        if not isinstance(item, dict) or set(item) != {"selection", "page"} or not isinstance(item["selection"], dict):
+            raise Stop("REUSE_NATIVE_BATCH_PAGE_UNAVAILABLE", exit_code=2)
+        value = item["page"]
+        if (not isinstance(value, dict) or value.get("work") != owner.work
+                or value.get("snapshot") != owner.scope["snapshot"]
+                or value.get("subject") != "service:" + owner.scope["service"]):
+            raise Stop("REUSE_NATIVE_SCOPE_MISMATCH", exit_code=2)
+    return value
+
+
+def validated_source_batch(owner, names, choices):
+    """Cache immutable parsed page validation only within this proof reader."""
+    cache = getattr(owner, "validated_source_batches", None)
+    if cache is None:
+        cache = owner.validated_source_batches = {}
+    key = (owner.work, owner.scope["snapshot"], owner.scope["service"],
+           tuple((name, owner.records[name.partition("#")[0]]["stdoutSha256"]) for name in names), encode(choices))
+    if key not in cache:
+        cache[key] = source_batch_pages([owner.payload(n) for n in names], owner.scope, owner.work, choices)
+    return cache[key]
+
+
 class ReadProof:
     def __init__(self, path, scope, work):
         self.path = path.resolve(strict=True); self.root = self.path.parent
@@ -107,10 +227,11 @@ class ReadProof:
         if not isinstance(receipts, list):
             raise Stop("INVALID_REUSE_RECEIPTS", exit_code=2)
         self.records, self.payloads, self.used, self.remap = {}, {}, set(), {}
+        self.validated_native_batches, self.validated_source_batches = set(), {}
         for receipt in receipts:
             if (not isinstance(receipt, dict) or not isinstance(receipt.get("command"), list)
                     or receipt["command"][1:4] not in [["docs", "work", "read"], ["docs", "work", "read-part"],
-                                                      ["docs", "work", "read-dependency-part"]]):
+                                                      ["docs", "work", "read-dependency-part"], ["docs", "work", "read-batch"]]):
                 raise Stop("INVALID_REUSE_RECEIPT_COMMAND", exit_code=2)
             for stream in ("stdout", "stderr"):
                 raw = self.file(receipt[stream])
@@ -136,14 +257,7 @@ class ReadProof:
         return path.read_bytes()
 
     def payload(self, name):
-        if name not in self.records or self.records[name]["exitCode"] != 0:
-            raise Stop("REUSE_NATIVE_PROOF_UNAVAILABLE", exit_code=2, artifact=name)
-        value = self.payloads[name]
-        if (not isinstance(value, dict) or value.get("work") != self.work
-                or value.get("snapshot") != self.scope["snapshot"]):
-            raise Stop("REUSE_NATIVE_SCOPE_MISMATCH", exit_code=2)
-        self.used.add(name)
-        return value
+        return native_payload(self, name)
 
     def parts(self, names, identity, reference=None):
         parts = [self.payload(name) for name in names]
@@ -180,6 +294,37 @@ class ReadProof:
         if digest(value) != first["recordDigest"]:
             raise Stop("REUSE_RECORD_DIGEST_MISMATCH", exit_code=2)
         return value
+
+    def source(self, outcome, identity, reference):
+        batch = outcome.get("sourceBatch")
+        if batch is None:
+            return self.parts([p["stdout"] for p in outcome["sourceParts"]], identity, reference)
+        if (not isinstance(batch, dict) or set(batch) != {"kind", "choices", "pages", "raw", "recordDigest"}
+                or batch["kind"] not in ("NATIVE_SOURCE_BATCH_ROW", "NATIVE_SOURCE_BATCH_OMISSION")
+                or not isinstance(batch["pages"], list) or not batch["pages"]
+                or any(not isinstance(n, str) for n in batch["pages"])):
+            raise Stop("INVALID_SOURCE_BATCH_PROOF", exit_code=2)
+        if any(self.records.get(name.partition("#")[0], {}).get("command", [])[1:4]
+               != ["docs", "work", "read-batch" if "#" in name else "read"]
+               for name in batch["pages"]):
+            raise Stop("SOURCE_BATCH_RECEIPT_KIND_MISMATCH", exit_code=2)
+        found, coverage = validated_source_batch(self, batch["pages"], batch["choices"])
+        if not any(c == {"id":identity, "reference":reference} for c in batch["choices"]):
+            raise Stop("SOURCE_BATCH_SELECTION_CHANGED", exit_code=2)
+        original, index, pointer = found[reference]
+        if batch["raw"] != {"stdout":batch["pages"][index], "pointer":pointer}:
+            raise Stop("SOURCE_BATCH_POINTER_CHANGED", exit_code=2)
+        if batch["kind"] == "NATIVE_SOURCE_BATCH_ROW":
+            if original is None or outcome["sourceParts"]:
+                raise Stop("SOURCE_BATCH_ROW_PROOF_CHANGED", exit_code=2)
+            source = original
+        else:
+            if original is not None:
+                raise Stop("SOURCE_BATCH_OMISSION_PROOF_CHANGED", exit_code=2)
+            source = self.parts([p["stdout"] for p in outcome["sourceParts"]], identity, reference)
+        if source.get("revision") != coverage["revision"] or batch["recordDigest"] != digest(source):
+            raise Stop("SOURCE_BATCH_RECORD_DIGEST_CHANGED", exit_code=2)
+        return source
 
     def declaration(self, outcome):
         declaration = outcome["declaration"]; raw = declaration["raw"]; name = raw["stdout"]
@@ -258,7 +403,7 @@ class ReadProof:
             if (proof.get("metadata") != {k: v for k, v in page.items() if k != "items"}
                     or proof.get("coverage") != [r for r in page["items"] if r.get("kind") == "COVERAGE"]):
                 raise Stop("REUSE_PAGE_PROOF_CHANGED", exit_code=2)
-        source = self.parts([p["stdout"] for p in outcome["sourceParts"]], source_id, reference)
+        source = self.source(outcome, source_id, reference)
         expected = {**outcome["source"], "text": self.packet["texts"][outcome["textKey"]]}
         if (source != expected or digest(source) != outcome["sourceRecordDigest"]
                 or source.get("service") != self.scope["service"] or source.get("revision") != row["revision"]
@@ -299,8 +444,12 @@ class ReadProof:
                     or outcome.get("fileBinding") is not None):
                 raise Stop("REUSE_SOURCE_REFERENCE_SELECTION_CHANGED", exit_code=2)
             names = binding.get("pages", [])
-            record, coverage, index, pointer = source_reference_pages(
-                [self.payload(name) for name in names], self.scope, self.work, binding["id"], binding["reference"])
+            if "batchChoices" in binding:
+                found, coverage = validated_source_batch(self, names, binding["batchChoices"])
+                record, index, pointer = found[binding["reference"]]
+            else:
+                record, coverage, index, pointer = source_reference_pages(
+                    [self.payload(name) for name in names], self.scope, self.work, binding["id"], binding["reference"])
             revision = coverage["revision"]
             if binding["raw"] != {"stdout":names[index], "pointer":pointer}:
                 raise Stop("REUSE_SOURCE_REFERENCE_PROOF_CHANGED", exit_code=2)
@@ -311,7 +460,7 @@ class ReadProof:
                 or record.get("source") != binding["source"] or record.get("recordDigest") != binding["recordDigest"]
                 or record.get("fullRecordReference") != binding["reference"] or record.get("textDelivered") is not False):
             raise Stop("REUSE_SOURCE_NAVIGATION_CHANGED", exit_code=2)
-        source = self.parts([p["stdout"] for p in outcome["sourceParts"]], binding["id"], binding["reference"])
+        source = self.source(outcome, binding["id"], binding["reference"])
         expected = {**outcome["source"], "text": self.packet["texts"][outcome["textKey"]]}
         if (source != expected or {k:v for k,v in source.items() if k != "text"} != binding["source"]
                 or digest(source) != binding["recordDigest"] or digest(source) != outcome["sourceRecordDigest"]

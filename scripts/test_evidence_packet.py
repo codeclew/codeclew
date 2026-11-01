@@ -84,6 +84,45 @@ class EvidencePacketTest(unittest.TestCase):
         return {'kind':'DECLARATION','id':item['id'],'reference':item['reference'],'symbol':item['record']['symbol'],
             'service':'owned','revision':'rev-a','sourceIds':item['record']['sourceIds'],'observationDigest':item['record']['digest']}
 
+    def test_batch_read_selected_and_reuse_keep_each_declaration_binding(self):
+        sources=[];declarations=[];rows=[]
+        for index in range(2):
+            source=F['source']('if (ready) send(); // π🙂\n')
+            source.update(id='source-'+str(index),evidenceDigest='sha256:original');sources.append(source)
+            item=F['declaration']([source['id']],['s'+str(index)])
+            item['id']=item['record']['id']='decl-'+str(index);item['reference']='d'+str(index);declarations.append(item)
+            rows.append({**self.row(item),'sourceReferences':item['sourceReferences']})
+        shared=json.loads(json.dumps(declarations[0]));shared['id']=shared['record']['id']='shared-declaration'
+        shared['reference']='d-shared';declarations.append(shared)
+        rows.append({**self.row(shared),'sourceReferences':shared['sourceReferences']})
+        self.read_input(rows,[{'declarationId':r['id']} for r in rows]);self.args.source_batch_size=8
+        self.args.output_format='author'
+        batch=page({'kind':'COVERAGE','id':'owned','revision':'rev-a'},
+                   *[{'kind':'SOURCE','id':s['id'],'reference':'s'+str(i),'record':s} for i,s in enumerate(sources)])
+        batch['receiptDigest']=digest(batch)
+        _,code,packet,summary=self.execute([batch,*[F['page'](d) for d in declarations]])
+        self.assertEqual(code,0);self.assertEqual(len(self.commands),4)
+        self.assertFalse(any(c[3]=='read-part' for c in self.commands))
+        self.assertEqual(summary['verifiedSourceReadsReused'],1)
+        A=runpy.run_path(str(ROOT/'skills/codeclew/scripts/author_citations.py'));A['load'](self.out/'citations.json')
+        prior=self.out/'packet.json';self.args.output_dir=self.root/'reuse';self.args.output_dir.mkdir();self.out=self.args.output_dir
+        self.args.reuse_read=prior
+        _,code,reused,summary=self.execute([]);self.assertEqual(code,0);self.assertEqual(self.commands,[])
+        self.assertEqual(packet['texts'],reused['texts']);A['load'](self.out/'citations.json')
+        fresh_source=F['source']('throw error; // π🙂\n')
+        fresh_source.update(id='fresh-source',evidenceDigest='sha256:original')
+        fresh=F['declaration'](['fresh-source'],['s-fresh']);fresh['id']=fresh['record']['id']='fresh-declaration'
+        fresh['reference']='d-fresh';rows.append({**self.row(fresh),'sourceReferences':fresh['sourceReferences']})
+        self.read_input(rows,[{'declarationId':r['id']} for r in rows]);self.args.reuse_read=prior
+        self.args.output_dir=self.root/'mixed';self.args.output_dir.mkdir();self.out=self.args.output_dir
+        batch=page({'kind':'COVERAGE','id':'owned','revision':'rev-a'},
+                   {'kind':'SOURCE','id':'fresh-source','reference':'s-fresh','record':fresh_source})
+        batch['receiptDigest']=digest(batch)
+        _,code,_,summary=self.execute([batch,F['page'](fresh)])
+        self.assertEqual(code,0);self.assertEqual(summary['priorEvidenceBindingsReused'],3)
+        self.assertEqual(self.inputs[0]['references'],['s-fresh']);self.assertEqual(len(self.commands),2)
+        A['load'](self.out/'citations.json')
+
     def test_discovery_drains_pages_and_recovers_oversized_record_without_source_reads(self):
         first=F['declaration'](); first['id']=first['record']['id']='decl-a';first['reference']='d8'
         second=F['declaration']();second['record']['normalized']['largeDescriptor']='x'*70000

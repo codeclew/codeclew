@@ -272,6 +272,16 @@ impl Fixture {
     pub fn tools_dir(&self) -> &Path {
         &self.tools
     }
+    /// Subprocess helper tests use the same authenticated fixture runtime,
+    /// never a direct capsule or a fallback for user repositories.
+    pub fn helper_launcher(&self) -> PathBuf {
+        let path = self.temp.path().join("helper-clew");
+        let config = path.with_extension("json");
+        fs::write(&config, serde_json::to_vec(&json!({"binary":self.binary,"state":self.state,"runtime":self.runtime,"lease":self.lease})).unwrap()).unwrap();
+        fs::write(&path, "#!/usr/bin/env python3\nimport os,sys,json\nfrom pathlib import Path\nc=json.loads(Path(__file__).with_suffix('.json').read_text())\nfor key,name in [('state','CODECLEW_STATE_ROOT_FD'),('runtime','CODECLEW_RUNTIME_ROOT_FD'),('lease','CODECLEW_RUNTIME_LEASE_FD')]:\n fd=os.open(c[key],os.O_RDONLY if key!='lease' else os.O_RDWR|os.O_CREAT,0o600);os.set_inheritable(fd,True);os.environ[name]=str(fd)\nos.execv(c['binary'],[c['binary'],*sys.argv[1:]])\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
     pub fn ok(&self, args: &[&str]) -> Value {
         let (code, value) = self.run(args);
         assert_eq!(code, 0, "{args:?}: {value}");

@@ -15,6 +15,7 @@ import runpy
 
 B = globals().get("SHARED_BOUND_SOURCE") or runpy.run_path(str(Path(__file__).with_name("bound_source.py")))
 Stop, digest, encode = (B[k] for k in ("Stop", "digest", "encode"))
+C = runpy.run_path(str(Path(__file__).with_name("citation_evidence.py")))
 
 
 class ReusableEvidence:
@@ -35,10 +36,11 @@ class ReusableEvidence:
         if not isinstance(receipts, list):
             raise Stop("INVALID_REUSE_RECEIPTS", exit_code=2)
         self.records, self.payloads, self.used, self.remap = {}, {}, set(), {}
+        self.validated_native_batches, self.validated_source_batches = set(), {}
         for receipt in receipts:
             if (not isinstance(receipt, dict) or not isinstance(receipt.get("command"), list)
                     or receipt["command"][1:4] not in [["docs", "work", "read"], ["docs", "work", "read-part"],
-                                                      ["docs", "work", "read-dependency-part"]]):
+                                                      ["docs", "work", "read-dependency-part"], ["docs", "work", "read-batch"]]):
                 raise Stop("INVALID_REUSE_RECEIPT_COMMAND", exit_code=2)
             for stream in ("stdout", "stderr"):
                 raw = self.file(receipt[stream])
@@ -64,14 +66,10 @@ class ReusableEvidence:
         return path.read_bytes()
 
     def payload(self, name):
-        if name not in self.records or self.records[name]["exitCode"] != 0:
-            raise Stop("REUSE_NATIVE_PROOF_UNAVAILABLE", exit_code=2, artifact=name)
-        value = self.payloads[name]
-        if (not isinstance(value, dict) or value.get("work") != self.work
-                or value.get("snapshot") != self.scope["snapshot"]):
-            raise Stop("REUSE_NATIVE_SCOPE_MISMATCH", exit_code=2)
-        self.used.add(name)
-        return value
+        try:
+            return C["native_payload"](self, name)
+        except C["Stop"] as error:
+            raise Stop(error.status, exit_code=error.exit_code, **error.details) from error
 
     def parts(self, names, identity, reference=None):
         parts = [self.payload(name) for name in names]
@@ -108,6 +106,12 @@ class ReusableEvidence:
         if digest(value) != first["recordDigest"]:
             raise Stop("REUSE_RECORD_DIGEST_MISMATCH", exit_code=2)
         return value
+
+    def source(self, outcome, identity, reference):
+        try:
+            return C["ReadProof"].source(self, outcome, identity, reference)
+        except C["Stop"] as error:
+            raise Stop(error.status, exit_code=error.exit_code, **error.details) from error
 
     def declaration(self, outcome):
         declaration = outcome["declaration"]; raw = declaration["raw"]; name = raw["stdout"]
@@ -186,7 +190,7 @@ class ReusableEvidence:
             if (proof.get("metadata") != {k: v for k, v in page.items() if k != "items"}
                     or proof.get("coverage") != [r for r in page["items"] if r.get("kind") == "COVERAGE"]):
                 raise Stop("REUSE_PAGE_PROOF_CHANGED", exit_code=2)
-        source = self.parts([p["stdout"] for p in outcome["sourceParts"]], source_id, reference)
+        source = self.source(outcome, source_id, reference)
         expected = {**outcome["source"], "text": self.packet["texts"][outcome["textKey"]]}
         if (source != expected or digest(source) != outcome["sourceRecordDigest"]
                 or source.get("service") != self.scope["service"] or source.get("revision") != row["revision"]
@@ -205,6 +209,9 @@ class ReusableEvidence:
 
     def retain(self, outcome, target):
         def transfer(name):
+            base, marker, index = name.partition("#")
+            if marker:
+                return transfer(base) + "#" + index
             if name not in self.remap:
                 raw = self.file(name)
                 suffix = Path(name).suffix
@@ -219,6 +226,10 @@ class ReusableEvidence:
         binding["raw"]["stdout"] = transfer(binding["raw"]["stdout"])
         for part in outcome["sourceParts"]:part["stdout"] = transfer(part["stdout"])
         for page in outcome["nativePages"]:page["raw"] = transfer(page["raw"])
+        if outcome.get("sourceBatch"):
+            batch = outcome["sourceBatch"]
+            batch["pages"] = [transfer(name) for name in batch["pages"]]
+            batch["raw"]["stdout"] = transfer(batch["raw"]["stdout"])
         outcome["evidenceReused"] = True
         return outcome
 
@@ -243,7 +254,7 @@ class ReusableEvidence:
                 or record.get("source") != binding["source"] or record.get("recordDigest") != binding["recordDigest"]
                 or record.get("fullRecordReference") != binding["reference"] or record.get("textDelivered") is not False):
             raise Stop("REUSE_SOURCE_NAVIGATION_CHANGED", exit_code=2)
-        source = self.parts([p["stdout"] for p in outcome["sourceParts"]], binding["id"], binding["reference"])
+        source = self.source(outcome, binding["id"], binding["reference"])
         expected = {**outcome["source"], "text": self.packet["texts"][outcome["textKey"]]}
         if (source != expected or {k:v for k,v in source.items() if k != "text"} != binding["source"]
                 or digest(source) != binding["recordDigest"] or digest(source) != outcome["sourceRecordDigest"]

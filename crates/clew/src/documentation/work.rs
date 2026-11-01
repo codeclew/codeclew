@@ -154,6 +154,8 @@ pub enum Command {
         work: String,
     },
     Read(ReadArgs),
+    /// Read up to 64 bounded SOURCE selections after loading immutable Work once.
+    ReadBatch(ReadArgs),
     Expand(ReadArgs),
     ReadPart(ReadPartArgs),
     /// Read canonical JSON of one retained operation in bounded recorded parts.
@@ -1034,6 +1036,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             super::agent_jobs::cancel(&Repository::open(&root)?, &work)
         }
         Command::Read(args) | Command::Expand(args) => read(
+            &Repository::open(&args.root)?,
+            &args.work,
+            store::read(&args.input, store::MAX_RECORD)?,
+        ),
+        Command::ReadBatch(args) => read_batch(
             &Repository::open(&args.root)?,
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,
@@ -3545,6 +3552,84 @@ fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     annotate_rows(work, items)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchSelection {
+    pub schema: String,
+    pub selections: Vec<Value>,
+}
+
+/// Transport batching only: ordinary page limits, cursors and recorded reads
+/// remain authoritative. Each result is explicit, including failed selections.
+pub fn read_batch(
+    repo: &Repository,
+    id: &str,
+    request: BatchSelection,
+) -> Result<Value, ClewError> {
+    if request.schema != "codeclew-documentation-work-batch-request/1.0"
+        || !(1..=64).contains(&request.selections.len())
+    {
+        return Err(invalid(
+            "read-batch requires its schema and 1..64 SOURCE selections",
+        ));
+    }
+    let work = load(repo, id)?;
+    if work.snapshot.as_deref().is_none_or(str::is_empty) {
+        return Err(invalid("read-batch requires an immutable Work snapshot"));
+    }
+    // Pages stay internal until the complete response and its ledger fit their
+    // bounds. One lock/load/atomic save avoids rewriting a growing ledger for
+    // every page, while retaining the exact ordinary per-page receipts.
+    let _lock = super::progress::run("WAIT_READ_RECEIPT_LOCK", || repo.lock())?;
+    let mut state = read_state(repo, id)?;
+    if state.work != id {
+        return Err(invalid("read ledger belongs to another work"));
+    }
+    let mut results = Vec::with_capacity(request.selections.len());
+    for requested in request.selections {
+        let result = serde_json::from_value::<Selection>(requested.clone())
+            .map_err(|error| invalid(format!("invalid SOURCE batch selection: {error}")))
+            .and_then(|selection| {
+                let source_only = !selection.untracked_reads
+                    && selection.symbols.is_empty()
+                    && (selection.query.as_ref().is_some_and(|q| q.kind == "SOURCE")
+                        || !selection.references.is_empty()
+                            && selection
+                                .references
+                                .iter()
+                                .all(|r| work.handles.get(r).is_some_and(|h| h.kind == "SOURCE")));
+                if source_only {
+                    read_loaded_with_state(repo, &work, selection, None, Some(&mut state))
+                } else {
+                    Err(invalid(
+                        "read-batch accepts only tracked SOURCE references or SOURCE queries",
+                    ))
+                }
+            });
+        results.push(match result {
+            Ok(page) => json!({"selection":requested,"page":page}),
+            Err(error) => json!({"selection":requested,"error":error}),
+        });
+    }
+    let mut output = json!({"schema":"codeclew-documentation-work-batch/1.0", "work":id,
+        "snapshot":work.snapshot,"results":results});
+    output["receiptDigest"] = json!(digest(&output)?);
+    if bytes(&output)?.len() > 4 * 1024 * 1024 {
+        return Err(invalid(
+            "read-batch output exceeds 4 MiB; request fewer selections",
+        ));
+    }
+    if output["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r.get("page").is_some())
+    {
+        save_read_state(repo, id, &state)?;
+    }
+    Ok(output)
+}
+
 pub fn read(repo: &Repository, id: &str, selection: Selection) -> Result<Value, ClewError> {
     let work = load(repo, id)?;
     read_loaded(repo, &work, selection)
@@ -3563,6 +3648,16 @@ pub(super) fn read_loaded_with_requested(
     work: &Work,
     selection: Selection,
     requested_selection: Option<Selection>,
+) -> Result<Value, ClewError> {
+    read_loaded_with_state(repo, work, selection, requested_selection, None)
+}
+
+fn read_loaded_with_state(
+    repo: &Repository,
+    work: &Work,
+    selection: Selection,
+    requested_selection: Option<Selection>,
+    batch_state: Option<&mut ReadState>,
 ) -> Result<Value, ClewError> {
     let id = work.id.as_str();
     let items = super::progress::run("BUILD_CONTEXT_ROWS", || rows(work, &selection))?;
@@ -3666,8 +3761,22 @@ pub(super) fn read_loaded_with_requested(
     if consumed < output["total"].as_u64().unwrap() as usize {
         output["nextCursor"] = json!(format!("{prefix}:{consumed}"));
     }
-    let _lock = super::progress::run("WAIT_READ_RECEIPT_LOCK", || repo.lock())?;
-    let mut state = read_state(repo, id)?;
+    let batch = batch_state.is_some();
+    let _lock = if batch {
+        None
+    } else {
+        Some(super::progress::run("WAIT_READ_RECEIPT_LOCK", || {
+            repo.lock()
+        })?)
+    };
+    let mut loaded_state;
+    let state = match batch_state {
+        Some(state) => state,
+        None => {
+            loaded_state = read_state(repo, id)?;
+            &mut loaded_state
+        }
+    };
     if state.work != id {
         return Err(invalid("read ledger belongs to another work"));
     }
@@ -3690,7 +3799,14 @@ pub(super) fn read_loaded_with_requested(
         return Err(invalid("work page metadata exceeds requested byte budget"));
     }
     state.receipts.insert(digest(&receipt)?, receipt);
-    let encoded = bytes(&state)?;
+    if !batch {
+        save_read_state(repo, id, state)?;
+    }
+    Ok(output)
+}
+
+fn save_read_state(repo: &Repository, id: &str, state: &ReadState) -> Result<(), ClewError> {
+    let encoded = bytes(state)?;
     if encoded.len() > 16 * 1024 * 1024 {
         return Err(invalid(
             "work read ledger exceeds its bound; prepare narrower work",
@@ -3698,8 +3814,7 @@ pub(super) fn read_loaded_with_requested(
     }
     super::progress::run("SAVE_READ_RECEIPT", || {
         repo.atomic(&format!("{}/reads.json", directory(id)?), &encoded)
-    })?;
-    Ok(output)
+    })
 }
 
 /// All initially required facts, old content and human inputs must be supplied.

@@ -15,7 +15,7 @@ OS/filesystem sandbox enforcement. Ordinary product implementation follows its
 repository workflow. Read saved helper artifacts through the supported inspector.
 
 ```sh
-python3 -I -S "$CODECLEW_SKILL_DIR/scripts/evidence_packet.py" discover-files --clew CLEW --root ROOT --service SERVICE --snapshot SNAPSHOT --prepare-work --output-dir DISCOVERY
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/evidence_packet.py" discover-files --clew CLEW --root ROOT --service SERVICE --snapshot SNAPSHOT --prepare-work --page-items 100 --output-dir DISCOVERY
 ```
 
 Inspect returned file metadata and coverage, then write an explicit selection
@@ -36,6 +36,39 @@ of `{"file":"RETURNED_PATH"}` or exact `startLine`/`endLine`, optionally `cite` 
 an ambiguous file. It returns verbatim original views, not new evidence. Missing
 whole-file proof refuses; no fallback or inferred whole-file coverage. Existing
 declaration read, source-union, reuse-read and full inspect remain available.
+
+For fragment-only Work, omit `--whole-files`: the ordinary `read-files` and
+`read-sources` routes batch exact retained SOURCE rows by default. They pool
+file-navigation pages and groups of up to eight SOURCE references across files.
+The installed native `docs work read-batch` loads immutable Work once for up to
+64 ordinary bounded page selections; original page budgets, cursors, ledger
+receipts and per-selection errors remain intact. An explicit size omission uses
+the existing source-part recovery. Unknown or missing members refuse instead of
+silently becoming complete, and fragments do not become whole-file evidence.
+
+Native bulk stdout stays unchanged. Citation sidecars address exact pages inside
+it and validate row membership, scope, text/record digests, authority and occurrence
+against the original bindings. Complete prior source-part manifests remain valid.
+`--native-batch-size 1` uses separate page invocations; adding
+`--source-batch-size 1` selects the legacy part-only acquisition for a bounded
+comparison. Metadata output changes presentation, not the acquired evidence.
+Before a large retained read, measure a representative and a larger owned sample;
+count launches, elapsed acquisition and validation, including metadata and any
+part recovery. A smaller launch count alone does not establish practical time.
+The explicit `--page-items 100` above prepares a new Work on the same retained
+snapshot with larger item capacity; it does not capture source or change the
+49,152-byte page bound. An existing Work keeps its original page capacity.
+
+For direct native use, pass `docs work read-batch --root ROOT --work WORK
+--input BATCH_JSON` with this envelope and exact returned references/paths:
+
+```json
+{"schema":"codeclew-documentation-work-batch-request/1.0","selections":[{"references":["RETURNED_SOURCE_REFERENCE"]},{"query":{"kind":"SOURCE","projection":"NAVIGATION","file":"RETURNED_PATH"}}]}
+```
+
+Each result echoes its selection and contains `page` or `error`. Each selection
+returns one ordinary page; follow every `page.nextCursor` with the same selection.
+The helpers pool these continuations and preserve unresolved results explicitly.
 
 For contracts/configuration exposed by a native dependency's `sourceReferences`,
 read the returned reference through `docs work read` to obtain its exact SOURCE

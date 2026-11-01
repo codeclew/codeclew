@@ -37,8 +37,12 @@ class RetainedFilesTest(unittest.TestCase):
             value=F['part'](source,start,end,'offset:'+str(end) if end<len(raw) else None,request['reference'])
             if self.bad=='part':value['recordDigest']='bad'
         else:
-            query=request['query'];projection=query['projection']
-            if projection=='FILES':
+            query=request.get('query',{});projection=query.get('projection')
+            if 'references' in request:
+                rows=[{'kind':'COVERAGE','id':'owned','revision':'rev-a'}]
+                rows += [{'kind':'SOURCE','id':self.sources[int(ref[1:])-1]['id'],'reference':ref,
+                          'record':self.sources[int(ref[1:])-1]} for ref in request['references']]
+            elif projection=='FILES':
                 files={s['file'] for s in self.sources if query.get('fileContains','') in s['file']}
                 rows=[{'kind':'SOURCE_FILE','id':file,'record':{'file':file,'service':'owned','revision':'rev-a',
                     'sourceRecords':sum(s['file']==file for s in self.sources),'authorities':['EXACT_SNAPSHOT_TEXT'],
@@ -54,24 +58,40 @@ class RetainedFilesTest(unittest.TestCase):
                 if projection=='WHOLE_FILE':
                     rows=rows[:1]
                     if rows and self.bad!='missing-marker':rows[0]['record']['wholeFileCapture']='EXACT_RETAINED_FILE'
-            start=int(request.get('cursor','page:0').split(':')[1]);selected=rows[start:start+2]
-            value={**F['page'](*selected,cursor='page:'+str(start+2) if start+2<len(rows) else None),
+            capacity=getattr(self,'page_size',2)
+            start=int(request.get('cursor','page:0').split(':')[1]);selected=rows[start:start+capacity]
+            value={**F['page'](*selected,cursor='page:'+str(start+capacity) if start+capacity<len(rows) else None),
                    'total':len(rows),'membershipDigest':digest([r['id'] for r in rows]),'contextDigest':'ctx','inputDigest':'input','authority':'IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED'}
             if self.bad=='foreign':value['work']='other'
             if self.bad=='omitted':value['omitted']=[{'id':'missing','kind':'SOURCE_NAVIGATION'}]
+            value['receiptDigest']=digest(value)
         return subprocess.CompletedProcess(command,0,encode(value).encode(),b'')
 
-    def packet(self,action,name,*,discovery=None,files=None,reuse=None,contains='',whole=False,output_format='author'):
+    def packet(self,action,name,*,discovery=None,files=None,reuse=None,contains='',whole=False,output_format='author',batch=1):
         out=self.root/name;out.mkdir();selection=self.root/(name+'.selection.json')
         if files is not None:selection.write_text(encode([{'file':f} for f in files]))
         args=argparse.Namespace(action=action,clew='/supported/clew',root='/disposable/docs',service='owned',snapshot=F['SNAPSHOT'],
             work='work-a' if action=='discover-files' else None,prepare_work=False,path_contains=contains,contains='',page_items=2,
-            packet=discovery,selection=selection,output_dir=out,reuse_read=reuse,output_format=output_format,whole_files=whole)
+            packet=discovery,selection=selection,output_dir=out,reuse_read=reuse,output_format=output_format,whole_files=whole,
+            source_batch_size=batch)
         self.commands=[];self.requests=[]
         with patch('subprocess.run',side_effect=self.native):value,code=M['Packet'](args).run()
         return out,value,code
 
     def prepare(self):return self.packet('discover-files','discovery')[0]/'packet.json'
+
+    def test_batched_overlapping_file_sources_keep_old_and_reusable_proof_routes(self):
+        for source in self.sources:source.update(file='Same.java',evidenceDigest='sha256:original')
+        discovery=self.prepare()
+        old,_,code=self.packet('read-files','old',discovery=discovery,files=['Same.java']);self.assertEqual(code,0)
+        fresh,_,code=self.packet('read-files','batch',discovery=discovery,files=['Same.java'],batch=8);self.assertEqual(code,0)
+        self.assertFalse(any(c[3]=='read-part' for c in self.commands));A['load'](fresh/'citations.json')
+        before=json.loads((old/'packet.json').read_text());after=json.loads((fresh/'packet.json').read_text())
+        self.assertEqual(before['texts'],after['texts'])
+        self.assertEqual([o['source'] for o in before['outcomes']],[o['source'] for o in after['outcomes']])
+        for name,prior in [('reuse',fresh),('again',self.root/'reuse')]:
+            reused,_,code=self.packet('read-files',name,discovery=discovery,files=['Same.java'],reuse=prior/'packet.json',batch=8)
+            self.assertEqual(code,0);self.assertEqual(self.commands,[]);A['load'](reused/'citations.json')
 
     def test_metadata_delivery_keeps_full_packet_bindings_and_grouped_inspection(self):
         for source in self.sources:

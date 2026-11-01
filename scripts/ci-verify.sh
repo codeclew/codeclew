@@ -120,6 +120,7 @@ ci_run checks python3 -I -S scripts/test_work_bound_source.py
 ci_run checks python3 -I -S scripts/test_evidence_packet.py
 ci_run checks python3 -I -S scripts/test_retained_files.py
 ci_run checks python3 -I -S scripts/test_source_references.py
+ci_run checks python3 -I -S scripts/test_native_page_batches.py
 ci_run checks python3 -I -S scripts/test_source_regions.py
 ci_run checks python3 -I -S scripts/test_native_source_citations.py
 ci_run checks python3 -I -S scripts/test_reusable_evidence.py
