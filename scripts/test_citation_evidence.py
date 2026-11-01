@@ -22,11 +22,14 @@ def refresh(directory, packet, discovery=None):
     raw = encode(discovery).encode()
     (directory / "discovery.input.json").write_bytes(raw)
     packet["inputPacketDigest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
-    receipts = json.loads((directory / "receipts.json").read_bytes())
-    for receipt in receipts:
-        for stream in ("stdout", "stderr"):
-            receipt[stream + "Sha256"] = hashlib.sha256((directory / receipt[stream]).read_bytes()).hexdigest()
-    (directory / "receipts.json").write_text(encode(receipts))
+    for name in ("receipts.json", "evidence-receipts.json"):
+        path = directory / name
+        if not path.exists():continue
+        receipts = json.loads(path.read_bytes())
+        for receipt in receipts:
+            for stream in ("stdout", "stderr"):
+                receipt[stream + "Sha256"] = hashlib.sha256((directory / receipt[stream]).read_bytes()).hexdigest()
+        path.write_text(encode(receipts))
     (directory / "packet.json").write_text(encode(packet))
     (directory / "read-summary.json").write_text(encode({"packetDigest": digest(packet)}))
     (directory / "citations.json").write_text(encode(A["manifest_value"](packet, discovery)))

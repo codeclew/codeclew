@@ -43,6 +43,9 @@ class NativePageBatchesTest(unittest.TestCase):
         if self.bad == 'work': value['work'] = 'foreign'
         if self.bad == 'snapshot': value['snapshot'] = 'foreign'
         if self.bad == 'page': results[0]['page']['work'] = 'foreign'
+        if self.bad == 'empty-next':
+            page=results[0]['page'];page.update(items=[],omitted=[],nextCursor='new-cursor')
+            page['receiptDigest']=digest({k:v for k,v in page.items() if k!='receiptDigest'})
         value['receiptDigest'] = digest(value)
         if self.bad == 'digest': value['receiptDigest'] = 'bad'
         raw = encode(value).encode()
@@ -78,29 +81,32 @@ class NativePageBatchesTest(unittest.TestCase):
         self.assertEqual(self.commands, []); A['load'](reused / 'citations.json')
 
     def test_transport_refuses_changed_selection_scope_missing_digest_and_truncation(self):
-        for bad in ['selection', 'missing', 'work', 'snapshot', 'page', 'digest', 'truncated']:
+        for bad in ['selection', 'missing', 'work', 'snapshot', 'page', 'digest', 'truncated', 'empty-next']:
             with self.subTest(bad=bad):
                 self.bad = bad; out, _, code = self.read('bad-' + bad)
                 self.assertNotEqual(code, 0)
 
     def test_virtual_pointer_and_edited_native_parent_fail_proof_validation(self):
-        for bad in ['pointer', 'parent', 'error', 'occurrence']:
+        for bad in ['pointer', 'parent', 'error', 'occurrence', 'projection']:
             out, _, code = self.read('saved-' + bad); self.assertEqual(code, 0)
             A['load'](out / 'citations.json')  # previous validation must not lend trust to the next load
             packet = json.loads((out / 'packet.json').read_text()); outcome = packet['outcomes'][0]
             if bad == 'pointer': outcome['sourceBinding']['raw']['stdout'] += '0'
             else:
-                base, _, index = outcome['sourceBinding']['raw']['stdout'].partition('#')
+                proof=outcome['sourceBatch'] if bad=='projection' else outcome['sourceBinding']
+                base, _, index = proof['raw']['stdout'].partition('#')
                 path = out / base; value = json.loads(path.read_text()); item = value['results'][int(index)]
                 if bad == 'parent': value['work'] = 'foreign'
                 elif bad == 'error': item.pop('page'); item['error'] = {'message':'missing'}
+                elif bad == 'projection': item['selection']['projection']='CONTEXT'
                 else: item['page']['items'][0]['record']['source']['occurrence'] = {'startByte':999}
                 value['receiptDigest'] = digest({k:v for k,v in value.items() if k != 'receiptDigest'})
                 path.write_text(encode(value))
             # Refresh outer local hashes deliberately: exact inner row/page proof still refuses.
             C = runpy.run_path(str(ROOT / 'scripts/test_citation_evidence.py'))
             C['refresh'](out, packet)
-            with self.assertRaises(A['Stop']): A['load'](out / 'citations.json')
+            with self.assertRaises(A['Stop']) as error: A['load'](out / 'citations.json')
+            if bad=='projection':self.assertEqual(error.exception.status,'SOURCE_BATCH_PROJECTION_CHANGED')
 
     def test_public_scale_keeps_all_bindings_with_bounded_native_invocations(self):
         f = self.fixture; f.page_size = 100; template = f.sources[0]; f.sources = []

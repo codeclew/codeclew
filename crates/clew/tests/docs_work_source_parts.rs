@@ -18,6 +18,147 @@ use support::{Fixture, read};
 const SOURCE_PART_REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
 
 #[test]
+fn source_rows_projection_retains_exact_source_and_coverage_without_repeating_narrative() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let checked = f.checked();
+    let narrative = f.author("orders", &checked);
+    let publication = f.ok(&[
+        "docs",
+        "render",
+        "--input",
+        narrative.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert_eq!(publication["updateFailures"], json!({}));
+    let (id, reference) = prepare_work(&f, 49_152);
+    fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
+    let read_selection = |value: Value| {
+        let input = f.input("projection.json", &value);
+        f.run(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            &id,
+            "--input",
+            input.to_str().unwrap(),
+        ])
+    };
+    let (code, ordinary) = read_selection(json!({"references":[reference]}));
+    assert_eq!(code, 0);
+    assert!(
+        ordinary["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "RETAINED_OPERATION")
+    );
+    assert!(
+        ordinary["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "RETAINED_GAPS")
+    );
+    let (code, projected) =
+        read_selection(json!({"references":[reference],"projection":"SOURCE_ROWS"}));
+    assert_eq!(code, 0);
+    assert_eq!(projected["selectionProjection"], "SOURCE_ROWS");
+    assert_eq!(projected["total"], 2);
+    let expected: Vec<_> = ordinary["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| matches!(r["kind"].as_str(), Some("SOURCE" | "COVERAGE")))
+        .cloned()
+        .collect();
+    assert_eq!(projected["items"], json!(expected));
+    let input = f.input(
+        "projection-batch.json",
+        &json!({"schema":"codeclew-documentation-work-batch-request/1.0",
+        "selections":[{"references":[reference],"projection":"SOURCE_ROWS"}]}),
+    );
+    let batch = f.ok(&[
+        "docs",
+        "work",
+        "read-batch",
+        "--work",
+        &id,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_eq!(batch["results"][0]["page"], projected);
+    assert_eq!(
+        read_selection(json!({"references":[reference]})).1,
+        ordinary
+    );
+    let ledger = read(f.docs.join(format!(".codeclew/work/{id}/reads.json")));
+    assert!(
+        ledger["receipts"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|r| r["selection"]["projection"] == "SOURCE_ROWS")
+    );
+    let request = f.input(
+        "one-item-work.json",
+        &json!({"schema":"codeclew-documentation-work-request/1.0",
+        "audience":"Projection cursor isolation","maxItems":1,"maxBytes":49152}),
+    );
+    let paged = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        publication["snapshot"].as_str().unwrap(),
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    let paged_id = paged["work"].as_str().unwrap();
+    let page = |projection: &str, cursor: Option<&str>| {
+        let mut selection = json!({"references":[reference],"projection":projection});
+        if let Some(cursor) = cursor {
+            selection["cursor"] = json!(cursor);
+        }
+        let input = f.input("projection-cursor.json", &selection);
+        f.run(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            paged_id,
+            "--input",
+            input.to_str().unwrap(),
+        ])
+    };
+    let ordinary_cursor = page("CONTEXT", None).1["nextCursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let projected_cursor = page("SOURCE_ROWS", None).1["nextCursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(ordinary_cursor, projected_cursor);
+    assert_ne!(page("SOURCE_ROWS", Some(&ordinary_cursor)).0, 0);
+    assert_ne!(page("CONTEXT", Some(&projected_cursor)).0, 0);
+    assert_eq!(page("SOURCE_ROWS", Some(&projected_cursor)).0, 0);
+    for invalid in [
+        json!({"projection":"SOURCE_ROWS"}),
+        json!({"projection":"SOURCE_ROWS","references":["missing"]}),
+        json!({"projection":"SOURCE_ROWS","references":[reference,reference]}),
+        json!({"projection":"SOURCE_ROWS","query":{"kind":"SOURCE"}}),
+        json!({"projection":"SOURCE_ROWS","references":[reference],"untrackedReads":true}),
+        json!({"projection":"SOURCE_ROWS","references":[reference],"cursor":"foreign:1"}),
+    ] {
+        assert_ne!(read_selection(invalid).0, 0);
+    }
+}
+
+#[test]
 fn source_batch_cli_preserves_ordinary_pages_cursors_and_explicit_failures_offline() {
     let f = Fixture::new();
     let source_repo = f.service("orders");
@@ -102,11 +243,15 @@ fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_tr
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| f.temp.path().join("public-probes"));
     let large = std::env::var_os("CODECLEW_SOURCE_BATCH_PROBE_LARGE").is_some();
-    let mut cases = vec![("representative", 1, 12, true)];
+    let mut cases = vec![
+        ("representative", 1, 12, true, 0, 20),
+        ("retained-context", 1, 19, false, 16, 20),
+        ("retained-context-paged", 1, 19, false, 16, 2),
+    ];
     if large {
-        cases.push(("larger", 64, 38, false));
+        cases.push(("larger-retained-context", 64, 38, false, 16, 20));
     }
-    for (name, files, methods, baseline) in cases {
+    for (name, files, methods, baseline, retained, page_items) in cases {
         let output = artifacts.join(name);
         let mut command = std::process::Command::new("python3");
         command
@@ -121,7 +266,11 @@ fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_tr
             .arg("--files")
             .arg(files.to_string())
             .arg("--methods")
-            .arg(methods.to_string());
+            .arg(methods.to_string())
+            .arg("--retained-operations")
+            .arg(retained.to_string())
+            .arg("--page-items")
+            .arg(page_items.to_string());
         if baseline {
             command.arg("--baseline");
         }

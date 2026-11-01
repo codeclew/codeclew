@@ -45,6 +45,13 @@ The installed native `docs work read-batch` loads immutable Work once for up to
 receipts and per-selection errors remain intact. An explicit size omission uses
 the existing source-part recovery. Unknown or missing members refuse instead of
 silently becoming complete, and fragments do not become whole-file evidence.
+SOURCE groups explicitly request `projection: "SOURCE_ROWS"`; native pages label
+this as `selectionProjection: "SOURCE_ROWS"`. This projection returns the original
+service coverage and selected SOURCE rows without retransmitting retained
+operations or gaps. It establishes selected fragment delivery only. Read process
+context and retained gaps separately before describing whole-service behavior.
+Omitting this projection preserves ordinary context rows and their receipts.
+Projection-specific cursors and receipts cannot be interchanged.
 
 Native bulk stdout stays unchanged. Citation sidecars address exact pages inside
 it and validate row membership, scope, text/record digests, authority and occurrence
@@ -63,7 +70,7 @@ For direct native use, pass `docs work read-batch --root ROOT --work WORK
 --input BATCH_JSON` with this envelope and exact returned references/paths:
 
 ```json
-{"schema":"codeclew-documentation-work-batch-request/1.0","selections":[{"references":["RETURNED_SOURCE_REFERENCE"]},{"query":{"kind":"SOURCE","projection":"NAVIGATION","file":"RETURNED_PATH"}}]}
+{"schema":"codeclew-documentation-work-batch-request/1.0","selections":[{"references":["RETURNED_SOURCE_REFERENCE"],"projection":"SOURCE_ROWS"},{"query":{"kind":"SOURCE","projection":"NAVIGATION","file":"RETURNED_PATH"}}]}
 ```
 
 Each result echoes its selection and contains `page` or `error`. Each selection

@@ -162,7 +162,7 @@ class SourceBatchTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name); self.requests = []; self.limit = 20
-        self.omit = set(); self.page_size = 20; self.bad = None
+        self.omit = set(); self.page_size = 20; self.bad = None; self.context_rows = 0
         self.sources = {}
         for n in range(1, 10):
             text = '\ufeff// π🙂\r\nif (ready) send();\r\n'
@@ -185,6 +185,9 @@ class SourceBatchTest(unittest.TestCase):
         else:
             refs = request['references']; self.assertLessEqual(len(refs),8)
             rows = [{'kind':'COVERAGE','id':'owned','revision':'rev-a'}]
+            if request.get('projection') != 'SOURCE_ROWS' and self.context_rows:
+                rows += [{'kind':'RETAINED_OPERATION','id':'op-'+str(n),'record':{'title':'Retained'}} for n in range(self.context_rows)]
+                rows += [{'kind':'RETAINED_GAPS','id':'service:owned','record':{}}]
             rows += [{'kind':'SOURCE','id':self.sources[r]['id'],'reference':r,
                       'record':copy.deepcopy(self.sources[r])} for r in refs]
             start = int(request.get('cursor','page:0').split(':')[1]); stop = min(start+self.page_size,len(rows))
@@ -196,6 +199,7 @@ class SourceBatchTest(unittest.TestCase):
             value = {**F['page'](*items,omitted=omitted,cursor='page:'+str(stop) if stop<len(rows) else None),
                      'total':len(rows),'membershipDigest':'members','contextDigest':'context','inputDigest':'input',
                      'authority':'IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED'}
+            if request.get('projection')=='SOURCE_ROWS':value['selectionProjection']='SOURCE_ROWS'
             source_row = next((r for r in items if r['kind']=='SOURCE'),None)
             if self.bad == 'work':value['work']='foreign'
             if self.bad == 'snapshot':value['snapshot']='foreign'
@@ -238,6 +242,36 @@ class SourceBatchTest(unittest.TestCase):
             self.assertEqual(packet['texts'][outcome['textKey']],source['text'])
             self.assertEqual(outcome['sourceParts'],[])
             self.assertEqual(outcome['sourceBatch']['kind'],'NATIVE_SOURCE_BATCH_ROW')
+
+    def test_retained_context_is_explicitly_projected_and_legacy_pages_still_validate(self):
+        self.context_rows=16; self.page_size=1
+        out,_,code=self.acquire();self.assertEqual(code,0);A['load'](out/'citations.json')
+        self.assertTrue(all(r.get('projection')=='SOURCE_ROWS' for verb,r in self.requests if verb=='read'))
+        validator=runpy.run_path(str(ROOT/'skills/codeclew/scripts/citation_evidence.py'))
+        refs=list(self.sources)[:8]; pages=[]; cursor=None
+        while True:
+            request={'references':refs}
+            if cursor:request['cursor']=cursor
+            path=self.root/'ordinary.json';path.write_text(encode(request))
+            page=json.loads(self.native(['clew','docs','work','read','--input',str(path)]).stdout)
+            pages.append(page);cursor=page['nextCursor']
+            if cursor is None:break
+        self.assertEqual(len(pages),26)
+        choices=[{'id':self.sources[r]['id'],'reference':r} for r in refs]
+        found,_=validator['source_batch_pages'](pages,{'service':'owned','snapshot':F['SNAPSHOT']},'work-a',choices)
+        self.assertEqual(set(found),set(refs))
+        legacy,_,code=self.acquire('legacy-context',size=1)
+        self.assertEqual(code,0);self.assertEqual(len(A['load'](legacy/'citations.json')[3]),9)
+        for mutation in ['projected-context','unknown-row','missing-context','duplicate-context']:
+            changed=copy.deepcopy(pages)
+            if mutation=='projected-context':
+                for page in changed:page['selectionProjection']='SOURCE_ROWS'
+            elif mutation=='unknown-row':changed[1]['items'][0]['kind']='UNEXPECTED'
+            elif mutation=='missing-context':changed.pop(1)
+            else:changed[2]['items'][0]=copy.deepcopy(changed[1]['items'][0])
+            for page in changed:page['receiptDigest']=digest({k:v for k,v in page.items() if k!='receiptDigest'})
+            with self.subTest(mutation=mutation),self.assertRaises(validator['Stop']):
+                validator['source_batch_pages'](changed,{'service':'owned','snapshot':F['SNAPSHOT']},'work-a',choices)
 
     def test_pagination_and_native_size_omission_use_parts_for_only_omitted_member(self):
         self.sources=dict(list(self.sources.items())[:3]);self.page_size=2;self.omit={'s2'}

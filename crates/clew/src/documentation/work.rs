@@ -427,6 +427,8 @@ impl Request {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selection {
+    #[serde(default, skip_serializing_if = "SelectionProjection::is_context")]
+    pub projection: SelectionProjection,
     #[serde(default)]
     pub references: Vec<String>,
     #[serde(default)]
@@ -437,6 +439,19 @@ pub struct Selection {
     pub cursor: Option<String>,
     #[serde(default)]
     pub untracked_reads: bool,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SelectionProjection {
+    #[default]
+    Context,
+    SourceRows,
+}
+
+impl SelectionProjection {
+    fn is_context(&self) -> bool {
+        *self == Self::Context
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -469,6 +484,16 @@ impl QueryProjection {
 }
 
 pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError> {
+    if selection.projection == SelectionProjection::SourceRows
+        && (selection.references.is_empty()
+            || !selection.symbols.is_empty()
+            || selection.query.is_some()
+            || selection.untracked_reads)
+    {
+        return Err(invalid(
+            "SOURCE_ROWS requires tracked SOURCE references only",
+        ));
+    }
     if selection.references.len() > 8
         || selection.symbols.len() > 8
         || selection.query.as_ref().is_some_and(|q| {
@@ -2765,6 +2790,9 @@ pub(super) fn audit_rows(work: &Work, selection: &Selection) -> Result<Vec<Value
 
 pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     validate_selection(selection)?;
+    if selection.projection == SelectionProjection::SourceRows {
+        return source_reference_rows(work, selection);
+    }
     if work.request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
         && selection.references.is_empty()
         && selection.symbols.is_empty()
@@ -3035,6 +3063,43 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
     } else {
         Ok(projected)
     }
+}
+
+/// Exact registered SOURCE rows plus their original service coverage. This
+/// explicit projection never builds or silently trims retained narrative context.
+fn source_reference_rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
+    let service = work
+        .subject
+        .strip_prefix("service:")
+        .ok_or_else(|| invalid("SOURCE_ROWS requires a service Work subject"))?;
+    let evidence = work
+        .checked
+        .services
+        .get(service)
+        .ok_or_else(|| invalid("SOURCE_ROWS requires retained service evidence"))?;
+    let mut items = vec![
+        json!({"kind":"COVERAGE","id":service,"revision":evidence.revision,
+        "extractor":evidence.extractor,"runtimeMode":evidence.runtime_mode,"coverage":evidence.coverage,
+        "boundaries":evidence.boundaries,"callAuthority":if evidence.extractor==SOURCE_EXTRACTOR{"SYNTAX_UNRESOLVED"}else{"PROVIDER_EVIDENCE"}}),
+    ];
+    let mut seen = BTreeSet::new();
+    for reference in &selection.references {
+        let handle = work
+            .handles
+            .get(reference)
+            .filter(|handle| handle.kind == "SOURCE")
+            .ok_or_else(|| invalid("SOURCE_ROWS accepts only registered SOURCE references"))?;
+        let source = evidence
+            .sources
+            .get(&handle.id)
+            .filter(|source| source.service == service)
+            .ok_or_else(|| invalid("SOURCE_ROWS reference is outside the Work service"))?;
+        if !seen.insert(&handle.id) {
+            return Err(invalid("SOURCE_ROWS references must be distinct"));
+        }
+        items.push(json!({"kind":"SOURCE","id":handle.id,"record":source}));
+    }
+    annotate_rows(work, items)
 }
 
 fn contract_source_provenance(source: &Source) -> Result<bool, ClewError> {
@@ -3690,6 +3755,9 @@ fn read_loaded_with_state(
         "influenceCoverage":"RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED","membershipDigest":membership_digest,
         "total":items.len(),"items":[],"omitted":[],"nextCursor":null});
     output["documentationLanguage"] = json!(work.request.documentation_language());
+    if selection.projection == SelectionProjection::SourceRows {
+        output["selectionProjection"] = json!(selection.projection);
+    }
     if work.subject.starts_with("scenario:") {
         output["subjectReference"] = json!({
             "reference": work.subject,

@@ -24,18 +24,18 @@ def prefetch(owner, choices):
         if key not in owner.source_cache and key not in owner.source_batch_proofs:
             pending.append(row)
     groups = [pending[start:start + size] for start in range(0, len(pending), size)]
-    owner.prefetch_work_pages([{"references":[r["reference"] for r in group]} for group in groups])
+    owner.prefetch_work_pages([{"references":[r["reference"] for r in group], "projection":"SOURCE_ROWS"} for group in groups])
     for group in groups:
         selection = [{"id":r["id"], "reference":r["reference"]} for r in group]
         pages, names, cursor, cursors = [], [], None, set()
         try:
             while True:
-                request = {"references":[r["reference"] for r in group]}
+                request = {"references":[r["reference"] for r in group], "projection":"SOURCE_ROWS"}
                 if cursor is not None:
                     request["cursor"] = cursor
                 page, receipt = owner.work_page("source-batch", request)
                 pages.append(page); names.append(receipt["stdout"])
-                if len(pages) > len(group) + 1 or not (page["items"] or page["omitted"]):
+                if type(page.get("total")) is not int or len(pages) > page["total"] or not (page["items"] or page["omitted"]):
                     raise owner.Stop("SOURCE_BATCH_NO_PROGRESS", exit_code=2)
                 cursor = page["nextCursor"]
                 if cursor is None:

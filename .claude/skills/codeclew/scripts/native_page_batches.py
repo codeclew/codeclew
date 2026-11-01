@@ -8,7 +8,7 @@ def prefetch(owner, selections):
     if type(size) is not int or not 1 <= size <= 64:
         raise owner.Stop("INVALID_NATIVE_BATCH_SIZE", exit_code=2)
     encode = owner.encode
-    pending, seen = [], set()
+    pending, seen, progress = [], set(), {}
     for selection in selections:
         key = encode(selection)
         if key not in seen and key not in owner.page_cache and key not in owner.page_errors:
@@ -38,6 +38,13 @@ def prefetch(owner, selections):
             owner.validate_page(page, "codeclew-documentation-work-page/1.0")
             if page.get("work") != owner.work:
                 raise owner.Stop("NATIVE_WORK_MISMATCH", exit_code=2)
+            chain = encode({k:v for k,v in selection.items() if k != "cursor"})
+            total, count = progress.get(chain, (page.get("total"), 0))
+            count += len(page["items"]) + len(page["omitted"])
+            if (type(total) is not int or total < 0 or page.get("total") != total or count > total
+                    or page["nextCursor"] is not None and not (page["items"] or page["omitted"])):
+                raise owner.Stop("NON_PROGRESSING_NATIVE_CONTINUATION", exit_code=2)
+            progress[chain] = (total, count)
             owner.page_cache[key] = (page, {"stdout":receipt["stdout"] + "#" + str(index)})
             cursor = page["nextCursor"]
             if cursor is not None:

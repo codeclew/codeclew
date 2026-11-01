@@ -62,6 +62,7 @@ class RetainedFilesTest(unittest.TestCase):
             start=int(request.get('cursor','page:0').split(':')[1]);selected=rows[start:start+capacity]
             value={**F['page'](*selected,cursor='page:'+str(start+capacity) if start+capacity<len(rows) else None),
                    'total':len(rows),'membershipDigest':digest([r['id'] for r in rows]),'contextDigest':'ctx','inputDigest':'input','authority':'IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED'}
+            if request.get('projection')=='SOURCE_ROWS':value['selectionProjection']='SOURCE_ROWS'
             if self.bad=='foreign':value['work']='other'
             if self.bad=='omitted':value['omitted']=[{'id':'missing','kind':'SOURCE_NAVIGATION'}]
             value['receiptDigest']=digest(value)

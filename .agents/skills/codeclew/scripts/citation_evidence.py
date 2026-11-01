@@ -44,7 +44,7 @@ def source_reference_pages(pages, scope, work, source_id, reference):
     A SOURCE row or explicit native size omission binds the reference. Parts
     recover the latter; neither is a declaration or whole-file capture proof.
     """
-    membership, coverage, selected, cursors, consumed = None, [], [], set(), 0
+    membership, coverage, selected, cursors, consumed, context_rows = None, [], [], set(), 0, set()
     for index, page in enumerate(pages):
         if (not isinstance(page, dict) or page.get("schema") != "codeclew-documentation-work-page/1.0"
                 or page.get("work") != work or page.get("snapshot") != scope["snapshot"]
@@ -77,6 +77,13 @@ def source_reference_pages(pages, scope, work, source_id, reference):
                         raise Stop("INVALID_SOURCE_REFERENCE_RECORD", exit_code=2)
                     selected.append((item.get("record") if section == "items" else None,
                                      index, f"/{section}/{offset}"))
+                elif item.get("kind") in ("RETAINED_OPERATION", "RETAINED_GAPS"):
+                    identity = (item["kind"], item.get("id"))
+                    if (not isinstance(identity[1], str) or not identity[1] or identity in context_rows
+                            or section == "items" and not isinstance(item.get("record"), dict)
+                            or section == "omitted" and item.get("reason") != "ITEM_EXCEEDS_WORK_BYTE_BUDGET"):
+                        raise Stop("INVALID_SOURCE_REFERENCE_ROW", exit_code=2)
+                    context_rows.add(identity)
                 else:
                     raise Stop("SOURCE_REFERENCE_IDENTITY_OR_OMISSION_MISMATCH", exit_code=2)
     if (not pages or consumed != membership["total"] or len(coverage) != 1 or len(selected) != 1
@@ -103,9 +110,8 @@ def source_batch_pages(pages, scope, work, choices):
             or len({c["reference"] for c in choices}) != len(choices)):
         raise Stop("INVALID_SOURCE_BATCH_SELECTION", exit_code=2)
     expected = {c["reference"]: c["id"] for c in choices}
-    if len(pages) > len(choices) + 1:
-        raise Stop("SOURCE_BATCH_NO_PROGRESS", exit_code=2)
-    found, coverage, membership, cursors = {}, [], None, set()
+    found, coverage, membership, cursors, context_rows = {}, [], None, set(), set()
+    delivered = 0
     for index, page in enumerate(pages):
         if (not isinstance(page, dict) or page.get("schema") != "codeclew-documentation-work-page/1.0"
                 or page.get("work") != work or page.get("snapshot") != scope["snapshot"]
@@ -115,9 +121,15 @@ def source_batch_pages(pages, scope, work, choices):
                 or page.get("receiptDigest") != digest({k:v for k,v in page.items() if k != "receiptDigest"})):
             raise Stop("SOURCE_BATCH_PAGE_MISMATCH", exit_code=2)
         current = {k:page.get(k) for k in ("contextDigest", "inputDigest", "membershipDigest", "total", "authority")}
-        if (type(current["total"]) is not int or current["total"] != len(choices) + 1
+        projection = page.get("selectionProjection", "CONTEXT")
+        if (projection not in ("CONTEXT", "SOURCE_ROWS")
+                or type(current["total"]) is not int or current["total"] < len(choices) + 1
+                or projection == "SOURCE_ROWS" and current["total"] != len(choices) + 1
                 or any(not isinstance(current[k], str) or not current[k] for k in current if k != "total")
-                or membership is not None and membership != current):
+                or len(pages) > current["total"]):
+            raise Stop("SOURCE_BATCH_MEMBERSHIP_CHANGED", exit_code=2)
+        current["selectionProjection"] = projection
+        if (membership is not None and membership != current):
             raise Stop("SOURCE_BATCH_MEMBERSHIP_CHANGED", exit_code=2)
         membership = current
         if not (page["items"] or page["omitted"]):
@@ -127,12 +139,23 @@ def source_batch_pages(pages, scope, work, choices):
                 or cursor is not None and (not isinstance(cursor, str) or not cursor or cursor in cursors)):
             raise Stop("SOURCE_BATCH_CONTINUATION_INCOMPLETE", exit_code=2)
         cursors.add(cursor)
+        delivered += len(page["items"]) + len(page["omitted"])
+        if delivered > current["total"]:
+            raise Stop("SOURCE_BATCH_MEMBERSHIP_CHANGED", exit_code=2)
         for section in ("items", "omitted"):
             for offset, item in enumerate(page[section]):
                 if not isinstance(item, dict):
                     raise Stop("INVALID_SOURCE_BATCH_ROW", exit_code=2)
                 if section == "items" and item.get("kind") == "COVERAGE" and item.get("id") == scope["service"]:
                     coverage.append(item)
+                    continue
+                if projection == "CONTEXT" and item.get("kind") in ("RETAINED_OPERATION", "RETAINED_GAPS"):
+                    identity = (item["kind"], item.get("id"))
+                    if (not isinstance(identity[1], str) or not identity[1] or identity in context_rows
+                            or section == "items" and not isinstance(item.get("record"), dict)
+                            or section == "omitted" and item.get("reason") != "ITEM_EXCEEDS_WORK_BYTE_BUDGET"):
+                        raise Stop("INVALID_SOURCE_BATCH_ROW", exit_code=2)
+                    context_rows.add(identity)
                     continue
                 ref = item.get("reference")
                 if (item.get("kind") != "SOURCE" or not isinstance(ref, str)
@@ -143,7 +166,7 @@ def source_batch_pages(pages, scope, work, choices):
                 if section == "items" and (not isinstance(source, dict) or not isinstance(source.get("text"), str)):
                     raise Stop("INVALID_SOURCE_BATCH_RECORD", exit_code=2)
                 found[ref] = (source, index, f"/{section}/{offset}")
-    if not pages or set(found) != set(expected) or len(coverage) != 1:
+    if not pages or delivered != membership["total"] or set(found) != set(expected) or len(coverage) != 1:
         raise Stop("SOURCE_BATCH_DELIVERY_INCOMPLETE", exit_code=2)
     revision = coverage[0].get("revision")
     if not isinstance(revision, str) or not revision:
@@ -190,6 +213,9 @@ def native_payload(owner, name):
         if not isinstance(item, dict) or set(item) != {"selection", "page"} or not isinstance(item["selection"], dict):
             raise Stop("REUSE_NATIVE_BATCH_PAGE_UNAVAILABLE", exit_code=2)
         value = item["page"]
+        if (isinstance(value, dict) and value.get("selectionProjection", "CONTEXT")
+                != item["selection"].get("projection", "CONTEXT")):
+            raise Stop("SOURCE_BATCH_PROJECTION_CHANGED", exit_code=2)
         if (not isinstance(value, dict) or value.get("work") != owner.work
                 or value.get("snapshot") != owner.scope["snapshot"]
                 or value.get("subject") != "service:" + owner.scope["service"]):
