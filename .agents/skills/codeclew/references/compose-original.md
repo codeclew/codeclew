@@ -205,8 +205,13 @@ evidence. Keep concise pages concise; a short overview needs no mandatory templa
 
 - Overview: purpose, responsibilities, inputs/outputs and useful next pages.
 - Domain data: authored GFM tables for comparable named fields, one conceptual
-  value per row. Keep code/DTO/storage aliases together. Explain evidenced meaning,
-  units, time interpretation, nullability and use; a name alone is not a definition.
+  value per row. The Field column contains the exact evidenced source/code
+  identifier, in code formatting and original casing. Put translations and business
+  labels in the meaning/use column, not in place of identifiers. Keep evidenced
+  code/DTO/storage aliases together (for example, `place_id` → API `id` in one
+  cell), without duplicate rows. If an identifier is unavailable, explain that
+  limit in prose instead of guessing a name. Explain evidenced meaning, units,
+  time interpretation, nullability and use; a name alone is not a definition.
 - Processes: trigger/input, ordered work, consequential branches and outcomes.
   Show what changes or is sent, when a branch happens or is skipped, and what
   failure, retry, completion or commit/acknowledgement changes. Use titled branches
