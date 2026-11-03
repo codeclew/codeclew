@@ -62,21 +62,35 @@ pub(super) fn read<T: DeserializeOwned>(
 ) -> Result<T, ClewError> {
     let data = store::read_bytes(path, limit)?;
     serde_path_to_error::deserialize(serde_yaml_ng::Deserializer::from_slice(&data)).map_err(|error| {
-        if let Err(syntax) = serde_yaml_ng::from_slice::<Value>(&data) {
+        match serde_yaml_ng::from_slice::<Value>(&data) {
+        Err(syntax) => {
             let location = syntax.location().map(|p| format!(" at line {}, column {}", p.line(), p.column())).unwrap_or_default();
-            invalid(format!("documentation input violates its closed JSON/YAML schema: malformed JSON/YAML at ${location}; expected {}. {}", input.schema(), input.guidance()))
-        } else {
-            input_error(error.path(), &error.inner().to_string(), input)
+            let mut error = invalid(format!("documentation input violates its closed JSON/YAML schema: malformed JSON/YAML at ${location}; expected {}. {}", input.schema(), input.guidance()));
+            error.details = Some(Box::new(json!({"schema":input.schema(),"path":"$","category":"SYNTAX","keyword":"syntax","expectedShape":"valid JSON/YAML","actualShape":"malformed","repair":input.guidance()})));
+            error
+        },
+        Ok(value) => input_error(error.path(), &error.inner().to_string(), input, Some(&value)),
         }
     })
 }
 
 pub(super) fn from_value<T: DeserializeOwned>(value: Value, input: Input) -> Result<T, ClewError> {
-    serde_path_to_error::deserialize(value)
-        .map_err(|error| input_error(error.path(), &error.inner().to_string(), input))
+    serde_path_to_error::deserialize(&value).map_err(|error| {
+        input_error(
+            error.path(),
+            &error.inner().to_string(),
+            input,
+            Some(&value),
+        )
+    })
 }
 
-fn input_error(error_path: &serde_path_to_error::Path, detail: &str, input: Input) -> ClewError {
+fn input_error(
+    error_path: &serde_path_to_error::Path,
+    detail: &str,
+    input: Input,
+    value: Option<&Value>,
+) -> ClewError {
     // Paths may contain arbitrary map keys (including secrets). Only names
     // declared by the shipped schemas are safe to display. This inventory
     // sanitizes diagnostics; it does not validate or resolve schema refs.
@@ -92,6 +106,39 @@ fn input_error(error_path: &serde_path_to_error::Path, detail: &str, input: Inpu
             _ => path.push_str("[<key>]"),
         }
     }
+    let mut actual = value;
+    for segment in error_path {
+        actual = match segment {
+            serde_path_to_error::Segment::Seq { index } => actual
+                .and_then(|v| v.as_array())
+                .and_then(|v| v.get(*index)),
+            serde_path_to_error::Segment::Map { key } => {
+                actual.and_then(|v| v.as_object()).and_then(|v| v.get(key))
+            }
+            _ => actual,
+        };
+    }
+    let actual_type = match actual {
+        Some(Value::Null) => "null",
+        Some(Value::Bool(_)) => "boolean",
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+        Some(Value::Number(n)) if n.is_i64() || n.is_u64() => "integer",
+        Some(Value::Number(_)) => "number",
+        None => "unknown",
+    };
+    let (category, keyword, actual_shape) = if detail.contains("missing field `") {
+        ("REQUIRED_FIELD_MISSING", "required", "absent")
+    } else if detail.contains("unknown field ") {
+        ("UNEXPECTED_FIELD", "additionalProperties", "present")
+    } else if detail.contains("duplicate field ") {
+        ("DUPLICATE_FIELD", "uniqueKeys", "duplicate")
+    } else if detail.contains("unknown variant") {
+        ("UNRECOGNIZED_VARIANT", "enum", actual_type)
+    } else {
+        ("TYPE_OR_SHAPE_MISMATCH", "type", actual_type)
+    };
     let expected = if let Some(name) = detail
         .split_once("missing field `")
         .and_then(|(_, s)| s.split_once('`').map(|(name, _)| name))
@@ -115,11 +162,16 @@ fn input_error(error_path: &serde_path_to_error::Path, detail: &str, input: Inpu
     } else {
         "documentation input violates its closed JSON/YAML schema"
     };
-    invalid(format!(
+    let mut error = invalid(format!(
         "{prefix}: {path}: {expected}; schema={}. {}",
         input.schema(),
         input.guidance()
-    ))
+    ));
+    error.details = Some(Box::new(
+        json!({"schema":input.schema(),"path":path,"category":category,
+        "keyword":keyword,"expectedShape":expected,"actualShape":actual_shape,"repair":input.guidance()}),
+    ));
+    error
 }
 
 fn property_names() -> BTreeSet<String> {

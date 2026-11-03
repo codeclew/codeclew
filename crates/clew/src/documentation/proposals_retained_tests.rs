@@ -182,6 +182,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
         .unwrap();
     let external_inputs = work::capture_inputs(&repo, &request).unwrap();
     let work = Work {
+        identity_references: Default::default(),
         schema: "codeclew-documentation-work/1.0".into(),
         id: "a".repeat(64),
         subject: narrative.subject.clone(),
@@ -1070,6 +1071,9 @@ fn context_migration_requires_exact_full_source_receipts_and_delivered_dependenc
         &work,
         work::Selection {
             query: Some(work::Query {
+                ids: Vec::new(),
+                expected_snapshot: None,
+                expected_context_digest: None,
                 file: None,
                 file_contains: String::new(),
                 kind: "SYMBOL".into(),

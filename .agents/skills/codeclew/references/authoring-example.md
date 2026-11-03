@@ -130,9 +130,10 @@ evidence in one short pass:
   continuation remains available.
 - Before submit or a FLOW-related repair, map every delivered mandatory FLOW
   requirement to the exact nested step and its evidence handle. Keep IF conditions
-  and each RETURN at their actual depth; a broader SOURCE or method handle does
-  not substitute for a required FLOW handle. Compare against the complete
-  delivered requirement set before repairing one fail-fast diagnostic. If a
+  and each RETURN at their actual depth. Prefer the direct FLOW handle; delivered
+  SOURCE or ENTRYPOINT evidence is also valid when the native resolver maps it to
+  the same FLOW. Summary-only evidence does not cover a step. Drain every proposal
+  diagnostic page and compare the complete unique missing set before repair. If a
   required record is omitted or unread, finish its supported reads first.
 - State supported actions and outcomes alongside their limits. Distinguish
   initiation, acceptance/enqueueing and completion only where evidence establishes
@@ -534,3 +535,42 @@ evidence; the host assigns row IDs and materializes their values/bindings. Inclu
 in-scope payload shape, not just the single rule in this schematic example.
 The renderer labels these cards as source-derived; they never become a published
 OpenAPI contract merely because they have source references.
+
+
+### Exact roots, FLOW recovery and repeat reads
+
+Start endpoint documentation from the exact callable returned by
+`clew docs endpoint list --root ROOT --service SERVICE --snapshot SNAPSHOT`.
+Choose a controller Work when that controller is the requested root. Do not
+switch roots or profiles to reduce mandatory FLOW coverage. Few mandatory root
+FLOWs do not establish complete helper, side-effect or failure semantics; expand
+the source/helper and boundary evidence needed by the requested explanation.
+
+A missing-FLOW diagnostic identifies its exact Work and current reference, or
+states why no unique handle is available. Use that reference for a recorded read.
+For an exact identity lookup, pass this JSON selection to
+`docs work read --work WORK --input SELECTION_JSON` (and the same `--root`):
+
+```json
+{"query":{"kind":"FLOW","ids":["REPORTED_FLOW_ID"],"expectedSnapshot":"SAME_WORK_SNAPSHOT","expectedContextDigest":"SAME_WORK_CONTEXT_DIGEST"}}
+```
+
+Replace all placeholders with returned values. Select at most eight distinct IDs;
+no substring/file filters apply. The original row and this Work's handle are
+returned within normal page budgets. Check `omitted` and `nextCursor`; an omitted
+or navigation-only handle is not a delivered citation. Lookup uses indexed exact
+record/handle access after full immutable Work hydration and a lazy linear handle
+index build; it does not promise constant CLI elapsed time. Missing, foreign,
+ambiguous and mismatched guarded identities refuse rather than widening scope.
+`symbolContains` remains a case-sensitive substring filter, not an exact ID lookup.
+
+A fresh same-Work reference selection without a cursor repeats its original page.
+Continue only with the cursor returned for that unchanged selection; do not carry
+one selection's cursor into another. Empty output is not a consuming-read contract.
+Preserve omissions and continuations; report a minimal reproducible failure rather
+than resetting the private store or falling back to a checkout.
+
+An external participant/catalogue ID and a delivered same-Work declared
+interaction reference are different identities. Cite the interaction returned by
+this Work for a declared boundary; read its evidence before use. Author an HTTP
+reply separately when supported. Do not invent a synchronous Kafka response.

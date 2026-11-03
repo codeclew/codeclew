@@ -2248,6 +2248,7 @@ impl WorkerClient {
                     .collect();
                 let code = parse_worker_code(&error.code);
                 let failure = ClewError {
+                    details: None,
                     message: safe_worker_error_message_for_worker_error(&code, &error.message)
                         .into(),
                     code,
@@ -2257,7 +2258,7 @@ impl WorkerClient {
                     // It is not an evidence authority and can contain absolute
                     // paths, environment values, or unbounded diagnostics.
                     evidence: Vec::new(),
-                    relevant_anchors_or_symbols: relevant.into_boxed_slice(),
+                    relevant_anchors_or_symbols: Box::new(relevant),
                     retryable: error.retryable,
                 };
                 return Err(failure);

@@ -841,6 +841,7 @@ mod tests {
             composition: None,
         };
         let work = Work {
+            identity_references: Default::default(),
             schema: "codeclew-documentation-work/1.0".into(),
             id: "a".repeat(64),
             subject: "service:orders".into(),

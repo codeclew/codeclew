@@ -3860,6 +3860,7 @@ mod tests {
             ])
             .collect();
         Work {
+            identity_references: Default::default(),
             schema: "codeclew-documentation-work/1.0".into(),
             id: "test-work".into(),
             subject: format!("service:{SERVICE}"),

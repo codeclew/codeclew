@@ -8,6 +8,11 @@ use serde_json::{Value, json};
 use std::fs;
 use support::{Fixture, commit, read};
 
+fn hydrated_work(f: &Fixture, id: &str) -> Value {
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    serde_json::to_value(clew::documentation::work::load(&repo, id).unwrap()).unwrap()
+}
+
 fn request(
     f: &Fixture,
     name: &str,
@@ -76,7 +81,7 @@ fn delivered_items_advertise_only_eligible_reference_roles() {
             && item["reference"].is_null()
             && item["referenceRoles"] == json!([])
     }));
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = hydrated_work(&f, &work);
     let source_reference = frozen["handles"]
         .as_object()
         .unwrap()
@@ -229,7 +234,7 @@ fn proposal_submission_uses_handles_and_role_predicates() {
     ]);
     let work = page["work"].as_str().unwrap().to_owned();
     let initial_items = read_all(&f, page, &work);
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = hydrated_work(&f, &work);
     let handle = |kind: &str, id: Option<&str>| {
         frozen["handles"]
             .as_object()
@@ -337,7 +342,7 @@ fn proposal_submission_uses_handles_and_role_predicates() {
         &work,
         &source_operation,
         "proposal-source-operation.json",
-        "operation requires an authorable work reference",
+        "operation is outside the requested entrypoint",
     );
     let mut source_gap = valid.clone();
     source_gap["gaps"] = json!({source_ref:"Source is not an operation or gap target."});
@@ -422,7 +427,7 @@ fn omitted_role_rows_are_not_recorded_as_supplied() {
         request_path.to_str().unwrap(),
     ]);
     let work = page["work"].as_str().unwrap().to_owned();
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = hydrated_work(&f, &work);
     let source_reference = frozen["handles"]
         .as_object()
         .unwrap()
@@ -561,7 +566,7 @@ fn scenario_subject_page_exposes_operation_and_gap_target() {
             input.to_str().unwrap(),
         ]);
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = hydrated_work(&f, &work);
     let evidence = frozen["handles"]
         .as_object()
         .unwrap()

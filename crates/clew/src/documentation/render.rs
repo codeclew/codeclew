@@ -235,7 +235,7 @@ pub(super) fn sequence_event_kinds(flow_kind: &str) -> &'static [&'static str] {
     }
 }
 
-fn sequence_diagnostic_id(id: &str) -> &str {
+pub(super) fn sequence_diagnostic_id(id: &str) -> &str {
     // Evidence IDs are opaque handles. Never echo a path, snippet, or control
     // character from malformed imported evidence into a validation error.
     if !id.is_empty()
@@ -250,7 +250,7 @@ fn sequence_diagnostic_id(id: &str) -> &str {
     }
 }
 
-fn missing_sequence_flow(dependency: &Observation) -> ClewError {
+fn missing_sequence_flow(dependency: &Observation, operation_id: &str) -> ClewError {
     let flow_kind = dependency.normalized["kind"].as_str().unwrap_or("");
     let expected = sequence_event_kinds(flow_kind);
     let source_ids: Vec<_> = dependency
@@ -279,7 +279,16 @@ fn missing_sequence_flow(dependency: &Observation) -> ClewError {
         dependency.source_ids.len().saturating_sub(source_ids.len()),
         expected.join(", "),
         group_action,
-    ))
+    )).with_relevant("MANDATORY_FLOW_UNCOVERED")
+        .with_relevant(sequence_diagnostic_id(&dependency.id))
+        .with_relevant(sequence_diagnostic_id(operation_id))
+}
+
+pub(super) fn is_sequence_coverage_error(error: &ClewError) -> bool {
+    error
+        .relevant_anchors_or_symbols
+        .iter()
+        .any(|code| code == "MANDATORY_FLOW_UNCOVERED")
 }
 
 pub(super) fn sequence_step_requires_endpoints(step_kind: &str) -> bool {
@@ -893,7 +902,7 @@ pub(super) fn validate_with_retained(
                 event.dependency_ids.contains(&dependency.id)
                     && expected_kinds.contains(&event.kind.as_str())
             }) {
-                return Err(missing_sequence_flow(dependency));
+                return Err(missing_sequence_flow(dependency, &o.id));
             }
         }
         if o.explanation.len() > 128 {

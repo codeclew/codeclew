@@ -704,6 +704,9 @@ mod tests {
             &work,
             Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "SYMBOL".into(),

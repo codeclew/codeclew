@@ -15,6 +15,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
+    sync::OnceLock,
 };
 
 pub use super::work_parts::{SourcePartReceipt, SourcePartRequest, read_part};
@@ -153,6 +154,7 @@ pub enum Command {
         #[arg(long)]
         work: String,
     },
+    /// Read a recorded page. Exact FLOW lookup input uses query.kind=FLOW and query.ids (1..8); optional expectedSnapshot/expectedContextDigest guard the immutable Work scope.
     Read(ReadArgs),
     /// Read up to 64 bounded SOURCE selections after loading immutable Work once.
     ReadBatch(ReadArgs),
@@ -453,10 +455,20 @@ impl SelectionProjection {
         *self == Self::Context
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     pub kind: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "exact_query_ids"
+    )]
+    pub ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_snapshot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_context_digest: Option<String>,
     #[serde(default)]
     pub symbol_contains: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -477,6 +489,18 @@ pub enum QueryProjection {
     WholeFile,
 }
 
+fn exact_query_ids<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    let ids = Vec::<String>::deserialize(deserializer)?;
+    if ids.is_empty() {
+        return Err(serde::de::Error::custom(
+            "WORK_IDENTITY_SELECTION_INVALID: ids must contain 1..8 distinct FLOW identities",
+        ));
+    }
+    Ok(ids)
+}
+
 impl QueryProjection {
     fn is_raw(&self) -> bool {
         *self == Self::Raw
@@ -484,6 +508,37 @@ impl QueryProjection {
 }
 
 pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError> {
+    if let Some(query) = &selection.query {
+        if query.ids.len() > 8
+            || query.ids.iter().any(|id| id.is_empty() || id.len() > 512)
+            || query.ids.iter().collect::<BTreeSet<_>>().len() != query.ids.len()
+            || query
+                .expected_snapshot
+                .as_ref()
+                .is_some_and(|s| s.len() > 256)
+            || query
+                .expected_context_digest
+                .as_ref()
+                .is_some_and(|s| s.len() > 128)
+        {
+            return Err(invalid(
+                "WORK_IDENTITY_SELECTION_INVALID: choose 1..8 distinct bounded FLOW IDs",
+            ));
+        }
+        if (!query.ids.is_empty()
+            && (query.kind != "FLOW"
+                || !query.symbol_contains.is_empty()
+                || query.file.is_some()
+                || !query.file_contains.is_empty()
+                || query.projection != QueryProjection::Raw))
+            || (query.ids.is_empty()
+                && (query.expected_snapshot.is_some() || query.expected_context_digest.is_some()))
+        {
+            return Err(invalid(
+                "WORK_IDENTITY_SELECTION_INVALID: ids requires FLOW RAW without substring/file filters; scope guards require ids",
+            ));
+        }
+    }
     if selection.projection == SelectionProjection::SourceRows
         && (selection.references.is_empty()
             || !selection.symbols.is_empty()
@@ -557,6 +612,11 @@ pub struct Handle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Work {
+    // Derived lazily from this immutable Work only; never persisted or shared
+    // across Works. Hydration/index construction is linear, exact lookup indexed.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub identity_references: OnceLock<BTreeMap<(String, String), Vec<String>>>,
     pub schema: String,
     pub id: String,
     pub subject: String,
@@ -573,6 +633,25 @@ pub struct Work {
     pub obligations: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_reasons: Vec<Value>,
+}
+
+impl Work {
+    pub(super) fn references_for(&self, kind: &str, id: &str) -> &[String] {
+        self.identity_references
+            .get_or_init(|| {
+                let mut index: BTreeMap<_, Vec<_>> = BTreeMap::new();
+                for (reference, handle) in &self.handles {
+                    index
+                        .entry((handle.kind.clone(), handle.id.clone()))
+                        .or_default()
+                        .push(reference.clone());
+                }
+                index
+            })
+            .get(&(kind.to_owned(), id.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 const SECTION_ORIENTATION_PROFILE: &str = "section-orientation-v1";
@@ -658,6 +737,7 @@ impl StoredWork {
         influence: BTreeMap<String, String>,
     ) -> Work {
         Work {
+            identity_references: Default::default(),
             schema: WORK_SCHEMA.into(),
             id: self.id,
             subject: self.subject,
@@ -2376,6 +2456,7 @@ pub fn prepare_with_snapshot(
         }
     }
     let mut work = Work {
+        identity_references: Default::default(),
         schema: "codeclew-documentation-work/1.0".into(),
         id: String::new(),
         subject,
@@ -2908,7 +2989,9 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
                 "query kind is required; use * for every dependency kind",
             ));
         }
-        if matches!(query.kind.as_str(), "THREAD_INVENTORY" | "THREAD_CONTEXT") {
+        if !query.ids.is_empty() {
+            return exact_flow_rows(work, query);
+        } else if matches!(query.kind.as_str(), "THREAD_INVENTORY" | "THREAD_CONTEXT") {
             super::thread_context::query(work, &query.kind, &query.symbol_contains)?
         } else if query.kind == "SOURCE" {
             if query.projection == QueryProjection::WholeFile {
@@ -3101,6 +3184,49 @@ fn source_reference_rows(work: &Work, selection: &Selection) -> Result<Vec<Value
         items.push(json!({"kind":"SOURCE","id":handle.id,"record":source}));
     }
     annotate_rows(work, items)
+}
+
+fn exact_flow_rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> {
+    if query
+        .expected_snapshot
+        .as_ref()
+        .is_some_and(|expected| Some(expected) != work.snapshot.as_ref())
+        || query
+            .expected_context_digest
+            .as_ref()
+            .is_some_and(|expected| expected != &work.checked.context_digest)
+    {
+        return Err(invalid(
+            "WORK_IDENTITY_SCOPE_MISMATCH: snapshot/context guard differs from this immutable Work",
+        ));
+    }
+    let service = work.subject.strip_prefix("service:").ok_or_else(|| {
+        invalid("WORK_IDENTITY_SCOPE_UNSUPPORTED: exact FLOW lookup requires a service Work")
+    })?;
+    let mut reverse = BTreeMap::new();
+    let mut selected = Vec::new();
+    for id in &query.ids {
+        let observation = work.checked.dependencies.get(id)
+            .filter(|row| row.kind == "FLOW" && row.service == service
+                && work.influence.get(id) == Some(&row.digest))
+            .ok_or_else(|| invalid("WORK_IDENTITY_NOT_FOUND: FLOW ID is missing, foreign or outside this Work's exact influence; use the reporting Work and its snapshot"))?;
+        let references = work.references_for("DEPENDENCY", id);
+        let [reference] = references else {
+            return Err(invalid(if references.is_empty() {
+                "WORK_IDENTITY_NOT_REGISTERED: no DEPENDENCY handle in this Work"
+            } else {
+                "WORK_IDENTITY_AMBIGUOUS: multiple handles in this Work"
+            }));
+        };
+        reverse.insert(("DEPENDENCY", id.as_str()), reference.as_str());
+        for source_id in &observation.source_ids {
+            if let [reference] = work.references_for("SOURCE", source_id) {
+                reverse.insert(("SOURCE", source_id.as_str()), reference.as_str());
+            }
+        }
+        selected.push(json!({"kind":"DEPENDENCY","id":id,"record":observation}));
+    }
+    annotate_rows_with_reverse(work, selected, &reverse)
 }
 
 fn contract_source_provenance(source: &Source) -> Result<bool, ClewError> {
@@ -3975,6 +4101,7 @@ mod section_context_tests {
                     "dependencyIds":[format!("orders:symbol:{:05}",count-1)],"sourceIds":["retained-source"]}}]
         })).unwrap());
         Work {
+            identity_references: Default::default(),
             schema: WORK_SCHEMA.into(),
             id: "work".into(),
             subject: "service:orders".into(),
@@ -4258,6 +4385,9 @@ mod section_context_tests {
 
         let raw = Selection {
             query: Some(Query {
+                ids: Vec::new(),
+                expected_snapshot: None,
+                expected_context_digest: None,
                 file: None,
                 file_contains: String::new(),
                 kind: "SYMBOL".into(),
@@ -4280,6 +4410,9 @@ mod section_context_tests {
 
         let navigation = Selection {
             query: Some(Query {
+                ids: Vec::new(),
+                expected_snapshot: None,
+                expected_context_digest: None,
                 file: None,
                 file_contains: String::new(),
                 kind: "SYMBOL".into(),
@@ -4398,6 +4531,9 @@ mod section_context_tests {
         }
         let select = |kind: &str| Selection {
             query: Some(Query {
+                ids: Vec::new(),
+                expected_snapshot: None,
+                expected_context_digest: None,
                 file: None,
                 file_contains: String::new(),
                 kind: kind.into(),
@@ -4456,6 +4592,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "SYMBOL".into(),
@@ -4474,6 +4613,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "SOURCE".into(),
@@ -4494,6 +4636,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "SYMBOL".into(),
@@ -4510,6 +4655,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "*".into(),
@@ -5959,6 +6107,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "DOMAIN_ENTITY".into(),
@@ -6026,6 +6177,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "DOMAIN_ENTITY".into(),
@@ -6113,6 +6267,9 @@ mod section_context_tests {
             &work,
             &Selection {
                 query: Some(Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "SYMBOL".into(),
@@ -6213,6 +6370,7 @@ pub(super) mod api_contract_tests {
 
     fn api_fixture(descriptor: &str, types: &[&str], request_source_bytes: usize) -> Work {
         let mut work = Work {
+            identity_references: Default::default(),
             schema: WORK_SCHEMA.into(),
             id: "work".into(),
             subject: "service:orders".into(),

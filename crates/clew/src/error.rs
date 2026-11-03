@@ -56,8 +56,10 @@ pub struct ClewError {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "relevant_is_empty")]
-    pub relevant_anchors_or_symbols: Box<[String]>,
+    pub relevant_anchors_or_symbols: Box<Vec<String>>,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<serde_json::Value>>,
 }
 
 fn relevant_is_empty(values: &[String]) -> bool {
@@ -81,6 +83,7 @@ impl ClewError {
             evidence: vec![],
             relevant_anchors_or_symbols: Box::default(),
             retryable,
+            details: None,
         }
     }
 
@@ -97,9 +100,7 @@ impl ClewError {
     pub fn with_relevant(mut self, value: impl Into<String>) -> Self {
         let value = value.into();
         if !value.is_empty() && !self.relevant_anchors_or_symbols.contains(&value) {
-            let mut relevant = self.relevant_anchors_or_symbols.into_vec();
-            relevant.push(value);
-            self.relevant_anchors_or_symbols = relevant.into_boxed_slice();
+            self.relevant_anchors_or_symbols.push(value);
         }
         self
     }

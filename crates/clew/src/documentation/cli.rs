@@ -3040,7 +3040,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(missing.code, ErrorCode::SymbolNotFound);
         assert_eq!(
-            missing.relevant_anchors_or_symbols.as_ref(),
+            missing.relevant_anchors_or_symbols.as_slice(),
             [missing_selector]
         );
 
@@ -3057,7 +3057,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(ambiguous.code, ErrorCode::AmbiguousSymbol);
-        assert_eq!(ambiguous.relevant_anchors_or_symbols.as_ref(), [selector]);
+        assert_eq!(ambiguous.relevant_anchors_or_symbols.as_slice(), [selector]);
 
         let exact = "method:pkg/orders/OrderService#helper(java.lang.String)";
         assert!(

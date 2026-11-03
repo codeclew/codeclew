@@ -239,6 +239,8 @@ struct StoredArtifact {
     schema: String,
     artifact: Artifact,
     influence_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostics_ref: Option<super::cache::ObjectRef>,
 }
 
 impl StoredArtifact {
@@ -249,6 +251,7 @@ impl StoredArtifact {
             schema: "codeclew-documentation-proposal-record/1.0".into(),
             artifact,
             influence_digest,
+            diagnostics_ref: None,
         };
         stored.artifact.id = digest(&stored)?[7..].into();
         Ok(stored)
@@ -260,6 +263,7 @@ impl StoredArtifact {
         if self.schema != "codeclew-documentation-proposal-record/1.0"
             || self.artifact.schema != "codeclew-documentation-proposal-result/1.0"
             || !self.artifact.influence.is_empty()
+            || self.diagnostics_ref.is_some() && !self.artifact.diagnostics.is_empty()
             || self.artifact.id != id
             || &digest(&canonical)?[7..] != id
         {
@@ -289,7 +293,66 @@ pub fn load(repo: &Repository, id: &str) -> Result<Artifact, ClewError> {
     let stored: StoredArtifact = store::read(&repo.path(&file(id)?)?, 4 * 1024 * 1024)?;
     stored.validate_identity(id)?;
     let influence = work::load_influence(repo, &stored.artifact.work)?;
-    stored.hydrate(influence)
+    let reference = stored.diagnostics_ref.clone();
+    let artifact = stored.hydrate(influence)?;
+    hydrate_diagnostics(repo, reference, artifact)
+}
+
+fn hydrate_diagnostics(
+    repo: &Repository,
+    reference: Option<super::cache::ObjectRef>,
+    mut artifact: Artifact,
+) -> Result<Artifact, ClewError> {
+    if let Some(reference) = reference {
+        if reference.schema != DIAGNOSTICS_SCHEMA {
+            return Err(invalid("proposal diagnostics reference schema is invalid"));
+        }
+        artifact.diagnostics =
+            super::cache::get_json(repo, &reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
+                .ok_or_else(|| {
+                    invalid(
+                        "proposal diagnostics object is missing; restore its exact retained object",
+                    )
+                })?;
+    }
+    Ok(artifact)
+}
+
+const DIAGNOSTICS_SCHEMA: &str = "codeclew-documentation-proposal-diagnostics/1.0";
+const INLINE_DIAGNOSTICS_MAX_BYTES: usize = 64 * 1024;
+mod flow_diagnostics;
+
+fn received_references(
+    work: &Work,
+    state: &work::ReadState,
+) -> Result<BTreeSet<String>, ClewError> {
+    let mut received: BTreeSet<_> = state
+        .receipts
+        .values()
+        .flat_map(|r| r.supplied.iter().cloned())
+        .collect();
+    received.extend(work::completed_source_references(work, state)?);
+    received.extend(super::work_retained_parts::completed_dependency_references(
+        work, state,
+    )?);
+    Ok(received)
+}
+
+fn store_artifact(repo: &Repository, mut artifact: Artifact) -> Result<StoredArtifact, ClewError> {
+    let reference = if bytes(&artifact.diagnostics)?.len() > INLINE_DIAGNOSTICS_MAX_BYTES {
+        let reference = super::cache::put_json(repo, DIAGNOSTICS_SCHEMA, &artifact.diagnostics)?;
+        artifact.diagnostics.clear();
+        Some(reference)
+    } else {
+        None
+    };
+    let mut stored = StoredArtifact::from_runtime(artifact)?;
+    if reference.is_some() {
+        stored.diagnostics_ref = reference;
+        stored.artifact.id.clear();
+        stored.artifact.id = digest(&stored)?[7..].into();
+    }
+    Ok(stored)
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
@@ -998,15 +1061,7 @@ pub(super) fn materialize(
     {
         return Err(invalid("invalid proposal schema or content budget"));
     }
-    let mut received: BTreeSet<_> = state
-        .receipts
-        .values()
-        .flat_map(|r| r.supplied.iter().cloned())
-        .collect();
-    received.extend(work::completed_source_references(work, state)?);
-    received.extend(super::work_retained_parts::completed_dependency_references(
-        work, state,
-    )?);
+    let received = received_references(work, state)?;
     let mut builder = Builder {
         work,
         received,
@@ -1014,6 +1069,7 @@ pub(super) fn materialize(
         diagnostics: Vec::new(),
         events: 0,
     };
+    builder.diagnostics = flow_diagnostics::collect(&builder, input)?;
     let mut n = Narrative {
         schema: work
             .retained
@@ -1337,7 +1393,8 @@ pub(super) fn materialize(
             },
             &work.checked,
             work.retained.as_ref(),
-        ) {
+        ) && !flow_diagnostics::already_reported(&error, &builder.diagnostics)
+        {
             builder.diagnostics.push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","operation":index,"nextAction":error.message}));
         }
     }
@@ -1547,7 +1604,9 @@ pub(super) fn materialize(
                 .or_insert_with(|| "Outside the requested work entrypoint.".into());
         }
     }
-    if let Err(error) = render::validate_with_retained(&n, &work.checked, work.retained.as_ref()) {
+    if let Err(error) = render::validate_with_retained(&n, &work.checked, work.retained.as_ref())
+        && !flow_diagnostics::already_reported(&error, &builder.diagnostics)
+    {
         builder
             .diagnostics
             .push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","nextAction":error.message}));
@@ -1575,11 +1634,11 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
         .and_then(|()| materialize(&work, &input, &state));
     let (narrative, claims, mut diagnostics) = match result {
         Ok((n, c, d)) => (Some(n), c, d),
-        Err(error) => (
-            None,
-            BTreeMap::new(),
-            vec![json!({"code":"INVALID_PROPOSAL","nextAction":error.message})],
-        ),
+        Err(error) => {
+            let mut diagnostics = flow_diagnostics::for_input(&work, &input, &state)?;
+            diagnostics.push(json!({"code":"INVALID_PROPOSAL","nextAction":error.message}));
+            (None, BTreeMap::new(), diagnostics)
+        }
     };
     if !work::initial_context_complete_with_parts(&work, &state)? {
         diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial Work page. For an oversized required SOURCE, use docs work read-part with its SOURCE reference; for an oversized DEPENDENCY, use docs work read-dependency-part with its exact kind/id; for required retained content, use docs work read-retained-part with its exact kind/id. Continue until nextCursor is null; automatic authoring still requires the complete context to fit in its actual request."}));
@@ -1639,7 +1698,7 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
         influence: work.influence.clone(),
         meaning_review: "UNASSESSED".into(),
     };
-    let stored = StoredArtifact::from_runtime(artifact)?;
+    let stored = store_artifact(repo, artifact)?;
     let artifact = &stored.artifact;
     let encoded = bytes(&stored)?;
     if encoded.len() > 4 * 1024 * 1024 {
@@ -2416,6 +2475,7 @@ mod operation_input_tests {
             },
         );
         Work {
+            identity_references: Default::default(),
             schema: "codeclew-documentation-work/1.0".into(),
             id: "work".into(),
             subject: subject.clone(),

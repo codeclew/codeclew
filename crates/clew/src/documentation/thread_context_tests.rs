@@ -530,6 +530,9 @@ fn owned_fixture_real_compiler_and_source_capture() {
                 &w.id,
                 work::Selection {
                     query: Some(work::Query {
+                        ids: Vec::new(),
+                        expected_snapshot: None,
+                        expected_context_digest: None,
                         file: None,
                         file_contains: String::new(),
                         kind: "THREAD_CONTEXT".into(),
@@ -609,6 +612,9 @@ fn work_resume_keeps_inventory_delivery_separate_from_source_bound_explanations(
     loop {
         let selection = work::Selection {
             query: Some(work::Query {
+                ids: Vec::new(),
+                expected_snapshot: None,
+                expected_context_digest: None,
                 file: None,
                 file_contains: String::new(),
                 kind: "THREAD_INVENTORY".into(),
@@ -933,6 +939,9 @@ fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_deli
             small["work"].as_str().unwrap(),
             work::Selection {
                 query: Some(work::Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "THREAD_INVENTORY".into(),
@@ -971,6 +980,9 @@ fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_deli
             recovered["work"].as_str().unwrap(),
             work::Selection {
                 query: Some(work::Query {
+                    ids: Vec::new(),
+                    expected_snapshot: None,
+                    expected_context_digest: None,
                     file: None,
                     file_contains: String::new(),
                     kind: "THREAD_INVENTORY".into(),
@@ -1206,6 +1218,9 @@ fn oversized_thread_scope_at_maximum_budget_reports_unavailable_without_repeatin
                 prepared["work"].as_str().unwrap(),
                 work::Selection {
                     query: Some(work::Query {
+                        ids: Vec::new(),
+                        expected_snapshot: None,
+                        expected_context_digest: None,
                         file: None,
                         file_contains: String::new(),
                         kind: "THREAD_INVENTORY".into(),
