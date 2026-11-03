@@ -546,9 +546,15 @@ switch roots or profiles to reduce mandatory FLOW coverage. Few mandatory root
 FLOWs do not establish complete helper, side-effect or failure semantics; expand
 the source/helper and boundary evidence needed by the requested explanation.
 
+For a known FLOW ID, first reuse its delivered record or read its exact same-Work
+reference. Do not start an unfiltered `query.kind=FLOW` inventory scan to find a
+known ID, or silently broaden a failed selection. Full inventory reads are
+appropriate when the task requires the entire inventory; supported pagination
+and JSON helpers remain allowed.
+
 A missing-FLOW diagnostic identifies its exact Work and current reference, or
-states why no unique handle is available. Use that reference for a recorded read.
-For an exact identity lookup, pass this JSON selection to
+states why no unique handle is available. On versions supporting exact service
+Work lookup, pass this JSON selection to
 `docs work read --work WORK --input SELECTION_JSON` (and the same `--root`):
 
 ```json
@@ -563,6 +569,16 @@ record/handle access after full immutable Work hydration and a lazy linear handl
 index build; it does not promise constant CLI elapsed time. Missing, foreign,
 ambiguous and mismatched guarded identities refuse rather than widening scope.
 `symbolContains` remains a case-sensitive substring filter, not an exact ID lookup.
+
+On 0.14.4, use `docs context --root ROOT --service SERVICE --snapshot WORK_SNAPSHOT
+--dependency FLOW_ID` on the Work's exact snapshot. Select the exact dependency
+`record.id` and its nonempty `symbol`, then read the same Work with
+`{"query":{"kind":"FLOW","symbolContains":"RETURNED_SYMBOL"}}`. Require the exact
+`record.id` and this Work's reference; continue only with that selector's cursor.
+Context output does not count as a recorded Work read. Never transfer `dN`
+references between Works. An empty symbol, missing row or ambiguous match is a
+bounded diagnostic result; report it instead of automatically scanning the full
+inventory.
 
 A fresh same-Work reference selection without a cursor repeats its original page.
 Continue only with the cursor returned for that unchanged selection; do not carry
