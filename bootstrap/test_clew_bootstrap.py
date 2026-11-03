@@ -939,7 +939,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
         repository = MODULE_PATH.parent.parent
         inputs, _development = bootstrap.source_manifest(repository)
         selected = {row["path"] for row in inputs}
-        for relative in ["crates/clew/src/documentation/agent_jobs.rs", "crates/clew/src/documentation/section_author.rs", "crates/clew/src/operations.rs"]:
+        for relative in ["crates/clew/src/documentation/agent_jobs.rs", "crates/clew/src/documentation/input_diagnostics.rs", "crates/clew/src/documentation/section_author.rs", "crates/clew/src/operations.rs"]:
             source = repository / relative
             resources = re.findall(r'include_(?:str|bytes)!\(\s*"([^\"]+)"\s*\)', source.read_text())
             self.assertTrue(resources)
