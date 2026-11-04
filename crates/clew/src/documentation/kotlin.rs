@@ -621,6 +621,11 @@ pub(super) fn project_facts(
                         .or_else(|| boundary["code"].as_str()).unwrap_or("KOTLIN_BUILD_MODEL_BOUNDARY")}), binding.clone()));
                 }
             }
+            // The docs projector consumes artifact ownership as a separate
+            // authority. Preserve its original payload binding and scope.
+            if schema == "codeclew-kotlin-index-metadata/2.4" {
+                output.push((fact, binding));
+            }
         } else if schema == "declaration-descriptor/0.1" {
             let Some(symbol) = fact["symbolIdentity"].as_str().map(str::to_owned) else {
                 continue;

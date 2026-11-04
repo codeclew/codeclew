@@ -191,7 +191,7 @@ pub(crate) fn load_projection(
     raw_semantics["freeCompilerArguments"] = Value::Array(raw_options.clone());
     let worker_semantics =
         crate::kotlin_engine::KotlinProjectSemantics::from_project_model(&raw_semantics)?;
-    if metadata["schema"] != "codeclew-kotlin-index-metadata/2.3"
+    if metadata["schema"] != "codeclew-kotlin-index-metadata/2.4"
         || metadata["compilation"] != ready.compilation
         || metadata["analyzerCompilerVersion"] != "2.4.10"
         || metadata["kotlinSemanticEngine"] != worker_engine

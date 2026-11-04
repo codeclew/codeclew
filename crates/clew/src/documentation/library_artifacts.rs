@@ -236,6 +236,40 @@ mod tests {
         json!({"resolvedDependencyArtifacts":[artifact.clone()],"publicationDeclarations":[{"group":"owned","name":"library","version":"1.0","authority":"GRADLE_PUBLICATION_DECLARATION"}],"binaryCallTargets":[{"targetIdentity":"callable:owned/library/Policy.decide#jvm:(I)Ljava/lang/String;","ownerInternalName":"owned/library/Policy","jvmDescriptor":"(I)Ljava/lang/String;","methodName":"decide","status":"UNIQUE_CLASSPATH_OWNER","owners":[{"classpathIndex":0,"kind":"JAR","classEntry":"owned/library/Policy.class","methodPresent":true,"artifact":artifact}],"authority":"COMPILER_TARGET_AND_UNIQUE_SELECTED_CLASSPATH_CLASSFILE_NOT_SOURCE_EQUIVALENCE"}]})
     }
     #[test]
+    fn library_ownership_survives_kotlin_documentation_translation() {
+        let mut fact = metadata();
+        fact["schema"] = json!("codeclew-kotlin-index-metadata/2.4");
+        fact["scope"] = json!(":/main");
+        fact["buildModelBoundaries"] = json!(["OWNED_PROVIDER_LIMIT"]);
+        let facts =
+            super::super::kotlin::project_facts(vec![
+                (fact, "original-payload".into()),
+                (json!({"schema":"declaration-descriptor/0.1", "symbolIdentity":"class:owned/Root", "declarationKind":"CLASS", "file":"Root.kt", "start":0,"end":1,"scope":":/main"}),"declaration-payload".into()),
+            ]).unwrap();
+        assert!(
+            facts
+                .iter()
+                .any(|(f, _)| f["code"] == "OWNED_PROVIDER_LIMIT")
+        );
+        let retained = facts
+            .iter()
+            .filter(|(f, _)| f["schema"] == "codeclew-kotlin-index-metadata/2.4")
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].1, "original-payload");
+        assert_eq!(retained[0].0["scope"], ":/main");
+        let mut e = evidence();
+        project(&mut e, &retained[0].0, &retained[0].1, ":/main").unwrap();
+        assert_eq!(e.observations.len(), 3);
+        assert!(
+            e.observations
+                .values()
+                .any(|o| o.kind == "DEPENDENCY_TARGET"
+                    && o.normalized["owners"][0]["artifact"]["contentDigest"]
+                        == metadata()["resolvedDependencyArtifacts"][0]["contentDigest"])
+        );
+    }
+    #[test]
     fn library_artifact_projection_keeps_compilations_and_original_limits_separate() {
         let mut e = evidence();
         project(&mut e, &metadata(), "payload", ":a/main").unwrap();
