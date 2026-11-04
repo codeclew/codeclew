@@ -315,6 +315,7 @@ fn saved_scenario_question_prepares_full_graph_work_from_frozen_selection() {
             evidence_digest: clew::canonical::hash(&source_text).unwrap(),
             authority: "RETAINED_SOURCE".into(),
             text_origin: None,
+            library_origin: None,
             occurrence: None,
             url: None,
         },

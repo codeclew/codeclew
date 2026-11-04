@@ -415,13 +415,13 @@ pub(super) fn collect_bounded(
         }
         match observation.kind.as_str() {
             "SYMBOL" if callable_observation(observation) => {
-                if observation.normalized["authority"] == "SYNTAX" {
-                    if let Some(name) = observation.normalized["name"].as_str() {
-                        source_methods_by_name
-                            .entry(name)
-                            .or_default()
-                            .push(observation);
-                    }
+                if observation.normalized["authority"] == "SYNTAX"
+                    && let Some(name) = observation.normalized["name"].as_str()
+                {
+                    source_methods_by_name
+                        .entry(name)
+                        .or_default()
+                        .push(observation);
                 }
 
                 if let Some(scope) = graph_scope(observation) {

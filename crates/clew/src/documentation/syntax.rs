@@ -829,16 +829,15 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                         | "variable_declaration"
                         | "property_declaration"
                 ))
-        {
-            if let Some(name) = node.child_by_field_name("name").or_else(|| {
+            && let Some(name) = node.child_by_field_name("name").or_else(|| {
                 children(node)
                     .into_iter()
                     .find(|n| n.kind() == "identifier")
-            }) {
-                kotlin_bindings.insert(spelling(name, file.text).to_owned());
-                if !callable(node.kind()) && !class(node.kind()) {
-                    kotlin_value_bindings.insert(spelling(name, file.text).to_owned());
-                }
+            })
+        {
+            kotlin_bindings.insert(spelling(name, file.text).to_owned());
+            if !callable(node.kind()) && !class(node.kind()) {
+                kotlin_value_bindings.insert(spelling(name, file.text).to_owned());
             }
         }
         let mut nested = owners.clone();

@@ -65,9 +65,9 @@ fn artifact(value: &Value) -> Result<(), ClewError> {
         }
     }
     if !value["coordinates"]["classifier"].is_null()
-        && !value["coordinates"]["classifier"]
+        && value["coordinates"]["classifier"]
             .as_str()
-            .is_some_and(|s| s.len() <= 512)
+            .is_none_or(|s| s.len() > 512)
     {
         return Err(invalid("Kotlin resolved artifact classifier is invalid"));
     }

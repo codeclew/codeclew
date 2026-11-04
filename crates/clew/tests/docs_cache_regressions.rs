@@ -27,6 +27,7 @@ fn evidence(service: &str, text: &str) -> ServiceEvidence {
         evidence_digest: format!("sha256:{}", "2".repeat(64)),
         authority: "EXACT_SNAPSHOT_TEXT".into(),
         text_origin: None,
+        library_origin: None,
         occurrence: None,
         url: None,
     };

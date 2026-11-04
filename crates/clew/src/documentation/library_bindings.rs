@@ -59,7 +59,7 @@ fn coordinates(value: &Value) -> Result<(), ClewError> {
             .as_str()
             .is_some_and(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
     }) || !value["classifier"].is_null()
-        && !value["classifier"].as_str().is_some_and(|s| s.len() <= 512)
+        && value["classifier"].as_str().is_none_or(|s| s.len() > 512)
     {
         return Err(invalid(
             "LIBRARY_COORDINATES_INVALID: specify group, name, version, classifier and extension",
@@ -212,23 +212,21 @@ pub(super) fn admit(
                 "SOURCE library binding cannot claim a compiler compilation",
             ));
         }
-    } else {
-        if input.consumer_compilation.is_empty()
-            || !a.observations.values().any(|o| {
-                o.kind == "DEPENDENCY_ARTIFACT"
-                    && o.normalized["scope"] == input.consumer_compilation
-                    && {
-                        let mut value = o.normalized.clone();
-                        value.as_object_mut().unwrap().remove("scope");
-                        value.as_object_mut().unwrap().remove("evidenceBinding");
-                        value == input.artifact
-                    }
-            })
-        {
-            return Err(invalid(
-                "LIBRARY_ARTIFACT_MISMATCH: select the exact resolved artifact row/hash/variant from A's retained compilation; a declared version is insufficient",
-            ));
-        }
+    } else if input.consumer_compilation.is_empty()
+        || !a.observations.values().any(|o| {
+            o.kind == "DEPENDENCY_ARTIFACT"
+                && o.normalized["scope"] == input.consumer_compilation
+                && {
+                    let mut value = o.normalized.clone();
+                    value.as_object_mut().unwrap().remove("scope");
+                    value.as_object_mut().unwrap().remove("evidenceBinding");
+                    value == input.artifact
+                }
+        })
+    {
+        return Err(invalid(
+            "LIBRARY_ARTIFACT_MISMATCH: select the exact resolved artifact row/hash/variant from A's retained compilation; a declared version is insufficient",
+        ));
     }
     if b.revision != input.library.revision || b.service != input.library.service {
         return Err(invalid(

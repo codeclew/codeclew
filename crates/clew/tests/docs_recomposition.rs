@@ -145,6 +145,7 @@ fn add_scoped_process_root(repo: &Repository, snapshot: &str, source_text: &str)
             evidence_digest: clew::canonical::hash(&source_text).unwrap(),
             authority: "RETAINED_SOURCE".into(),
             text_origin: None,
+            library_origin: None,
             occurrence: None,
             url: None,
         },

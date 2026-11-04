@@ -58,6 +58,7 @@ fn evidence(service: &Service, service_digest: String, revision: &str) -> Servic
         text: source_text,
         authority: "SYNTHETIC_RETAINED_FIXTURE".into(),
         text_origin: None,
+        library_origin: None,
         occurrence: None,
         url: None,
     };
