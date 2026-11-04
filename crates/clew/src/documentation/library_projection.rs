@@ -547,6 +547,25 @@ mod tests {
             "unreachable",
             vec![json!({"kind":"CALL","kafka":{"topic":"owned.unreachable"}})],
         );
+        // A real call-relation-shaped record exercises the independent B
+        // revision check used by Work, beyond the simpler FLOW-only traversal.
+        let mut call_source = b.sources["source-decide"].clone();
+        call_source.id = "relation-source".into();
+        call_source.text = "normalize(amount)".into();
+        call_source.text_digest = crate::canonical::hash_bytes(call_source.text.as_bytes());
+        let relation = json!({"schema":"codeclew-kotlin-documentation-call/1.0","kind":"RELATION","relationKind":"CALLS","scope":":/main",
+            "resolution":"COMPILER_EXACT","compilerResolution":"PROVEN","provider":"K2_FIR","compilerSchema":"declaration-relation/0.1","sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "sourceIdentity":decide,"targetIdentity":normalize,"sourceCompilerCallableId":"owned/library/Policy.decide","sourceJvmDescriptor":"(I)Ljava/lang/String;","targetCompilerCallableId":"owned/library/Policy.normalize","targetJvmDescriptor":"(I)Ljava/lang/String;",
+            "evidenceBinding":call_source.evidence_digest,"callSite":{"sourceId":call_source.id,"sourceStatus":"SOURCE_RETAINED","file":call_source.file,"startLine":1,"endLine":1,"byteStart":0,"byteEnd":call_source.text.len(),"sourceDigest":call_source.text_digest,"evidenceDigest":call_source.evidence_digest}});
+        add(
+            &mut b,
+            "decide-relation",
+            "CALL_RELATION",
+            decide,
+            relation,
+            vec![call_source.id.clone()],
+        );
+        b.sources.insert(call_source.id.clone(), call_source);
         add(
             &mut b,
             "publication",

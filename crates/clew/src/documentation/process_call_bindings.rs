@@ -80,8 +80,14 @@ pub(super) fn project(
     let end = site["byteEnd"]
         .as_u64()
         .ok_or_else(|| invalid("process call end is missing"))?;
+    let revision_matches = if let Some(origin) = &source.library_origin {
+        caller.normalized["libraryOrigin"]["binding"] == origin.binding
+            && super::library_projection::verify_source(evidence, source)?
+    } else {
+        source.revision == evidence.revision
+    };
     if source.service != evidence.service
-        || source.revision != evidence.revision
+        || !revision_matches
         || site["sourceId"] != *source_id
         || site["sourceStatus"] != "SOURCE_RETAINED"
         || site["file"] != source.file
