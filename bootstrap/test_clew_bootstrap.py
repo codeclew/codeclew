@@ -7,6 +7,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import stat
@@ -851,6 +852,17 @@ class BootstrapAuthorityTest(unittest.TestCase):
             self.assertEqual(results.count("published"), 1)
             self.assertEqual(results.count("reused"), 3)
             bootstrap.verify_component(root, authority["componentKey"], authority)
+
+    def test_runtime_manifest_contains_embedded_diagnostic_schemas(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        source = repository / "crates/clew/src/documentation/input_diagnostics.rs"
+        inputs, _development = bootstrap.source_manifest(repository)
+        paths = {row["path"] for row in inputs}
+        embedded = re.findall(r'include_str!\("([^"\n]+)"\)', source.read_text())
+        self.assertTrue(embedded)
+        for relative in embedded:
+            schema = (source.parent / relative).resolve().relative_to(repository)
+            self.assertIn(schema.as_posix(), paths, str(schema))
 
     def test_runtime_component_registry_partitions_real_relevant_inputs(self) -> None:
         repository = MODULE_PATH.parent.parent
