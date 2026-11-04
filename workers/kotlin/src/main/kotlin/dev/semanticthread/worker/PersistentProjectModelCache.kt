@@ -300,6 +300,7 @@ enum class PublishOutcome {
         val resources = listOf(
             "/dev/semanticthread/worker/PersistentProjectModelCache.class",
             "/dev/semanticthread/worker/Worker.class",
+            "/dev/semanticthread/worker/LibraryArtifactsKt.class",
             "/dev/semanticthread/worker/SemanticInputManifestAuthorityKt.class",
             "/semantic-thread-model.init.gradle",
         )

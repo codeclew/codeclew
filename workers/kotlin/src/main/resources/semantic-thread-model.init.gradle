@@ -144,10 +144,19 @@ gradle.beforeProject { project ->
             }
             def compilerVersionAvailable = compilerVersion != null && !compilerVersion.isEmpty()
             def dependencyCoordinates = []
+            def dependencyArtifacts = []
             def dependencyCoordinatesAvailable = true
             try {
                 def configuration = project.configurations.findByName(configurationName)
                 def byFile = [:]
+                def variantsByFile = [:]
+                configuration?.incoming?.artifacts?.artifacts?.each { resolved ->
+                    def attributes = [:]
+                    resolved.variant.attributes.keySet().sort { it.name }.each { key ->
+                        attributes[key.name] = resolved.variant.attributes.getAttribute(key)?.toString()
+                    }
+                    variantsByFile[resolved.file.absolutePath] = attributes
+                }
                 configuration?.resolvedConfiguration?.resolvedArtifacts?.each { artifact ->
                     def id = artifact.moduleVersion.id
                     byFile[artifact.file.absolutePath] = [
@@ -158,8 +167,31 @@ gradle.beforeProject { project ->
                         scope: configurationName
                     ]
                 }
-                classpath.each { path -> if (byFile.containsKey(path)) dependencyCoordinates.add(byFile[path]) }
+                classpath.eachWithIndex { path, index ->
+                    if (byFile.containsKey(path)) {
+                        dependencyCoordinates.add(byFile[path])
+                        dependencyArtifacts.add([
+                            classpathIndex: index, file: path, coordinates: byFile[path],
+                            variant: variantsByFile[path] ?: [:]
+                        ])
+                    }
+                }
             } catch (Throwable ignored) { dependencyCoordinatesAvailable = false }
+            def publicationDeclarations = []
+            try {
+                project.extensions.findByName("publishing")?.publications?.each { publication ->
+                    if (publication.hasProperty("groupId") && publication.hasProperty("artifactId")) {
+                        publicationDeclarations.add([
+                            group: publication.groupId, name: publication.artifactId,
+                            version: publication.version, authority: "GRADLE_PUBLICATION_DECLARATION"
+                        ])
+                    }
+                }
+            } catch (Throwable ignored) {}
+            if (publicationDeclarations.isEmpty()) publicationDeclarations.add([
+                group: project.group.toString(), name: project.name, version: project.version.toString(),
+                authority: "GRADLE_PROJECT_DECLARATION"
+            ])
             def repositories = []
             def repositoriesAvailable = true
             try {
@@ -246,6 +278,8 @@ gradle.beforeProject { project ->
                 freeCompilerArguments: freeCompilerArgs.values,
                 optIns: optIns.values,
                 dependencyCoordinates: dependencyCoordinates,
+                dependencyArtifacts: dependencyArtifacts,
+                publicationDeclarations: publicationDeclarations,
                 repositories: repositories,
                 reactorPoms: [],
                 buildPlugins: [],

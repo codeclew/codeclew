@@ -1733,6 +1733,11 @@ pub(crate) fn project_scoped(
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut roslyn_coordinates = BTreeMap::new();
     for (raw_fact, binding) in &facts {
+        if raw_fact["schema"] == "codeclew-kotlin-index-metadata/2.4" {
+            let scope = resolve_scope_key(&raw_fact["scope"], known)?;
+            super::library_artifacts::project(&mut evidence, raw_fact, binding, &scope)?;
+            continue;
+        }
         if csharp_sources::project_file(&mut evidence, service, sources, known, raw_fact, binding)?
         {
             continue;

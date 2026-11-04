@@ -1870,6 +1870,8 @@ internal class Worker(
                 if (apiVersion == "1.9") add("KOTLIN_ANALYSIS_API_UPGRADED_FROM_1_9_TO_2_0")
             }
             put("dependencyCoordinates", buildModel["dependencyCoordinates"] ?: JsonArray(emptyList()))
+            put("resolvedDependencyArtifacts", resolvedLibraryArtifacts(buildModel, classpath))
+            put("publicationDeclarations", buildModel["publicationDeclarations"] ?: JsonArray(emptyList()))
             put("repositories", buildModel["repositories"] ?: JsonArray(emptyList()))
             put("reactorPoms", buildModel["reactorPoms"] ?: JsonArray(emptyList()))
             put("buildPlugins", buildModel["buildPlugins"] ?: JsonArray(emptyList()))
@@ -1924,6 +1926,8 @@ internal class Worker(
             put("generatedSourceConfiguration", normalized["generatedSourceConfiguration"] ?: JsonNull)
             put("buildModelBoundaries", normalized["buildModelBoundaries"] ?: JsonNull)
             put("dependencyCoordinates", normalized["dependencyCoordinates"] ?: JsonNull)
+            put("resolvedDependencyArtifacts", normalized["resolvedDependencyArtifacts"] ?: JsonArray(emptyList()))
+            put("publicationDeclarations", normalized["publicationDeclarations"] ?: JsonArray(emptyList()))
             put("repositories", normalized["repositories"] ?: JsonNull)
             put("reactorPoms", normalized["reactorPoms"] ?: JsonNull)
             put("buildPlugins", normalized["buildPlugins"] ?: JsonNull)
@@ -2539,6 +2543,12 @@ internal class Worker(
             .map { it.jsonObject }.groupBy { it["file"]?.jsonPrimitive?.content }
         val documentationCalls = analysis.facts.filter { it["recordType"].safeString() == "DOCUMENTATION_CALL" }
             .groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
+        val binaryTargets = if (semanticAvailable) libraryBinaryTargets(
+            model!!,
+            project!!["resolvedDependencyArtifacts"]?.jsonArray ?: JsonArray(emptyList()),
+            documentationCalls.values.flatten(),
+            documentationDescriptors.values.flatten().mapNotNull { it["symbolIdentity"]?.jsonPrimitive?.contentOrNull }.toSet(),
+        ) else JsonArray(emptyList())
         val documentationData = analysis.facts.filter { it["recordType"].safeString() in setOf(
             "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY", "PORTABLE_VALUE_PROJECTION",
             "DOCUMENTATION_LEXICAL_VARIABLE", "DOCUMENTATION_LEXICAL_RECEIPT", "DOCUMENTATION_RETURN_CONTROL",
@@ -2608,6 +2618,9 @@ internal class Worker(
                                 project[field]?.let { put(field, it) }
                             }
                             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
+                            put("resolvedDependencyArtifacts", project["resolvedDependencyArtifacts"] ?: JsonArray(emptyList()))
+                            put("publicationDeclarations", project["publicationDeclarations"] ?: JsonArray(emptyList()))
+                            put("binaryCallTargets", binaryTargets)
                         }
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
             if (!syntaxOnly && !analysis.valid && project != null && model != null) {

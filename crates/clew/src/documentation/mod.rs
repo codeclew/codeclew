@@ -44,6 +44,7 @@ mod interaction_work_tests;
 mod job_context;
 mod kotlin;
 mod language;
+mod library_artifacts;
 mod local_cfg;
 pub mod maintained_context;
 pub mod model;

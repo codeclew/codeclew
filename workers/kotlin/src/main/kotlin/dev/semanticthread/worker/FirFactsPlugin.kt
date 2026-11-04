@@ -67,6 +67,8 @@ import org.jetbrains.kotlin.fir.scopes.getDirectOverriddenSafe
 import org.jetbrains.kotlin.fir.scopes.jvm.computeJvmDescriptor
 import org.jetbrains.kotlin.fir.backend.jvm.FirJvmTypeMapper
 import org.jetbrains.org.objectweb.asm.Type
+import org.jetbrains.kotlin.load.kotlin.JvmPackagePartSource
+import org.jetbrains.kotlin.load.kotlin.KotlinJvmBinarySourceElement
 import org.jetbrains.kotlin.fir.scopes.unsubstitutedScope
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassSymbol
@@ -1864,6 +1866,16 @@ private class FirFactsExpressionChecker(
                         if (descriptor != null && compilerId != null && !compilerId.isLocal) {
                             val prefix = if (relationKind == "CONSTRUCTS") "constructor:" else "callable:"
                             put("target", "$prefix$compilerId#jvm:$descriptor")
+                            val binaryContainer = function?.containerSource
+                            val classId = compilerId.classId
+                                ?: (binaryContainer as? KotlinJvmBinarySourceElement)?.binaryClass?.classId
+                            val jvmOwner = (binaryContainer as? JvmPackagePartSource)?.className?.internalName
+                                ?: classId?.let { id ->
+                                    val pkg = id.packageFqName.asString().replace('.', '/')
+                                    val name = id.relativeClassName.asString().replace('.', '$')
+                                    if (pkg.isEmpty()) name else "$pkg/$name"
+                                }
+                            jvmOwner?.let { put("targetJvmOwner", it) }
                             put("resolution", "COMPILER_EXACT")
                         } else {
                             put("resolution", "UNKNOWN")
