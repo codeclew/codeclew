@@ -125,6 +125,7 @@ fn inputs() -> RepositoryInputs {
         },
         services,
         external_services: BTreeMap::new(),
+        library_bindings: BTreeMap::new(),
         interactions: BTreeMap::new(),
         scenarios: BTreeMap::from([
             ("parent".into(), process("parent", vec!["child"])),

@@ -45,6 +45,7 @@ mod job_context;
 mod kotlin;
 mod language;
 mod library_artifacts;
+mod library_bindings;
 mod local_cfg;
 pub mod maintained_context;
 pub mod model;

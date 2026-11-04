@@ -37,6 +37,8 @@ pub struct RepositoryInputs {
     pub services: BTreeMap<String, Service>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub external_services: BTreeMap<String, super::external_services::ExternalService>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub library_bindings: BTreeMap<String, super::library_bindings::Binding>,
     pub interactions: BTreeMap<String, Interaction>,
     pub scenarios: BTreeMap<String, Scenario>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -534,6 +536,7 @@ impl Repository {
             manifest: self.manifest.clone(),
             services: self.services()?,
             external_services: super::external_services::records(self)?,
+            library_bindings: super::library_bindings::records(self)?,
             interactions: self.interactions()?,
             process_states: super::process_states::records(self, &scenarios)?,
             scenarios,

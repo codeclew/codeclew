@@ -76,6 +76,7 @@ fn composer() -> Result<String, ClewError> {
         &[
             SCHEMA,
             include_str!("composition.rs"),
+            include_str!("library_bindings.rs"),
             include_str!("retained_contracts.rs"),
             include_str!("check.rs"),
             include_str!("entities.rs"),

@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Associate separately captured library source with an explicit pinned dependency.
+    Library {
+        #[command(subcommand)]
+        command: super::library_bindings::Command,
+    },
     /// Human-only exports with exact retained metadata lookup.
     Reader {
         #[command(subcommand)]
@@ -384,6 +389,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::Reader { command } => super::reader_address::run(command),
+        Command::Library { command } => super::library_bindings::run(command),
         Command::External { command } => super::external_services::run(command),
         Command::Storage { command } => super::storage::run(command),
         Command::Endpoint { command } => super::endpoint_publication::run(command),
