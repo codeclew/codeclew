@@ -808,6 +808,7 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
     let mut declarations = Vec::new();
     let mut details = Vec::new();
     let mut kotlin_bindings = BTreeSet::new();
+    let mut kotlin_value_bindings = BTreeSet::new();
     let mut visited = 0;
     while let Some((node, owners, depth)) = stack.pop() {
         visited += 1;
@@ -835,6 +836,9 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     .find(|n| n.kind() == "identifier")
             }) {
                 kotlin_bindings.insert(spelling(name, file.text).to_owned());
+                if !callable(node.kind()) && !class(node.kind()) {
+                    kotlin_value_bindings.insert(spelling(name, file.text).to_owned());
+                }
             }
         }
         let mut nested = owners.clone();
@@ -970,6 +974,19 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     let source = file.source(e, &event_identity, n.start_byte(), n.end_byte())?;
                     let mut event = json!({"kind":kind,"syntaxKind":n.kind(),"authority":"SYNTAX","ordering":"LEXICAL_ONLY","text":spelling(n,file.text),"fingerprint":fingerprint(n,file.text)?,"targetStatus":"UNRESOLVED","ordinal":index,"parentOrdinal":parent,"nestingDepth":depth});
                     if kind == "CALL" && file.service.language == "kotlin" {
+                        event["navigationPolicy"] = json!("KOTLIN_SOURCE_CANDIDATES/1");
+                        if let Some((name, receiver)) = kotlin_navigation(n, file.text) {
+                            if receiver.is_none() && kotlin_value_bindings.contains(name) {
+                                event["navigationBoundary"] = json!("LOCAL_CALL_NAME_SHADOWED");
+                            } else {
+                                event["navigationName"] = json!(name);
+                                event["navigationAuthority"] =
+                                    json!("DECLARED_NAME_ONLY_NOT_RESOLUTION");
+                                if let Some(receiver) = receiver {
+                                    event["receiverText"] = json!(receiver);
+                                }
+                            }
+                        }
                         if let Some(candidate) =
                             kotlin_library_candidate(n, file.text, &kotlin_bindings)
                         {
@@ -1105,6 +1122,28 @@ pub(super) fn project_source_framework(
     }
     entry.boundaries.sort();
     entry.boundaries.dedup();
+}
+
+fn kotlin_navigation<'a>(node: Node<'_>, text: &'a str) -> Option<(&'a str, Option<&'a str>)> {
+    let callee = children(node).into_iter().next()?;
+    let identifier = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .enumerate()
+                .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || i > 0 && b.is_ascii_digit())
+    };
+    match callee.kind() {
+        "identifier" => {
+            let name = spelling(callee, text);
+            identifier(name).then_some((name, None))
+        }
+        "navigation_expression" => {
+            let (receiver, name) = spelling(callee, text).rsplit_once('.')?;
+            (identifier(name) && receiver.split('.').all(identifier))
+                .then_some((name, Some(receiver)))
+        }
+        _ => None,
+    }
 }
 
 /// Lexical spelling only. Import/owner/overload admission happens separately;
@@ -1405,6 +1444,115 @@ mod tests {
             assert_eq!(calls[0].normalized["targetStatus"], "UNRESOLVED");
             assert!(calls[0].normalized.get("target").is_none());
         }
+    }
+
+    #[test]
+    fn kotlin_source_local_helper_is_navigation_and_ambiguous_or_shadowed_names_stay_unresolved() {
+        let source = "class Calculator {\n fun calculate(value: Int): Int = value + 1\n}\nclass Api(private val calculator: Calculator) {\n fun handle(value: Int): Int = calculator.calculate(value)\n}";
+        let e = fixture("kotlin", source);
+        let root = e
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "handle")
+            .unwrap();
+        let helper = e
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "calculate")
+            .unwrap();
+        let rows = super::super::thread_context::context(
+            &e,
+            &root.id,
+            "snapshot",
+            "input",
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r["obligationKind"] == "BODY" && r["record"]["declaration"] == helper.id)
+        );
+        assert!(rows.iter().any(|r| r["obligationKind"] == "CANDIDATE"
+            && r["record"]["relationshipAuthority"] == "NAVIGATION_ONLY"
+            && r["record"]["runtimeTarget"] == "UNKNOWN"));
+        let graph =
+            super::super::process_graph::collect_bounded(&e, root, "snapshot", "input", None)
+                .unwrap();
+        assert_eq!(graph["methods"].as_array().unwrap().len(), 2);
+        assert_eq!(graph["edges"][0]["resolution"], "SOURCE_NAME_CANDIDATE");
+        assert_eq!(
+            graph["edges"][0]["relationshipAuthority"],
+            "NAVIGATION_ONLY"
+        );
+        let ambiguous=fixture("kotlin",&source.replace("fun calculate(value: Int): Int = value + 1","fun calculate(value: Int): Int = value + 1\nfun calculate(value: String): String = value"));
+        let root = ambiguous
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "handle")
+            .unwrap();
+        let graph = super::super::process_graph::collect_bounded(
+            &ambiguous, root, "snapshot", "input", None,
+        )
+        .unwrap();
+        assert_eq!(graph["edges"][0]["resolution"], "SOURCE_NAME_AMBIGUOUS");
+        assert_eq!(graph["edges"][0]["targetMethodId"], Value::Null);
+        let shadow = fixture(
+            "kotlin",
+            "class Calculator {\n fun calculate(value: Int): Int = value + 1\n}\nclass Api {\n fun handle(calculate: (Int) -> Int, value: Int): Int = calculate(value)\n}",
+        );
+        let root = shadow
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "handle")
+            .unwrap();
+        let rows = super::super::thread_context::context(
+            &shadow,
+            &root.id,
+            "snapshot",
+            "input",
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r["record"]["reason"] == "LOCAL_CALL_NAME_SHADOWED")
+        );
+        assert!(!rows.iter().any(|r| r["obligationKind"] == "CANDIDATE"));
+        // Frozen old producer observations never gain hints through reads.
+        let mut legacy = e.clone();
+        for o in legacy
+            .observations
+            .values_mut()
+            .filter(|o| o.kind == "FLOW")
+        {
+            for key in [
+                "navigationName",
+                "navigationAuthority",
+                "navigationPolicy",
+                "libraryCallCandidate",
+            ] {
+                o.normalized.as_object_mut().unwrap().remove(key);
+            }
+            o.digest = digest(&o.normalized).unwrap();
+        }
+        let root = legacy
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "handle")
+            .unwrap();
+        let rows = super::super::thread_context::context(
+            &legacy,
+            &root.id,
+            "snapshot",
+            "input",
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r["record"]["reason"] == "LEXICAL_CALL_NAME_NOT_CAPTURED")
+        );
+        assert!(!rows.iter().any(|r| r["obligationKind"] == "CANDIDATE"));
     }
 
     #[test]

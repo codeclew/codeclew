@@ -156,9 +156,10 @@ pub enum Command {
     },
     /// Read a recorded page. Exact FLOW lookup input uses query.kind=FLOW and query.ids (1..8); optional expectedSnapshot/expectedContextDigest guard the immutable Work scope.
     Read(ReadArgs),
-    /// Read up to 64 bounded SOURCE selections after loading immutable Work once.
+    /// Read 1..64 tracked SOURCE selections. --input uses schema=codeclew-documentation-work-batch-request/1.0 and selections:[{projection:"SOURCE_ROWS",references:["RETURNED_SOURCE_REFERENCE"]}]. Inspect each page.nextCursor/omitted/error independently; see installed schemas/work-batch-request.schema.json.
     ReadBatch(ReadArgs),
     Expand(ReadArgs),
+    /// Read one SOURCE in recorded UTF-8 parts. --input is {schema:"codeclew-documentation-source-part-request/1.0",reference:"RETURNED_SOURCE_REFERENCE",cursor:null}. No projection field. Response source-part/1.0 is not request input; continue its cursor until null. See installed schemas/source-part-request.schema.json.
     ReadPart(ReadPartArgs),
     /// Read canonical JSON of one retained operation in bounded recorded parts.
     ReadRetainedPart(ReadPartArgs),
@@ -547,6 +548,15 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     {
         return Err(invalid(
             "SOURCE_ROWS requires tracked SOURCE references only",
+        ));
+    }
+    if selection
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.len() > 256)
+    {
+        return Err(invalid(
+            "Work cursor exceeds 256 bytes; copy the exact cursor returned for this same selection",
         ));
     }
     if selection.references.len() > 8
@@ -1148,12 +1158,20 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::ReadBatch(args) => read_batch(
             &Repository::open(&args.root)?,
             &args.work,
-            store::read(&args.input, store::MAX_RECORD)?,
+            super::input_diagnostics::read(
+                &args.input,
+                store::MAX_RECORD,
+                super::input_diagnostics::Input::SourceBatch,
+            )?,
         ),
         Command::ReadPart(args) => read_part(
             &Repository::open(&args.root)?,
             &args.work,
-            store::read(&args.input, store::MAX_RECORD)?,
+            super::input_diagnostics::read(
+                &args.input,
+                store::MAX_RECORD,
+                super::input_diagnostics::Input::SourcePart,
+            )?,
         ),
         Command::ReadRetainedPart(args) => read_retained_part(
             &Repository::open(&args.root)?,
@@ -3762,7 +3780,7 @@ pub fn read_batch(
         || !(1..=64).contains(&request.selections.len())
     {
         return Err(invalid(
-            "read-batch requires its schema and 1..64 SOURCE selections",
+            "read-batch requires schema=codeclew-documentation-work-batch-request/1.0 and 1..64 SOURCE selections; work-batch/1.0 is the response schema. See installed schemas/work-batch-request.schema.json or clew docs work read-batch --help",
         ));
     }
     let work = load(repo, id)?;
@@ -3779,25 +3797,27 @@ pub fn read_batch(
     }
     let mut results = Vec::with_capacity(request.selections.len());
     for requested in request.selections {
-        let result = serde_json::from_value::<Selection>(requested.clone())
-            .map_err(|error| invalid(format!("invalid SOURCE batch selection: {error}")))
-            .and_then(|selection| {
-                let source_only = !selection.untracked_reads
-                    && selection.symbols.is_empty()
-                    && (selection.query.as_ref().is_some_and(|q| q.kind == "SOURCE")
-                        || !selection.references.is_empty()
-                            && selection
-                                .references
-                                .iter()
-                                .all(|r| work.handles.get(r).is_some_and(|h| h.kind == "SOURCE")));
-                if source_only {
-                    read_loaded_with_state(repo, &work, selection, None, Some(&mut state))
-                } else {
-                    Err(invalid(
-                        "read-batch accepts only tracked SOURCE references or SOURCE queries",
-                    ))
-                }
-            });
+        let result = super::input_diagnostics::from_value::<Selection>(
+            requested.clone(),
+            super::input_diagnostics::Input::SourceSelection,
+        )
+        .and_then(|selection| {
+            let source_only = !selection.untracked_reads
+                && selection.symbols.is_empty()
+                && (selection.query.as_ref().is_some_and(|q| q.kind == "SOURCE")
+                    || !selection.references.is_empty()
+                        && selection
+                            .references
+                            .iter()
+                            .all(|r| work.handles.get(r).is_some_and(|h| h.kind == "SOURCE")));
+            if source_only {
+                read_loaded_with_state(repo, &work, selection, None, Some(&mut state))
+            } else {
+                Err(invalid(
+                    "read-batch accepts only tracked SOURCE references or SOURCE queries",
+                ))
+            }
+        });
         results.push(match result {
             Ok(page) => json!({"selection":requested,"page":page}),
             Err(error) => json!({"selection":requested,"error":error}),

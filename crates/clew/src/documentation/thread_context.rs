@@ -392,7 +392,7 @@ pub(super) fn context(
                     .unwrap_or_default();
                 if candidates.is_empty() {
                     rows.push(row("CALL_BOUNDARY",&event.id,json!({"declaration":id,"eventId":event.id,"sourceIds":event.source_ids,"dependencyIds":[event.id],
-                        "candidateCount":0,"targetStatus":event.normalized["targetStatus"],"actionable":hint.is_none(),"runtimeTarget":"UNKNOWN","reason":if hint.is_none(){"LEXICAL_CALL_NAME_NOT_CAPTURED"}else{"NO_NAME_CANDIDATE_IN_SELECTED_INPUTS"},
+                        "candidateCount":0,"targetStatus":event.normalized["targetStatus"],"actionable":hint.is_none(),"runtimeTarget":"UNKNOWN","reason":event.normalized["navigationBoundary"].as_str().unwrap_or(if hint.is_none(){"LEXICAL_CALL_NAME_NOT_CAPTURED"}else{"NO_NAME_CANDIDATE_IN_SELECTED_INPUTS"}),
                         "nextAction":"explain the missing local candidate or external/unsupported receiver boundary; no transport or dispatch guarantee is established"})));
                 }
                 let available = budget.max_events.saturating_sub(candidate_rows);

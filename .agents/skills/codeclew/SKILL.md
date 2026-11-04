@@ -42,6 +42,7 @@ Read only the reference for the requested result:
 | Navigate, analyze or change code through an admitted session | [Managed code](references/managed-code.md) |
 | Register services, capture source, author or publish durable documentation | [Service documentation](references/service-documentation.md) |
 | Inventory entrypoints and prepare complete local threads | [Thread preparation](references/thread-preparation.md) |
+| Finish a large SOURCE read or batch independent source selections | [Recorded SOURCE parts and batches](references/source-read-parts.md) |
 | Connect a separately captured Kotlin library to a service thread | [Independent library source](references/library-sources.md) |
 | Collect or explain a saved failed Check | [Evidence and support](references/documentation-evidence.md) |
 

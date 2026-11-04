@@ -18,9 +18,11 @@ compiler rerun, model call or publication is implicit in the reads below.
    delivery, recapture source or establish a complete explanation.
 2. For each requested returned `rootDeclarations` ID, read
    `{"query":{"kind":"THREAD_CONTEXT","symbolContains":"EXACT_DECLARATION_ID"}}`
-   through the same Work and finish pagination. This Java/Spring slice reuses
-   compiler graph traversal or supplies lexical continuation candidates in pure
-   SOURCE_SYNTAX. It does not establish universal framework discovery.
+   through the same Work and finish pagination. The retained route reuses compiler
+   graph traversal or supplies lexical continuation candidates in SOURCE_SYNTAX.
+   New Kotlin SOURCE captures include bounded local call-name hints; old frozen
+   snapshots keep their producer limitations. This is not universal framework
+   discovery or compiler proof for a syntax caller.
 3. Read the complete bodies/events using returned `sourceReferences` and
    `dependencyReferences`. Use `docs work read-part` for a large source. A
    candidate is navigation, even if unique. Inspect alternatives, overloads and
@@ -61,10 +63,19 @@ approval or runtime proof. Inspect remaining open obligations; a gap does not
 become a completed thread by being recorded. Existing proposal/review and
 publication commands remain the authority for accepted documentation.
 
-## Saved Work continuations without Java THREAD_CONTEXT
+## Recorded source parts, batches and exact root IDs
 
-For Kotlin or another profile without that Java/Spring route, use the existing
-recorded Work queries. After finishing initial/default pages, find a receiver or
+Use the [copyable SOURCE part/batch examples and portable schemas](source-read-parts.md)
+for large bodies and independent pagination. `rootDeclaration` is the exact
+inventory declaration ID; `accounts[].obligation` is the complete returned row ID
+such as `BODY:ID`. Complete its own SOURCE read before accounting. An entrypoint
+can stay `IN_PROGRESS` after a controller account; helper-only accounting under a
+different root does not increase that entrypoint's accounted count.
+
+## Saved Work without captured continuation hints
+
+For an older Kotlin snapshot or another profile without retained call-name
+hints, use the existing recorded Work queries. After finishing initial/default pages, find a receiver or
 helper declaration with a targeted SYMBOL query:
 
 ```json

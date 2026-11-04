@@ -92,6 +92,35 @@ def operation_answer_schema_errors(value: dict[str, object]) -> list[str]:
 
 
 class DocumentationSelectionContractTest(unittest.TestCase):
+    def test_portable_source_part_request_is_not_response_or_selection(self) -> None:
+        request = json.loads((ROOT / "schemas/documentation/source-part-request.schema.json").read_text())
+        request.pop("$id", None)
+        valid = {"schema": "codeclew-documentation-source-part-request/1.0", "reference": "s16"}
+        self.assertFalse(definition_errors(valid, request, request.get("$defs", {})))
+        for invalid in [dict(valid, schema="codeclew-documentation-source-part/1.0"), dict(valid, projection="SOURCE_ROWS"), dict(valid, cursor="x" * 257)]:
+            self.assertTrue(definition_errors(invalid, request, request.get("$defs", {})))
+        response = json.loads((ROOT / "schemas/documentation/source-part.schema.json").read_text())
+        response.pop("$id", None)
+        metadata = {"id":"retained-source", "service":"application", "revision":"b"*40, "file":"Policy.kt", "startLine":1, "endLine":1, "textDigest":"sha256:"+"a"*64, "evidenceDigest":"sha256:"+"b"*64, "authority":"EXACT_SNAPSHOT_TEXT", "url":None, "libraryOrigin":{"binding":"policy", "originalSourceId":"library-source"}}
+        part = {"schema":"codeclew-documentation-source-part/1.0", "work":"a"*64, "snapshot":"sha256:"+"b"*64+"/1", "reference":"s16", "sourceId":"retained-source", "authority":"IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED", "recordDigest":"sha256:"+"c"*64, "source":metadata, "startByte":0, "endByte":4, "totalTextBytes":4, "text":"code", "fragmentDigest":"sha256:"+"d"*64, "nextCursor":None, "receiptType":"SOURCE_PART", "receiptDigest":"sha256:"+"e"*64}
+        self.assertFalse(definition_errors(part, response, response["$defs"]))
+        self.assertTrue(definition_errors(dict(part, projection="RAW"), response, response["$defs"]))
+
+    def test_portable_source_batch_keeps_projection_and_each_result_independent(self) -> None:
+        request=json.loads((ROOT / "schemas/documentation/work-batch-request.schema.json").read_text())
+        request.pop("$id", None)
+        selection={"projection":"SOURCE_ROWS", "references":["s16"], "cursor":"a"*64+":1"}
+        value={"schema":"codeclew-documentation-work-batch-request/1.0", "selections":[selection,{"query":{"kind":"SOURCE","projection":"FILES"},"cursor":"b"*64+":2"}]}
+        self.assertFalse(definition_errors(value,request,request["$defs"]))
+        for invalid in [dict(value,selections=[]),dict(value,selections=[selection]*65),dict(value,selections=[{"projection":"SOURCE_ROWS","query":{"kind":"SOURCE"}}]),dict(value,selections=[{"query":{"kind":"SYMBOL"}}])]:
+            self.assertTrue(definition_errors(invalid,request,request["$defs"]))
+        response=json.loads((ROOT / "schemas/documentation/work-batch.schema.json").read_text())
+        response.pop("$id", None)
+        page={"schema":"codeclew-documentation-work-page/1.0", "work":"a"*64,"subject":"service:owned","audience":"Owned", "contextDigest":"context", "inputDigest":"input", "authority":"IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED", "influenceCoverage":"RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED", "membershipDigest":"membership", "total":1, "items":[], "omitted":[{"index":0,"kind":"SOURCE","id":"source","reference":"s16","reason":"ITEM_EXCEEDS_WORK_BYTE_BUDGET"}],"nextCursor":None,"receiptDigest":"receipt","selectionProjection":"SOURCE_ROWS"}
+        batch={"schema":"codeclew-documentation-work-batch/1.0", "work":"a"*64,"snapshot":"snapshot","receiptDigest":"receipt", "results":[{"selection":selection,"page":page},{"selection":"malformed","error":{"code":"INVALID_INPUT","message":"Malformed selection","retryable":False}}]}
+        self.assertFalse(definition_errors(batch,response,response["$defs"]))
+        self.assertTrue(definition_errors(dict(batch, extra=True),response,response["$defs"]))
+
     def test_data_model_reader_claims_match_current_native_shapes(self) -> None:
         schema = json.loads((ROOT / "schemas/documentation/data-model-plan.schema.json").read_text())
         definitions = schema["$defs"]

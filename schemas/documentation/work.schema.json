@@ -185,6 +185,27 @@
             "string",
             "null"
           ]
+        },
+        "textOrigin": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/committedTextOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "libraryOrigin": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/librarySourceOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Compact pointer to the same Work library binding; revision and file remain B origin, not container A provenance."
         }
       },
       "required": [
@@ -217,6 +238,9 @@
         "endByte": {
           "type": "integer",
           "minimum": 0
+        },
+        "generatedOrigin": {
+          "type": "string"
         }
       },
       "required": [
@@ -668,11 +692,19 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 256
         },
         "untrackedReads": {
           "type": "boolean",
           "default": false
+        },
+        "projection": {
+          "enum": [
+            "CONTEXT",
+            "SOURCE_ROWS"
+          ],
+          "description": "SOURCE_ROWS requires tracked SOURCE references, no symbols or query. It returns source rows and source service coverage without narrative expansion."
         }
       },
       "required": []
@@ -830,6 +862,9 @@
             "ru"
           ],
           "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
+        },
+        "selectionProjection": {
+          "const": "SOURCE_ROWS"
         }
       },
       "required": [
@@ -898,6 +933,86 @@
         "bundle",
         "operation",
         "fragment"
+      ]
+    },
+    "committedTextOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "gitBlob": {
+          "type": "string"
+        },
+        "contentDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textDigest": {
+          "type": "string"
+        },
+        "evidenceDigest": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "revision",
+        "file",
+        "gitBlob",
+        "contentDigest",
+        "snapshotDigest",
+        "startByte",
+        "endByte",
+        "lineStart",
+        "lineEnd",
+        "textDigest",
+        "evidenceDigest",
+        "receipt"
+      ]
+    },
+    "librarySourceOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string"
+        },
+        "originalSourceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding",
+        "originalSourceId"
       ]
     }
   }

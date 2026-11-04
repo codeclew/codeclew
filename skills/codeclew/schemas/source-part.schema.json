@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/source-part.schema.json",
+  "title": "Recorded SOURCE UTF-8 part and immutable receipt; not request input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-source-part/1.0"
+    },
+    "work": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "snapshot": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}/(0|[1-9][0-9]*)$"
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sourceId": {
+      "type": "string"
+    },
+    "authority": {
+      "const": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED"
+    },
+    "recordDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source": {
+      "$ref": "#/$defs/sourceMetadata"
+    },
+    "startByte": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "endByte": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalTextBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "text": {
+      "type": "string"
+    },
+    "fragmentDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "receiptType": {
+      "const": "SOURCE_PART"
+    },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "work",
+    "snapshot",
+    "reference",
+    "sourceId",
+    "authority",
+    "recordDigest",
+    "source",
+    "startByte",
+    "endByte",
+    "totalTextBytes",
+    "text",
+    "fragmentDigest",
+    "nextCursor",
+    "receiptType",
+    "receiptDigest"
+  ],
+  "$defs": {
+    "sourceMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textDigest": {
+          "type": "string"
+        },
+        "evidenceDigest": {
+          "type": "string"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "occurrence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sourceOccurrence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "textOrigin": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/committedTextOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "libraryOrigin": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/librarySourceOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Compact pointer to the same Work library binding; revision and file remain B origin, not container A provenance."
+        }
+      },
+      "required": [
+        "id",
+        "service",
+        "revision",
+        "file",
+        "startLine",
+        "endLine",
+        "textDigest",
+        "evidenceDigest",
+        "authority",
+        "url"
+      ]
+    },
+    "sourceOccurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "snapshot": {
+          "type": "string"
+        },
+        "blob": {
+          "type": "string"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generatedOrigin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot",
+        "blob",
+        "startByte",
+        "endByte"
+      ]
+    },
+    "committedTextOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "gitBlob": {
+          "type": "string"
+        },
+        "contentDigest": {
+          "type": "string"
+        },
+        "snapshotDigest": {
+          "type": "string"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textDigest": {
+          "type": "string"
+        },
+        "evidenceDigest": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "revision",
+        "file",
+        "gitBlob",
+        "contentDigest",
+        "snapshotDigest",
+        "startByte",
+        "endByte",
+        "lineStart",
+        "lineEnd",
+        "textDigest",
+        "evidenceDigest",
+        "receipt"
+      ]
+    },
+    "librarySourceOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string"
+        },
+        "originalSourceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding",
+        "originalSourceId"
+      ]
+    }
+  }
+}

@@ -60,25 +60,24 @@ pub(super) fn strip(a: &mut ServiceEvidence) {
     a.sources.retain(|_, s| s.library_origin.is_none());
 }
 fn rewrite(value: &mut Value, ids: &BTreeMap<String, String>) {
-    match value {
-        Value::String(s) => {
-            if let Some(id) = ids.get(s) {
-                *s = id.clone()
-            }
+    // Only engine-created reference positions may change. Business strings,
+    // names, topics and source expressions must survive namespace projection.
+    for field in ["ownerDeclarationId", "declarationId"] {
+        if let Some(id) = value[field].as_str().and_then(|id| ids.get(id)).cloned() {
+            value[field] = json!(id);
         }
-        Value::Array(rows) => {
-            for row in rows {
-                rewrite(row, ids)
-            }
+    }
+    for field in ["callSite", "outlineSite", "outlineOwnerSource"] {
+        if let Some(id) = value[field]["sourceId"]
+            .as_str()
+            .and_then(|id| ids.get(id))
+            .cloned()
+        {
+            value[field]["sourceId"] = json!(id);
         }
-        Value::Object(map) => {
-            for row in map.values_mut() {
-                rewrite(row, ids)
-            }
-        }
-        _ => {}
     }
 }
+
 fn compiler_candidate<'a>(
     a: &ServiceEvidence,
     b: &'a ServiceEvidence,
@@ -635,6 +634,23 @@ mod tests {
         };
         (temp, repo, binding, a, b)
     }
+    #[test]
+    fn namespace_rewrites_reference_positions_without_changing_names_or_literals() {
+        let ids = BTreeMap::from([
+            ("decide".into(), "projected-declaration".into()),
+            ("source-decide".into(), "projected-source".into()),
+        ]);
+        let mut value = json!({"name":"decide","ownerDeclarationId":"decide","kafka":{"topic":"source-decide"},"text":"decide","callSite":{"sourceId":"source-decide"},"outlineOwnerSource":{"sourceId":"source-decide"},"documentation":{"events":[{"text":"source-decide"}]}});
+        rewrite(&mut value, &ids);
+        assert_eq!(value["ownerDeclarationId"], "projected-declaration");
+        assert_eq!(value["callSite"]["sourceId"], "projected-source");
+        assert_eq!(value["outlineOwnerSource"]["sourceId"], "projected-source");
+        assert_eq!(value["name"], "decide");
+        assert_eq!(value["text"], "decide");
+        assert_eq!(value["kafka"]["topic"], "source-decide");
+        assert_eq!(value["documentation"]["events"][0]["text"], "source-decide");
+    }
+
     #[test]
     fn compiler_thread_projects_reached_library_bodies_and_keeps_binary_binding_candidate() {
         let (_temp, repo, binding, a, _b) = fixture();

@@ -1,0 +1,548 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/work-batch.schema.json",
+  "title": "Independent SOURCE batch pages or errors; inspect every cursor and omission",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-work-batch/1.0"
+    },
+    "work": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "snapshot": {
+      "type": "string"
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/result"
+      }
+    },
+    "receiptDigest": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "work",
+    "snapshot",
+    "results",
+    "receiptDigest"
+  ],
+  "$defs": {
+    "sourceSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "projection": {
+              "enum": [
+                "CONTEXT",
+                "SOURCE_ROWS"
+              ]
+            },
+            "references": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string"
+              }
+            },
+            "symbols": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "query": {
+              "type": "null"
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "untrackedReads": {
+              "const": false
+            }
+          },
+          "required": [
+            "references"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "projection": {
+              "const": "CONTEXT"
+            },
+            "references": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "symbols": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "query": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "SOURCE"
+                },
+                "symbolContains": {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "description": "Exact retained SOURCE path; WHOLE_FILE selects one complete original committed Kotlin file or registered non-code input."
+                },
+                "fileContains": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "description": "Case-sensitive retained SOURCE path substring; omit with WHOLE_FILE."
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": [
+                    "RAW",
+                    "NAVIGATION",
+                    "FILES",
+                    "WHOLE_FILE"
+                  ],
+                  "description": "NAVIGATION supports SYMBOL/SOURCE; FILES is SOURCE navigation grouping only; WHOLE_FILE requires SOURCE and exact file."
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "anyOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SYMBOL"
+                    },
+                    "projection": {
+                      "const": "NAVIGATION"
+                    },
+                    "symbolContains": {}
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "enum": [
+                        "RAW",
+                        "NAVIGATION",
+                        "FILES"
+                      ]
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    },
+                    "file": {},
+                    "fileContains": {}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "const": "WHOLE_FILE"
+                    },
+                    "file": {},
+                    "fileContains": {
+                      "const": ""
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection",
+                    "file"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {},
+                    "symbolContains": {},
+                    "projection": {
+                      "const": "RAW"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "FLOW"
+                    },
+                    "ids": {},
+                    "expectedSnapshot": {},
+                    "expectedContextDigest": {},
+                    "projection": {
+                      "const": "RAW"
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "required": [
+                    "ids"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "SOURCE"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "symbolContains": {
+                    "const": ""
+                  }
+                }
+              }
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "untrackedReads": {
+              "const": false
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      ],
+      "description": "Only tracked SOURCE references or SOURCE queries. Native Work membership, per-selection error handling and receipts remain authoritative."
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "selection": {
+              "$ref": "#/$defs/sourceSelection"
+            },
+            "page": {
+              "$ref": "#/$defs/page"
+            }
+          },
+          "required": [
+            "selection",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "selection": {
+              "description": "Exact original JSON, including malformed selection values."
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "required": [
+            "selection",
+            "error"
+          ]
+        }
+      ]
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-work-page/1.0"
+        },
+        "work": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "contextProfile": {
+          "type": "string",
+          "enum": [
+            "declarations-v1",
+            "endpoint-context-v3",
+            "http-api-contract-v1",
+            "process-v1",
+            "process-graph-v1",
+            "section-orientation-v1",
+            "section-entities-orientation-v1"
+          ],
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, bounded direct HTTP API contract preparation, or endpoint-context-v3. Subject compatibility is validated by the host."
+        },
+        "subjectReference": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reference": {
+              "type": "string"
+            },
+            "referenceRoles": {
+              "$ref": "#/$defs/referenceRoles"
+            }
+          },
+          "required": [
+            "reference",
+            "referenceRoles"
+          ]
+        },
+        "contextDigest": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}/(0|[1-9][0-9]*)$"
+        },
+        "inputDigest": {
+          "type": "string"
+        },
+        "authority": {
+          "const": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED"
+        },
+        "influenceCoverage": {
+          "enum": [
+            "RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED",
+            "INCOMPLETE_UNTRACKED_READS"
+          ]
+        },
+        "membershipDigest": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "referenceRoles": {
+                "$ref": "#/$defs/referenceRoles"
+              }
+            }
+          }
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "index": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "const": "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+              },
+              "recovery": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "command",
+                  "input",
+                  "continueUntil"
+                ],
+                "properties": {
+                  "command": {
+                    "const": "docs work read-dependency-part"
+                  },
+                  "input": {
+                    "$ref": "#/$defs/dependencyPartRequest"
+                  },
+                  "continueUntil": {
+                    "const": "nextCursor is null"
+                  }
+                }
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "id",
+              "reference",
+              "reason"
+            ]
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receiptDigest": {
+          "type": "string"
+        },
+        "documentationLanguage": {
+          "type": "string",
+          "enum": [
+            "en",
+            "ru"
+          ],
+          "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
+        },
+        "selectionProjection": {
+          "const": "SOURCE_ROWS"
+        }
+      },
+      "required": [
+        "schema",
+        "work",
+        "subject",
+        "audience",
+        "contextDigest",
+        "inputDigest",
+        "authority",
+        "influenceCoverage",
+        "membershipDigest",
+        "total",
+        "items",
+        "omitted",
+        "nextCursor",
+        "receiptDigest"
+      ]
+    },
+    "referenceRoles": {
+      "type": "array",
+      "description": "Advisory capabilities for the proposal handle in reference; only reference values are handles.",
+      "uniqueItems": true,
+      "maxItems": 3,
+      "items": {
+        "enum": [
+          "evidence",
+          "operation",
+          "gap"
+        ]
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "transactionId": {
+          "type": "string"
+        },
+        "snapshotId": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relevantAnchorsOrSymbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {}
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "dependencyPartRequest": {
+      "title": "Bounded immutable dependency part request",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-dependency-part-request/1.0"
+        },
+        "kind": {
+          "const": "DEPENDENCY"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256,
+          "pattern": "^retained-part-v1:[1-9][0-9]*:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "id"
+      ]
+    }
+  }
+}

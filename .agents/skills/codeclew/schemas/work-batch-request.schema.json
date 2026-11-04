@@ -1,0 +1,453 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/work-batch-request.schema.json",
+  "title": "Up to 64 independent recorded SOURCE selections",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-work-batch-request/1.0"
+    },
+    "selections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/sourceSelection"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "selections"
+  ],
+  "$defs": {
+    "sourceSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "projection": {
+              "enum": [
+                "CONTEXT",
+                "SOURCE_ROWS"
+              ]
+            },
+            "references": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string"
+              }
+            },
+            "symbols": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "query": {
+              "type": "null"
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "untrackedReads": {
+              "const": false
+            }
+          },
+          "required": [
+            "references"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "projection": {
+              "const": "CONTEXT"
+            },
+            "references": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "symbols": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "query": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "SOURCE"
+                },
+                "symbolContains": {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "description": "Exact retained SOURCE path; WHOLE_FILE selects one complete original committed Kotlin file or registered non-code input."
+                },
+                "fileContains": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "description": "Case-sensitive retained SOURCE path substring; omit with WHOLE_FILE."
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": [
+                    "RAW",
+                    "NAVIGATION",
+                    "FILES",
+                    "WHOLE_FILE"
+                  ],
+                  "description": "NAVIGATION supports SYMBOL/SOURCE; FILES is SOURCE navigation grouping only; WHOLE_FILE requires SOURCE and exact file."
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "anyOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SYMBOL"
+                    },
+                    "projection": {
+                      "const": "NAVIGATION"
+                    },
+                    "symbolContains": {}
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "enum": [
+                        "RAW",
+                        "NAVIGATION",
+                        "FILES"
+                      ]
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    },
+                    "file": {},
+                    "fileContains": {}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "const": "WHOLE_FILE"
+                    },
+                    "file": {},
+                    "fileContains": {
+                      "const": ""
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection",
+                    "file"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {},
+                    "symbolContains": {},
+                    "projection": {
+                      "const": "RAW"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "FLOW"
+                    },
+                    "ids": {},
+                    "expectedSnapshot": {},
+                    "expectedContextDigest": {},
+                    "projection": {
+                      "const": "RAW"
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "required": [
+                    "ids"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "SOURCE"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "symbolContains": {
+                    "const": ""
+                  }
+                }
+              }
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "untrackedReads": {
+              "const": false
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      ],
+      "description": "Only tracked SOURCE references or SOURCE queries. Native Work membership, per-selection error handling and receipts remain authoritative."
+    },
+    "selection": {
+      "type": "object",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE supports RAW, NAVIGATION, FILES grouping or WHOLE_FILE with an exact file, and requires omitted/empty symbolContains; nonempty symbol filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION supports SOURCE metadata and SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
+      "additionalProperties": false,
+      "properties": {
+        "references": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "Matches a dependency record's Observation.kind, or SOURCE for registered service source inventory. Use * for every dependency kind only."
+                },
+                "symbolContains": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "description": "Case-sensitive substring of captured dependency symbols or method names. SOURCE has no symbol field and requires this field omitted or empty; nonempty SOURCE filters are rejected."
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "description": "Exact retained SOURCE path; WHOLE_FILE selects one complete original committed Kotlin file or registered non-code input."
+                },
+                "fileContains": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "description": "Case-sensitive retained SOURCE path substring; omit with WHOLE_FILE."
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": [
+                    "RAW",
+                    "NAVIGATION",
+                    "FILES",
+                    "WHOLE_FILE"
+                  ],
+                  "description": "NAVIGATION supports SYMBOL/SOURCE; FILES is SOURCE navigation grouping only; WHOLE_FILE requires SOURCE and exact file."
+                },
+                "ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "description": "Exact same-Work FLOW identities; no substring/file filters."
+                },
+                "expectedSnapshot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "expectedContextDigest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "anyOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SYMBOL"
+                    },
+                    "projection": {
+                      "const": "NAVIGATION"
+                    },
+                    "symbolContains": {}
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "enum": [
+                        "RAW",
+                        "NAVIGATION",
+                        "FILES"
+                      ]
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    },
+                    "file": {},
+                    "fileContains": {}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "SOURCE"
+                    },
+                    "projection": {
+                      "const": "WHOLE_FILE"
+                    },
+                    "file": {},
+                    "fileContains": {
+                      "const": ""
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "projection",
+                    "file"
+                  ]
+                },
+                {
+                  "properties": {
+                    "kind": {},
+                    "symbolContains": {},
+                    "projection": {
+                      "const": "RAW"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "FLOW"
+                    },
+                    "ids": {},
+                    "expectedSnapshot": {},
+                    "expectedContextDigest": {},
+                    "projection": {
+                      "const": "RAW"
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    }
+                  },
+                  "required": [
+                    "ids"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "SOURCE"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "symbolContains": {
+                    "const": ""
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "untrackedReads": {
+          "type": "boolean"
+        },
+        "projection": {
+          "enum": [
+            "CONTEXT",
+            "SOURCE_ROWS"
+          ],
+          "description": "SOURCE_ROWS requires tracked SOURCE references, no symbols or query. It returns source rows and source service coverage without narrative expansion."
+        }
+      },
+      "required": []
+    }
+  }
+}

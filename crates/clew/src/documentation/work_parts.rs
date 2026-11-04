@@ -73,7 +73,7 @@ pub(super) fn read_part_loaded(
 ) -> Result<Value, ClewError> {
     if request.schema != REQUEST_SCHEMA {
         return Err(invalid(
-            "unsupported source-part request schema; expected codeclew-documentation-source-part-request/1.0",
+            "unsupported source-part request schema; expected codeclew-documentation-source-part-request/1.0 with reference and optional cursor, no projection. source-part/1.0 is the response schema; see installed schemas/source-part-request.schema.json or clew docs work read-part --help",
         ));
     }
     if request.reference.is_empty() || request.reference.chars().count() > 256 {

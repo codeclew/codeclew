@@ -400,6 +400,7 @@ pub(super) fn collect_bounded(
     input_digest: &str,
     budget: Option<&super::process_extract::Budgets>,
 ) -> Result<Value, ClewError> {
+    let mut source_methods_by_name: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
     let mut methods_by_scope_symbol: BTreeMap<(&str, &str), Vec<&Observation>> = BTreeMap::new();
     let mut scopes_by_symbol: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut unscoped_methods_by_symbol: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
@@ -414,6 +415,15 @@ pub(super) fn collect_bounded(
         }
         match observation.kind.as_str() {
             "SYMBOL" if callable_observation(observation) => {
+                if observation.normalized["authority"] == "SYNTAX" {
+                    if let Some(name) = observation.normalized["name"].as_str() {
+                        source_methods_by_name
+                            .entry(name)
+                            .or_default()
+                            .push(observation);
+                    }
+                }
+
                 if let Some(scope) = graph_scope(observation) {
                     methods_by_scope_symbol
                         .entry((scope, observation.symbol.as_str()))
@@ -877,8 +887,23 @@ pub(super) fn collect_bounded(
                 .and_then(|link| link.normalized["targetMethodId"].as_str())
                 .and_then(|id| evidence.observations.get(id))
                 .filter(|o| o.normalized["libraryOrigin"].is_object());
+            let source_candidates = if flow.normalized["authority"] == "SYNTAX"
+                && flow.normalized["navigationAuthority"] == "DECLARED_NAME_ONLY_NOT_RESOLUTION"
+            {
+                flow.normalized["navigationName"]
+                    .as_str()
+                    .and_then(|name| source_methods_by_name.get(name))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+            } else {
+                &[]
+            };
             let (target_resolution, target_candidate) = if let Some(target) = library_target {
                 ("LIBRARY_SOURCE_CANDIDATE", Some(target))
+            } else if let [candidate] = source_candidates {
+                ("SOURCE_NAME_CANDIDATE", Some(*candidate))
+            } else if source_candidates.len() > 1 {
+                ("SOURCE_NAME_AMBIGUOUS", None)
             } else {
                 match target {
                     None => ("TARGET_IDENTITY_UNAVAILABLE", None),
@@ -970,6 +995,13 @@ pub(super) fn collect_bounded(
             if let Some(link) = library_link {
                 edge["relationshipAuthority"] = json!("DECLARED_SOURCE_BINDING");
                 edge["libraryContinuation"] = link.normalized.clone();
+            }
+            if flow.normalized["authority"] == "SYNTAX" && library_link.is_none() {
+                edge["relationshipAuthority"] = json!("NAVIGATION_ONLY");
+                edge["runtimeTarget"] = json!("UNKNOWN");
+                edge["candidateCount"] = json!(source_candidates.len());
+                edge["candidateMethodIds"] =
+                    json!(source_candidates.iter().map(|o| &o.id).collect::<Vec<_>>());
             }
             edges.push(edge);
         }
