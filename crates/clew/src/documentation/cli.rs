@@ -2437,6 +2437,7 @@ mod tests {
                     text: "try { helper(); } catch (RuntimeException ex) {}".into(),
                     evidence_digest: "call-binding-digest".into(),
                     authority: "CAPTURED_SOURCE".into(),
+                    library_origin: None,
                     text_origin: None,
                     occurrence: None,
                     url: None,

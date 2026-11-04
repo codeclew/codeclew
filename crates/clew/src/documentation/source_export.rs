@@ -188,6 +188,32 @@ pub(super) struct Projection<'a> {
     origins: BTreeMap<String, Vec<RepositoryMapping>>,
 }
 
+fn repository_mapping(
+    policy: &Policy,
+    binding: &super::model::Service,
+) -> Result<Option<RepositoryMapping>, ClewError> {
+    if let Some(mapping) = policy.repositories.get(&binding.repository_id) {
+        return Ok(Some(mapping.clone()));
+    }
+    if let Some(web) = &binding.source_web {
+        web.validate().map_err(invalid)?;
+        return Ok(Some(RepositoryMapping {
+            provider: web.provider.clone(),
+            web_base: links::web_base(&web.web_base).map_err(invalid)?,
+            origin: None,
+        }));
+    }
+    Ok(links::repository(&binding.repository)
+        .ok()
+        .and_then(|(base, provider)| {
+            provider.map(|p| RepositoryMapping {
+                provider: p.into(),
+                web_base: base,
+                origin: None,
+            })
+        }))
+}
+
 impl<'a> Projection<'a> {
     pub fn new(policy: &'a Policy, checked: &Check) -> Result<Self, ClewError> {
         let mut current = BTreeMap::new();
@@ -203,34 +229,16 @@ impl<'a> Projection<'a> {
                 };
                 // A failure applies only to exported records: unrelated selected
                 // services with no exported source need no repository mapping.
-                let mapping = if let Some(mapping) = policy.repositories.get(&binding.repository_id)
-                {
-                    Some(mapping.clone())
-                } else if let Some(web) = &binding.source_web {
-                    web.validate().map_err(invalid)?;
-                    Some(RepositoryMapping {
-                        provider: web.provider.clone(),
-                        web_base: links::web_base(&web.web_base).map_err(invalid)?,
-                        origin: None,
-                    })
-                } else {
-                    links::repository(&binding.repository)
-                        .ok()
-                        .and_then(|(base, provider)| {
-                            provider.map(|p| RepositoryMapping {
-                                provider: p.into(),
-                                web_base: base,
-                                origin: None,
-                            })
-                        })
-                };
-                if let Some(mapping) = mapping {
-                    for source in evidence.sources.values() {
+                for source in evidence.sources.values() {
+                    let library = super::library_projection::source_service(evidence, source)?;
+                    let binding = library.as_ref().unwrap_or(binding);
+                    let mapping = repository_mapping(policy, binding)?;
+                    if let Some(mapping) = mapping {
                         let value = serde_json::to_value(source).map_err(io_error)?;
                         if exact_source(&value) {
                             exact.insert(exact_key(&value));
                         }
-                        current.insert(key(&value), mapping.clone());
+                        current.insert(key(&value), mapping);
                     }
                 }
             }

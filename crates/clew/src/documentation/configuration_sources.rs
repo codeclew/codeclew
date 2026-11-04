@@ -84,6 +84,7 @@ pub(super) fn retain(
                     text.len(),
                 ))?,
                 authority: "EXACT_SNAPSHOT_TEXT".into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: Some(SourceOccurrence {
                     snapshot: snapshot.into(),

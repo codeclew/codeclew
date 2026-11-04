@@ -77,6 +77,7 @@ fn composer() -> Result<String, ClewError> {
             SCHEMA,
             include_str!("composition.rs"),
             include_str!("library_bindings.rs"),
+            include_str!("library_projection.rs"),
             include_str!("retained_contracts.rs"),
             include_str!("check.rs"),
             include_str!("entities.rs"),
@@ -122,9 +123,29 @@ pub(super) fn validate_parent_manifest(
             derived,
         )?;
     } else if digest(&parent.service_manifests)? != digest(&derived.service_manifests)? {
-        return Err(invalid(
-            "composition source evidence does not match its original capture parent",
-        ));
+        let mut services = parent
+            .service_manifests
+            .iter()
+            .map(|(id, capture)| Ok((id.clone(), cache::load_capture(repo, capture)?)))
+            .collect::<Result<BTreeMap<_, _>, ClewError>>()?;
+        super::library_projection::apply(repo, &value.inputs.library_bindings, &mut services)?;
+        if services.keys().ne(derived.service_manifests.keys()) {
+            return Err(invalid(
+                "composition library service selection differs from its original capture",
+            ));
+        }
+        for (id, expected) in &services {
+            let actual = cache::load_capture(repo, &derived.service_manifests[id])?;
+            if digest(expected)? != digest(&actual)?
+                || derived.service_manifests[id].cacheability
+                    != parent.service_manifests[id].cacheability
+                || derived.service_manifests[id].reason != parent.service_manifests[id].reason
+            {
+                return Err(invalid(
+                    "composition source evidence differs from the original capture and frozen library projection",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -234,6 +255,7 @@ fn derive(
             super::retained_contracts::refresh(&inputs.services, &mut services, selected)
         })
         .transpose()?;
+    super::library_projection::apply(repo, &inputs.library_bindings, &mut services)?;
     let mut checked = check::assemble(
         input_digest.clone(),
         services,

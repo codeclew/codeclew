@@ -67,7 +67,9 @@ impl<'a> Context<'a> {
     }
     pub(in crate::documentation::static_pages) fn valid_source(&self, source: &Source) -> bool {
         source.service == self.evidence.service
-            && source.revision == self.evidence.revision
+            && (source.revision == self.evidence.revision
+                || crate::documentation::library_projection::verify_source(self.evidence, source)
+                    .unwrap_or(false))
             && !source.authority.is_empty()
             && !source.evidence_digest.is_empty()
             && !source.text.is_empty()

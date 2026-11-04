@@ -22,6 +22,8 @@ analyzed with language/API 2.0 by the current engine; this is conditional analys
 not execution by the project's original compiler. Older installed releases need
 the corresponding product update before using these extensions.
 
+For a separately captured in-process Kotlin library, use the [explicit library source association](library-sources.md). Preserve its declared source/binary binding and the distinct authority of SOURCE callers and compiler-backed library bodies.
+
 ## Prepared SOURCE answers and maintenance
 
 Start directly at the [short prepared SOURCE entry](../README.md). It contains

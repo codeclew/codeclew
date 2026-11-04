@@ -1625,6 +1625,55 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             out.push_str(&format!("### {} {{#{}}}\n\n[Open the retained record and separate assessment](../notes/{id}--{}.mdx)\n\n", md(reading::note_title(note)), text(&note["id"]), text(&note["id"])));
         }
     }
+    if rows(&page["libraryContinuations"]).next().is_some() {
+        out.push_str("## Library continuations\n\nCandidate source continuations run inside this service. A declared source binding does not establish binary/source equivalence or runtime dispatch.\n\n");
+        for continuation in rows(&page["libraryContinuations"]) {
+            if continuation["status"] == "NOT_LINKED" {
+                out.push_str(&format!(
+                    "### {} · unavailable\n\n{}\n\n{}\n\n",
+                    md(text(&continuation["library"])),
+                    md(text(&continuation["reason"])),
+                    md(text(&continuation["nextAction"]))
+                ));
+                continue;
+            }
+            out.push_str(&format!(
+                "### {} → {} · candidate\n\n",
+                md(text(&continuation["caller"])),
+                md(text(&continuation["target"]))
+            ));
+            for method in rows(&continuation["methods"]) {
+                let mut body = String::new();
+                for source in rows(&method["sources"]) {
+                    body.push_str(&format!(
+                        "{} · revision {} · lines {}–{}\n\n",
+                        md(text(&source["file"])),
+                        md(text(&source["revision"])),
+                        source["startLine"],
+                        source["endLine"]
+                    ));
+                    if let Some(code) = source["text"].as_str() {
+                        body.push_str(&fence(code, "kotlin"));
+                    } else if let Some(url) = source["url"].as_str() {
+                        body.push_str(&format!("[Retained source]({url})\n\n"));
+                    }
+                }
+                out.push_str(&details(text(&method["name"]), &body));
+            }
+            let call_authority = if continuation["callAuthority"] == "SOURCE_SYNTAX" {
+                "source syntax"
+            } else {
+                "compiler-selected binary target"
+            };
+            let artifact_authority =
+                if continuation["artifactAuthority"] == "DECLARED_DEPENDENCY_NOT_RESOLVED" {
+                    "declared dependency"
+                } else {
+                    "resolved Gradle artifact"
+                };
+            out.push_str(&details("Evidence and limits",&format!("A call: {call_authority}. Dependency: {artifact_authority}. Library internals: retained compiler declarations. Source binding: declared. Runtime dispatch and source/binary equivalence are unverified.\n\n")));
+        }
+    }
     out.push_str(&reading::status(page));
     out.push_str("## Original operations\n\n");
     for op in rows(&page["operations"]) {
@@ -2754,6 +2803,19 @@ pub(super) fn project(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn library_continuation_mdx_keeps_candidate_and_independent_code_citations() {
+        let page = json!({"subject":"service:owned","title":"Owned","subtitle":"Owned library example","language":"en","sections":[],"notes":[],"operations":[],"libraryContinuations":[{"status":"CANDIDATE","caller":"handle","target":"decide","callAuthority":"SOURCE_SYNTAX","artifactAuthority":"DECLARED_DEPENDENCY_NOT_RESOLVED","methods":[{"name":"decide","sources":[{"file":"owned/Policy.kt","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","startLine":5,"endLine":8,"text":"if (amount < 0) return negative"}]}]}]});
+        let rendered = service_page(&page, "owned").unwrap();
+        assert!(rendered.contains("handle → decide · candidate"));
+        assert!(rendered.contains("<summary>decide</summary>"));
+        assert!(rendered.contains("owned/Policy.kt"));
+        assert!(rendered.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(rendered.contains("if (amount < 0) return negative"));
+        assert!(rendered.contains("A call: source syntax"));
+        assert!(rendered.contains("does not establish binary/source equivalence"));
+        assert!(!rendered.contains("<details open"));
+    }
     use super::*;
     #[test]
     fn secondary_evidence_renders_authored_markdown_and_preserves_exact_source() {

@@ -37,6 +37,7 @@ fn source(e: &ServiceEvidence, id: &str, text: &str) -> Source {
         text_digest: crate::canonical::hash_bytes(text.as_bytes()),
         evidence_digest: "compiler-receipt".into(),
         authority: "EXACT_SNAPSHOT_TEXT".into(),
+        library_origin: None,
         text_origin: None,
         occurrence: Some(SourceOccurrence {
             generated_origin: None,
@@ -234,6 +235,7 @@ fn add_local_cfg(
             text_digest: text_digest.clone(),
             evidence_digest: graph_binding.clone(),
             authority: owner_source.authority.clone(),
+            library_origin: None,
             text_origin: None,
             occurrence: None,
             url: owner_source.url.clone(),

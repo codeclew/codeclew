@@ -70,12 +70,18 @@ fn entry_roots(e: &ServiceEvidence, entry: &Entrypoint) -> Vec<String> {
 }
 pub(super) fn inventory(e: &ServiceEvidence) -> Result<Vec<Value>, ClewError> {
     let mut rows = Vec::new();
-    for o in e
-        .observations
-        .values()
-        .filter(|o| matches!(o.kind.as_str(), "SOURCE_SCOPE" | "CAPTURE_SCOPE"))
-    {
-        let mut summary = o.normalized.clone();
+    for o in e.observations.values().filter(|o| {
+        matches!(
+            o.kind.as_str(),
+            "SOURCE_SCOPE" | "CAPTURE_SCOPE" | "LIBRARY_SOURCE_SCOPE"
+        )
+    }) {
+        let mut summary = if o.kind == "LIBRARY_SOURCE_SCOPE" {
+            let b = &o.normalized["binding"];
+            json!({"role":"LIBRARY_SOURCE","binding":b["input"]["id"],"repositoryId":b["service"]["repositoryId"],"revision":b["capture"]["revision"],"compilation":b["input"]["library"]["compilation"],"authority":"DECLARED_SOURCE_BINDING","projection":"REACHED_CALLABLES_ONLY_NOT_WHOLE_LIBRARY_COVERAGE"})
+        } else {
+            o.normalized.clone()
+        };
         summary.as_object_mut().map(|o| o.remove("inventory"));
         summary.as_object_mut().map(|o| o.remove("excludedFiles"));
         rows.push(json!({"kind":"THREAD_SCOPE","id":o.id,"record":{"summary":summary,"dependencyIds":[o.id]}}));
@@ -201,12 +207,17 @@ pub(super) fn context(
             name_index.entry(name).or_default().push(o);
         }
     }
-    let graph = if syntax {
+    let graph = if syntax
+        && !e
+            .observations
+            .values()
+            .any(|o| o.kind == "LIBRARY_CONTINUATION")
+    {
         Value::Null
     } else {
         process_graph::collect_bounded(e, root, snapshot, input, Some(budget))?
     };
-    if !syntax {
+    if !graph.is_null() {
         queue = graph["methods"]
             .as_array()
             .into_iter()
@@ -293,13 +304,14 @@ pub(super) fn context(
             continue;
         }
         let method = &e.observations[&id];
+        let method_syntax = method.normalized["authority"] == "SYNTAX";
         let method_events: Vec<_> = flow_index
             .get(&(scope(method), method.symbol.as_str()))
             .into_iter()
             .flatten()
             .copied()
             .filter(|event| event.belongs_to_declaration(method))
-            .filter(|event| syntax || graph_events.contains(event.id.as_str()))
+            .filter(|event| method_syntax || graph_events.contains(event.id.as_str()))
             .collect();
         let effects: Vec<_> = effects_index
             .get(&(scope(method), method.symbol.as_str()))
@@ -331,7 +343,7 @@ pub(super) fn context(
                 .all(|id| e.sources.contains_key(id));
         rows.push(row("BODY",&id,json!({"declaration":id,"symbol":method.symbol,"sourceIds":method.source_ids,"dependencyIds":[id],
             "actionable":!source_available,"nextAction":"read complete retained declaration and source through these Work references; account for inputs, effects and outcomes",
-            "bodyStatus":method.normalized["documentation"]["bodyStatus"],"authority":if syntax{"SOURCE_BODY_NOT_CALL_RESOLUTION"}else{"RETAINED_COMPILER_DECLARATION_NOT_RUNTIME_DISPATCH"}})));
+            "bodyStatus":method.normalized["documentation"]["bodyStatus"],"authority":if method_syntax{"SOURCE_BODY_NOT_CALL_RESOLUTION"}else{"RETAINED_COMPILER_DECLARATION_NOT_RUNTIME_DISPATCH"}})));
         for boundary in e.observations.values().filter(|o| {
             o.kind == "PROVIDER_BOUNDARY"
                 && scope(o) == scope(method)
@@ -369,7 +381,10 @@ pub(super) fn context(
             ) {
                 continue;
             }
-            if syntax {
+            if method_syntax {
+                if super::library_projection::link(e, &event.id).is_some() {
+                    continue;
+                }
                 let hint = event.normalized["navigationName"].as_str();
                 let candidates = hint
                     .and_then(|name| name_index.get(name))

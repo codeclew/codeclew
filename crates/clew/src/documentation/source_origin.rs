@@ -289,6 +289,7 @@ mod tests {
                 text_digest: canonical::hash_bytes(exact.as_bytes()),
                 evidence_digest: canonical::hash_bytes(b"admitted compilation"),
                 authority: AUDIT.into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: None,
                 url: Some(format!(

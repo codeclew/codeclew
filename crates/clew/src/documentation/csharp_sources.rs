@@ -70,6 +70,7 @@ pub(super) fn project_file(
                 text_digest: blob.content_digest.clone(),
                 evidence_digest: binding.into(),
                 authority: "EXACT_SNAPSHOT_TEXT".into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: None,
                 url: None,

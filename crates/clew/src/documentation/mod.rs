@@ -46,6 +46,7 @@ mod kotlin;
 mod language;
 mod library_artifacts;
 mod library_bindings;
+mod library_projection;
 mod local_cfg;
 pub mod maintained_context;
 pub mod model;

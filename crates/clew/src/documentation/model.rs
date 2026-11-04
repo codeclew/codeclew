@@ -250,9 +250,19 @@ pub struct Source {
     /// Byte origin is independent of semantic/call-resolution authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_origin: Option<CommittedTextOrigin>,
+    /// Container service stays A; this records the independent library source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_origin: Option<LibrarySourceOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurrence: Option<SourceOccurrence>,
     pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LibrarySourceOrigin {
+    pub binding: String,
+    pub original_source_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

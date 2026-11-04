@@ -49,7 +49,7 @@ pub(super) fn run(
                 "--declaration must name an exact callable SYMBOL observation in service {service} and snapshot {handle}; use the exact retained SYMBOL observation ID"
             ))
         })?;
-    let _root_scope = exact_scope(root).ok_or_else(|| {
+    let _root_scope = graph_scope(root).ok_or_else(|| {
         invalid("selected declaration has no exact retained scope; choose a scoped callable observation")
     })?;
 
@@ -80,6 +80,13 @@ fn exact_scope(observation: &Observation) -> Option<&str> {
     observation.normalized["scope"]
         .as_str()
         .filter(|value| !value.trim().is_empty())
+}
+
+// Empty partition is available only for explicitly retained SOURCE syntax. It
+// never supplies compiler scope or target resolution.
+fn graph_scope(observation: &Observation) -> Option<&str> {
+    exact_scope(observation)
+        .or_else(|| (observation.normalized["authority"] == "SYNTAX").then_some(""))
 }
 
 pub(super) fn callable_observation(observation: &Observation) -> bool {
@@ -407,7 +414,7 @@ pub(super) fn collect_bounded(
         }
         match observation.kind.as_str() {
             "SYMBOL" if callable_observation(observation) => {
-                if let Some(scope) = exact_scope(observation) {
+                if let Some(scope) = graph_scope(observation) {
                     methods_by_scope_symbol
                         .entry((scope, observation.symbol.as_str()))
                         .or_default()
@@ -424,7 +431,7 @@ pub(super) fn collect_bounded(
                 }
             }
             "CALL_RELATION" => {
-                if let Some(scope) = exact_scope(observation) {
+                if let Some(scope) = graph_scope(observation) {
                     calls_by_scope_symbol
                         .entry((scope, observation.symbol.as_str()))
                         .or_default()
@@ -432,7 +439,7 @@ pub(super) fn collect_bounded(
                 }
             }
             "FLOW" => {
-                if let Some(scope) = exact_scope(observation) {
+                if let Some(scope) = graph_scope(observation) {
                     flows_by_scope_symbol
                         .entry((scope, observation.symbol.as_str()))
                         .or_default()
@@ -446,7 +453,7 @@ pub(super) fn collect_bounded(
             }
             "SYMBOL" if observation.normalized["declarationKind"] == "FIELD" => {
                 if let (Some(scope), Some(owner), Some(name)) = (
-                    exact_scope(observation),
+                    graph_scope(observation),
                     observation.normalized["ownerIdentity"].as_str(),
                     observation.normalized["name"].as_str(),
                 ) {
@@ -490,7 +497,7 @@ pub(super) fn collect_bounded(
             .get(method_id)
             .filter(|observation| callable_observation(observation))
             .ok_or_else(|| invalid("retained graph queue contained an unavailable method"))?;
-        let scope = exact_scope(method).ok_or_else(|| {
+        let scope = graph_scope(method).ok_or_else(|| {
             invalid("reachable method has no exact retained scope; graph cannot merge unscoped declarations")
         })?;
         let pending_calls = calls_by_scope_symbol
@@ -865,36 +872,45 @@ pub(super) fn collect_bounded(
             let target = flow.normalized["target"]
                 .as_str()
                 .filter(|value| !value.is_empty());
-            let (target_resolution, target_candidate) = match target {
-                None => ("TARGET_IDENTITY_UNAVAILABLE", None),
-                Some(target) => match methods_by_scope_symbol
-                    .get(&(scope, target))
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-                {
-                    [candidate]
-                        if unscoped_methods_by_symbol
+            let library_link = super::library_projection::link(evidence, &flow.id);
+            let library_target = library_link
+                .and_then(|link| link.normalized["targetMethodId"].as_str())
+                .and_then(|id| evidence.observations.get(id))
+                .filter(|o| o.normalized["libraryOrigin"].is_object());
+            let (target_resolution, target_candidate) = if let Some(target) = library_target {
+                ("LIBRARY_SOURCE_CANDIDATE", Some(target))
+            } else {
+                match target {
+                    None => ("TARGET_IDENTITY_UNAVAILABLE", None),
+                    Some(target) => match methods_by_scope_symbol
+                        .get(&(scope, target))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                    {
+                        [candidate]
+                            if unscoped_methods_by_symbol
+                                .get(target)
+                                .is_none_or(|methods| methods.is_empty()) =>
+                        {
+                            ("SAME_SCOPE_UNIQUE", Some(*candidate))
+                        }
+                        [_] => ("TARGET_SCOPE_ASSOCIATION_AMBIGUOUS", None),
+                        [] if scopes_by_symbol
                             .get(target)
-                            .is_none_or(|methods| methods.is_empty()) =>
-                    {
-                        ("SAME_SCOPE_UNIQUE", Some(*candidate))
-                    }
-                    [_] => ("TARGET_SCOPE_ASSOCIATION_AMBIGUOUS", None),
-                    [] if scopes_by_symbol
-                        .get(target)
-                        .is_some_and(|scopes| !scopes.is_empty()) =>
-                    {
-                        ("TARGET_ONLY_IN_OTHER_SCOPE", None)
-                    }
-                    [] if unscoped_methods_by_symbol
-                        .get(target)
-                        .is_some_and(|methods| !methods.is_empty()) =>
-                    {
-                        ("TARGET_SCOPE_UNAVAILABLE", None)
-                    }
-                    [] => ("EXTERNAL_OR_UNRETAINED_TARGET", None),
-                    _ => ("SAME_SCOPE_AMBIGUOUS", None),
-                },
+                            .is_some_and(|scopes| !scopes.is_empty()) =>
+                        {
+                            ("TARGET_ONLY_IN_OTHER_SCOPE", None)
+                        }
+                        [] if unscoped_methods_by_symbol
+                            .get(target)
+                            .is_some_and(|methods| !methods.is_empty()) =>
+                        {
+                            ("TARGET_SCOPE_UNAVAILABLE", None)
+                        }
+                        [] => ("EXTERNAL_OR_UNRETAINED_TARGET", None),
+                        _ => ("SAME_SCOPE_AMBIGUOUS", None),
+                    },
+                }
             };
             let (resolution, target_method, possible_target_method) = if association_ambiguous {
                 (
@@ -920,7 +936,25 @@ pub(super) fn collect_bounded(
                     "possibleTargetMethodId": possible_target_method.map(|target| &target.id),
                 }));
             }
-            edges.push(json!({
+            let mut dependency_ids = vec![flow.id.clone()];
+            if let Some(link) = library_link {
+                dependency_ids.push(link.id.clone());
+                if let Some(target) = target_method {
+                    dependency_ids.push(target.id.clone());
+                }
+                dependency_ids.extend(
+                    evidence
+                        .observations
+                        .values()
+                        .filter(|o| {
+                            o.kind == "LIBRARY_SOURCE_SCOPE"
+                                && o.normalized["binding"]["input"]["id"]
+                                    == link.normalized["binding"]
+                        })
+                        .map(|o| o.id.clone()),
+                );
+            }
+            let mut edge = json!({
                 "id": edge_id,
                 "kind": flow.normalized["kind"],
                 "fromMethodId": if association_ambiguous { Value::Null } else { json!(method.id) },
@@ -931,8 +965,13 @@ pub(super) fn collect_bounded(
                 "possibleTargetMethodId": possible_target_method.map(|target| &target.id),
                 "resolution": resolution,
                 "sourceIds": flow.source_ids,
-                "dependencyIds": [flow.id],
-            }));
+                "dependencyIds": dependency_ids,
+            });
+            if let Some(link) = library_link {
+                edge["relationshipAuthority"] = json!("DECLARED_SOURCE_BINDING");
+                edge["libraryContinuation"] = link.normalized.clone();
+            }
+            edges.push(edge);
         }
         method_frontiers.sort_by_key(|frontier| frontier.to_string());
         for frontier in &method_frontiers {
@@ -1581,6 +1620,7 @@ mod tests {
                 text_digest: "text-digest".into(),
                 evidence_digest: "evidence-digest".into(),
                 authority: "RETAINED_SOURCE".into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: None,
                 url: None,

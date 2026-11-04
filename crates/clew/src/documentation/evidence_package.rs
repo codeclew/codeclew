@@ -553,7 +553,13 @@ impl Package {
         }
         let mut seen = BTreeSet::new();
         for s in e.sources.values() {
-            verify_portable_source(s, &self.manifest.service, e.extractor == EXTRACTOR)?;
+            let library_service = super::library_projection::source_service(&e, s)?;
+            let source_service = library_service.as_ref().unwrap_or(&self.manifest.service);
+            verify_portable_source(
+                s,
+                source_service,
+                e.extractor == EXTRACTOR || s.library_origin.is_some(),
+            )?;
         }
         for o in e.observations.values() {
             if o.service != e.service || o.id.is_empty() || o.id.len() > 512 {

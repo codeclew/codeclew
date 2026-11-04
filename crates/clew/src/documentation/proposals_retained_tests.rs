@@ -39,6 +39,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
         text_digest: crate::canonical::hash_bytes(source_text.as_bytes()),
         evidence_digest: digest(&observation).unwrap(),
         authority: "TEST_FIXTURE".into(),
+        library_origin: None,
         text_origin: None,
         occurrence: None,
         url: None,

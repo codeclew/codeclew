@@ -2887,3 +2887,14 @@ if(process.env.CODECLEW_CROSS_FLOW_FIXTURE_INPUT_OUT){
   for(const [name,data] of Object.entries(cases))fs.writeFileSync(path.join(out,name+'.json'),JSON.stringify(data));
  }
 }
+
+test('library continuations stay candidates in service egress with compact escaped code details',()=>{
+ const data=fixture();data.sections.push({id:'section-egress',title:'Outgoing systems and storage',gap:'No authored explanation'});
+ data.libraryContinuations=[{status:'CANDIDATE',caller:'handle',target:'decide',library:'policy',callAuthority:'SOURCE_SYNTAX',artifactAuthority:'DECLARED_DEPENDENCY_NOT_RESOLVED',methods:[{name:'decide',sources:[{file:'owned/Policy.kt',revision:'b'.repeat(40),startLine:5,endLine:8,text:'if (amount < 0) return "<script>negative</script>"'}]}]}];
+ const before=JSON.stringify(data),r=load(data);r.run('showEntry("section-egress")');const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Library continuations/);assert.match(html,/handle → decide/);assert.match(html,/class="badge">candidate/);
+ assert.match(html,/A call: source syntax/);assert.match(html,/Dependency: declared dependency/);assert.match(html,/Binary\/source equivalence and runtime dispatch are unverified/);
+ assert.match(html,/<details><summary>decide<\/summary>/);assert.doesNotMatch(html,/<details open><summary>decide/);
+ assert.match(html,/&lt;script&gt;negative&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>negative/);
+ assert.doesNotMatch(html,/owned\.unreachable/);assert.equal(JSON.stringify(data),before);
+});

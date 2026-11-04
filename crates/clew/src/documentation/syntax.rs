@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     time::{Duration, Instant},
 };
@@ -594,6 +594,7 @@ impl File<'_> {
                     "EXACT_SNAPSHOT_TEXT"
                 }
                 .into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: Some(SourceOccurrence {
                     generated_origin: self.generated_origin.map(str::to_owned),
@@ -806,6 +807,7 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
     let mut stack = vec![(root, vec![], 0usize)];
     let mut declarations = Vec::new();
     let mut details = Vec::new();
+    let mut kotlin_bindings = BTreeSet::new();
     let mut visited = 0;
     while let Some((node, owners, depth)) = stack.pop() {
         visited += 1;
@@ -815,6 +817,26 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
         let name = node
             .child_by_field_name("name")
             .map(|n| spelling(n, file.text).to_owned());
+        if file.service.language == "kotlin"
+            && (callable(node.kind())
+                || class(node.kind())
+                || matches!(
+                    node.kind(),
+                    "parameter"
+                        | "function_value_parameter"
+                        | "class_parameter"
+                        | "variable_declaration"
+                        | "property_declaration"
+                ))
+        {
+            if let Some(name) = node.child_by_field_name("name").or_else(|| {
+                children(node)
+                    .into_iter()
+                    .find(|n| n.kind() == "identifier")
+            }) {
+                kotlin_bindings.insert(spelling(name, file.text).to_owned());
+            }
+        }
         let mut nested = owners.clone();
         if file.service.language == "typescript"
             && owners.is_empty()
@@ -947,6 +969,13 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     let event_identity = format!("{identity}/event/{index}");
                     let source = file.source(e, &event_identity, n.start_byte(), n.end_byte())?;
                     let mut event = json!({"kind":kind,"syntaxKind":n.kind(),"authority":"SYNTAX","ordering":"LEXICAL_ONLY","text":spelling(n,file.text),"fingerprint":fingerprint(n,file.text)?,"targetStatus":"UNRESOLVED","ordinal":index,"parentOrdinal":parent,"nestingDepth":depth});
+                    if kind == "CALL" && file.service.language == "kotlin" {
+                        if let Some(candidate) =
+                            kotlin_library_candidate(n, file.text, &kotlin_bindings)
+                        {
+                            event["libraryCallCandidate"] = candidate;
+                        }
+                    }
                     if kind == "CALL" && file.service.language == "java" {
                         if let Some(name) = n
                             .child_by_field_name("name")
@@ -1076,6 +1105,42 @@ pub(super) fn project_source_framework(
     }
     entry.boundaries.sort();
     entry.boundaries.dedup();
+}
+
+/// Lexical spelling only. Import/owner/overload admission happens separately;
+/// file-wide shadowing is deliberately conservative for this bounded path.
+fn kotlin_library_candidate(
+    node: Node<'_>,
+    text: &str,
+    bindings: &BTreeSet<String>,
+) -> Option<Value> {
+    let nodes = children(node);
+    let callee = nodes.first()?;
+    if callee.kind() != "navigation_expression" {
+        return None;
+    }
+    let spelling = spelling(*callee, text);
+    let (receiver, name) = spelling.rsplit_once('.')?;
+    let identifier = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .enumerate()
+                .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || i > 0 && b.is_ascii_digit())
+    };
+    if !identifier(name) || !receiver.split('.').all(identifier) {
+        return None;
+    }
+    let arguments = nodes.iter().find(|n| n.kind() == "value_arguments")?;
+    if nodes
+        .iter()
+        .any(|n| n.kind() == "annotated_lambda" || n.kind() == "type_arguments")
+    {
+        return None;
+    }
+    Some(
+        json!({"name":name,"receiver":receiver,"argumentCount":children(*arguments).len(),
+        "shadowedReceiver":bindings.contains(receiver.split('.').next()?),"authority":"LEXICAL_SPELLING_NOT_RESOLUTION"}),
+    )
 }
 
 fn event_kind(node: Node<'_>) -> Option<&'static str> {
@@ -1302,6 +1367,46 @@ mod tests {
     fn service(language: &str) -> Service {
         serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":language,"profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":if language=="kotlin"{"1.9"}else{"declared"}}})).unwrap()
     }
+    #[test]
+    fn kotlin_library_call_spelling_is_bounded_and_shadowing_is_not_resolution() {
+        for (text, shadowed) in [
+            (
+                "package owned\nimport owned.library.Policy\nclass Service { fun handle(amount: Int): String { return Policy.decide(amount) } }",
+                false,
+            ),
+            (
+                "package owned\nimport owned.library.Policy\nclass Service { fun handle(Policy: Other, amount: Int): String { return Policy.decide(amount) } }",
+                true,
+            ),
+        ] {
+            let e = fixture("kotlin", text);
+            let calls = e
+                .observations
+                .values()
+                .filter(|o| o.kind == "FLOW" && o.normalized["kind"] == "CALL")
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].normalized["libraryCallCandidate"]["name"],
+                "decide"
+            );
+            assert_eq!(
+                calls[0].normalized["libraryCallCandidate"]["receiver"],
+                "Policy"
+            );
+            assert_eq!(
+                calls[0].normalized["libraryCallCandidate"]["shadowedReceiver"],
+                shadowed
+            );
+            assert_eq!(
+                calls[0].normalized["libraryCallCandidate"]["argumentCount"],
+                1
+            );
+            assert_eq!(calls[0].normalized["targetStatus"], "UNRESOLVED");
+            assert!(calls[0].normalized.get("target").is_none());
+        }
+    }
+
     #[test]
     fn kotlin_whole_file_shared_text_budget_refuses_before_mutating_evidence() {
         let selected = service("kotlin");
@@ -1816,6 +1921,7 @@ export async function start() {
                 text_digest: canonical::hash_bytes(contract_source.as_bytes()),
                 evidence_digest: "retained-contract".into(),
                 authority: "DECLARED_CONTRACT".into(),
+                library_origin: None,
                 text_origin: None,
                 occurrence: None,
                 url: None,

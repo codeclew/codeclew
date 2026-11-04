@@ -804,6 +804,7 @@ mod tests {
             text_digest: "sha256:stored-text-digest".into(),
             evidence_digest: "sha256:stored-evidence-digest".into(),
             authority: "CAPTURED_SOURCE".into(),
+            library_origin: None,
             text_origin: None,
             occurrence: Some(SourceOccurrence {
                 generated_origin: None,

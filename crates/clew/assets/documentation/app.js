@@ -238,6 +238,12 @@ function serviceDeclaredEgress(){
   return chromeHtml`<li><a href="${esc(href)}">${esc(node?.label||id)}</a>: ${esc(e.title)} · ${esc(e.transport?.kind||'unknown')}<details><summary>Declaration and source checks</summary><pre>${pretty(e)}</pre></details></li>`;
  }).join('')}</ul></section>`;
 }
+function libraryContinuationsCard(){
+ const rows=D.libraryContinuations||[];
+ if(!rows.length)return '';
+ return chromeHtml`<section class="library-continuations"><h3>Library continuations</h3><p>Candidate source continuations run inside this service.</p>${rows.map(row=>row.status==='NOT_LINKED'?chromeHtml`<article class="gap-card"><h4>${esc(row.library)} · unavailable</h4><p>${esc(row.reason)}</p><p>${esc(row.nextAction||'Select the matching artifact and library capture, then recompose.')}</p></article>`:chromeHtml`<article><h4>${esc(row.caller||'Call')} → ${esc(row.target)} <span class="badge">candidate</span></h4>${(row.methods||[]).map(method=>chromeHtml`<details><summary>${esc(method.name)}</summary>${(method.sources||[]).map(source=>chromeHtml`<p>${esc(source.file)} · lines ${esc(source.startLine)}–${esc(source.endLine)} · revision ${esc(source.revision)}</p>${source.text?chromeHtml`<pre><code>${esc(source.text)}</code></pre>`:source.url?chromeHtml`<p><a href="${esc(source.url)}">Retained source</a></p>`:''}`).join('')}</details>`).join('')}<details><summary>Evidence and limits</summary><p>A call: ${row.callAuthority==='SOURCE_SYNTAX'?'source syntax':'compiler-selected binary target'}. Dependency: ${row.artifactAuthority==='DECLARED_DEPENDENCY_NOT_RESOLVED'?'declared dependency':'resolved Gradle artifact'}. Library internals: retained compiler declarations. Source binding: declared.</p><p>Binary/source equivalence and runtime dispatch are unverified.</p></details></article>`).join('')}</section>`;
+}
+
 const serviceSectionOrder=['section-overview','section-responsibilities','section-entities','section-ingress','section-egress'];
 function profileSummary(owner,accepted){
  return chromeHtml`<div class="profile-summary clew-markdown">${prose(accepted.text)}</div>${button(accepted.sourceIds,t('Supporting code'),false,owner.id)}`;
@@ -1123,7 +1129,7 @@ function showEntry(id,nextTab='sequence'){collapseSequence(false,false);httpCopy
   if(e.id==='section-ingress')detail=ingressComparison(inventory,D.contracts);
   if(e.id==='section-overview')detail=serviceProfile()+(processCatalogVisible?chromeHtml`<section class="profile-processes"><h3>${esc(t(showInternalProcesses?'Internal processes and selected diagrams':'Saved processes'))}</h3>${visualRows().length?'':chromeHtml`<p class="profile-gap">No typed process diagram has been accepted in this publication.</p>`}<p>Browse maintained processes and structural candidates with their authoring status. A local fragment is not automatically an entry-to-outgoing-call scenario.</p><p><button class="source-link" data-entry="process-catalog">${esc(t(showInternalProcesses?'Explore internal processes →':'Open saved processes →'))}</button></p></section>`:'')+visualPreview()+chromeHtml`<details class="profile-discovery"><summary>Source inventory and coverage</summary><div class="coverage-grid"><div class="metric"><b>${(inventory.publicBoundaries||[]).length}</b><p>discovered public boundaries</p></div><div class="metric"><b>${inventory.internalCallableCount??(inventory.internalCallables||[]).length}</b><p>internal callable evidence records</p></div></div><p>Internal callable inventory does not establish public API exposure.</p></details>`;
   if(e.id==='section-ingress'||e.id==='section-overview')detail=serviceTopicBoundaries('incoming')+detail;
-  if(e.id==='section-egress')detail=groupedEgress()+serviceTopicBoundaries('outgoing')+detail;
+  if(e.id==='section-egress')detail=groupedEgress()+libraryContinuationsCard()+serviceTopicBoundaries('outgoing')+detail;
   detail+=sourcePayloadViews(e);
 
   if(['section-entities','section-egress'].includes(e.id)){

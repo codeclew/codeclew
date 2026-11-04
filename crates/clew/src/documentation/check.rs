@@ -364,6 +364,7 @@ fn capture_selected_with(
     if input_digest != repository.input_digest()? {
         return Err(invalid("documentation input changed during checking"));
     }
+    super::library_projection::apply(repository, &inputs.library_bindings, &mut evidence)?;
     let mut checked = assemble(
         input_digest.clone(),
         evidence,
@@ -2615,6 +2616,7 @@ mod tests {
                     text: "void process() { return; }".into(),
                     evidence_digest: "fixture".into(),
                     authority: "EXACT_SNAPSHOT_TEXT".into(),
+                    library_origin: None,
                     text_origin: None,
                     occurrence: None,
                     url: None,

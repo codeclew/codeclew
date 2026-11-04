@@ -1205,6 +1205,7 @@ mod tests {
             text_digest: canonical::hash_bytes(b"return reserve();"),
             evidence_digest: canonical::hash_bytes(b"evidence"),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            library_origin: None,
             text_origin: None,
             occurrence: None,
             url: None,

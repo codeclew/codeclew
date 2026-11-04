@@ -2078,7 +2078,7 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"operationExternalCalls":operation_external_calls,"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).map(|interaction| {
+    json!({"libraryContinuations":service_id.and_then(|id|checked.services.get(id)).map(super::library_projection::page).unwrap_or_else(||json!([])),"operationExternalCalls":operation_external_calls,"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).map(|interaction| {
         let mut row = json!(interaction);
         row["declaration"] = checked.dependencies.get(&format!("interaction:{}", interaction.id))
             .filter(|dependency| dependency.kind == "DECLARED_INTERACTION")
@@ -6346,6 +6346,7 @@ public void checkout() {
             text_digest: "d".into(),
             evidence_digest: "d".into(),
             authority: "TRANSFORMED_SOURCE".into(),
+            library_origin: None,
             text_origin: None,
             occurrence: None,
             url: None,
@@ -6384,6 +6385,7 @@ public void checkout() {
             text_digest: "other-d".into(),
             evidence_digest: "other-d".into(),
             authority: "TEST".into(),
+            library_origin: None,
             text_origin: None,
             occurrence: None,
             url: None,
@@ -6473,6 +6475,7 @@ public void checkout() {
             text_digest: "checkout-text-digest".into(),
             evidence_digest: "checkout-evidence-digest".into(),
             authority: "RETAINED_SOURCE_NOT_REVERIFIED".into(),
+            library_origin: None,
             text_origin: None,
             occurrence: None,
             url: None,

@@ -22,6 +22,8 @@ pub struct Input {
     pub schema: String,
     pub id: String,
     pub consumer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_revision: Option<String>,
     /// Empty only for SOURCE_SYNTAX; never stands for a compiler wildcard.
     pub consumer_compilation: String,
     /// Exact retained artifact row for compiler A; declared coordinates/hash for SOURCE A.
@@ -66,6 +68,7 @@ fn coordinates(value: &Value) -> Result<(), ClewError> {
     Ok(())
 }
 fn validate_input(v: &Input) -> Result<(), ClewError> {
+    let source = v.consumer_compilation.is_empty();
     if v.schema != INPUT_SCHEMA
         || !store::valid_id(&v.id)
         || !store::valid_id(&v.consumer)
@@ -79,9 +82,15 @@ fn validate_input(v: &Input) -> Result<(), ClewError> {
         || v.library.compilation.len() > 512
         || v.library.revision.len() != 40
         || !v.library.revision.bytes().all(|b| b.is_ascii_hexdigit())
-        || !super::library_artifacts::is_digest(v.artifact["contentDigest"].as_str().unwrap_or(""))
-        || !v.artifact["variant"].is_object()
-        || v.artifact["size"].as_u64().is_none()
+        || v.consumer_revision
+            .as_ref()
+            .is_some_and(|r| r.len() != 40 || !r.bytes().all(|b| b.is_ascii_hexdigit()))
+        || (!source || !v.artifact["contentDigest"].is_null())
+            && !super::library_artifacts::is_digest(
+                v.artifact["contentDigest"].as_str().unwrap_or(""),
+            )
+        || (!source || !v.artifact["variant"].is_null()) && !v.artifact["variant"].is_object()
+        || (!source || !v.artifact["size"].is_null()) && v.artifact["size"].as_u64().is_none()
     {
         return Err(invalid(
             "LIBRARY_BINDING_INVALID: explicit pinned artifact, repository, revision, compilation and declared rationale required",
@@ -105,6 +114,7 @@ pub(super) fn validate(v: &Binding) -> Result<(), ClewError> {
         || v.capture.service != s.service
         || v.capture.revision != s.revision
         || v.capture.service_digest != digest(&v.service)?
+        || v.capture.extractor != EXTRACTOR
         || v.service.profile != "kotlin-jvm-gradle-analysis"
         || v.service.language != "kotlin"
         || !v.service.compilations.contains(&s.compilation)
@@ -146,6 +156,11 @@ pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result
             ));
         }
         let a = &inputs.services[&b.input.consumer];
+        if a.language != "kotlin" {
+            return Err(invalid(
+                "LIBRARY_CONSUMER_LANGUAGE_UNSUPPORTED: this library association path supports Kotlin consumers",
+            ));
+        }
         if a.repository_id == b.service.repository_id || a.repository == b.service.repository {
             return Err(invalid(
                 "library source must have an independent repository identity",
@@ -164,6 +179,11 @@ pub(super) fn admit(
 ) -> Result<(), ClewError> {
     validate_input(input)?;
     analysis::verify_evidence(b)?;
+    if b.extractor != EXTRACTOR {
+        return Err(invalid(
+            "LIBRARY_COMPILER_CAPTURE_REQUIRED: source syntax is not a compiler B capture",
+        ));
+    }
     let c = &input.artifact["coordinates"];
     let publications = b
         .observations
@@ -181,7 +201,12 @@ pub(super) fn admit(
             "LIBRARY_PUBLICATION_MISMATCH: artifact coordinates/version do not match a publication declaration in the selected B compilation; capture the corresponding version",
         ));
     }
-    if a.extractor == SOURCE_EXTRACTOR && a.coverage == "SYNTAX" {
+    if a.extractor == SOURCE_EXTRACTOR {
+        if input.consumer_revision.as_deref() != Some(a.revision.as_str()) {
+            return Err(invalid(
+                "LIBRARY_SOURCE_CONSUMER_REVISION_MISMATCH: explicitly review and pin the dependency declaration to this SOURCE capture revision; no A build resolution is implied",
+            ));
+        }
         if !input.consumer_compilation.is_empty() {
             return Err(invalid(
                 "SOURCE library binding cannot claim a compiler compilation",
@@ -248,7 +273,7 @@ pub(super) fn import(
         || evidence
             .sources
             .values()
-            .any(|s| s.revision != evidence.revision)
+            .any(|s| s.revision != evidence.revision || s.library_origin.is_some())
     {
         return Err(invalid(
             "LIBRARY_ORIGINAL_CAPTURE_REQUIRED: select B's independent original compiler capture",
@@ -257,7 +282,14 @@ pub(super) fn import(
     let (origin_digest, size) = library_snapshot
         .rsplit_once('/')
         .ok_or_else(|| invalid("invalid B snapshot identity"))?;
-    let capture = cache::store_capture(repo, evidence)?;
+    let mut capture = cache::store_capture(repo, evidence)?;
+    let original = Check::load_snapshot_manifest(library_repo, library_snapshot)?;
+    let original = original
+        .service_manifests
+        .get(&input.library.service)
+        .ok_or_else(|| invalid("original B capture manifest missing"))?;
+    capture.cacheability = original.cacheability.clone();
+    capture.reason = original.reason.clone();
     let binding = Binding {
         schema: SCHEMA.into(),
         input,
@@ -275,7 +307,15 @@ pub(super) fn import(
 /// Public artifact rows are bounded provenance, not source-to-binary claims.
 pub(super) fn dependency_rows(e: &ServiceEvidence) -> Vec<Value> {
     e.observations.values().filter(|o| matches!(o.kind.as_str(),"DEPENDENCY_ARTIFACT"|"LIBRARY_PUBLICATION"))
-        .map(|o|json!({"id":o.id,"kind":o.kind,"compilation":o.normalized["scope"],"record":o.normalized})).collect()
+        .map(|o|{
+            let artifact=if o.kind=="DEPENDENCY_ARTIFACT" {
+                let mut artifact=o.normalized.clone();
+                artifact.as_object_mut().unwrap().remove("scope");
+                artifact.as_object_mut().unwrap().remove("evidenceBinding");
+                artifact
+            } else {Value::Null};
+            json!({"id":o.id,"kind":o.kind,"compilation":o.normalized["scope"],"artifact":artifact,"record":o.normalized})
+        }).collect()
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -422,7 +462,7 @@ mod tests {
     fn setup() -> (Input, ServiceEvidence, ServiceEvidence) {
         let hash = format!("sha256:{}", "a".repeat(64));
         let artifact = json!({"id":format!("classpath:0:{hash}"),"classpathIndex":0,"fileName":"library.jar","contentDigest":hash,"size":100,"coordinates":{"group":"owned","name":"library","version":"1.0.0","extension":"jar","classifier":null,"scope":"compileClasspath"},"variant":{"org.gradle.usage":"java-api"},"authority":"GRADLE_RESOLVED_COMPONENT_ARTIFACT","classpathAuthority":"KOTLIN_TASK_LIBRARIES"});
-        let input=Input{schema:INPUT_SCHEMA.into(),id:"owned-library".into(),consumer:"application".into(),consumer_compilation:":/main".into(),artifact:artifact.clone(),library:LibrarySelection{service:"library".into(),repository_id:"owned-library".into(),repository:"https://github.com/example/owned-library.git".into(),revision:"b".repeat(40),compilation:":/main".into()},authority:AUTHORITY.into(),rationale:"Owner explicitly associates this compiler source capture; no binary equivalence attestation.".into()};
+        let input=Input{schema:INPUT_SCHEMA.into(),id:"owned-library".into(),consumer:"application".into(),consumer_revision:None,consumer_compilation:":/main".into(),artifact:artifact.clone(),library:LibrarySelection{service:"library".into(),repository_id:"owned-library".into(),repository:"https://github.com/example/owned-library.git".into(),revision:"b".repeat(40),compilation:":/main".into()},authority:AUTHORITY.into(),rationale:"Owner explicitly associates this compiler source capture; no binary equivalence attestation.".into()};
         let mut a = ServiceEvidence {
             schema: "codeclew-documentation-service-evidence/1.0".into(),
             service: "application".into(),
@@ -475,6 +515,7 @@ mod tests {
     fn declared_association_requires_exact_compiler_artifact_and_publication() {
         let (input, a, b) = setup();
         admit(&input, &a, &b).unwrap();
+        assert_eq!(dependency_rows(&a)[0]["artifact"], input.artifact);
         for field in ["contentDigest", "variant", "coordinates", "id", "size"] {
             let mut bad = input.clone();
             bad.artifact[field] = match field {
@@ -506,7 +547,12 @@ mod tests {
         a.observations.clear();
         assert!(admit(&input, &a, &b).is_err());
         input.consumer_compilation.clear();
+        input.consumer_revision = Some(a.revision.clone());
+        input.artifact = json!({"coordinates":input.artifact["coordinates"]});
         admit(&input, &a, &b).unwrap();
+        let mut stale = input.clone();
+        stale.consumer_revision = Some("d".repeat(40));
+        assert!(admit(&stale, &a, &b).is_err());
         let mut other = b.clone();
         other.revision = "c".repeat(40);
         input.library.revision = other.revision.clone();
