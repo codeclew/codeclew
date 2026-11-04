@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,6 +31,22 @@ def run_skill(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def unresolved_markdown_links(root: Path, document: Path) -> list[str]:
+    # Entry-point prose only: example code fences do not declare package links.
+    prose = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", document.read_text())
+    missing = []
+    for target in re.findall(r"\[[^\]\n]+\]\(([^)\s]+)\)", prose):
+        if re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
+            continue
+        path = target.split("#", 1)[0]
+        if not path:
+            continue
+        resolved = (document.parent / path).resolve()
+        if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+            missing.append(target)
+    return missing
+
+
 class AgentSkillTest(unittest.TestCase):
     def test_repository_discovery_copies_match_canonical_package(self) -> None:
         for root in [
@@ -41,6 +58,26 @@ class AgentSkillTest(unittest.TestCase):
                     (root / relative).read_bytes(),
                     (CANONICAL_SKILL / relative).read_bytes(),
                 )
+
+    def test_portable_entrypoint_links_resolve_after_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            copied = Path(value) / "codeclew"
+            shutil.copytree(CANONICAL_SKILL, copied)
+            for relative in ["SKILL.md", "README.md", "references/compose-original.md",
+                             "references/authoring-example.md", "references/service-documentation.md",
+                             "references/task-oriented-readers.md", "examples/markdown-renderer/README.md"]:
+                self.assertEqual(unresolved_markdown_links(copied, copied / relative), [], relative)
+
+    def test_relative_reader_link_uses_its_document_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            (root / "references").mkdir()
+            (root / "references/task-oriented-readers.md").write_text("# Reader tasks")
+            entry = root / "SKILL.md"
+            entry.write_text("[Reader tasks](task-oriented-readers.md)")
+            self.assertEqual(unresolved_markdown_links(root, entry), ["task-oriented-readers.md"])
+            entry.write_text("[Reader tasks](references/task-oriented-readers.md#four-reader-tasks)")
+            self.assertEqual(unresolved_markdown_links(root, entry), [])
 
     def test_finder_metadata_does_not_change_package_identity(self) -> None:
         import importlib.util

@@ -1,6 +1,10 @@
 # Source-bound authoring example
 
-Start with proposal input, not a materialized Narrative. Replace each uppercase
+This reference is for explicitly requested native Work/proposal/coordinator
+results. Broad service/process documentation defaults to the
+[human-page route](compose-original.md#frozen-source-to-reviewed-pages), including
+after new-repository registration/capture. Historical native rendering remains
+supported when requested. For native proposals, start with proposal input, not a materialized Narrative. Replace each uppercase
 reference with one returned and read in the current Work. The fixture in
 `fixtures/durable-docs` and its CLI regression provide an executable example;
 these placeholders are not executable evidence.

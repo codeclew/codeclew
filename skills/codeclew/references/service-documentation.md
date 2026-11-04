@@ -2,6 +2,13 @@ For domain, egress, field lineage and compact process UX, apply the existing wor
 
 # Durable service documentation
 
+For a broad generate/update documentation request, use the
+[human-page route](compose-original.md#frozen-source-to-reviewed-pages). This reference
+provides source registration/capture and explicitly requested native deliverables.
+After acquiring a new repository, return to human-page authoring; a missing root
+is not a reason to default to native catalogue/Work output. Existing frozen inputs
+are reused without another capture. Historical `docs render` remains supported.
+
 Use this workflow for a separate documentation repository with per-service pages,
 a root overview and named interaction slices. Scenario traversal admits up to
 eight selected services and declared HTTP/Kafka interactions. Compiler profiles
@@ -28,10 +35,14 @@ For a separately captured in-process Kotlin library, use the [explicit library s
 
 Start directly at the [short prepared SOURCE entry](../README.md). It contains
 all three maintenance cases and the local bounded-packet helper. Do not load this
-full reference for a ready snapshot or a saved answer. Use the sections below only
+full reference for a bounded SOURCE question with a ready snapshot or saved answer. Use the sections below only
 when registration, source capture or durable documentation work is requested.
 
 ## Authoring start route
+
+The following Work/proposal/coordinator steps serve explicitly requested native
+deliverables. For ordinary reader documentation, return to the human-page route
+above and its requested-scope completion check.
 
 For source-scope inventory, continuation candidates and resumable per-entry
 explanation accounting, use the [thread preparation route](thread-preparation.md).
@@ -71,8 +82,8 @@ After `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS`, local publication can use
 `clew docs proposal publish --root ROOT --proposal PROPOSAL_ID --unassessed`.
 It preserves `UNASSESSED` meaning review and returns the publication to inspect.
 
-Instruction-level example: "Document this operation" uses the normal route;
-"Document this operation, debug=true" uses the same route and decisions, adding
+Instruction-level example: "Prepare a native proposal for this operation" uses this route;
+adding "debug=true" keeps the same route and decisions, adding
 only sanitized scope, Work identity, native status, diagnostics and completed
 checks to a local record outside the installed skill. A `NEEDS_REPAIR` result
 still blocks publication in both modes. This is assistant reporting, not a CLI

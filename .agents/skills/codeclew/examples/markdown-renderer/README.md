@@ -1,10 +1,13 @@
 # Trusted Markdown renderer example
 
-This optional reader uses the canonical Codeclew colors, typography and cat
+This is the default local preview for ordinary human-page documentation requests
+without a caller-selected renderer or theme. It uses the canonical Codeclew colors, typography and cat
 artwork around ordinary Markdown. Human page titles, an active page menu and
 keyboard-scrollable tables make the same authored content easier to read. It
 uses Node.js 20 or later and the pinned `marked` 16.4.2 dependency, not a
-new default renderer or a replacement for native HTML/MDX/Docusaurus workflows.
+new rendering engine or a replacement for explicitly selected native
+HTML/MDX/Docusaurus workflows. It renders plain Markdown, not native MDX components;
+installation and trusted argv selection remain explicit.
 
 Copy this directory to your own tooling directory before installing dependencies:
 

@@ -1,7 +1,9 @@
 # Task-oriented documentation authoring and review
 
-Use the existing evidence collection, Work proposal, validation and publication
-workflow. This checklist changes the reader outcome, not the approval lifecycle.
+Apply this checklist to the [default human-page route](compose-original.md#frozen-source-to-reviewed-pages)
+and its requested-scope completion check. Explicit native Work/proposal outputs
+keep their existing validation/publication workflow. This checklist evaluates the
+reader outcome; it does not create a new approval lifecycle.
 Draft missing semantic content with the assigned author model. Keep independent
 review separate from authorship. Never turn a protocol PASS, object count or
 non-overlapping screenshot into semantic or UX acceptance.

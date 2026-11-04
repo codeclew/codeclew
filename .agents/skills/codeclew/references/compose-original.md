@@ -2,10 +2,30 @@
 
 ## Frozen source to reviewed pages
 
-When the caller supplies a frozen root/service/snapshot and requests human pages,
-use one installed CODECLEW_SKILL_DIR and the admitted CLEW launcher. Keep a running
-experiment on its admitted runtime. Native Work/proposal deliverables, capture,
-registration and bounded SOURCE Q&A keep their existing routes in SKILL.md.
+This is the default route for broad service/process documentation requests and
+updates. Author reader-facing Markdown through the existing original-fragment, bind and
+export commands, with a checked local HTML/standalone preview. Explicit MDX or
+Docusaurus requests keep their existing selected export route. Interaction
+is optional. Essential purpose, behavior and failures are visible immediately;
+source, provenance and technical detail are secondary.
+
+Resolve one installed CODECLEW_SKILL_DIR and admitted CLEW launcher. For a new
+repository, use [supported registration and capture](service-documentation.md#start-or-recover)
+first, then return here with the resulting root/service/snapshot. For an existing
+frozen root, reuse its retained evidence without recapture. The presence or absence
+of those arguments does not select a different documentation result.
+
+A loose HTML directory or copied bindings manifest is not an original frozen root.
+Reuse requires the original root or a complete supported export/recovery route,
+including its declared evidence object closure and required Work state. If missing,
+name that missing input and leave authoring blocked; do not reconstruct proof from
+HTML, inspect private stores or silently recapture source. Preserve the original
+publication, texts and provenance; write the new human pages separately.
+
+Bounded SOURCE Q&A, explicitly requested native Work/proposal/coordinator output
+and historical native `docs render` keep their routes in [SKILL.md](../SKILL.md).
+Keep a running experiment on its admitted runtime. A skill-only delta is not a new
+runtime release: record the installed version and exact selected skill identity.
 
 Source facts MUST come through supported APIs. Use the supplied frozen root;
 do not clone it again. Failure is not permission to bypass clew with shell/file
@@ -213,6 +233,37 @@ without repetitive disclaimers or reviewer checklists in human pages.
 When the retained source contradicts the draft, rewrite the contradicted visible
 claim before READY; adding a generic caveat does not repair the claim.
 
+## Requested-scope completion
+
+Before reporting DONE, compare the actual request with the rendered reader pages.
+For broad service/process documentation, account for the requested surfaces:
+
+- Purpose, responsibilities, scope and useful reading order.
+- Threads from trigger/input through local helpers, consequential branches,
+  effects, failures and outcomes; supported continuations must be explained.
+- Domain concepts and individual field tables with exact identifiers, types,
+  nesting/requiredness where evidenced, and distinct human meanings.
+- Ingress and full in-scope request, response and error contracts. Identify
+  observed source shapes separately from an actual published contract.
+- Egress grouped by destination and operation: known method/path/topic, destination
+  configuration keys and supplied address/profile; distinguish an unknown host
+  from a known logical operation. Preserve declared versus observed authority.
+- Local errors beside their steps, and useful links to populated process, domain,
+  contract and dependency explanations. Optional DataFlow is required only if asked.
+
+Keep concise requested pages concise; this is not a mandatory universal template.
+Name genuine evidence limits explicitly. Unknown runtime settings or unsupported
+edges remain unknown, while delivered-but-unread helpers and supported unexplained
+targets remain unfinished work. A raw catalogue, auto-structure, GAP card, render
+exit zero or binding-helper PASS cannot make that draft complete. Do not narrow a
+broad task to one handler or hide essential explanations inside source disclosures.
+
+Review the actual local HTML on desktop and a narrow viewport, follow the reader
+links, and check visible language and content. Keep semantic/reader acceptance
+separate from proof integrity and helper success. Use the
+[reader checklist](task-oriented-readers.md); retain the complete supported export
+and its original source bindings for independent review. Private output stays local.
+
 ## Original pages and completion
 
 For preselected factual schemas/storage declarations that must survive authoring,
@@ -339,11 +390,19 @@ export-check/native proof reconstruction. Inputs remain in place; unreconciled
 Markdown changes fail. RENDERER_JSON is unchanged caller-trusted argv JSON with
 separate `{input}`/`{output}` arguments, executed with caller permissions. The
 renderer must be deterministic and independent of input/output locations.
-The optional [portable Markdown renderer example](../examples/markdown-renderer/README.md)
-supports the Codeclew shell, readable page titles, authored tables and a retained
-neutral comparison option. Copy it to your
-own tools directory, install its pinned dependency there, and supply the explicit
-command JSON; the helper does not silently choose or install a renderer.
+For an ordinary request without a caller-selected theme or renderer, use the
+[packaged Codeclew-shell Markdown renderer](../examples/markdown-renderer/README.md).
+Copy the example to an owned tooling directory, explicitly install its pinned
+dependency with the documented `npm ci` command, and save its trusted argv JSON
+with separate `{input}`/`{output}` arguments and the requested `--lang`. Pass that
+file as RENDERER_JSON to the existing checked finalize command above; do not invent
+a new design/renderer or substitute historical native `docs render` for these pages.
+The helper still does not select, install or sandbox a command automatically.
+
+This example renders plain Markdown, including authored tables; it does not execute
+native MDX components. A caller-selected trusted renderer remains supported.
+Explicit Docusaurus/MDX output follows its existing selected export workflow and
+constraints. The neutral theme remains available for a retained comparison.
 
 For service-oriented reading (one or more services), that renderer accepts
 optional explicit navigation JSON. Declare service ownership, local trigger kinds
