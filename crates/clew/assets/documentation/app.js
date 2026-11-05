@@ -220,7 +220,9 @@ function selectFlow(action,value){
  else{$('flow-selection-detail')?.focus?.();$('flow-selection-detail')?.scrollIntoView?.({block:'start'});}
 }
 document.addEventListener('change',event=>{if(event.target?.dataset?.dfcpicker!==undefined)selectFlow('connection',event.target.value);});
-function executionBadge(event){return event.reader?.execution?chromeHtml`<span class="execution-mode">${esc(t(event.reader.execution.mode))}</span>`:'';}
+function executionBadge(event){const mode=event.reader?.execution?.mode,label={synchronous:'Synchronous call',wait:'Wait for completion','parallel-await':'Wait for parallel results',background:'Without waiting',unknown:'Timing unknown'}[mode];return label?chromeHtml`<span class="execution-mode">${esc(t(label))}</span>`:'';}
+function processControlLabel(kind){return t({alt:'Condition',else:'Otherwise',opt:'When',loop:'Repeat'}[kind]||kind);}
+function processStepNumbers(owner){return new Map((owner.events||[]).filter(event=>event.kind!=='end').map((event,index)=>[event.id,index+1]));}
 function processStepId(owner,event){return 'process-step-'+encodeURIComponent(JSON.stringify([owner.id,event.id]));}
 let processStepOrigin=null,selectedProcessStep=null;
 function returnToProcessDiagram(restoreFocus=true){
@@ -602,7 +604,7 @@ function sequenceLayout(o,availableWidth=800){
   const a=xs[e.from]??W/2,b=xs[e.to]??W/2,self=a===b&&!branch&&e.kind!=='end',direction=W-padding-a>=a-padding?1:-1;
   const selfSpace=direction>0?W-padding-a:a-padding,selfWidth=Math.max(12,Math.min(180,selfSpace-8)),loopWidth=Math.max(8,Math.min(85,selfSpace-8));
   const labelWidth=self?selfWidth:Math.max(12,Math.abs(a-b)-16),mid=self?a+direction*selfWidth/2:(a+b)/2;
-  const lines=e.kind==='end'?[]:sequenceLines(branch?`${t(e.kind)} · ${sequenceEventLabel(e)}`:sequenceEventLabel(e),branch?W-left*2-12:labelWidth,branch?'600 14px':'14px');
+  const lines=e.kind==='end'?[]:sequenceLines(branch?`${processControlLabel(e.kind)} · ${sequenceEventLabel(e)}`:sequenceEventLabel(e),branch?W-left*2-12:labelWidth,branch?'600 14px':'14px');
   const arrowOffset=Math.max(39,(lines.length-1)*18+20),arrowBottom=arrowOffset+(a===b?17:0),captionOffset=arrowBottom+18;
   const captionLines=(e.kind==='declared'||isDeclaredBoundary(e))?sequenceLines(isDeclaredBoundary(e)?t(e.kind==='declared-boundary-return'?'Local boundary return':'Declared call'):t('Declared service interaction'),labelWidth,'14px'):[];
   const h=e.kind==='end'?18:branch?Math.max(40,lines.length*18+14):Math.max(72,((e.kind==='declared'||isDeclaredBoundary(e))?captionOffset+Math.max(0,captionLines.length-1)*18:arrowBottom)+28);
@@ -619,8 +621,8 @@ function diagram(o,availableWidth){
  let svg=chromeHtml`<svg class="sequence-svg" data-sequence-operation="${esc(o.id)}" data-layout-width="${Math.max(160,Math.floor(availableWidth??800))}" style="width:100%;min-width:${W}px;height:auto" viewBox="0 0 ${W} ${H}" role="group" aria-label="Sequence diagram: ${esc(o.title)}"><defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#608365"/></marker></defs>`;
  svg+=frames.map(f=>{const inset=16+Math.min(f.depth*12,Math.max(0,(W-160)/4));return chromeHtml`<rect x="${inset}" y="${f.y-8}" width="${W-inset*2}" height="${f.end-f.y+8}" rx="4" fill="#fdfbf6" stroke="#e3d9c5"/>`;}).join('');
  svg+=actors.map(p=>chromeHtml`${participantHref(p)?chromeHtml`<a href="${esc(participantHref(p))}" aria-label="${esc(p.label)}: documentation"><title>${esc(p.label)}: documentation</title>`:''}<line class="lifeline" x1="${xs[p.id]}" x2="${xs[p.id]}" y1="${headerBottom+4}" y2="${H-8}"/><rect x="${xs[p.id]-p.width/2}" y="9" width="${p.width}" height="${headerHeight}" rx="6" fill="#f1f6ed" stroke="#d6e1d0"/>${p.titleLines.map((line,i)=>chromeHtml`<text class="actor-label" text-anchor="middle" x="${xs[p.id]}" y="${p.titleY+i*actorLineHeight}">${esc(line)}</text>`).join('')}${p.technicalLines.map((line,i)=>chromeHtml`<text class="actor-technical" text-anchor="middle" x="${xs[p.id]}" y="${p.technicalY+i*actorLineHeight}">${esc(line)}</text>`).join('')}${participantHref(p)?'</a>':''}`).join('');
- let number=0;
- for(const {e,y,h,left,lines,arrowOffset,captionOffset,captionLines,mid,labelWidth,direction,loopWidth} of rows){if(e.kind==='end')continue;number++;let inside='';
+ const numbers=processStepNumbers(o);
+ for(const {e,y,h,left,lines,arrowOffset,captionOffset,captionLines,mid,labelWidth,direction,loopWidth} of rows){if(e.kind==='end')continue;const number=numbers.get(e.id);let inside='';
  if(['alt','else','loop','opt'].includes(e.kind)){
   inside=chromeHtml`${e.kind==='else'?chromeHtml`<line x1="${left-12}" y1="${y-8}" x2="${W-left+12}" y2="${y-8}" stroke="#ddd2bd" stroke-dasharray="4 3"/>`:''}<rect class="hit-area" x="${left-5}" y="${y-5}" width="${W-left*2+10}" height="${h-9}" rx="3" fill="transparent"/>`+lines.map((line,i)=>chromeHtml`<text class="branch-title" x="${left}" y="${y+13+i*18}">${esc(line)}</text>`).join('');
  }else{
@@ -630,7 +632,7 @@ function diagram(o,availableWidth){
   inside+=a===b?chromeHtml`<path class="event-arrow ${dash}" d="M${a} ${arrowY} h${direction*loopWidth} v17 h${-direction*loopWidth}" marker-end="url(#arrow)"/>`:chromeHtml`<line class="event-arrow ${dash}" x1="${a}" y1="${arrowY}" x2="${b}" y2="${arrowY}" marker-end="url(#arrow)"/>`;
   if((e.kind==='declared'||isDeclaredBoundary(e)))inside+=captionLines.map((line,i)=>chromeHtml`<text class="branch-title" text-anchor="middle" x="${mid}" y="${y+captionOffset+i*18}">${esc(line)}</text>`).join('');
  }
- svg+=chromeHtml`<a href="#${esc(processStepId(o,e))}" data-event="${esc(e.id)}" data-sequence-event="true" data-step-operation="${esc(o.id)}" aria-label="${esc(e.text)}: ${esc(t('Read process step'))}"><title>${esc(isDeclaredBoundary(e)?boundaryCaption(o,e):e.text)}</title>${inside}</a>`;
+ svg+=chromeHtml`<a href="#${esc(processStepId(o,e))}" data-event="${esc(e.id)}" data-sequence-event="true" data-step-operation="${esc(o.id)}" data-step-number="${number}" aria-label="${esc(e.text)}: ${esc(t('Read process step'))}"><title>${esc(isDeclaredBoundary(e)?boundaryCaption(o,e):e.text)}</title>${inside}</a>`;
  }return svg+chromeHtml`</svg>`;
 }
 let expandedSequence=null;
@@ -794,16 +796,18 @@ function operationContext(e){
  return chromeHtml`<section class="gap-card operation-context"><h3>Related documentation</h3>${processes}${data?chromeHtml`<p><button class="source-link" data-entry="section-entities">Service data and domain context →</button></p>`:''}</section>`;
 }
 function sequenceTrace(o){
- const actors=new Map(o.participants.map(p=>[p.id,p.label||p.service||p.externalService||p.id])),guards=[];let number=0;
+ const actors=new Map(o.participants.map(p=>[p.id,p.label||p.service||p.externalService||p.id])),guards=[],numbers=processStepNumbers(o);
  const rows=[];
  for(const event of o.events||[]){
   if(event.kind==='end'){guards.pop();continue;}
   const branch=['alt','else','opt','loop'].includes(event.kind),title=event.reader?.label?.text||event.text;
-  if(event.kind==='else'&&guards.length){const guard=guards[guards.length-1];guard.label=t('Condition not met')+': '+guard.original+' · '+title;}
+  const genericElse=event.kind==='else'&&title===t('Otherwise');
+  if(event.kind==='else'&&guards.length){const guard=guards[guards.length-1];guard.label=t('Condition not met')+': '+guard.original+(genericElse?'':' · '+title);}
+  const heading=genericElse&&guards.length?guards[guards.length-1].label:title;
   const conditions=guards.map(g=>g.label);
-  const kind=event.kind==='message'?'Call':event.kind==='return'?'Return':event.kind==='note'?'Note':event.kind==='declared-boundary-return'?'Local boundary return':event.kind==='declared-boundary'||event.kind==='declared'?'Declared call':event.kind;
+  const kind=event.kind==='message'?'Call':event.kind==='return'?'Return':event.kind==='note'?'Note':event.kind==='declared-boundary-return'?'Local boundary return':event.kind==='declared-boundary'||event.kind==='declared'?'Declared call':{alt:'Condition',else:'Otherwise',opt:'When',loop:'Repeat'}[event.kind]||event.kind;
   const proof=isDeclaredBoundary(event)?boundaryEvidence(o,event).replace(`id="${esc(boundaryEvidenceId(o,event))}"`,`id="trace-${esc(boundaryEvidenceId(o,event))}"`):stepEvidence(o,event);
-  rows.push(chromeHtml`<li id="${esc(processStepId(o,event))}" tabindex="-1" class="sequence-trace-step ${branch?'sequence-trace-guard':''}" data-trace-event="${esc(event.id)}"><div class="sequence-trace-kind">${++number}. ${esc(t(kind))} ${executionBadge(event)}</div>${!branch&&event.from&&event.to?chromeHtml`<div class="sequence-trace-route"><strong>${esc(actors.get(event.from)||event.from)}</strong><span aria-hidden="true">→</span><strong>${esc(actors.get(event.to)||event.to)}</strong></div>`:''}<h4>${esc(title)}</h4>${title!==event.text?chromeHtml`<div class="clew-markdown process-step-meaning">${prose(event.text)}</div>`:''}<button type="button" class="process-step-return" data-step-return hidden>${esc(t('Back to diagram'))}</button>${!branch&&conditions.length?chromeHtml`<p class="sequence-trace-conditions"><b>${esc(t('Conditions'))}:</b> ${esc(conditions[conditions.length-1])}</p>${conditions.length>1?chromeHtml`<details class="sequence-trace-ancestry"><summary>${esc(t('All conditions'))} (${conditions.length})</summary><ul>${conditions.map(condition=>chromeHtml`<li>${esc(condition)}</li>`).join('')}</ul></details>`:''}`:''}<details class="process-step-evidence"><summary>${esc(t('Step evidence'))}</summary>${event.reader?.execution&&event.reader.execution.meaning.text!==event.text?chromeHtml`<p>${esc(event.reader.execution.meaning.text)}</p>`:''}${claimButton(event.reader?.label,t('Label evidence'))}${event.reader?.execution?claimButton(event.reader.execution.meaning,t('Execution evidence')):''}${proof}</details></li>`);
+  rows.push(chromeHtml`<li id="${esc(processStepId(o,event))}" tabindex="-1" class="sequence-trace-step ${branch?'sequence-trace-guard':''}" data-step-number="${numbers.get(event.id)}" data-trace-event="${esc(event.id)}"><div class="sequence-trace-kind">${numbers.get(event.id)}. ${esc(t(kind))} ${executionBadge(event)}</div>${!branch&&event.from&&event.to?chromeHtml`<div class="sequence-trace-route"><strong>${esc(actors.get(event.from)||event.from)}</strong><span aria-hidden="true">→</span><strong>${esc(actors.get(event.to)||event.to)}</strong></div>`:''}<h4>${esc(heading)}</h4>${title!==event.text?chromeHtml`<div class="clew-markdown process-step-meaning">${prose(event.text)}</div>`:''}<button type="button" class="process-step-return" data-step-return hidden>${esc(t('Back to diagram'))}</button>${!branch&&conditions.length?chromeHtml`<p class="sequence-trace-conditions"><b>${esc(t('Conditions'))}:</b> ${esc(conditions[conditions.length-1])}</p>${conditions.length>1?chromeHtml`<details class="sequence-trace-ancestry"><summary>${esc(t('All conditions'))} (${conditions.length})</summary><ul>${conditions.map(condition=>chromeHtml`<li>${esc(condition)}</li>`).join('')}</ul></details>`:''}`:''}<details class="process-step-evidence"><summary>${esc(t('Step evidence'))}</summary>${event.reader?.execution&&event.reader.execution.meaning.text!==event.text?chromeHtml`<p>${esc(event.reader.execution.meaning.text)}</p>`:''}${claimButton(event.reader?.label,t('Label evidence'))}${event.reader?.execution?claimButton(event.reader.execution.meaning,t('Execution evidence')):''}${proof}</details></li>`);
   if(['alt','opt','loop'].includes(event.kind))guards.push({original:title,label:title});
  }
  return chromeHtml`<section class="sequence-trace" aria-label="${esc(t('Step-by-step trace'))}"><p>${esc(t('Sender → step → receiver'))}</p><ol>${rows.join('')}</ol></section>`;
@@ -867,12 +871,13 @@ function serviceModelFieldTables(){
  const models=D.serviceModelLinks||[];if(!models.length)return '';
  return chromeHtml`<section class="service-field-models">${models.map(model=>chromeHtml`<article class="service-field-model"><h3><a href="${esc(model.href)}">${esc(model.title)}</a></h3>${model.fieldTableHtml?chromeHtml`${model.fieldTableHtml}<details class="contract-raw"><summary>${esc(t('Field descriptions and provenance'))}</summary><p>${esc(t('These explicit documentation mappings do not establish domain ownership.'))}</p><pre>${pretty({kind:model.kind,authority:model.authority,review:model.review,documentationLanguage:model.documentationLanguage,provenance:model.provenance})}</pre></details>`:chromeHtml`<p><a href="${esc(model.href)}">${esc(t('Field descriptions'))}</a></p>`}</article>`).join('')}</section>`;
 }
+function contractFieldPath(path){return esc(path).replace(/([.\/])/g,'$1<wbr>');}
 function interfaceContracts(e){
  const cards=operation(e)?.interfaceContracts||[];
  if(!cards.length)return '';
  const boundaries=cards.filter(c=>c.kind!=='payload'),payloads=cards.filter(c=>c.kind==='payload');
  const chosenPayload=payloads.find(c=>c.id===payloadId)||payloads[0];
- const meaningRow=row=>chromeHtml`<tr><td><code class="contract-field-path">${esc(row.field.path)}</code><span class="contract-field-direction">${esc(t({request:'Request field',response:'Response field',event:'Event field',record:'Record field'}[row.field.direction]||'Field'))}</span></td><td class="contract-value"><div class="clew-markdown">${prose(row.value)}</div>${claimButton(row,t('Supporting source'),false,e.id)}</td></tr>`;
+ const meaningRow=row=>chromeHtml`<tr><td data-label="${esc(t('Field'))}"><code class="contract-field-path">${contractFieldPath(row.field.path)}</code><span class="contract-field-direction">${esc(t({request:'Request field',response:'Response field',event:'Event field',record:'Record field'}[row.field.direction]||'Field'))}</span></td><td class="contract-value" data-label="${esc(t('Meaning'))}"><div class="clew-markdown">${prose(row.value)}</div>${claimButton(row,t('Supporting source'),false,e.id)}</td></tr>`;
  const render=c=>{
   const declared=D.interfaceContractDeclarations?.[e.id]?.[c.id],fields=c.rows.filter(row=>row.field),legacy=c.rows.filter(row=>!row.field),needsRepair=c.kind==='payload'&&legacy.length;
   const originalRows=()=>chromeHtml`<div class="table-wrap"><table><thead><tr><th>Contract element</th><th>Value / behavior</th></tr></thead><tbody>${legacy.map(row=>chromeHtml`<tr><td><code>${esc(row.label)}</code></td><td class="contract-value">${esc(row.value)}</td></tr>`).join('')}</tbody></table></div>`;

@@ -626,7 +626,7 @@ test('sequence SVG omits long Notes while readable behavior retains nested note-
  for(const id of ['message','result'])assert.ok(svg.includes(`data-event="${id}"`));
  assert.doesNotMatch(svg,/data-event="(?:outer|inner|otherwise)"/);
  assert.equal((svg.match(/class="step-number"/g)||[]).length,2);
- assert.match(svg,/>2<\/text>/);
+ assert.match(svg,/>8<\/text>/);
  const behavior=r.run('behaviorPseudocode(D.operations[0])');
  assert.ok(behavior.includes(longNote));assert.match(behavior,/newer stored timestamp|rejection-write/);
  assert.equal(r.run('JSON.stringify(D.operations[0])'),original);
@@ -2378,7 +2378,7 @@ test('DataFlow defaults to selectable overview and selection focuses context wit
 });
 test('compact process uses authored overview and independently evidenced execution without stripping original',()=>{
  const data=behaviorFixture(),op=data.operations[0],event=op.events.find(e=>e.kind==='declared');event.reader={overview:true,label:fragment('Compute required result'),execution:{mode:'parallel-await',meaning:fragment('Wait for required results')}};
- const before=JSON.stringify(data),r=load(data),html=r.run('compactProcess(D.operations[0])');assert.match(html,/Compute required result/);assert.match(html,/parallel-await/);assert.match(html,/Wait for required results/);assert.match(html,new RegExp(event.text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.equal(r.run('JSON.stringify(D)'),before);
+ const before=JSON.stringify(data),r=load(data),html=r.run('compactProcess(D.operations[0])');assert.match(html,/Compute required result/);assert.match(html,/Wait for parallel results/);assert.match(html,/Wait for required results/);assert.match(html,new RegExp(event.text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.equal(r.run('JSON.stringify(D)'),before);
 });
 
 test('compact boundary label opens its own source without promoting declaration evidence',()=>{
@@ -2959,4 +2959,32 @@ test('legacy payload groups retain the complete original and precise repair with
  const before=JSON.stringify(data),r=load(data),html=r.run('interfaceContracts(entries.find(e=>e.id===D.operations[0].id))');
  assert.match(html,/Individual field meanings are not yet authored/);assert.match(html,/Original grouped descriptions and evidence/);assert.match(html,/id \/ quantity \/ origin\.id/);assert.match(html,/A common group statement\./);assert.match(html,/No recapture is needed/);
  assert.doesNotMatch(html,/class="contract-field-path"/);assert.equal(JSON.stringify(data),before);
+});
+
+test('sequence arrows and authored trace use one ordinal despite omitted notes and guards',()=>{
+ const data=behaviorFixture(),op=data.operations[0],r=load(data),before=JSON.stringify(data);
+ const svg=r.run('diagram(D.operations[0])'),trace=r.run('sequenceTrace(D.operations[0])');
+ const strip=html=>html.replace(/<[^>]*>/g,'');
+ const cards=new Map([...trace.matchAll(/<li\b[^>]*data-step-number="(\d+)" data-trace-event="([^"]+)"/g)].map(([,number,id])=>[id,Number(number)]));
+ const full=op.events.filter(e=>e.kind!=='end');assert.equal(cards.size,full.length);
+ for(const match of svg.matchAll(/<a\b[^>]*data-event="([^"]+)"[^>]*data-step-number="(\d+)"[^>]*>([\s\S]*?)<\/a>/g)){
+  const [,id,number,body]=match;assert.equal(Number(number),cards.get(id));assert.equal(Number(number),full.findIndex(e=>e.id===id)+1);
+  const visible=body.match(/class="step-number"[^>]*>(\d+)<\/text>/);if(visible)assert.equal(visible[1],number);
+ }
+ for(const language of ['en','ru']){
+  const copy=structuredClone(data);copy.language=language;const rr=load(copy),html=rr.run('sequenceTrace(D.operations[0])');
+  const kinds=[...html.matchAll(/class="sequence-trace-kind">([\s\S]*?)<\/div>/g)].map(m=>strip(m[1]));
+  assert.ok(kinds.some(kind=>kind.includes(language==='ru'?'Условие':'Condition')));assert.ok(kinds.some(kind=>kind.includes(language==='ru'?'Иначе':'Otherwise')));
+  for(const kind of kinds)assert.doesNotMatch(kind,/\b(?:alt|else|opt|loop)\b/);
+ }
+ assert.equal(JSON.stringify(data),before);
+});
+
+test('field paths add visual separator opportunities without splitting identifiers or changing copyable identity',()=>{
+ const r=load();
+ for(const value of ['request.requestId','request.current.id','/message/requestId','field<unsafe>.requestId']){
+  const html=r.run(`contractFieldPath(${JSON.stringify(value)})`);
+  assert.doesNotMatch(html,/reques<wbr>tId|<unsafe>/);assert.doesNotMatch(html,/\s/);
+  const decoded=html.replaceAll('<wbr>','').replaceAll('&lt;','<').replaceAll('&gt;','>');assert.equal(decoded,value);
+ }
 });

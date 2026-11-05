@@ -1417,5 +1417,11 @@
   "Request field": "Поле запроса",
   "Response field": "Поле ответа",
   "Event field": "Поле события",
-  "Record field": "Поле записи"
+  "Record field": "Поле записи",
+  "Repeat": "Повторять",
+  "Synchronous call": "Синхронно",
+  "Wait for completion": "Ожидает завершения",
+  "Wait for parallel results": "Параллельно с ожиданием",
+  "Without waiting": "Без ожидания",
+  "Timing unknown": "Время выполнения не установлено"
 }
