@@ -508,14 +508,45 @@ pub enum AuthoredContextRole {
     RetainedUnverifiedContext,
 }
 
+/// Exact source-observed payload identity, scoped by its containing contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContractField {
+    pub path: String,
+    pub direction: String,
+}
+
+impl ContractField {
+    pub fn valid(&self) -> bool {
+        !self.path.trim().is_empty()
+            && self.path.len() <= 512
+            && !self.path.chars().any(char::is_control)
+            && matches!(
+                self.direction.as_str(),
+                "request" | "response" | "event" | "record"
+            )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InterfaceContractRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<ContractField>,
     pub id: String,
     pub label: String,
     pub value: String,
     pub dependency_ids: Vec<String>,
     pub source_ids: Vec<String>,
+}
+
+impl InterfaceContractRow {
+    pub fn reader_label(&self) -> String {
+        self.field.as_ref().map_or_else(
+            || self.label.clone(),
+            |field| format!("{} · {}", field.path, field.direction),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

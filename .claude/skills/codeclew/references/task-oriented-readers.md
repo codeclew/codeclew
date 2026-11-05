@@ -87,6 +87,31 @@ description and provenance rather than heuristically stripping caveats.
   An `alt` with nonempty `otherwise` may set optional `otherwiseReader` using
   the same reader shape for its generated else marker. Parent label, overview
   and execution never propagate to else/end; end has no reader metadata.
+- Process pages show every authored non-end step in a numbered reading trace;
+  the overview flag never authorizes dropping branches, returns or deferred work.
+  Write `meaning.text` as an action, condition or outcome the reader can explain,
+  with supported side effects and local failure behavior. A method signature,
+  pasted code/comment or short `reader.label` alone is not an explanation.
+  `reader.execution` remains separately evidenced; never infer timing from HTTP
+  or a return arrow. Unauthored content stays unfinished, with author repair.
+- For source-derived contract fields use one row per actual field:
+  `{"label":"Quantity","field":{"path":"request.quantity","direction":"request"},
+  "description":{"text":"Requested number of items to reserve.","evidence":["FIELD_REF"]}}`.
+  Directions are `request`, `response`, `event` and `record`; retain the full
+  source-observed path and separate equal leaf names in distinct parents/directions.
+  `contract.title` can group rows. A shared group meaning never supplies each
+  field's semantics. Transport metadata rows in `http`/`kafka` remain separate;
+  new `payload` rows require explicit field identities and individual claims.
+  Old arbitrary groups remain in original evidence, visibly needing separation.
+  Repair through a new supported proposal using the same retained Work evidence;
+  preserve the old publication/review and do not recapture or silently reapprove it.
+- Before submitting a process proposal, run
+  `python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_plan_preflight.py" --proposal proposal.json`.
+  It checks structural meaning/evidence presence and individual field identities,
+  including nested arms. It does not inspect semantic quality or prove complete
+  branches: native validation and actual reader review remain required. Continue
+  using `--plan` for data-model/navigation preflight; metadata-only section updates
+  do not require process steps.
 - Optional external-service `category` is `system`, `storage`, `queue`,
   `configuration` or `unknown`. Optional `identity` has stable grouping key,
   title, profile, proposed/confirmed/rejected status, declaration and dependency

@@ -301,5 +301,49 @@ class ReaderPlanPreflightTests(unittest.TestCase):
         self.assertTrue(INSPECT(plan, service='service:sample')['findings'])
 
 
+class ProcessProposalPreflightTest(unittest.TestCase):
+    def proposal(self):
+        claim = lambda text: {'text': text, 'evidence': ['retained-source']}
+        return {'schema': 'codeclew-documentation-proposal/1.0', 'operations': [{
+            'entrypoint': 'operation', 'steps': [{'kind': 'alt', 'meaning': claim('Quantity is positive'),
+            'children': [{'kind': 'return', 'meaning': claim('Reserve and return the selected quantity')}],
+            'otherwise': [{'kind': 'return', 'meaning': claim('Reject before storage')}]}],
+            'contracts': [{'title': 'Quantity', 'kind': 'payload', 'rows': [
+                {'label': 'Quantity', 'field': {'path': 'request.quantity', 'direction': 'request'},
+                 'description': claim('Number of items requested for reservation')}]}]}]}
+
+    def test_nested_missing_meaning_and_grouped_fields_name_precise_repair_paths(self):
+        value = self.proposal()
+        self.assertEqual(HELPER['proposal_findings'](value)['findings'], [])
+        value['operations'][0]['steps'][0]['otherwise'][0]['meaning'] = {'text': '  '}
+        value['operations'][0]['contracts'][0]['rows'][0].pop('field')
+        result = HELPER['proposal_findings'](value)
+        self.assertEqual([r['code'] for r in result['findings']], ['STEP_MEANING_MISSING', 'PAYLOAD_FIELD_IDENTITY_MISSING'])
+        self.assertEqual(result['findings'][0]['path'], '/operations/0/steps/0/otherwise/0/meaning')
+        self.assertIn('without recapture', result['findings'][1]['action'])
+
+    def test_cli_reports_individual_field_meaning_without_claiming_semantic_acceptance(self):
+        value = self.proposal()
+        value['operations'][0]['contracts'][0]['rows'][0]['description'] = {'text': ''}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'proposal.json'; path.write_text(json.dumps(value))
+            script = Path(__file__).resolve().parents[1] / 'skills/codeclew/scripts/reader_plan_preflight.py'
+            result = subprocess.run([sys.executable, '-I', '-S', str(script), '--proposal', str(path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        result = json.loads(result.stdout)
+        self.assertEqual(result['findings'][0]['code'], 'FIELD_MEANING_MISSING')
+        self.assertEqual(result['findings'][0]['path'], '/operations/0/contracts/0/rows/0/description')
+        self.assertIn('Does not establish semantic quality', result['limits'])
+
+    def test_direction_scopes_duplicate_paths_and_metadata_remains_separate(self):
+        value = self.proposal(); rows = value['operations'][0]['contracts'][0]['rows']
+        row = copy.deepcopy(rows[0]); row['field']['direction'] = 'response'; rows.append(row)
+        self.assertEqual(HELPER['proposal_findings'](value)['findings'], [])
+        rows.append(copy.deepcopy(rows[0]))
+        self.assertEqual(HELPER['proposal_findings'](value)['findings'][0]['code'], 'DUPLICATE_PAYLOAD_FIELD')
+        value['operations'][0]['contracts'] = [{'title': 'Transport', 'kind': 'kafka', 'rows': [{'label': 'Topic', 'description': {'text': 'Selected topic'}}]}]
+        self.assertEqual(HELPER['proposal_findings'](value)['findings'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -202,6 +202,29 @@
               },
               "description": {
                 "$ref": "#/$defs/claim"
+              },
+              "field": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "direction": {
+                    "enum": [
+                      "request",
+                      "response",
+                      "event",
+                      "record"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "direction"
+                ]
               }
             },
             "required": [
@@ -215,6 +238,28 @@
         "title",
         "kind",
         "rows"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "payload"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "rows": {
+                "items": {
+                  "required": [
+                    "field"
+                  ]
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "operation": {

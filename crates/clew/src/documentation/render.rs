@@ -1030,7 +1030,17 @@ pub(super) fn validate_with_retained(
                     "interface contract requires a unique ID, kind and bounded rows",
                 ));
             }
+            let mut fields = BTreeSet::new();
             for row in &contract.rows {
+                if let Some(field) = &row.field {
+                    if !field.valid()
+                        || !fields.insert((field.direction.clone(), field.path.clone()))
+                    {
+                        return Err(invalid(
+                            "contract field requires a unique direction/path and an individual supported meaning",
+                        ));
+                    }
+                }
                 if !store::valid_id(&row.id)
                     || !ids.insert(row.id.clone())
                     || row.label.trim().is_empty()
@@ -2930,7 +2940,7 @@ pub(super) fn markdown(
             for row in &contract.rows {
                 out.push_str(&format!(
                     "| {} | {} |\n",
-                    escape(&row.label).replace('|', "&#124;"),
+                    escape(&row.reader_label()).replace('|', "&#124;"),
                     escape(&row.value)
                         .replace('|', "&#124;")
                         .replace('\n', "<br>")

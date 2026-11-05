@@ -212,6 +212,8 @@ pub struct Contract {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<super::model::ContractField>,
     pub label: String,
     pub description: Claim,
 }
@@ -1344,10 +1346,28 @@ pub(super) fn materialize(
             if contract.rows.len() > 128 {
                 return Err(invalid("contract exceeds 128 rows"));
             }
+            let mut fields = BTreeSet::new();
             for (ri, row) in contract.rows.iter().enumerate() {
+                match &row.field {
+                    Some(field)
+                        if !field.valid()
+                            || !fields.insert((field.direction.clone(), field.path.clone())) =>
+                    {
+                        return Err(invalid(format!(
+                            "contract {ci} row {ri}: supply a valid, unique field.path and field.direction (request, response, event or record); each field needs its own description claim"
+                        )));
+                    }
+                    None if contract.kind == "payload" => {
+                        return Err(invalid(format!(
+                            "contract {ci} row {ri}: payload fields need explicit field.path and field.direction plus an individual evidence-bound description; retain a group heading in title, and use retained Work evidence to separate fields without recapture"
+                        )));
+                    }
+                    _ => {}
+                }
                 let fragment =
                     builder.claim(&scope, &format!("contract/{ci}/{ri}"), &row.description)?;
                 rows.push(InterfaceContractRow {
+                    field: row.field.clone(),
                     id: fragment.id,
                     label: row.label.clone(),
                     value: fragment.text,

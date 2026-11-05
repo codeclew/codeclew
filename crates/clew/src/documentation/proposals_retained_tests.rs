@@ -126,6 +126,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
             title: "Output".into(),
             kind: "payload".into(),
             rows: vec![InterfaceContractRow {
+                field: None,
                 id: "quantity-row".into(),
                 label: "quantity".into(),
                 value: "Requested quantity.".into(),
@@ -1198,4 +1199,86 @@ fn context_migration_requires_exact_full_source_receipts_and_delivered_dependenc
             .message
             .contains("this Work")
     );
+}
+
+#[test]
+fn explicit_contract_fields_materialize_without_aliasing_and_reject_group_only_repair() {
+    let (_temp, _repo, mut work, original) = fixture();
+    work.request.entrypoint = Some("reserve".into());
+    // This test establishes structural preservation, not semantic approval of prose.
+    for (reference, kind, id) in [
+        ("op", "ENTRYPOINT", "reserve"),
+        ("source", "DEPENDENCY", "symbol-reserve"),
+    ] {
+        work.handles.insert(
+            reference.into(),
+            work::Handle {
+                kind: kind.into(),
+                id: id.into(),
+            },
+        );
+    }
+    let mut state = work::ReadState::default();
+    state.receipts.insert(
+        "read".into(),
+        work::ReadReceipt {
+            selection: Default::default(),
+            requested_selection: None,
+            result_digest: "fixture".into(),
+            supplied: vec!["op".into(), "source".into()],
+            membership_digest: "fixture".into(),
+            omitted: vec![],
+            next_cursor: None,
+        },
+    );
+    let rows: Vec<Value> = [
+        ("request", "current.quantity"),
+        ("request", "origin.quantity"),
+        ("response", "current.quantity"),
+        ("event", "quantity"),
+        ("record", "quantity"),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, (direction, path))| {
+        json!({
+            "label":"Quantity context", "field":{"path":path,"direction":direction},
+            "description":{"text":format!("Structural field meaning {i}"),"evidence":["source"]}
+        })
+    })
+    .collect();
+    let value = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{
+        "entrypoint":"op","title":"Reserve quantity","summary":{"text":"Return supplied quantity.","evidence":["source"]},
+        "steps":[{"kind":"return","from":"orders","to":"caller","meaning":{"text":"Return quantity.","evidence":["source"]}}],
+        "contracts":[{"title":"Distinct quantity contexts","kind":"payload","rows":rows}]
+    }]});
+    let input: Proposal = serde_json::from_value(value.clone()).unwrap();
+    let (narrative, _, diagnostics) = materialize(&work, &input, &state).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let output = &narrative.operations[0].interface_contracts[0].rows;
+    assert_eq!(output.len(), 5);
+    for (i, row) in output.iter().enumerate() {
+        assert_eq!(serde_json::to_value(&row.field).unwrap(), rows[i]["field"]);
+        assert_eq!(row.value, format!("Structural field meaning {i}"));
+        assert_eq!(row.source_ids, vec!["source-reserve"]);
+    }
+    let mut grouped = value.clone();
+    grouped["operations"][0]["contracts"][0]["rows"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("field");
+    let grouped: Proposal = serde_json::from_value(grouped).unwrap();
+    let error = materialize(&work, &grouped, &state).unwrap_err();
+    assert!(error.message.contains("contract 0 row 0"));
+    assert!(error.message.contains("without recapture"));
+    let mut duplicate = value;
+    duplicate["operations"][0]["contracts"][0]["rows"][1]["field"] = rows[0]["field"].clone();
+    assert!(
+        materialize(&work, &serde_json::from_value(duplicate).unwrap(), &state)
+            .unwrap_err()
+            .message
+            .contains("unique field.path")
+    );
+    // Historical materialized inputs remain valid and byte-identical.
+    render::validate(&original, &work.checked).unwrap();
 }

@@ -1009,16 +1009,30 @@ fn operation_body_with_payloads(
             out.push_str(&format!("{}\n\n",md(t("No declaration is bound to this card. The description below is source-derived behavior, not a declared schema."))));
         }
         out.push_str(&format!("**{}**\n\n{}\n\n| {} | {} |\n| --- | --- |\n",md(t("Source-derived context and checks")),md(t("The original descriptions are retained separately from the declaration. Their sources do not establish schema enforcement or runtime delivery.")),md(t("Topic")),md(t("Retained contract detail"))));
+        if text(&contract["kind"]) == "payload"
+            && rows(&contract["rows"]).any(|row| !row["field"].is_object())
+        {
+            out.push_str(&format!("{}\n\n", md(t("Individual field meanings are not yet authored for these retained descriptions."))));
+        }
         let mut bound = String::new();
         for row in rows(&contract["rows"]) {
+            let label = if row["field"].is_object() {
+                format!(
+                    "{} · {}",
+                    text(&row["field"]["path"]),
+                    text(&row["field"]["direction"])
+                )
+            } else {
+                text(&row["label"]).to_owned()
+            };
             out.push_str(&format!(
                 "| {} | {} |\n",
-                md(text(&row["label"])),
+                md(&label),
                 md(text(&row["value"])).replace('\n', "<br/>")
             ));
             bound.push_str(&format!(
                 "**{}**\n\n{}\n",
-                md(text(&row["label"])),
+                md(&label),
                 citations(page, id, row)?
             ));
         }
@@ -3132,6 +3146,25 @@ mod tests {
         assert!(page.contains("Original artifact: Snapshot") && page.contains("unchanged-digest"));
         assert!(!page.contains("#### Broader request acceptance"));
         assert_eq!((entry, packet), before);
+    }
+
+    #[test]
+    fn typed_contract_rows_preserve_direction_path_and_individual_meaning() {
+        let operation = json!({"id":"reserve","summary":{"text":"Reserve items"},"interfaceContracts":[{
+            "id":"request", "title":"Request fields", "kind":"payload", "rows":[
+                {"id":"current","label":"Group label","field":{"path":"request.current.id","direction":"request"},"value":"Select the current party","sourceIds":[]},
+                {"id":"origin","label":"Group label","field":{"path":"request.origin.id","direction":"request"},"value":"Identify the original party","sourceIds":[]}
+            ]
+        }]});
+        for language in ["en", "ru"] {
+            let page = json!({"language":language,"subject":"service:sample","sources":{},"operations":[operation]});
+            let body = operation_body(&page, &operation, "###").unwrap();
+            assert!(body.contains("request.current.id · request"));
+            assert!(body.contains("request.origin.id · request"));
+            assert!(body.contains("Select the current party"));
+            assert!(body.contains("Identify the original party"));
+            assert!(!body.contains("Group label"));
+        }
     }
 
     #[test]

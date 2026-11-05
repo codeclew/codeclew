@@ -217,7 +217,7 @@ pub(super) fn operation(op: &Operation, reader_conditions: &[String]) -> Section
             rows: contract
                 .rows
                 .iter()
-                .map(|r| vec![r.label.clone(), r.value.clone()])
+                .map(|r| vec![r.reader_label(), r.value.clone()])
                 .collect(),
         });
     }

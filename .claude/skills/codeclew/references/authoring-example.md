@@ -229,7 +229,7 @@ into an oversized summary.
         {"kind": "return", "from": "SERVICE_ID", "to": "caller", "meaning": {"text": "Return the reservation result", "evidence": ["RETURN_REF"]}}
       ]
     }],
-    "contracts": [{"title": "Quantity input", "kind": "payload", "rows": [{"label": "quantity validation", "description": {"text": "A value at or below zero is rejected before delegation.", "evidence": ["IF_REF", "REJECT_REF"]}}]}]
+    "contracts": [{"title": "Quantity input", "kind": "payload", "rows": [{"label": "quantity", "field": {"path": "request.quantity", "direction": "request"}, "description": {"text": "A value at or below zero is rejected before delegation.", "evidence": ["IF_REF", "REJECT_REF"]}}]}]
   }],
   "uncertainties": ["The selected body does not establish the downstream reservation algorithm or wire schema."]
 }
@@ -503,7 +503,7 @@ When the destination cannot yet be identified, the following is an explicitly in
       {"kind":"note","from":"SERVICE_ID","meaning":{"text":"Call the external client; receiver execution is not captured.","evidence":["CALL_REF","INTERACTION_REF"],"uncertainty":"Receiver implementation and runtime delivery are unknown."}},
       {"kind":"return","from":"SERVICE_ID","to":"caller","meaning":{"text":"Return the client result.","evidence":["RETURN_REF"]}}
     ],
-    "contracts":[{"title":"Caller request","kind":"payload","rows":[{"label":"Request argument","description":{"text":"The caller forwards the request argument to the client.","evidence":["METHOD_REF"]}}]}]
+    "contracts":[{"title":"Caller request","kind":"http","rows":[{"label":"Request argument","description":{"text":"The caller forwards the request argument to the client.","evidence":["METHOD_REF"]}}]}]
   }],
   "uncertainties":["The external receiver and its failures are not captured; runtime delivery is UNKNOWN."]
 }

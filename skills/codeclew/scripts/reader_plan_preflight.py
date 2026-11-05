@@ -316,9 +316,74 @@ def inspect(plan, payload_owners=(), service=None, expected_fields=(), nested_fi
     return result
 
 
+def proposal_findings(proposal):
+    """Structural preflight for a process proposal; meaning remains unassessed."""
+    if not isinstance(proposal, dict) or proposal.get('schema') != 'codeclew-documentation-proposal/1.0':
+        raise ValueError('Expected a documentation-proposal/1.0 process proposal')
+    findings = []
+
+    def finding(code, path, action):
+        findings.append({'code': code, 'path': path, 'action': action})
+
+    def claim(value, path, field=False):
+        if not isinstance(value, dict) or not isinstance(value.get('text'), str) or not value['text'].strip():
+            finding('FIELD_MEANING_MISSING' if field else 'STEP_MEANING_MISSING', path, 'Author this field’s own source-supported meaning.' if field else 'Author the supported action, condition or outcome in natural language; code and a compact label do not replace its meaning.')
+        elif not value.get('evidence') and not value.get('uncertainty'):
+            finding('CLAIM_EVIDENCE_MISSING', path, 'Bind exact retained Work evidence or name the consequential missing evidence explicitly.')
+
+    def walk(steps, path):
+        if not isinstance(steps, list):
+            finding('PROCESS_STEPS_MISSING', path, 'Supply ordered authored steps for this process, retaining branches, returns, failures and deferred work.')
+            return
+        for index, step in enumerate(steps):
+            node = f'{path}/{index}'
+            if not isinstance(step, dict):
+                finding('INVALID_PROCESS_STEP', node, 'Supply a step object; use the native proposal schema.')
+                continue
+            claim(step.get('meaning'), node + '/meaning')
+            for branch in ('children', 'otherwise'):
+                if branch in step:
+                    walk(step[branch], node + '/' + branch)
+
+    if not isinstance(proposal.get('operations'), list) or not proposal['operations']:
+        raise ValueError('Process preflight needs at least one operation')
+    for oi, operation in enumerate(proposal['operations']):
+        base = f'/operations/{oi}'
+        if not isinstance(operation, dict):
+            finding('INVALID_PROCESS_OPERATION', base, 'Supply an operation object.')
+            continue
+        if operation.get('steps') == []:
+            finding('PROCESS_STEPS_MISSING', base + '/steps', 'Author the process from retained evidence; an empty trace is unfinished. Use this preflight for process proposals, not metadata-only section updates.')
+        walk(operation.get('steps'), base + '/steps')
+        for ci, contract in enumerate(operation.get('contracts', [])):
+            identities = set()
+            for ri, row in enumerate(contract.get('rows', [])):
+                path = f'{base}/contracts/{ci}/rows/{ri}'
+                field = row.get('field')
+                if field is None and contract.get('kind') != 'payload':
+                    continue  # Transport metadata is a separate row kind.
+                if (not isinstance(field, dict) or not isinstance(field.get('path'), str)
+                        or not field['path'].strip() or len(field['path'].encode()) > 512
+                        or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in field['path'])
+                        or field.get('direction') not in ('request', 'response', 'event', 'record')):
+                    finding('PAYLOAD_FIELD_IDENTITY_MISSING', path + '/field', 'Supply one exact field.path and field.direction per actual field; keep a group heading in contract.title. Repair with retained Work evidence, without recapture.')
+                    continue
+                identity = (field['direction'], field['path'])
+                if identity in identities:
+                    finding('DUPLICATE_PAYLOAD_FIELD', path + '/field', 'Retain one independently evidenced meaning for this exact direction/path within the contract.')
+                identities.add(identity)
+                claim(row.get('description'), path + '/description', field=True)
+    return {'schema': 'codeclew-process-reader-preflight/1.0',
+            'status': 'NEEDS_AUTHOR_REPAIR' if findings else 'READY_FOR_NATIVE_AND_READER_REVIEW',
+            'findings': findings,
+            'limits': 'Structural presence only. Does not establish semantic quality, evidence validity, completeness, execution mode or runtime behavior; native validation and independent reader review remain required.'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--plan', required=True, type=Path)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument('--plan', type=Path)
+    inputs.add_argument('--proposal', type=Path, help='Process proposal structural preflight; excludes metadata-only section updates')
     parser.add_argument('--payload-owner', action='append', default=[],
                         help='Exact requested subject/operation; repeat for every in-scope boundary')
     parser.add_argument('--service', help='Requested service; representation models need relevant operation/process or payload navigation')
@@ -331,6 +396,13 @@ def main():
     parser.add_argument('--reader-export', type=Path, help='Post-render native export; verify target.rendered file/pointer/page bindings and manifest hashes')
     args = parser.parse_args()
     try:
+        if args.proposal:
+            raw = args.proposal.read_bytes()
+            if len(raw) > 4 * 1024 * 1024:
+                raise ValueError('Process proposal exceeds 4 MiB')
+            result = proposal_findings(json.loads(raw))
+            print(json.dumps(result, ensure_ascii=False))
+            return 2 if result['findings'] else 0
         if bool(args.reader_scope) != bool(args.reader_scope_digest) or bool(args.reader_scope) != bool(args.coverage):
             raise ValueError('Use --reader-scope, --reader-scope-digest and --coverage together')
         if args.reader_export and not args.reader_scope:

@@ -533,7 +533,7 @@ test('long admitted sequences retain explicit arrows guards sources and immutabl
   assert.equal(op.events.length,count);
   const html=r.run('overviewDiagram(D.operations[0])');assert.match(html,/class="sequence-svg"/);assert.doesNotMatch(html,/bounded overview|NaN|Infinity/);
   for(const e of op.events.filter(e=>e.kind.startsWith('declared-boundary')||e.kind==='alt'||e.kind==='else')){
-   const attribute=e.kind.startsWith('declared-boundary')?'data-boundary-declaration="'+r.run(`boundaryEvidenceId(D.operations[0],${JSON.stringify(e)})`):'data-event="'+e.id;
+   const attribute='data-event="'+e.id;
    assert.ok(html.includes(attribute+'"'),e.id);
   }
   for(const width of [390,1440]){
@@ -2218,7 +2218,7 @@ test('declared external boundary stays visible without source calls and links it
  assert.doesNotMatch(svg,/<script>/);
  assert.equal((svg.match(/class="event-arrow event-return"/g)||[]).length,2);
  assert.equal(JSON.stringify(data.operations[0]),retained);
- assert.match(svg,/data-boundary-declaration="boundary-evidence-reserve-fixture-declared-request"/);
+ assert.match(svg,/data-event="declared-request" data-sequence-event="true" data-step-operation="reserve-fixture"/);
  assert.match(reader.e('scenario-content').innerHTML,/Declared relationship evidence/);
  reader.click({boundaryDeclaration:'boundary-evidence-reserve-fixture-declared-request'});
  assert.equal(reader.e('boundary-evidence-reserve-fixture-declared-request').open,true);
@@ -2481,7 +2481,7 @@ test('mobile sequence trace preserves all non-end events, route names, guards an
  assert.deepEqual([...html.matchAll(/data-trace-event="([^"]+)"/g)].map(m=>m[1]),op.events.filter(e=>e.kind!=='end').map(e=>e.id));
  for(const actor of op.participants)assert.ok(html.includes(actor.label));assert.match(html,/Вызов/);assert.match(html,/Возврат/);assert.match(html,/Условие не выполнено/);assert.match(html,/Параллельно с ожиданием/);assert.match(html,/Без ожидания/);
  const adaptive=r.run("adaptiveSequence(D.operations[0],'<div>FULL_DIAGRAM</div>')");assert.match(adaptive,/data-presentation="narrow"/);assert.doesNotMatch(adaptive,/<div class="sequence-trace-panel" hidden|<details class="full-sequence-diagram" open/);assert.match(adaptive,/Полная диаграмма последовательности/);assert.equal(JSON.stringify(data),before);
- const wide=load(data).run("adaptiveSequence(D.operations[0],'<div>FULL_DIAGRAM</div>')");assert.match(wide,/<div class="sequence-trace-panel" hidden>/);assert.match(wide,/<details class="full-sequence-diagram" open>/);
+ const wide=load(data).run("adaptiveSequence(D.operations[0],'<div>FULL_DIAGRAM</div>')");assert.doesNotMatch(wide,/sequence-trace-panel/);assert.match(wide,/<details class="full-sequence-diagram" open>/);
 });
 if(process.env.CODECLEW_BOUNDED_FLOW_TRACE_FIXTURE_OUT){
  const output=path.resolve(process.env.CODECLEW_BOUNDED_FLOW_TRACE_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});
@@ -2513,7 +2513,7 @@ test('mobile trace keeps only the nearest guard primary and preserves full negat
   const ancestors=language==='ru'?['Условие не выполнено: Есть блокирующие входы · Блокирующих входов нет','Условие не выполнено: Активная версия отсутствует · Активная версия задана']:['Condition not met: Blocking inputs present · No blocking inputs','Condition not met: Active version missing · Active version supplied'];
   for(const [content,local,total] of [[required,'required=true: parallel; awaitAll before response',3],[optional,'required=false: background without await/join',5],[nestedReturn,'required=false: background without await/join',5]]){
    const primary=content.match(/<p class="sequence-trace-conditions">([\s\S]*?)<\/p>/)[1];assert.ok(primary.includes(local));assert.doesNotMatch(primary,/Blocking inputs|Блокирующих|Active version|Активная версия|First result|Second result/);
-   const inherited=content.match(/<details class="sequence-trace-ancestry">[\s\S]*?<\/details>/)[0];assert.deepEqual([...inherited.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(m=>m[1]),[...ancestors,...(total===5?['First result != null','Second result != null']:[]),local]);assert.ok(content.indexOf(inherited)+inherited.length<=content.indexOf('<details class="sequence-trace-evidence">'));assert.match(content,/<details class="sequence-trace-ancestry"><summary>/);assert.doesNotMatch(content,/<details class="sequence-trace-ancestry" open/);assert.ok(content.includes((language==='ru'?'Все условия':'All conditions')+` (${total})`));assert.ok(content.includes(language==='ru'?'Условие не выполнено: Есть блокирующие входы':'Condition not met: Blocking inputs present'));assert.ok(content.includes(language==='ru'?'Активная версия задана':'Active version supplied'));
+   const inherited=content.match(/<details class="sequence-trace-ancestry">[\s\S]*?<\/details>/)[0];assert.deepEqual([...inherited.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(m=>m[1]),[...ancestors,...(total===5?['First result != null','Second result != null']:[]),local]);assert.ok(content.indexOf(inherited)+inherited.length<=content.indexOf('<details class="process-step-evidence">'));assert.match(content,/<details class="sequence-trace-ancestry"><summary>/);assert.doesNotMatch(content,/<details class="sequence-trace-ancestry" open/);assert.ok(content.includes((language==='ru'?'Все условия':'All conditions')+` (${total})`));assert.ok(content.includes(language==='ru'?'Условие не выполнено: Есть блокирующие входы':'Condition not met: Blocking inputs present'));assert.ok(content.includes(language==='ru'?'Активная версия задана':'Active version supplied'));
   }
   const second=card('formula-second');assert.match(second,/<p class="sequence-trace-conditions"><b>[^<]+<\/b> First result != null<\/p>/);assert.ok(second.includes('callFormula(saveResult=true by default)'));assert.ok(html.indexOf('data-trace-event="formula-first"')<html.indexOf('data-trace-event="formula-second"'));
   assert.deepEqual([...html.matchAll(/data-trace-event="([^"]+)"/g)].map(m=>m[1]),data.operations[0].events.filter(e=>e.kind!=='end').map(e=>e.id));assert.equal(JSON.stringify(data),before);assert.equal(r.e('source-panel').hidden,true);
@@ -2549,7 +2549,7 @@ test('semantic domain lists canonical attributes first and keeps scoped DTO mapp
 });
 test('timing is a plain nonfocusable annotation while step disclosure remains independently actionable',()=>{
  const data=compactUxFixture('en','process'),r=load(data),html=r.run('sequenceTrace(D.operations[0])');
- const timing=html.match(/<span class="execution-mode"[^>]*>[^<]*<\/span>/g);assert.ok(timing.length>=3);assert.ok(timing.every(tag=>!/(tabindex|role=|data-|<button)/.test(tag)));assert.match(html,/<details class="sequence-trace-evidence"><summary>/);
+ const timing=html.match(/<span class="execution-mode"[^>]*>[^<]*<\/span>/g);assert.ok(timing.length>=3);assert.ok(timing.every(tag=>!/(tabindex|role=|data-|<button)/.test(tag)));assert.match(html,/<details class="process-step-evidence"><summary>/);
 });
 if(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT){
  const output=path.resolve(process.env.CODECLEW_SEMANTIC_READER_FIXTURE_OUT);fs.mkdirSync(output,{recursive:true});for(const language of ['en','ru'])fs.writeFileSync(path.join(output,'domain-'+language+'.html'),renderReaderFixture(semanticDomainFixture(language)));
@@ -2897,4 +2897,66 @@ test('library continuations stay candidates in service egress with compact escap
  assert.match(html,/<details><summary>decide<\/summary>/);assert.doesNotMatch(html,/<details open><summary>decide/);
  assert.match(html,/&lt;script&gt;negative&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>negative/);
  assert.doesNotMatch(html,/owned\.unreachable/);assert.equal(JSON.stringify(data),before);
+});
+
+test('process messages select the exact namespaced authored step and Escape returns to their link',()=>{
+ for(const language of ['en','ru']){
+  const data=behaviorFixture();data.language=language;
+  const original=data.operations[0];original.events[0].id='shared';
+  const other=structuredClone(original);other.id='other-operation';other.events[0].text='A DIFFERENT AUTHORED MEANING';data.operations.push(other);data.catalogue.push({...data.catalogue[0],id:other.id});
+  const before=JSON.stringify(data),r=load(data),origin=r.e('test-arrow');origin.focus();
+  const id=r.run('processStepId(D.operations[0],D.operations[0].events[0])');
+  assert.notEqual(id,r.run('processStepId(D.operations[1],D.operations[1].events[0])'));
+  assert.notEqual(r.run('processStepId({id:"a-b"},{id:"c"})'),r.run('processStepId({id:"a"},{id:"b-c"})'));
+  assert.equal(r.run(`inspectProcessStep(${JSON.stringify(original.id)},'shared',document.activeElement)`),true);
+  assert.equal(r.document.activeElement.id,id);assert.equal(r.e('source-panel').hidden,true);
+  assert.equal(r.key('Escape'),true);assert.equal(r.document.activeElement,origin);
+  r.click({event:'shared',stepOperation:other.id});assert.equal(r.run('current.id'),other.id);
+  assert.match(r.e('scenario-content').innerHTML,/A DIFFERENT AUTHORED MEANING/);assert.equal(r.e('source-panel').hidden,true);
+  r.run(`showEntry(D.operations[0].id,'contract');location.hash='#'+processStepId(D.operations[0],D.operations[0].events[0]);routeReaderHash()`);
+  assert.equal(r.run('tab'),'sequence');
+  assert.equal(r.run('current.id'),original.id);assert.equal(r.document.activeElement.id,id);
+  assert.equal(r.run(`inspectProcessStep(${JSON.stringify(original.id)},'absent',null)`),false);
+  assert.equal(JSON.stringify(data),before);
+ }
+});
+
+test('declared and missing-source step selection preserves meaning without inventing source evidence',()=>{
+ const data=behaviorFixture(),op=data.operations[0];
+ op.events=[{id:'declared',kind:'declared-boundary',text:'A declared request; delivery is unknown.',from:'caller',to:'service',sourceIds:[],dependencyIds:[]},{id:'missing',kind:'return',text:'The retained author describes a result; source text is not exported.',from:'service',to:'caller',sourceIds:[],dependencyIds:[]}];
+ const r=load(data),before=JSON.stringify(data),html=r.run('compactProcess(D.operations[0])');
+ for(const event of op.events){r.click({event:event.id,stepOperation:op.id});assert.equal(r.e('source-panel').hidden,true);assert.ok(html.includes(event.text));}
+ assert.doesNotMatch(html,/data-sources=/);assert.match(r.run('diagram(D.operations[0])'),/data-step-operation=/);assert.equal(JSON.stringify(data),before);
+});
+
+test('known evidence limits keep complete colon-containing paths and localized local impact',()=>{
+ const data=behaviorFixture(),path='src/main/kotlin/nested:module/DeeplyNestedRequestHandler.kt';
+ for(const language of ['en','ru']){
+  data.language=language;const r=load(data),parse=r.run(`evidenceLimit(${JSON.stringify('PARSE_ERROR:'+path)})`);
+  assert.ok(parse.includes(path));assert.ok(parse.includes('PARSE_ERROR:'+path));assert.doesNotMatch(parse,/entire file|whole file|весь файл/);
+  assert.match(parse,/evidence-limit-path/);assert.match(parse,language==='ru'?/Часть синтаксиса/:/Some syntax/);
+  const authority=r.run('evidenceLimit("AUTHORITY:SYNTAX")');assert.match(authority,language==='ru'?/синтаксисе исходного кода/:/source syntax/);
+  const unknown=r.run('evidenceLimit("FUTURE_CODE:part:one")');assert.match(unknown,/FUTURE_CODE:part:one/);assert.doesNotMatch(unknown,/could not be parsed|не удалось разобрать/);
+  assert.match(r.run('evidenceLimit("Only this selected branch is captured.")'),/Only this selected branch is captured\./);
+ }
+});
+
+test('field contracts show one exact direction and path per individually evidenced meaning',()=>{
+ const data=behaviorFixture(),op=data.operations[0];op.interfaceContracts=[{id:'five-fields',title:'Selection payload',kind:'payload',boundaries:[],rows:[
+  ['request','request.current.id','Select the current row.'],['request','request.origin.id','Identify its historical source.'],['request','request.quantity','Request this number of items.'],['response','response.current.id','Identify the accepted row.'],['event','message.quantity','Report the reserved item count.']
+ ].map(([direction,path,value],i)=>({id:'field-'+i,label:'Group / arbitrary label',field:{direction,path},value,sourceIds:['same-source'],dependencyIds:['dep']}))}];
+ const before=JSON.stringify(data);
+ for(const language of ['en','ru']){data.language=language;const r=load(data),html=r.run('interfaceContracts(entries.find(e=>e.id===D.operations[0].id))');
+  assert.equal((html.match(/class="contract-field-path"/g)||[]).length,5);assert.match(html,/<details class="payload-library" open>/);
+  for(const row of op.interfaceContracts[0].rows){assert.ok(html.includes(row.field.path));assert.ok(html.includes(row.value));assert.ok(html.includes('data-source-claim="'+row.id+'"'));}
+  assert.doesNotMatch(html,/Individual field meanings are not yet authored/);assert.equal(r.e('source-panel').hidden,true);
+ }
+ delete data.language;const original=JSON.parse(before);delete original.language;assert.equal(JSON.stringify(data),JSON.stringify(original));
+});
+
+test('legacy payload groups retain the complete original and precise repair without inferred field identities',()=>{
+ const data=behaviorFixture(),op=data.operations[0];op.interfaceContracts=[{id:'legacy',title:'Old payload',kind:'payload',boundaries:[],rows:[{id:'old-row',label:'id / quantity / origin.id',value:'A common group statement.',sourceIds:['same-source'],dependencyIds:['dep']}]}];
+ const before=JSON.stringify(data),r=load(data),html=r.run('interfaceContracts(entries.find(e=>e.id===D.operations[0].id))');
+ assert.match(html,/Individual field meanings are not yet authored/);assert.match(html,/Original grouped descriptions and evidence/);assert.match(html,/id \/ quantity \/ origin\.id/);assert.match(html,/A common group statement\./);assert.match(html,/No recapture is needed/);
+ assert.doesNotMatch(html,/class="contract-field-path"/);assert.equal(JSON.stringify(data),before);
 });

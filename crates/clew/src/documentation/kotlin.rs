@@ -2270,6 +2270,7 @@ mod tests {
             title: "Stock import message".into(),
             kind: "kafka".into(),
             rows: vec![InterfaceContractRow {
+                field: None,
                 id: "stock-topic".into(),
                 label: "Topic".into(),
                 value: "stock-import".into(),
