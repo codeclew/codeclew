@@ -178,9 +178,15 @@ fn process_profile_defers_provider_authority_until_recorded_expansion() {
     ]);
     assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
     assert!(
-        rejected
-            .to_string()
-            .contains("gap is duplicate, out of scope, or lacks an actionable reason"),
+        rejected["items"].as_array().unwrap().iter().any(|row| {
+            row["kind"] == "DIAGNOSTIC"
+                && row["record"]["code"] == "INVALID_PROPOSAL"
+                && row["record"]["nextAction"].as_str().is_some_and(|detail| {
+                    detail.contains("scenario:quantity")
+                        && detail.contains("conflicts")
+                        && detail.contains("process-overview")
+                })
+        }),
         "{rejected}"
     );
     let mut supported = good;
