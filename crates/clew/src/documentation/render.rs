@@ -1032,14 +1032,13 @@ pub(super) fn validate_with_retained(
             }
             let mut fields = BTreeSet::new();
             for row in &contract.rows {
-                if let Some(field) = &row.field {
-                    if !field.valid()
-                        || !fields.insert((field.direction.clone(), field.path.clone()))
-                    {
-                        return Err(invalid(
-                            "contract field requires a unique direction/path and an individual supported meaning",
-                        ));
-                    }
+                if let Some(field) = &row.field
+                    && (!field.valid()
+                        || !fields.insert((field.direction.clone(), field.path.clone())))
+                {
+                    return Err(invalid(
+                        "contract field requires a unique direction/path and an individual supported meaning",
+                    ));
                 }
                 if !store::valid_id(&row.id)
                     || !ids.insert(row.id.clone())
