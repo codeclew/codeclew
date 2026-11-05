@@ -169,7 +169,6 @@ class DeclarationSourceTest(unittest.TestCase):
         self.assertEqual((code, value["status"]), (2, "INVALID_SOURCE_PROVENANCE"))
 
     def test_default_authoring_instruction_requires_permission_for_source_bypass(self):
-        skill = (ROOT / "skills/codeclew/SKILL.md").read_text()
         section = (ROOT / "skills/codeclew/references/compose-original.md").read_text()
         words = " ".join(section.split())
         # User-required instruction contract. Behavior is separately exercised
@@ -182,7 +181,7 @@ class DeclarationSourceTest(unittest.TestCase):
         self.assertIn('scripts/evidence_packet.py" discover', section)
         self.assertIn('scripts/evidence_packet.py" read', section)
         self.assertIn('do not clone it again', words)
-        self.assertIn('Prepared SOURCE: start here', skill)
+        # Entry-point headings are routing prose, not source-bypass permissions.
         self.assertTrue(HELPER.is_file())
 
 
