@@ -37,6 +37,47 @@ the user explicitly authorizes that fallback. This is agent guidance, not
 OS/filesystem sandbox enforcement. Ordinary product implementation follows its
 repository workflow. Read saved helper artifacts through the supported inspector.
 
+Choose discovery from the retained capture's supported inventory. The file route
+below requires a registered `SOURCE_SCOPE`; it is not the entry route for every
+compiler-backed service. Native packet `selectionGuidance`, when supplied, reports
+`sourceInventoryAvailable` and `availableKinds`. A compiler Work without SOURCE
+inventory still retains declarations, thread context and their source references.
+
+For that compiler Work, prepare ordinary service Work on the same saved snapshot
+and use the existing [thread inventory/context reads](thread-preparation.md):
+
+```sh
+CLEW docs work prepare --root ROOT --subject service:SERVICE --snapshot SNAPSHOT --input REQUEST_JSON
+CLEW docs work read --root ROOT --work WORK --input SELECTION_JSON
+```
+
+Write REQUEST_JSON as:
+
+```json
+{"schema":"codeclew-documentation-work-request/1.0","audience":"Service documentation","maxItems":100,"maxBytes":49152}
+```
+
+Start SELECTION_JSON with
+`{"query":{"kind":"THREAD_INVENTORY"}}`; for each requested returned
+`rootDeclarations` ID, use
+`{"query":{"kind":"THREAD_CONTEXT","symbolContains":"EXACT_DECLARATION_ID"}}`.
+Finish each query's pagination and inspect omissions. Use ordinary `docs work
+read` for these context queries; `read-batch` accepts bounded SOURCE selections,
+not THREAD_CONTEXT queries. Follow returned declaration/source references, read
+their exact SOURCE IDs, then use [read-sources below](#retained-source-references)
+to obtain the ordinary citation sidecars. For relevant declarations outside a
+selected thread, use bounded SYMBOL queries and returned dependency/source
+references. Before recording an evidence gap, follow known available references
+needed to explain data shapes, contracts, configuration and effects. Missing file
+inventory does not make that retained evidence unavailable; available-but-unread
+evidence remains unfinished work. Preserve compiler/provider boundaries and actual
+unavailable evidence; fragment delivery does not establish whole-file coverage.
+Do not retry file inventory with altered metadata or recapture the service to make
+this route work. Both routes continue to the same human-page compose/bind/finalize
+workflow.
+
+For Work with registered SOURCE file inventory, use:
+
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/evidence_packet.py" discover-files --clew CLEW --root ROOT --service SERVICE --snapshot SNAPSHOT --prepare-work --page-items 100 --output-dir DISCOVERY
 ```
@@ -46,6 +87,10 @@ array `[{"file":"RETURNED_PATH"}]` covering the requested task. No fixed file
 allowlist or semantic pruning is implied. The helper drains native pages; failed
 reads and unresolved/omitted coverage remain visible. For routine inspection
 against context already received intact, use the existing repeat-reference option:
+
+The `--whole-files` example requires retained Kotlin SOURCE_SYNTAX whole-file
+records. For other or fragment-only captures, omit that flag as described below;
+file grouping alone does not establish complete original files.
 
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/evidence_packet.py" read-files --clew CLEW --root ROOT --service SERVICE --snapshot SNAPSHOT --packet DISCOVERY/packet.json --selection FILES_JSON --whole-files --output-format metadata --output-dir READ
@@ -100,7 +145,16 @@ Each result echoes its selection and contains `page` or `error`. Each selection
 returns one ordinary page; follow every `page.nextCursor` with the same selection.
 The helpers pool these continuations and preserve unresolved results explicitly.
 
-For contracts/configuration exposed by a native dependency's `sourceReferences`,
+## Retained source references
+
+To discover retained contracts without file inventory, use ordinary `docs work
+read` with `{"query":{"kind":"CONTRACT"}}`, continuing pagination and inspecting
+omissions. Returned dependency rows expose their original `sourceIds` and
+`sourceReferences`; use those exact Work-local references below. A global SOURCE
+ID returned by `docs context` alone is not a Work-local reference.
+
+For compiler declaration/thread source, or contracts/configuration exposed by a
+native dependency's `sourceReferences`,
 read the returned reference through `docs work read` to obtain its exact SOURCE
 ID. It need not be a SYMBOL or belong to the file-inventory profile. Select
 `[{"sourceId":"RETURNED_SOURCE_ID","sourceReference":"RETURNED_REFERENCE"}]`:
