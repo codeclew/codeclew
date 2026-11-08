@@ -57,6 +57,27 @@ class CitationEvidenceTest(unittest.TestCase):
             with self.assertRaises(A["Stop"]):
                 A["load"](manifest)
 
+    def test_candidate_lookup_reuses_validated_identity_without_rescanning_outcomes(self):
+        manifest, packet = self.fixture()
+        proof = A['R'](manifest.parent/'packet.json', packet['scope'], packet['work'])
+        discovery = json.loads((manifest.parent/'discovery.input.json').read_bytes())
+        row, selection = discovery['choices'][0], packet['outcomes'][0]['selection']
+        expected = proof.find(row, selection)
+        class NoTraversal(list):
+            def __iter__(self):
+                raise AssertionError('A lookup must not scan the entire validated packet')
+        proof.packet['outcomes'] = NoTraversal(proof.packet['outcomes'])
+        self.assertEqual(proof.find(row, selection), expected)
+        self.assertIsNone(proof.find_source({'id':'not-retained'}, {}))
+
+    def test_duplicate_identity_keeps_ambiguity_instead_of_selecting_one_outcome(self):
+        manifest, packet = self.fixture()
+        packet['outcomes'].append(copy.deepcopy(packet['outcomes'][0]))
+        refresh(manifest.parent, packet)
+        with self.assertRaises(A['Stop']) as error:
+            A['load'](manifest)
+        self.assertEqual(error.exception.status, 'AMBIGUOUS_REUSE_BINDING')
+
     def test_rehashed_native_parts_still_require_exact_identity_ranges_and_digests(self):
         changes = {
             "sourceId": "foreign", "reference": "s-other", "startByte": 1,

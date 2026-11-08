@@ -268,6 +268,14 @@ class ReadProof:
                 raise Stop("CONFLICTING_REUSE_RECEIPTS", exit_code=2)
             self.records[name] = receipt
             self.payloads[name] = json.loads(self.file(name))
+        self._outcomes = {}
+        for outcome in self.packet.get("outcomes", []):
+            status = outcome.get("status")
+            key = {"DECLARATION_SOURCE_RETURNED":"declaration", "RETAINED_SOURCE_RETURNED":"sourceBinding"}.get(status)
+            if key:
+                identity = outcome.get(key, {}).get("id")
+                if isinstance(identity, str):
+                    self._outcomes.setdefault((status, identity), []).append(outcome)
 
     def file(self, name):
         relative = Path(name)
@@ -389,8 +397,7 @@ class ReadProof:
         raise Stop("REUSE_NAVIGATION_PROOF_UNAVAILABLE", exit_code=2)
 
     def find(self, row, selection):
-        candidates = [o for o in self.packet.get("outcomes", []) if o.get("status") == "DECLARATION_SOURCE_RETURNED"
-                      and o.get("declaration", {}).get("id") == row["id"]]
+        candidates = self._outcomes.get(("DECLARATION_SOURCE_RETURNED", row["id"]), [])
         if not candidates:
             return None
         if any(o["declaration"].get("sourceIds") != row["sourceIds"]
@@ -447,8 +454,7 @@ class ReadProof:
         return copy.deepcopy(outcome), source
 
     def find_source(self, row, selection):
-        candidates = [o for o in self.packet.get("outcomes", [])
-                      if o.get("status") == "RETAINED_SOURCE_RETURNED" and o.get("sourceBinding", {}).get("id") == row["id"]]
+        candidates = self._outcomes.get(("RETAINED_SOURCE_RETURNED", row["id"]), [])
         if not candidates:return None
         if len(candidates) != 1:raise Stop("AMBIGUOUS_REUSE_SOURCE", exit_code=2)
         outcome = candidates[0]; binding = outcome["sourceBinding"]
