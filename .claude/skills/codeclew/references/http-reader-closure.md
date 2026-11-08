@@ -47,6 +47,11 @@ Review the actual draft against the entry/body/resource inventory already used:
 1. For each requested route, follow handler → meaningful helpers → effects →
    response/errors. Check route/version-specific branches and shared-service
    entry differences. Correct omissions in the original fragments.
+   Keep local adapters, tasks and senders distinct from external services,
+   databases and topics. Attribute local catch, null mapping and await to the
+   local participant, never the remote one. Show source-confirmed normal returns
+   for response-bearing operations, then local result mapping as separate work.
+   A Kafka sender call does not prove a broker acknowledgement.
    For a collection of strategies, handlers or aggregators, use the available
    structural inventory and supported refs to inspect relevant implementations
    with consequential external, database or queue effects, including conditional
