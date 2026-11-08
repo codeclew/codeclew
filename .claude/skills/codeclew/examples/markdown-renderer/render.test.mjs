@@ -27,6 +27,10 @@ test('authored sequences render every step with explicit timing, conditions and 
    assert.doesNotMatch(html,/language-clew-sequence|<pre>/);assert.match(html,/<figure class="clew-sequence">/);
    assert.match(html,/class="sequence-message await"/);assert.match(html,/class="sequence-message return reverse"/);
    assert.match(html,/class="sequence-text" open/);assert.match(html,/href="stock.html"/);assert.match(html,/href="post.html#check"/);
+   assert.match(html,/<div class="sequence-actors"><span>Client<\/span><span><a href="post.html#handler">Controller.post<\/a>/);
+   assert.match(html,/<span>2\. <a href="post.html#check">Start a check<\/a>/);
+   assert.match(html,/class="sequence-diagram" role="group" aria-label="Two entry branches"/);
+   assert.doesNotMatch(html,/class="sequence-diagram" aria-hidden/);
    for(const step of sequence().steps){assert.ok(html.includes(step.label));if(step.condition)assert.ok(html.includes(step.condition))}
    assert.equal((html.match(/class="sequence-direction"/g)||[]).length,5);
    assert.match(html,/@media\(max-width:700px\).*sequence-scroll,.sequence-hint\{display:none\}/);

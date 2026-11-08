@@ -1,4 +1,5 @@
 .clew-sequence{margin:24px 0;border:1px solid var(--line,#ccd5df);border-radius:10px;padding:18px;background:#fffdf8;min-width:0}
+.clew-sequence a:focus-visible{outline:3px solid var(--accent,#175aab);outline-offset:3px;border-radius:3px}
 .clew-sequence figcaption{font-weight:600;font-size:18px}
 .sequence-participants{font-size:13px;line-height:1.6}
 .sequence-hint{font-size:12px;color:var(--muted,#435364)}

@@ -133,8 +133,9 @@ No implicit branches, returns, ACK, ordering or completion are added.
 
 Targets use an existing flat `.md` page with an optional unique anchor. Invalid
 targets/schema fail before output is written. A client needs no fictitious page;
-external participants should link to their local integration description. Steps
-can link to the explained local section. These links are navigation, not clew
+external participants should link to their local integration description. Actor
+headers and message labels link directly to these destinations on the diagram;
+the same links remain available in its text trace. Steps can link to the explained local section. These links are navigation, not clew
 evidence: bind substantive JSON rows/conditions to their exact delivered handles
 through ordinary compose fragments, alongside bound prose. Retain existing source
 maps and originals. Rendering and link checks never certify semantic completeness.
