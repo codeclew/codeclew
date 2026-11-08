@@ -47,6 +47,12 @@ Review the actual draft against the entry/body/resource inventory already used:
 1. For each requested route, follow handler → meaningful helpers → effects →
    response/errors. Check route/version-specific branches and shared-service
    entry differences. Correct omissions in the original fragments.
+   For a collection of strategies, handlers or aggregators, use the available
+   structural inventory and supported refs to inspect relevant implementations
+   with consequential external, database or queue effects, including conditional
+   reads and writes. An "iterate handlers" summary is not the end of that thread.
+   Source declarations alone do not establish runtime registration, complete
+   dispatch coverage or item order; retain those limits explicitly.
 2. For every referenced constant, predicate or configuration/feature flag that
    changes the explanation, follow its returned supported refs. Read the missing
    relevant definition/body through the existing inspector/Work read route.
