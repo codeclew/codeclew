@@ -20,10 +20,15 @@
 .sequence-message.return{border-bottom-style:dashed}
 .sequence-message.async{border-bottom-style:dotted}
 .sequence-message.await{border-bottom-width:3px}
-.sequence-message.self{border-right:2px solid var(--ink,#16202b);border-radius:0 6px 6px 0;min-height:44px}
-.sequence-message.self>span{width:240px;box-sizing:border-box}
-.sequence-message.self.label-left>span{transform:translateX(-100%);margin-left:0}
-.sequence-message.self:after{right:auto;left:0;transform:rotate(-135deg)}
+.sequence-message.self{border:0;min-height:0;padding:0 8px}
+.sequence-message.self>span{margin:0;text-align:center}
+.sequence-message.self:after{content:none}
+.sequence-message.self.note>span{border:1px solid var(--line,#ccd5df);border-radius:6px;background:#faf8f1}
+.sequence-loop{display:block;position:relative;margin-left:50%;width:36px;height:24px;border:2px solid var(--ink,#16202b);border-left:0;border-radius:0 6px 6px 0;box-sizing:border-box}
+.sequence-loop:after{content:'';position:absolute;left:-1px;bottom:-5px;border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:6px solid var(--ink,#16202b)}
+.sequence-message.return .sequence-loop{border-style:dashed}
+.sequence-message.async .sequence-loop{border-style:dotted}
+.sequence-message.await .sequence-loop{border-width:3px;border-left:0}
 .sequence-text summary{cursor:pointer;min-height:32px;padding:8px 0;font-weight:600}
 .sequence-text ol{padding-left:26px}
 .sequence-text li{padding:8px 0 12px;line-height:1.5;overflow-wrap:anywhere}

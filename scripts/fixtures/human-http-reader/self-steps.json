@@ -1,0 +1,22 @@
+{
+  "title": "Four-participant self-step layout (synthetic)",
+  "participants": [
+    {"id":"client","title":"Client"},
+    {"id":"handler","title":"Handler","target":"self-steps.md#details"},
+    {"id":"calculation","title":"Calculation","target":"self-steps.md#details"},
+    {"id":"external","title":"External","target":"self-steps.md#details"}
+  ],
+  "steps": [
+    {"from":"client","to":"handler","kind":"call","label":"Submit calculation request"},
+    {"from":"handler","to":"calculation","kind":"call","label":"Calculate the requested result"},
+    {"from":"calculation","to":"calculation","kind":"note","label":"Keep the selected calculation inputs together","condition":"Only when the optional input is available","target":"self-steps.md#details"},
+    {"from":"calculation","to":"calculation","kind":"call","label":"Apply the selected calculation rule","condition":"Use the supplied value or its declared default","target":"self-steps.md#details"},
+    {"from":"calculation","to":"external","kind":"call","label":"Request the external adjustment"},
+    {"from":"external","to":"external","kind":"note","label":"Keep the accepted request fields together","condition":"Only after the incoming request is accepted","target":"self-steps.md#details"},
+    {"from":"external","to":"external","kind":"call","label":"Apply the external adjustment rule","condition":"Use the accepted fields and selected rule","target":"self-steps.md#details"},
+    {"from":"external","to":"calculation","kind":"return","label":"Return the adjustment result"},
+    {"from":"calculation","to":"external","kind":"async","label":"Start optional background reporting","condition":"Reporting enabled; caller does not wait here"},
+    {"from":"calculation","to":"handler","kind":"return","label":"Return the calculation result"},
+    {"from":"handler","to":"client","kind":"return","label":"Return the accepted response"}
+  ]
+}

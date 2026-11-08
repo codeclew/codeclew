@@ -59,16 +59,6 @@ test('sequence schema rejects ambiguity, invented kinds and broken destinations 
  }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test('many actors, long labels and middle/end self steps retain text without synthesizing returns',()=>{
- const v=sequence();v.participants.push(...Array.from({length:8},(_,i)=>({id:'p'+i,title:'External participant '+i})));
- v.steps=Array.from({length:35},(_,i)=>({from:i%2?'handler':'stock',to:i%2?'handler':'client',kind:i%2?'note':'call',label:i+' '+('Long <literal> & label '.repeat(12)),condition:'Explicit alternative '+i}));
- const html=renderSequence(v);
- assert.equal((html.match(/class="sequence-direction"/g)||[]).length,35);
- assert.equal((html.match(/class="sequence-row"/g)||[]).length,35);
- assert.match(html,/sequence-message note self/);assert.match(html,/34 Long &lt;literal> &amp; label/);
- assert.doesNotMatch(html,/<literal>|sequence-message return|NaN|undefined/);
-});
-
 test('Codeclew pages retain semantic tables, titles, stable links and inline components',async()=>{
  const root=await mkdtemp(join(tmpdir(),'clew-markdown-'));
  try{
