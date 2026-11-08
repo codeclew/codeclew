@@ -3,12 +3,20 @@ import {resolve,join,basename} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 import {validateNavigation,navigationView,insertHub} from './navigation.mjs';
+import {renderSequence,checkSequenceTargets} from './sequence.mjs';
 const require=createRequire(import.meta.url);
 const {marked}=await import(pathToFileURL(require.resolve('marked')));
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 
-function renderMarkdown(markdown){
- let html=marked.parse(markdown,{gfm:true});
+function renderMarkdown(markdown,sequences,words){
+ const renderer=new marked.Renderer();
+ const code=renderer.code.bind(renderer);
+ renderer.code=token=>{
+  if(token.lang?.trim()!=='clew-sequence')return code(token);
+  let value;try{value=JSON.parse(token.text)}catch{throw new Error('Invalid clew-sequence JSON')}
+  const html=renderSequence(value,words);sequences.push(value);return html;
+ };
+ let html=marked.parse(markdown,{gfm:true,renderer});
  const seen=new Map();
  html=html.replace(/<h([1-6])>(.*?)<\/h\1>/gs,(_,level,title)=>{
   const base=title.replace(/<[^>]*>/g,'').toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu,'').trim().replace(/\s+/g,'-');
@@ -33,18 +41,21 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  if(!['codeclew','neutral'].includes(theme)||!['en','ru'].includes(language))throw new Error('Use --theme codeclew|neutral and --lang en|ru');
  input=resolve(input);output=resolve(output);
  const files=(await readdir(input)).filter(x=>x.endsWith('.md')).sort();
+ const sequences=[],sequenceWords=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')).sequence:undefined;
  const pages=await Promise.all(files.map(async file=>{
-  const html=renderMarkdown(await readFile(join(input,file),'utf8'));
+  const html=renderMarkdown(await readFile(join(input,file),'utf8'),sequences,sequenceWords);
   const heading=html.match(/<h1\b[^>]*>(.*?)<\/h1>/s);
   return {file,html,title:heading?plain(heading[1]):basename(file,'.md')};
  }));
+ checkSequenceTargets(sequences,pages);
+ const sequenceStyle=sequences.length?await readFile(new URL('./assets/sequence.css',import.meta.url),'utf8'):'';
  const explicit=navigation===undefined?null:validateNavigation(typeof navigation==='string'?JSON.parse(await readFile(navigation,'utf8')):navigation,pages);
  await mkdir(output,{recursive:true});
  let assets;
  if(theme==='codeclew'){
   const directory=fileURLToPath(new URL('./assets/',import.meta.url));
   const [reader,type,style,icon,cat]=await Promise.all(['reader.css','typography.css','markdown.css','favicon.svg','cat-standing.svg'].map(x=>readFile(join(directory,x),'utf8')));
-  assets={style:reader+'\n'+type+'\n'+style,icon,cat};
+  assets={style:reader+'\n'+type+'\n'+style+'\n'+sequenceStyle,icon,cat};
   await writeFile(join(output,'favicon.svg'),icon);
  }
  const words=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')):{skip:'Skip to content',pages:'Pages',navigation:'Documentation pages',table:'Table; scroll horizontally when needed',documentation:'Documentation',services:'Services',overview:'Overview',starts:'Starts here',data:'Data',participation:'Shared-route participation',routes:'Cross-service routes',otherPages:'Other pages',breadcrumb:'Current location',serviceNavigation:'Service navigation',routeParticipants:'Route participants',origin:'Route origin',inRoute:'In this route',kind_http:'HTTP',kind_kafka:'Kafka',kind_scheduled:'Scheduled',kind_background:'Background',kind_manual:'Manual',kind_other:'Other'};
@@ -52,12 +63,12 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  const home=explicit?explicit.home.to.href:files.includes('index.md')?'index.html':files[0]?.replace(/\.md$/,'.html');
  for(const {file,html,title} of pages){
   let page;
-  if(theme==='neutral')page=neutralPage(html,files,label);
+  if(theme==='neutral'){page=neutralPage(html,files,label);if(sequenceStyle)page=page.replace('</style>',sequenceStyle+'</style>')}
   else{
    let mainId='clew-reader-main';while(html.includes(`id="${mainId}"`))mainId+='-content';
    const view=explicit?navigationView(explicit,file,words):null;
    const links=view?view.menu:ordered.map(p=>`<a href="${escape(p.file.replace(/\.md$/,'.html'))}"${p.file===file?' aria-current="page"':''}>${escape(p.title)}</a>`).join('');
-   const script=`const menu=document.querySelector('.guide-local-navigation');const narrow=matchMedia('(max-width:950px)');const resize=()=>{menu.open=!narrow.matches};resize();narrow.addEventListener('change',resize);for(const table of document.querySelectorAll('main table')){const region=document.createElement('div');region.className='table-scroll';region.tabIndex=0;region.setAttribute('role','region');region.setAttribute('aria-label',${JSON.stringify(words.table)});table.before(region);region.append(table);for(const th of table.querySelectorAll('thead th'))th.scope='col'}`;
+   const script=`const sequenceNarrow=matchMedia('(max-width:700px)');const syncSequences=()=>{for(const trace of document.querySelectorAll('.sequence-text'))trace.open=sequenceNarrow.matches};syncSequences();sequenceNarrow.addEventListener('change',syncSequences);const menu=document.querySelector('.guide-local-navigation');const narrow=matchMedia('(max-width:950px)');const resize=()=>{menu.open=!narrow.matches};resize();narrow.addEventListener('change',resize);for(const table of document.querySelectorAll('main table')){const region=document.createElement('div');region.className='table-scroll';region.tabIndex=0;region.setAttribute('role','region');region.setAttribute('aria-label',${JSON.stringify(words.table)});table.before(region);region.append(table);for(const th of table.querySelectorAll('thead th'))th.scope='col'}`;
    const locationScript=`const syncLocation=()=>{let id='';try{id=decodeURIComponent(location.hash.slice(1))}catch{}const target=id?document.getElementById(id):null;const heading=target&&target.tagName!=='MAIN'?(target.matches('h1,h2,h3,h4,h5,h6')?target:target.querySelector('h1,h2,h3,h4,h5,h6')):null;const crumb=document.querySelector('.breadcrumb-section');if(crumb){crumb.hidden=!heading;crumb.replaceChildren();if(heading){crumb.append(' / ');const link=document.createElement('a');link.href='#'+encodeURIComponent(id);link.textContent=heading.textContent;link.setAttribute('aria-current','location');crumb.append(link)}}for(const link of document.querySelectorAll('.guide-local-navigation a[data-page]')){if(link.dataset.page===document.body.dataset.readerPage&&link.dataset.fragment){if(link.dataset.fragment===id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}};syncLocation();addEventListener('hashchange',syncLocation);`;
    page=`<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12334e"><title>${escape(title)} — ${escape(label)}</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>${assets.style}</style></head><body class="markdown-reader" data-reader-page="${escape(file)}"><a class="skip-link" href="#${mainId}">${escape(words.skip)}</a><header class="reader-nav"><a class="reader-brand" href="${escape(home||'#')}">${decoration(assets.icon)}<span>Codeclew</span></a><span class="reader-project">${escape(label)}</span></header><div class="guide-layout"><aside class="guide-toc"><details class="guide-local-navigation" open><summary>${escape(words.pages)}</summary><nav aria-label="${escape(words.navigation)}">${links}</nav></details></aside><main class="reader-guide" id="${mainId}">${view?view.breadcrumb:''}${insertHub(html,view?.hub)}<footer class="markdown-footer">${decoration(assets.cat)}<span>Codeclew · ${escape(words.documentation)}</span></footer></main></div><script>${script}${view?locationScript:''}</script></body></html>`;
   }

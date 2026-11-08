@@ -23,6 +23,9 @@ non-overlapping screenshot into semantic or UX acceptance.
 4. **Process:** Read a compact overview, then inspect branches/errors locally.
    Distinguish synchronous work, waiting, parallel waiting and background work
    only when the selected source supports that interpretation.
+   For HTTP, navigate method/path → its endpoint page → exact handler → thread
+   and sequence. Follow [bounded explanation closure](http-reader-closure.md),
+   including shared-service entry branches and integration participants.
 
 ## Content and additive contracts
 

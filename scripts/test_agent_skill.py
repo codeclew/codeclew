@@ -65,7 +65,7 @@ class AgentSkillTest(unittest.TestCase):
             shutil.copytree(CANONICAL_SKILL, copied)
             for relative in ["SKILL.md", "README.md", "references/compose-original.md",
                              "references/authoring-example.md", "references/service-documentation.md",
-                             "references/task-oriented-readers.md", "examples/markdown-renderer/README.md"]:
+                             "references/task-oriented-readers.md", "references/http-reader-closure.md", "examples/markdown-renderer/README.md"]:
                 self.assertEqual(unresolved_markdown_links(copied, copied / relative), [], relative)
 
     def test_relative_reader_link_uses_its_document_directory(self) -> None:

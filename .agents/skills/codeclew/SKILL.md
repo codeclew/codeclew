@@ -31,6 +31,9 @@ then return to the same human-page route.
 Before reporting documentation done, apply the
 [requested-scope completion check](references/compose-original.md#requested-scope-completion)
 and [task-oriented reader checklist](references/task-oriented-readers.md).
+For HTTP scope, apply [endpoint and explanation closure](references/http-reader-closure.md):
+each method/path leads to its own handler-started thread and sequence, with
+consequential referenced definitions read before finalization.
 A raw catalogue, generated structure, GAP cards or a successful render is a draft,
 not a completed explanation. Preserve explicit native and historical routes.
 

@@ -98,3 +98,47 @@ No source capture, model,
 network request or application code execution is performed by this renderer;
 dependency installation is a separate explicit setup step. Keep the installed
 skill unchanged and retain its version/digest alongside your chosen renderer.
+
+## Authored sequences
+
+The `clew-sequence` fence renders an authored sequence rather than a code listing.
+It uses finite HTML/CSS lifelines and arrows; no new dependency, source inference,
+graph engine or network request is involved. Desktop shows the diagram and a
+disclosure with the same numbered steps. Narrow screens show the text trace,
+keeping sender, receiver, action and condition together without horizontal panning.
+Without JavaScript the trace stays open. Neutral pages also render sequences.
+
+````markdown
+```clew-sequence
+{"title":"Accept an item","participants":[
+  {"id":"client","title":"Client"},
+  {"id":"handler","title":"ItemController.post","target":"post.md#handler"},
+  {"id":"stock","title":"Stock API","target":"integrations.md#stock"}
+],"steps":[
+  {"from":"client","to":"handler","kind":"call","label":"POST /v1/items","target":"post.md#handler"},
+  {"from":"handler","to":"stock","kind":"call","label":"Check stock","condition":"Only when stock.check is enabled","target":"post.md#check"},
+  {"from":"stock","to":"handler","kind":"return","label":"Stock result","condition":"Check was made"},
+  {"from":"handler","to":"client","kind":"return","label":"200 with result","condition":"Validation and stock check succeed"}
+]}
+```
+````
+
+Top-level keys are exactly `title`, `participants`, `steps`. Participants have
+unique `id`, nonempty `title` and optional `target`. Steps have `from`, `to`,
+`kind`, `label`, optional `condition` and `target`. Kinds: `call` (no implicit wait),
+`return`, `async` (start without waiting), `await` (explicit evidenced wait),
+`note` (local work/decision, usually same sender and receiver). Every condition
+applies only to its own row: write else/skip/error alternatives explicitly.
+No implicit branches, returns, ACK, ordering or completion are added.
+
+Targets use an existing flat `.md` page with an optional unique anchor. Invalid
+targets/schema fail before output is written. A client needs no fictitious page;
+external participants should link to their local integration description. Steps
+can link to the explained local section. These links are navigation, not clew
+evidence: bind substantive JSON rows/conditions to their exact delivered handles
+through ordinary compose fragments, alongside bound prose. Retain existing source
+maps and originals. Rendering and link checks never certify semantic completeness.
+
+Keep labels concise; full explanations and source/provenance belong in linked
+steps and secondary details. Multiple consecutive blocks may split a long
+sequence at meaningful boundaries while preserving all meaningful work.

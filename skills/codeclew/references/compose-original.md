@@ -309,6 +309,9 @@ evidence. Keep concise pages concise; a short overview needs no mandatory templa
   and concise outcome comparisons where useful, without a universal stage count.
 - HTTP/integrations: direction, endpoint/topic, payload/result and important
   errors/timeouts. Distinguish declared contracts from visible runtime behavior.
+  For HTTP scope, follow [endpoint and explanation closure](http-reader-closure.md):
+  inventory every method/path, give each a handler-started page/sequence, and
+  resolve consequential constants, predicates and flag key/default/provider refs.
 - Presentation: use meaningful headings, short paragraphs, numbered ordered work,
   bullets for parallel alternatives and tables for comparable items. Long pages
   benefit from local contents links. Keep primary behavior and key failures visible;

@@ -5,6 +5,65 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {renderDirectory} from './render.mjs';
 import {validateNavigation} from './navigation.mjs';
+import {validateSequence,renderSequence} from './sequence.mjs';
+
+const sequence=()=>({title:'Two entry branches',participants:[{id:'client',title:'Client'},{id:'handler',title:'Controller.post',target:'post.md#handler'},{id:'stock',title:'Stock API',target:'stock.md'}],steps:[
+ {from:'client',to:'handler',kind:'call',label:'POST /v1/items',target:'post.md#handler'},
+ {from:'handler',to:'stock',kind:'async',label:'Start a check',condition:'Flag enabled',target:'post.md#check'},
+ {from:'handler',to:'stock',kind:'await',label:'Await the started check',condition:'Flag enabled'},
+ {from:'stock',to:'handler',kind:'return',label:'Checked value',condition:'Check succeeds'},
+ {from:'handler',to:'client',kind:'return',label:'200 result',condition:'Successful request'}]});
+
+test('authored sequences render every step with explicit timing, conditions and local links',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-sequence-'));
+ try{
+  const input=join(root,'input');await mkdir(input);
+  await writeFile(join(input,'post.md'),'# Entry\n\n## Handler\n\n```clew-sequence\n'+JSON.stringify(sequence())+'\n```\n\n## Check\n\nBound explanation.\n');
+  await writeFile(join(input,'stock.md'),'# Stock\n');
+  for(const theme of ['codeclew','neutral']){
+   const a=join(root,theme),b=join(root,theme+'-again');
+   await renderDirectory(input,a,{theme});await renderDirectory(input,b,{theme});
+   const html=await readFile(join(a,'post.html'),'utf8');assert.equal(html,await readFile(join(b,'post.html'),'utf8'));
+   assert.doesNotMatch(html,/language-clew-sequence|<pre>/);assert.match(html,/<figure class="clew-sequence">/);
+   assert.match(html,/class="sequence-message await"/);assert.match(html,/class="sequence-message return reverse"/);
+   assert.match(html,/class="sequence-text" open/);assert.match(html,/href="stock.html"/);assert.match(html,/href="post.html#check"/);
+   for(const step of sequence().steps){assert.ok(html.includes(step.label));if(step.condition)assert.ok(html.includes(step.condition))}
+   assert.equal((html.match(/class="sequence-direction"/g)||[]).length,5);
+   assert.match(html,/@media\(max-width:700px\).*sequence-scroll,.sequence-hint\{display:none\}/);
+  }
+  await renderDirectory(input,join(root,'ru'),{language:'ru'});
+  const words=JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8'));
+  assert.ok((await readFile(join(root,'ru/post.html'),'utf8')).includes(words.sequence.await));
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test('sequence schema rejects ambiguity, invented kinds and broken destinations before writing',async()=>{
+ for(const mutate of [v=>v.participants.push(v.participants[0]),v=>v.steps[0].from='missing',v=>v.steps[0].kind='ack',v=>v.steps[0].ordered=true,v=>v.steps[0].target='https://example.org/x.md',v=>v.steps[0].condition='']){
+  const v=sequence();mutate(v);assert.throws(()=>validateSequence(v),/Invalid sequence/);
+ }
+ const root=await mkdtemp(join(tmpdir(),'clew-sequence-invalid-'));
+ try{
+  const input=join(root,'input');await mkdir(input);
+  for(const bad of ['missing.md','post.md#absent']){
+   const v=sequence();v.participants[1].target=bad;v.participants[2].target=undefined;v.steps.forEach(s=>delete s.target);
+   await writeFile(join(input,'post.md'),'# Handler\n\n```clew-sequence\n'+JSON.stringify(v)+'\n```\n');
+   await assert.rejects(renderDirectory(input,join(root,'output')),/page does not exist|anchor missing/);
+   await assert.rejects(readFile(join(root,'output/post.html')));
+  }
+  await writeFile(join(input,'post.md'),'```clew-sequence\n{bad}\n```');
+  await assert.rejects(renderDirectory(input,join(root,'bad-json')),/Invalid clew-sequence JSON/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test('many actors, long labels and middle/end self steps retain text without synthesizing returns',()=>{
+ const v=sequence();v.participants.push(...Array.from({length:8},(_,i)=>({id:'p'+i,title:'External participant '+i})));
+ v.steps=Array.from({length:35},(_,i)=>({from:i%2?'handler':'stock',to:i%2?'handler':'client',kind:i%2?'note':'call',label:i+' '+('Long <literal> & label '.repeat(12)),condition:'Explicit alternative '+i}));
+ const html=renderSequence(v);
+ assert.equal((html.match(/class="sequence-direction"/g)||[]).length,35);
+ assert.equal((html.match(/class="sequence-row"/g)||[]).length,35);
+ assert.match(html,/sequence-message note self/);assert.match(html,/34 Long &lt;literal> &amp; label/);
+ assert.doesNotMatch(html,/<literal>|sequence-message return|NaN|undefined/);
+});
 
 test('Codeclew pages retain semantic tables, titles, stable links and inline components',async()=>{
  const root=await mkdtemp(join(tmpdir(),'clew-markdown-'));
