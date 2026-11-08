@@ -29,6 +29,9 @@ test('source footers keep local linked ranges and refuse changed excerpts, maps,
   await reset();await renderDirectory(input,join(root,'good'),{sources:bundleFile,language:'ru'});
   const html=await readFile(join(root,'good/reader.html'),'utf8');
   assert.match(html,/<h2>\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438<\/h2>/);
+  assert.match(html,/<details class="source-fragments"><summary>/);
+  assert.doesNotMatch(html,/<details class="source-fragments" open/);
+  assert.ok(html.indexOf('class="source-fragments"')<html.indexOf('class="source-excerpt"'));
   assert.match(html,/href="#clew-source-0-0">40<\/a>/);assert.match(html,/id="clew-source-0-0"/);
   assert.match(html,/src\/OrderService.kt/);assert.match(html,/&lt;literal>/);assert.doesNotMatch(html,/<literal>|href="https?:/);
   const cases=[

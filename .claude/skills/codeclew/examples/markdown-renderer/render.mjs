@@ -43,11 +43,12 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  input=resolve(input);output=resolve(output);
  const files=(await readdir(input)).filter(x=>x.endsWith('.md')).sort();
  const sourceBundle=sources?await loadSources(sources):null;
- const sequences=[],sequenceWords=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')).sequence:undefined;
+ const locale=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')):null;
+ const sequences=[],sequenceWords=locale?.sequence;
  const pages=await Promise.all(files.map(async file=>{
   const markdown=await readFile(join(input,file),'utf8');
   let html=renderMarkdown(markdown,sequences,sequenceWords);
-  html+=sourceFooter(sourceBundle,file,markdown,html,language);
+  html+=sourceFooter(sourceBundle,file,markdown,html,locale?.sources);
   const heading=html.match(/<h1\b[^>]*>(.*?)<\/h1>/s);
   return {file,html,title:heading?plain(heading[1]):basename(file,'.md')};
  }));
@@ -63,7 +64,7 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
   assets={style:reader+'\n'+type+'\n'+style+'\n'+sequenceStyle,icon,cat};
   await writeFile(join(output,'favicon.svg'),icon);
  }
- const words=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')):{skip:'Skip to content',pages:'Pages',navigation:'Documentation pages',table:'Table; scroll horizontally when needed',documentation:'Documentation',services:'Services',overview:'Overview',starts:'Starts here',data:'Data',participation:'Shared-route participation',routes:'Cross-service routes',otherPages:'Other pages',breadcrumb:'Current location',serviceNavigation:'Service navigation',routeParticipants:'Route participants',origin:'Route origin',inRoute:'In this route',kind_http:'HTTP',kind_kafka:'Kafka',kind_scheduled:'Scheduled',kind_background:'Background',kind_manual:'Manual',kind_other:'Other'};
+ const words=locale||{skip:'Skip to content',pages:'Pages',navigation:'Documentation pages',table:'Table; scroll horizontally when needed',documentation:'Documentation',services:'Services',overview:'Overview',starts:'Starts here',data:'Data',participation:'Shared-route participation',routes:'Cross-service routes',otherPages:'Other pages',breadcrumb:'Current location',serviceNavigation:'Service navigation',routeParticipants:'Route participants',origin:'Route origin',inRoute:'In this route',kind_http:'HTTP',kind_kafka:'Kafka',kind_scheduled:'Scheduled',kind_background:'Background',kind_manual:'Manual',kind_other:'Other'};
  const ordered=[...pages].sort((a,b)=>Number(b.file==='index.md')-Number(a.file==='index.md'));
  const home=explicit?explicit.home.to.href:files.includes('index.md')?'index.html':files[0]?.replace(/\.md$/,'.html');
  for(const {file,html,title} of pages){
