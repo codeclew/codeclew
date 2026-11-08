@@ -4,6 +4,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 import {validateNavigation,navigationView,insertHub} from './navigation.mjs';
 import {renderSequence,checkSequenceTargets} from './sequence.mjs';
+import {loadSources,sourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
 const require=createRequire(import.meta.url);
 const {marked}=await import(pathToFileURL(require.resolve('marked')));
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
@@ -37,16 +38,20 @@ function decoration(svg){
  return svg.slice(svg.indexOf('<svg')).replace(/<title\b[^>]*>.*?<\/title>/gs,'').replace(/\s(?:role|aria-labelledby)="[^"]*"/g,'').replace('<svg','<svg aria-hidden="true" focusable="false"');
 }
 
-export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation}={}){
+export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation,sources}={}){
  if(!['codeclew','neutral'].includes(theme)||!['en','ru'].includes(language))throw new Error('Use --theme codeclew|neutral and --lang en|ru');
  input=resolve(input);output=resolve(output);
  const files=(await readdir(input)).filter(x=>x.endsWith('.md')).sort();
+ const sourceBundle=sources?await loadSources(sources):null;
  const sequences=[],sequenceWords=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')).sequence:undefined;
  const pages=await Promise.all(files.map(async file=>{
-  const html=renderMarkdown(await readFile(join(input,file),'utf8'),sequences,sequenceWords);
+  const markdown=await readFile(join(input,file),'utf8');
+  let html=renderMarkdown(markdown,sequences,sequenceWords);
+  html+=sourceFooter(sourceBundle,file,markdown,html,language);
   const heading=html.match(/<h1\b[^>]*>(.*?)<\/h1>/s);
   return {file,html,title:heading?plain(heading[1]):basename(file,'.md')};
  }));
+ if(sourceBundle&&(sourceBundle.pages.length!==files.length||new Set(sourceBundle.pages.map(p=>p.page)).size!==files.length))throw Error('Source footer page inventory mismatch');
  checkSequenceTargets(sequences,pages);
  const sequenceStyle=sequences.length?await readFile(new URL('./assets/sequence.css',import.meta.url),'utf8'):'';
  const explicit=navigation===undefined?null:validateNavigation(typeof navigation==='string'?JSON.parse(await readFile(navigation,'utf8')):navigation,pages);
@@ -72,6 +77,7 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
    const locationScript=`const syncLocation=()=>{let id='';try{id=decodeURIComponent(location.hash.slice(1))}catch{}const target=id?document.getElementById(id):null;const heading=target&&target.tagName!=='MAIN'?(target.matches('h1,h2,h3,h4,h5,h6')?target:target.querySelector('h1,h2,h3,h4,h5,h6')):null;const crumb=document.querySelector('.breadcrumb-section');if(crumb){crumb.hidden=!heading;crumb.replaceChildren();if(heading){crumb.append(' / ');const link=document.createElement('a');link.href='#'+encodeURIComponent(id);link.textContent=heading.textContent;link.setAttribute('aria-current','location');crumb.append(link)}}for(const link of document.querySelectorAll('.guide-local-navigation a[data-page]')){if(link.dataset.page===document.body.dataset.readerPage&&link.dataset.fragment){if(link.dataset.fragment===id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}};syncLocation();addEventListener('hashchange',syncLocation);`;
    page=`<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12334e"><title>${escape(title)} — ${escape(label)}</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>${assets.style}</style></head><body class="markdown-reader" data-reader-page="${escape(file)}"><a class="skip-link" href="#${mainId}">${escape(words.skip)}</a><header class="reader-nav"><a class="reader-brand" href="${escape(home||'#')}">${decoration(assets.icon)}<span>Codeclew</span></a><span class="reader-project">${escape(label)}</span></header><div class="guide-layout"><aside class="guide-toc"><details class="guide-local-navigation" open><summary>${escape(words.pages)}</summary><nav aria-label="${escape(words.navigation)}">${links}</nav></details></aside><main class="reader-guide" id="${mainId}">${view?view.breadcrumb:''}${insertHub(html,view?.hub)}<footer class="markdown-footer">${decoration(assets.cat)}<span>Codeclew · ${escape(words.documentation)}</span></footer></main></div><script>${script}${view?locationScript:''}</script></body></html>`;
   }
+  if(sourceBundle)page=page.replace('</style>',sourcesStyle+'</style>').replace('</main>','</main><script>'+sourcesScript+'</script>');
   await writeFile(join(output,file.replace(/\.md$/,'.html')),page);
  }
  return {input,output,files,theme,language,renderer:'marked; authored Markdown and checked source components retained'};
@@ -79,8 +85,8 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
 
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
  const args=process.argv.slice(2);const input=args.shift(),output=args.shift();
- if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE]');
+ if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE]');
  const options={};if(args.length&&!args[0].startsWith('--'))options.label=args.shift();
- while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else throw new Error('Unknown renderer option: '+key)}
+ while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else throw new Error('Unknown renderer option: '+key)}
  console.log(JSON.stringify(await renderDirectory(input,output,options)));
 }

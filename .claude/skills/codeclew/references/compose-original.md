@@ -8,6 +8,9 @@ export commands, with a checked local HTML/standalone preview. Explicit MDX or
 Docusaurus requests keep their existing selected export route. Interaction
 is optional. Essential purpose, behavior and failures are visible immediately;
 source, provenance and technical detail are secondary.
+For checked previews, include the mechanical per-page
+[Sources footer](../examples/markdown-renderer/README.md#checked-local-sources-footer)
+from existing bindings and cited retained excerpts; do not reauthor source lists.
 
 Resolve one installed CODECLEW_SKILL_DIR and admitted CLEW launcher. For a new
 repository, use [supported registration and capture](service-documentation.md#start-or-recover)

@@ -143,3 +143,37 @@ maps and originals. Rendering and link checks never certify semantic completenes
 Keep labels concise; full explanations and source/provenance belong in linked
 steps and secondary details. Multiple consecutive blocks may split a long
 sequence at meaningful boundaries while preserving all meaningful work.
+
+## Checked local sources footer
+
+After bind/finalize, materialize cited excerpts without changing Markdown/maps:
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_sources.py" \
+  --index /path/to/checked/index.json --manifest /path/to/citations.json \
+  --view /path/to/saved-source-union.json --output /path/to/new-sources.json
+```
+
+`--index` also accepts the existing Markdown `sources.json` checked-index pointer.
+Repeat `--manifest`/`--view` for multiple inputs. Saved supported author-read/union
+views reuse exact UTF-8 `byteSlice` ranges, validated against citation identities,
+locations and text digests. With views, missing/conflicting excerpts refuse rather
+than fetching again. Without views, one bounded grouped read per manifest/batch
+obtains only cited ranges; no capture or source fallback. SOURCE_NATIVE keeps its
+existing explicit `--clew` and `--root` admission arguments.
+
+Add `--sources /path/to/new-sources.json` to the owned renderer argv. Every page
+gets Sources (localized for Russian): one file row per service/path/revision/
+snapshot, deduplicated exact ranges separated by `;`. Each range opens a local
+verbatim excerpt on that page. Full paths/versions remain discernible; missing
+Git mappings need no invented URL. No extra pages or full cache are exported.
+Changed index/maps/Markdown refuse stale bundles. Refresh after binding changes.
+
+For a render-only update, render the existing checked bound Markdown and run
+`reader_export_check.py` against the same checked index and original authored
+root with the new renderer argv/output. Reuse the existing bind; do not author or
+finalize again just for this presentation change. Keep originals/maps authoritative.
+
+Portable `npm test` is a smoke check. Full repository renderer regressions run as
+`CODECLEW_MARKDOWN_RENDERER=/path/to/npm-renderer node --test scripts/test_markdown_renderer.mjs`;
+sequence regression coverage also uses `node --test scripts/test_markdown_sequence.mjs`.
