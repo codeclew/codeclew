@@ -73,6 +73,9 @@ Review the actual draft against the entry/body/resource inventory already used:
    participants ↔ integration catalogue. Check field/default/condition explanations
    in both directions against the selected source. Reuse exact delivered handles;
    do not fetch whole files merely to recover an already known cite.
+   Preserve literal newline and block separators when replacing or assembling
+   fragments. Inspect composed headings and table rows; count rendered HTTP
+   inventory rows against the entries, not merely links, to catch merged rows.
 
 Keep this bounded to the requested scope and consequential references. No blanket
 full reread, global cache scan, mandatory new model or production external critic
