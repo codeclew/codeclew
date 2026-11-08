@@ -90,6 +90,12 @@ if [ "${1:-}" = pack ]; then
   exit 2
 fi
 
+# The older installer calls the newly activated launcher here. This hook runs
+# once per installed release; it never creates absent agent skill copies.
+if [ "${1:-}" = capabilities ] && [ -L "$ENTRYPOINT" ] && [ -f "$RELEASE_ROOT/source/scripts/refresh_agent_skills.py" ]; then
+  python3 -I -S -B "$RELEASE_ROOT/source/scripts/refresh_agent_skills.py" "$RELEASE_ROOT"
+fi
+
 SEED_PATH=
 SEED_COUNT=0
 for candidate in "$RELEASE_ROOT"/seed/release-N-*/seed.json; do

@@ -146,6 +146,13 @@ sequence at meaningful boundaries while preserving all meaningful work.
 
 ## Checked local sources footer
 
+For a new full guide, use `reader_export_check.py finalize --source-footers` with
+this renderer's ordinary argv. It binds once, materializes local excerpts and
+checks the final output, recording the effective argv and source bundle. Add
+`--source-view SAVED_VIEW` for existing supported views/unions. The following
+materialization command is for refreshing an already checked render without
+another bind.
+
 After bind/finalize, materialize cited excerpts without changing Markdown/maps:
 
 ```sh

@@ -109,6 +109,7 @@ MINIMAL_SOURCE_FILES = (
     "clew",
     "packaging/macos/upgrade",
     "scripts/install_agent_skill.py",
+    "scripts/refresh_agent_skills.py",
     "site/install.sh",
 )
 

@@ -1,4 +1,4 @@
-import {readFile,writeFile,readdir,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,readdir,mkdir,realpath} from 'node:fs/promises';
 import {resolve,join,basename} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
@@ -84,7 +84,8 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  return {input,output,files,theme,language,renderer:'marked; authored Markdown and checked source components retained'};
 }
 
-if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
+const entry=process.argv[1]?await realpath(process.argv[1]).catch(()=>null):null;
+if(entry&&pathToFileURL(entry).href===import.meta.url){
  const args=process.argv.slice(2);const input=args.shift(),output=args.shift();
  if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE]');
  const options={};if(args.length&&!args[0].startsWith('--'))options.label=args.shift();

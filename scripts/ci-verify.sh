@@ -136,10 +136,12 @@ ci_run checks python3 -I -S scripts/test_reader_metadata.py
 ci_run checks python3 -I -S scripts/test_page_citations.py
 ci_run checks python3 -I -S scripts/test_page_compose.py
 ci_run checks python3 -I -S scripts/test_reader_export_check.py
+ci_run checks python3 -I -S scripts/test_reader_sources.py
 ci_run checks python3 -I -S scripts/test_reader_plan_preflight.py
 ci_run checks python3 -I -S scripts/test_prepared_source.py
 ci_run checks python3 -I -S scripts/test_pilot.py
 ci_run checks python3 -I -S scripts/test_macos_distribution.py
+ci_run checks python3 -I -S scripts/test_refresh_agent_skills.py
 ci_run checks python3 -I -S scripts/test_support_diagnostics.py
 ci_run checks python3 -I -S scripts/test_build_macos_release.py
 ci_run checks python3 -I -S scripts/test_prepare_release_candidate.py

@@ -211,12 +211,16 @@ Installation is atomic and idempotent. A different existing `codeclew` skill is
 preserved unless `--force` is explicit. The skill prefers `clew` on `PATH`, uses
 `doctor repository` to discover exact contours when necessary, requires atomic
 task admission before research, checks freshness, and prevents publication
-without explicit user approval. Product upgrades do not automatically replace
-personal or project skill copies. Run the installer again after upgrading
-Codeclew so the skill remains version-matched. If a different copy is reported,
-review and back up local customizations, then explicitly replace that selected
-copy, for example `clew skill install --agent codex --force`. Repeat with
-`--agent claude` or `--project` only for the corresponding intended destination.
+without explicit user approval. From 0.14.8, installed release activation refreshes
+unchanged recorded copies once per version transition. Standard personal copies
+from 0.14.7 migrate only on an exact complete match with a verified previous
+bundle in the same install prefix. Fresh isolated installs do not refresh global
+copies. Project and custom destinations refresh only when explicitly recorded
+by `clew skill install`; there is no repository scan or AGENTS rewrite.
+Modified, unknown and pinned copies remain intact. Use `clew skill install --pin`
+to pin a selected installed copy. Review and back up customizations before an
+explicit replacement, for example `clew skill install --agent codex --force`.
+Repeat with `--agent claude` or `--project` only for the intended destination.
 An agent holding older instructions must reload the updated skill; upgrading the
 binary alone does not change its existing context.
 

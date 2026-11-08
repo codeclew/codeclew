@@ -115,13 +115,19 @@ acceptance.
 
 ## Refresh agent instructions after an upgrade
 
-The release bundles its skill, but upgrading the CLI does not automatically
-replace personal or project skill copies. Run `clew skill install --agent codex`
-or the selected client's equivalent. If it reports a different package, review
-and back up local edits before using the same command with `--force`. For a
-project-scoped installation, use `--project /absolute/target-repository` and
-select the intended agent. Ask the working agent to reload the updated skill;
-its existing context may still contain older instructions.
+From 0.14.8, activation of a new installed release refreshes unchanged recorded
+skill copies. A 0.14.7 personal copy can migrate when its complete content matches
+a verified previous release in the same installation prefix. This is a legacy
+official-content match, not evidence of an earlier managed installation.
+Modified, unknown and pinned copies are preserved with an explicit message.
+Fresh isolated prefixes do not refresh global copies or create absent skills.
+
+Use `clew skill install --agent codex` for initial setup or an unrecorded project
+copy (`--project /absolute/target-repository`). `--pin` keeps that installed copy
+out of future automatic refreshes. Review and back up customizations before an
+explicit `--force` replacement. Upgrade does not edit project AGENTS files or
+search other repositories. Ask the agent to reload the updated skill or start a
+new task: installation cannot replace instructions already held in its context.
 
 Existing documentation-root instructions are also preserved. `docs init` does
 not overwrite `AGENTS.md` or an existing `AGENTS.codeclew-docs.md`; rerunning it

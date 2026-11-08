@@ -1,15 +1,28 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {pathToFileURL} from 'node:url';
+import {pathToFileURL,fileURLToPath} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {resolve} from 'node:path';
 const rendererRoot=pathToFileURL(resolve(process.env.CODECLEW_MARKDOWN_RENDERER)+'/');
 const {renderDirectory}=await import(new URL('render.mjs',rendererRoot));
 const {validateNavigation}=await import(new URL('navigation.mjs',rendererRoot));
 const {validateSequence,renderSequence}=await import(new URL('sequence.mjs',rendererRoot));
+
+test('CLI through a symlinked entrypoint produces the requested export',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-render-entry-'));
+ try{
+  const input=join(root,'input');await mkdir(input);await writeFile(join(input,'index.md'),'# Portable CLI\n');
+  const alias=join(root,'alias.mjs');await symlink(fileURLToPath(new URL('render.mjs',rendererRoot)),alias);
+  const result=await promisify(execFile)(process.execPath,[alias,input,join(root,'html'),'Alias fixture']);
+  assert.deepEqual(JSON.parse(result.stdout).files,['index.md']);
+  assert.match(await readFile(join(root,'html/index.html'),'utf8'),/Portable CLI/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
 
 test('source footers keep local linked ranges and refuse changed excerpts, maps, index and Markdown',async()=>{
  const root=await mkdtemp(join(tmpdir(),'clew-source-footers-'));

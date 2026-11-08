@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import runpy
 import stat
 import sys
 import uuid
@@ -17,7 +18,7 @@ SCHEMA = "codeclew-skill-install/1.0"
 SKILL_NAME = "codeclew"
 MAX_FILES = 128
 # Budget for the bounded source package, including the portable reader/navigation.
-MAX_TOTAL_BYTES = 1152 * 1024
+MAX_TOTAL_BYTES = 1168 * 1024
 
 
 class InstallError(RuntimeError):
@@ -169,6 +170,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     install.add_argument(
         "--force", action="store_true", help="replace a different existing Codeclew skill"
     )
+    install.add_argument("--pin", action="store_true", help="Keep this installed copy out of automatic release refresh")
     return parser.parse_args(arguments)
 
 
@@ -181,6 +183,9 @@ def main(arguments: list[str]) -> int:
             {"agent": agent, **install_one(root, rows, parsed.force)}
             for agent, root in destinations(parsed)
         ]
+        refresh = Path(__file__).with_name('refresh_agent_skills.py')
+        if refresh.is_file():
+            runpy.run_path(str(refresh))['record'](source.parent.parent, installed, digest(rows), parsed.pin)
         print(
             canonical(
                 {
@@ -192,7 +197,7 @@ def main(arguments: list[str]) -> int:
             )
         )
         return 0
-    except (InstallError, OSError) as error:
+    except (InstallError, OSError, ValueError) as error:
         print(f"clew skill: {error}", file=sys.stderr)
         return 2
 

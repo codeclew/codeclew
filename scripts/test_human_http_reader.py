@@ -27,6 +27,7 @@ def build(root, renderer):
     with patch.dict(F['fixture'].__globals__, {'declaration': lambda: declaration}):
         manifest, view, _ = F['fixture'](root, record=record)
     handle = view['records'][0]['cite']
+    (root / 'view.json').write_text(json.dumps(view))
     original = {'pages': []}
 
     def page(name, fragments):
@@ -128,10 +129,12 @@ def build(root, renderer):
     (root / 'renderer.json').write_text(json.dumps(['node', str(renderer / 'render.mjs'), '{input}', '{output}', 'Owned HTTP fixture', '--navigation', str(root / 'navigation.json')]))
     mapping = root / 'repositories.json'
     mapping.write_text(json.dumps({'owned': {'repository': 'https://example.invalid/owned', 'urlTemplate': 'https://example.invalid/owned/blob/{revision}/{path}#L{startLine}-L{endLine}'}}))
-    result = E['finalize'](root / 'compose', [manifest], root / 'renderer.json', root / 'final', repositories=mapping)
+    result = E['finalize'](root / 'compose', [manifest], root / 'renderer.json', root / 'final', repositories=mapping,
+                           source_footers=True, source_views=[root / 'view.json'])
     assert result['status'] == 'CHECKED_PAGES_FINALIZED', result
     assert result['exportStatus'] == 'EXPORT_CHECKED', result
     assert result['semanticTruthAssessed'] is False
+    assert (root / 'final' / result['sourceFooterBundle']).is_file()
     bound_root = root / 'final' / Path(result['checkedIndex']).parent
     index = json.loads((root / 'final' / result['checkedIndex']).read_text())
     for file in ['post.md', 'put.md']:
@@ -145,6 +148,7 @@ def build(root, renderer):
         content = (html / file).read_text()
         assert content.count('class="sequence-direction"') == count
         assert 'language-clew-sequence' not in content and 'class="clew-sequence"' in content
+        assert 'class="page-sources"' in content and 'class="source-fragments"' in content
         assert 'class="sequence-message await' not in content
     return result
 

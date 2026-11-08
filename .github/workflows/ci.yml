@@ -71,6 +71,8 @@ jobs:
           cp -R skills/codeclew/examples/markdown-renderer/. "$renderer_dir/"
           npm ci --prefix "$renderer_dir" --ignore-scripts --no-audit --no-fund
           npm test --prefix "$renderer_dir"
+          CODECLEW_MARKDOWN_RENDERER="$renderer_dir" node --test scripts/test_markdown_renderer.mjs scripts/test_markdown_sequence.mjs
+          python3 -I -S scripts/test_human_http_reader.py --renderer "$renderer_dir"
       - name: Install the required C# preview SDK
         if: matrix.suite == 'checks'
         uses: actions/setup-dotnet@v6

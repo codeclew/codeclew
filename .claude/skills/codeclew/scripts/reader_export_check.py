@@ -197,9 +197,11 @@ def checked_command(argv, receipts, label, expected):
     return value
 
 
-def finalize(compose_root, manifests, renderer, output, *, previous=None, repositories=None):
+def finalize(compose_root, manifests, renderer, output, *, previous=None, repositories=None,
+             source_footers=False, source_views=()):
     """Complete reviewed pages using existing bind, renderer and full check."""
     compose_root, renderer, output = map(Path, (compose_root, renderer, output))
+    require(source_footers or not source_views, "SOURCE_VIEW_REQUIRES_FOOTERS")
     require(not output.exists() and not output.is_symlink(), "OUTPUT_ALREADY_EXISTS")
     require(output.parent.is_dir() and not output.parent.is_symlink(), "INVALID_COMPOSE_PARENT")
     require(compose_root.is_dir() and not compose_root.is_symlink(), "INVALID_COMPOSE_DIRECTORY")
@@ -224,8 +226,11 @@ def finalize(compose_root, manifests, renderer, output, *, previous=None, reposi
         require(all(Path(name).name == name for name in pages), "UNSUPPORTED_EXPORT_LAYOUT")
         require(inventory(compose_root / "markdown", ".md") == set(pages), "AUTHORED_PAGE_INVENTORY_MISMATCH")
         require(all(read(compose_root / "markdown", name) == raw for name, raw in pages.items()), "COMPOSE_PACKAGE_CHANGED")
-        renderer_raw = read(renderer.parent, renderer.name)
+        renderer_raw = renderer_input_raw = read(renderer.parent, renderer.name)
         argv = R["renderer_command"](renderer)
+        require(not source_footers or '--sources' not in argv, "SOURCE_FOOTERS_ALREADY_CONFIGURED")
+        if source_footers:
+            (output / 'renderer.request.json').write_bytes(renderer_input_raw)
         authored = output / state["authoredRoot"]; authored.mkdir(parents=True)
         (output / state["original"]).write_bytes(original)
         (output / state["composeRoot"] / "request.json").write_bytes(request)
@@ -254,6 +259,22 @@ def finalize(compose_root, manifests, renderer, output, *, previous=None, reposi
         with (authored / "sources.json").open("x", encoding="utf-8") as stream:
             stream.write(encode(pointer))
         (receipts / "sources-pointer.json").write_text(encode(pointer), encoding="utf-8")
+        bundle_raw = None
+        if source_footers:
+            stage = 'source-footers'
+            bundle = output / 'source-footers.json'
+            source_argv = [sys.executable, '-I', '-S', str(scripts / 'reader_sources.py'),
+                           '--index', str(index), *manifest_args, '--output', str(bundle)]
+            if NATIVE_ENGINE_ARGS[:1] == ['--clew']:
+                source_argv.extend(NATIVE_ENGINE_ARGS[:4])
+            for view in source_views:
+                source_argv.extend(['--view', str(Path(view).resolve())])
+            checked_command(source_argv, receipts, stage, 'SOURCE_FOOTERS_MATERIALIZED')
+            bundle_raw = bundle.read_bytes()
+            state['sourceFooterBundle'] = bundle.name
+            argv = [*argv, '--sources', str(bundle)]
+            renderer_raw = encode(argv).encode('utf-8')
+            command_path.write_bytes(renderer_raw)
         stage = "render"
         try:
             R["run_renderer"](argv, index.parent / "markdown", output / state["renderedRoot"], receipts, stage)
@@ -271,11 +292,12 @@ def finalize(compose_root, manifests, renderer, output, *, previous=None, reposi
         # The explicit trusted renderer must not silently change the reviewed
         # original/outer inputs while producing its first render.
         require(read(compose_root, "original.json", M["MAX_MAP"]) == original
-                and read(compose_root, "request.json") == request and read(renderer.parent, renderer.name) == renderer_raw
+                and read(compose_root, "request.json") == request and read(renderer.parent, renderer.name) == renderer_input_raw
                 and read(output / state["composeRoot"], "original.json", M["MAX_MAP"]) == original
                 and read(output / state["composeRoot"], "request.json") == request
                 and read(output, state["rendererCommand"]) == renderer_raw
                 and M["json_file"](authored / "sources.json") == pointer
+                and (bundle_raw is None or bundle.read_bytes() == bundle_raw)
                 and all(read(compose_root / "markdown", name) == raw for name, raw in pages.items()), "EXPORT_INPUT_CHANGED")
         state.update(status="CHECKED_PAGES_FINALIZED", exportStatus=checked["status"], pages=checked["pages"], claims=checked["claims"])
     except (Stop, OSError, ValueError, TypeError, KeyError, IndexError) as error:
@@ -300,13 +322,16 @@ def main(argv=None):
     if finalizing:
         parser.add_argument("--previous-index", type=Path)
         parser.add_argument("--repositories", type=Path)
+        parser.add_argument("--source-footers", action="store_true", help="Materialize local source footers for a compatible renderer")
+        parser.add_argument("--source-view", type=Path, action="append", default=[], help="Reuse an existing supported source view/union")
     args = parser.parse_args(arguments[1:] if finalizing else arguments)
     existed = args.output_dir.exists() or args.output_dir.is_symlink()
     try:
         configure_engine(args.clew, args.root, args.components, args.component_set_digest)
         if finalizing:
             result = finalize(args.compose_root, args.manifest, args.renderer_command, args.output_dir,
-                              previous=args.previous_index, repositories=args.repositories)
+                              previous=args.previous_index, repositories=args.repositories,
+                              source_footers=args.source_footers, source_views=args.source_view)
             code = 0 if result["status"] == "CHECKED_PAGES_FINALIZED" else 2
         else:
             result = verify(args.manifest, args.index, args.authored_root, args.rendered_root,

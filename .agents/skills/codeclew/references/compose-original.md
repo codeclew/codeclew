@@ -380,7 +380,7 @@ edits outside this representation use the [manual selector route](reader-metadat
 
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/page_citations.py" compose --input ORIGINAL --output-dir NEW
-python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_export_check.py" finalize --compose-root NEW --manifest READ/citations.json --renderer-command RENDERER_JSON --output-dir FINAL
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_export_check.py" finalize --compose-root NEW --manifest READ/citations.json --renderer-command RENDERER_JSON --source-footers --output-dir FINAL
 ```
 
 For updates add `--previous-index OLD_INDEX` to finalize. Repeat `--manifest` for
@@ -404,6 +404,13 @@ with separate `{input}`/`{output}` arguments and the requested `--lang`. Pass th
 file as RENDERER_JSON to the existing checked finalize command above; do not invent
 a new design/renderer or substitute historical native `docs render` for these pages.
 The helper still does not select, install or sandbox a command automatically.
+For this packaged route, `--source-footers` materializes the per-page Sources
+section after the same bind and records the effective renderer argv in FINAL.
+Repeat `--source-view SAVED_VIEW` for already received supported views/unions;
+their exact cited slices are reused without inspector queries. Without a saved
+view, the existing bounded inspector supplies cited excerpts. No second bind,
+manual source list or renderer patch is needed. Caller-selected renderers without
+the `--sources` input keep their explicit workflow and omit `--source-footers`.
 
 This example renders plain Markdown, including authored tables; it does not execute
 native MDX components. A caller-selected trusted renderer remains supported.
