@@ -123,6 +123,61 @@ retained static evidence, not proof of runtime dispatch, delivery or persistence
 Use the normal proposal/review path for an accepted process explanation; no paid
 full-service author run is necessary to demonstrate this connection.
 
+### Checked Sources footer for human pages
+
+`compose-original` names the [human-page route](compose-original.md#original-pages-and-completion),
+not a `clew docs` command. Its existing command is
+`python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_export_check.py" finalize`;
+add `--source-footers` as shown in that route. Follow the
+[checked local footer example](../examples/markdown-renderer/README.md#checked-local-sources-footer)
+for the required compose root, citation manifests, renderer argv and output path.
+Finalize binds once; a render-only Sources update uses the existing checked index
+and `reader_sources.py`, without another bind. `materialize` is an internal
+function, not a `reader_sources.py` subcommand.
+
+Footers select each page's bound claims, not every field of every library DTO.
+The packaged renderer opens local verbatim excerpts; Git mappings are optional
+and do not make this a remote-only export. Keep excerpt-containing HTML private
+when its sources are private. The human bind/finalize `--repositories` file maps
+source service IDs to `{repository,urlTemplate}` with placeholders `revision`,
+`path`, `startLine`, `endLine`. Native `--source-map` instead uses the
+`codeclew-source-repositories/1.0` wrapper keyed by immutable repository IDs;
+these files are not interchangeable. A URL or an attachment is not read evidence.
+
+### Library reads and citation-helper boundaries
+
+A reached library callable does not establish all DTO fields or a complete wire
+schema. Follow exact returned SOURCE references for the definitions behind the
+claims you author. Preserve both the Work owner and the original library source
+identity; an imported A-scoped SOURCE ID is not an original B Work reference.
+
+Native thread/part delivery and acceptance by the human citation helper are
+separate checks. The helper's SOURCE batch path currently requires source revision
+to equal the Work service COVERAGE revision. An imported library row can retain
+B's revision under A's Work scope and fail `SOURCE_BATCH_RECORD_CHANGED` despite
+successful native delivery. This limitation does not establish that B changed,
+and does not establish the cause of `SOURCE_BATCH_ROW_IDENTITY_CHANGED`.
+The latter rejects row kind, id/reference pairing, duplicates or unsupported
+omissions before checking record service/revision/digests. A smaller batch or
+ordinary read/read-part is not a guaranteed citation-helper bypass.
+
+If an independent retained B root/Work is available, use its own service,
+snapshot and returned SOURCE IDs/references through
+[read-sources](compose-original.md#retained-source-references), then supply the
+resulting B manifests alongside A manifests to the common page bind/finalize.
+Preserve B's file, range, revision and root ownership; do not relabel its evidence
+as A, edit proof packets or infer a replacement repository from a URL. This route
+requires actual B evidence; attached provenance alone is insufficient. A
+SOURCE_NATIVE manifest also requires its actual retained evidenceSet and owning
+root, never a synthetic packet reconstructed from quotes.
+
+For an unresolved batch error, retain one sanitized helper/native argv, input
+JSON, exit code/error and page metadata: Work, snapshot, subject,
+selectionProjection, requested id/reference, returned kind/id/reference/reason,
+and record versus COVERAGE service/revision. Source text and credentials are not
+needed. Generic input/output-unavailable errors also need the exact input file
+and root/Work arguments; they do not by themselves prove a missing library DTO.
+
 ## Failure, freshness and removal
 
 - A resolved artifact hash/variant mismatch: inspect the new A capture, explicitly

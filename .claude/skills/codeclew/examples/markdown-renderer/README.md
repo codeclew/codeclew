@@ -153,6 +153,23 @@ checks the final output, recording the effective argv and source bundle. Add
 materialization command is for refreshing an already checked render without
 another bind.
 
+Sources are selected by the page's bound claims, not a mandatory full-service
+DTO inventory. Annotated semantic fragments require `{id,text,evidence}` with
+nonempty genuine cite-handles. Plain headings/navigation may use `{text}`;
+do not remove annotations to present unsupported field meanings as established.
+One read fragment may support several claims when it actually covers them.
+Compose can reject unpaired annotations or empty evidence before binding; bind
+can reject unavailable handles; source materialization can reject missing excerpts.
+Keep the actual stage/status instead of calling every failure
+`CITATION_BINDING_UNAVAILABLE`. No partial/skip-invalid-claims footer mode exists;
+an invalid required claim can block finalize for the selected page set.
+
+Git mapping is optional for the local footer. Saved `--source-view` inputs must
+be previously delivered supported views/unions containing every cited excerpt;
+they are not arbitrary quotations. Without them the existing inspector reads
+bound ranges. For a render-only refresh below, the materializer command is
+`reader_sources.py --index ...`, without a `materialize` subcommand.
+
 After bind/finalize, materialize cited excerpts without changing Markdown/maps:
 
 ```sh
