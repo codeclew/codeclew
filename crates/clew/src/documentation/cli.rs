@@ -2193,6 +2193,44 @@ mod tests {
             #[command(subcommand)]
             command: Command,
         }
+        let historical = [
+            "clew-docs",
+            "render",
+            "--root",
+            "docs",
+            "--publication",
+            "pub",
+            "--snapshot",
+            "saved",
+            "--source-mode",
+            "remote",
+            "--export-subject",
+            "service:orders",
+            "--source-map",
+            "repos.json",
+            "--output",
+            "new-export",
+        ];
+        Docs::try_parse_from(historical).unwrap();
+        for extra in [
+            "--publish",
+            "--refresh",
+            "--require-complete",
+            "--input=selection.json",
+        ] {
+            assert!(Docs::try_parse_from(historical.into_iter().chain([extra])).is_err());
+        }
+        let missing_snapshot = [
+            "clew-docs",
+            "render",
+            "--root",
+            "docs",
+            "--publication",
+            "pub",
+            "--output",
+            "new-export",
+        ];
+        assert!(Docs::try_parse_from(missing_snapshot).is_err());
         for args in [
             vec![
                 "clew-docs",

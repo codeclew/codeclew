@@ -135,6 +135,11 @@ fn integrity(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewErro
 pub(super) struct FrozenInputBudget {
     pub remaining_bytes: u64,
 }
+fn embedded_limit_message(detail: &str) -> String {
+    format!(
+        "{detail}. Use the existing remote route with the original publication and exact snapshot: clew docs pages render --root ROOT --publication PUB --snapshot SNAP --source-mode remote --export-subject service:ID --source-map repos.json --output NEW_DIRECTORY (or scenario:ID; repeat --export-subject for several). --input cannot be combined with --publication. Remote export has separate bounds, includes shared context, and still rejects missing/invalid selected closure; it does not refresh evidence. See installed references/service-documentation.md: Source links for shared documentation."
+    )
+}
 /// Read the exact immutable publication without loading any original Check.
 pub(super) fn read_frozen_bindings(
     repo: &Repository,
@@ -147,9 +152,9 @@ pub(super) fn read_frozen_bindings(
         .map_err(|_| invalid("selected frozen publication is unavailable"))?
         .len();
     if size > budget.remaining_bytes {
-        return Err(invalid(
-            "native frozen publication input exceeds 64 MiB; narrow the selection",
-        ));
+        return Err(invalid(embedded_limit_message(
+            "native frozen publication input exceeds 64 MiB",
+        )));
     }
     budget.remaining_bytes -= size;
     let publication = load(repo, id)?;
@@ -167,9 +172,9 @@ pub(super) fn read_frozen_bindings(
             .checked_add(metadata.len())
             .ok_or_else(|| invalid("native frozen input size overflow"))?;
         if total > budget.remaining_bytes {
-            return Err(invalid(
-                "native frozen publication input exceeds 64 MiB; narrow the selection",
-            ));
+            return Err(invalid(embedded_limit_message(
+                "native frozen publication input exceeds 64 MiB",
+            )));
         }
     }
     // The root manifest is bounded by the ordinary frozen-file preflight. Its
@@ -186,9 +191,9 @@ pub(super) fn read_frozen_bindings(
         .read_to_end(&mut binding_raw)
         .map_err(io_error)?;
     if binding_raw.len() as u64 > budget.remaining_bytes {
-        return Err(invalid(
-            "native frozen publication input exceeds 64 MiB; narrow the selection",
-        ));
+        return Err(invalid(embedded_limit_message(
+            "native frozen publication input exceeds 64 MiB",
+        )));
     }
     if canonical::hash_bytes(&binding_raw) != *expected_bindings {
         return Err(invalid(
@@ -216,7 +221,9 @@ pub(super) fn read_frozen_bindings(
         if total > budget.remaining_bytes {
             return Err(crate::error::ClewError::new(
                 crate::error::ErrorCode::SliceBudgetExceeded,
-                "native frozen publication input exceeds 64 MiB including its portable closure; narrow the selection",
+                embedded_limit_message(
+                    "native frozen publication input exceeds 64 MiB including its portable closure",
+                ),
             ));
         }
     }
@@ -226,7 +233,9 @@ pub(super) fn read_frozen_bindings(
     if total > budget.remaining_bytes {
         return Err(crate::error::ClewError::new(
             crate::error::ErrorCode::SliceBudgetExceeded,
-            "native frozen publication input exceeds 64 MiB including reconstructed logical bindings; narrow the selection",
+            embedded_limit_message(
+                "native frozen publication input exceeds 64 MiB including reconstructed logical bindings",
+            ),
         ));
     }
     // Hash verification uses the same portable reader; no source capture or
@@ -249,9 +258,9 @@ pub(super) fn read_frozen_bindings(
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
         if bytes.len() as u64 > budget.remaining_bytes {
-            return Err(invalid(
-                "native frozen publication input exceeds 64 MiB; narrow the selection",
-            ));
+            return Err(invalid(embedded_limit_message(
+                "native frozen publication input exceeds 64 MiB",
+            )));
         }
         budget.remaining_bytes -= bytes.len() as u64;
         if canonical::hash_bytes(&bytes) != *expected {
@@ -677,6 +686,29 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod language_tests {
     use super::*;
+    #[test]
+    fn frozen_manifest_budget_refuses_before_parsing_and_keeps_recovery_exact() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Docs").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let id = "a".repeat(64);
+        repo.atomic(&path(&id).unwrap(), b"x").unwrap();
+        let mut budget = FrozenInputBudget { remaining_bytes: 0 };
+        let error = read_frozen_bindings(&repo, &id, &mut budget).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidInput);
+        assert_eq!(budget.remaining_bytes, 0);
+        assert!(error.message.contains("--publication PUB --snapshot SNAP"));
+        assert!(error.message.contains("--export-subject"));
+        // Fitting the manifest reaches ordinary validation, not an export fallback.
+        budget.remaining_bytes = 1;
+        let error = read_frozen_bindings(&repo, &id, &mut budget).unwrap_err();
+        assert!(!error.message.contains("exceeds 64 MiB"));
+        assert_eq!(budget.remaining_bytes, 0);
+        assert_eq!(
+            fs::read(repo.path(&path(&id).unwrap()).unwrap()).unwrap(),
+            b"x"
+        );
+    }
     #[test]
     fn working_snapshots_explain_empty_history_without_becoming_releases() {
         let root = tempfile::tempdir().unwrap();

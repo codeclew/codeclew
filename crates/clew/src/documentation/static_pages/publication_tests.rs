@@ -2150,3 +2150,46 @@ fn historical_docs_render_replays_exact_publication_without_replacing_reader_or_
             .context_digest
     );
 }
+
+#[test]
+fn declaration_selection_file_rejects_wrong_shape_without_echoing_unknown_input() {
+    use crate::documentation::input_diagnostics::{self, Input};
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("selection.json");
+    let minimal = json!([{"id":"one","service":"sample","endpointDeclaration":"exact-id","workerDeclaration":"exact-id"}]);
+    fs::write(&path, serde_json::to_vec(&minimal).unwrap()).unwrap();
+    let selected: Vec<model::Selection> =
+        input_diagnostics::read(&path, 1024 * 1024, Input::NativePageSelections).unwrap();
+    assert_eq!(
+        selected[0].endpoint_declaration,
+        selected[0].worker_declaration
+    );
+    let mut unknown = minimal.clone();
+    unknown[0]["private-unknown-key"] = json!("private-value");
+    let mut missing = minimal.clone();
+    missing[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("workerDeclaration");
+    for (bad, category, error_path) in [
+        (unknown, "UNEXPECTED_FIELD", "$[0][<key>]"),
+        (missing, "REQUIRED_FIELD_MISSING", "$[0].workerDeclaration"),
+        (json!({"selections":minimal}), "TYPE_OR_SHAPE_MISMATCH", "$"),
+    ] {
+        fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let error = input_diagnostics::read::<Vec<model::Selection>>(
+            &path,
+            1024 * 1024,
+            Input::NativePageSelections,
+        )
+        .unwrap_err();
+        let details = error.details.as_ref().unwrap();
+        assert_eq!(details["category"], category);
+        assert_eq!(details["path"], error_path);
+        let diagnostic = serde_json::to_string(&error).unwrap();
+        assert!(diagnostic.contains("docs context"));
+        assert!(diagnostic.contains("workerDeclaration"));
+        assert!(!diagnostic.contains("private-unknown-key"));
+        assert!(!diagnostic.contains("private-value"));
+    }
+}

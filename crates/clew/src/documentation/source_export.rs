@@ -21,7 +21,10 @@ pub struct Args {
     /// Embed retained source (default), or export exact GitHub/GitLab links without source attachments.
     #[arg(long, value_enum, default_value_t = SourceMode::Embedded)]
     pub source_mode: SourceMode,
-    /// JSON provider/web-base mappings keyed by immutable repository ID; required for private hosts.
+    /// File path to {schema: "codeclew-source-repositories/1.0", repositories: {REPOSITORY_ID: {provider, webBase}}}.
+    /// Keys are immutable retained repository IDs, not service IDs. Optional origin is the exact historical
+    /// clone origin. GitLab webBase is the HTTPS project browser root, without /-/blob or a commit/anchor.
+    /// Required for private hosts; see installed references/service-documentation.md: Source links for shared documentation.
     #[arg(long)]
     pub source_map: Option<PathBuf>,
     /// Saved publication subject to export (service:ID or scenario:ID); repeat to select several.
@@ -82,9 +85,16 @@ impl Args {
             ));
         }
         if let Some(path) = &self.source_map {
-            let mapping: MappingFile = store::read(path, 1024 * 1024)?;
+            let mapping: MappingFile = super::input_diagnostics::read(
+                path,
+                1024 * 1024,
+                super::input_diagnostics::Input::SourceRepositories,
+            )?;
             if mapping.schema != "codeclew-source-repositories/1.0" {
-                return Err(invalid("unsupported source-map schema"));
+                return Err(invalid(format!(
+                    "unsupported source-map schema. {}",
+                    super::input_diagnostics::Input::SourceRepositories.guidance()
+                )));
             }
             for (id, entry) in mapping.repositories {
                 if id.is_empty()
@@ -992,6 +1002,55 @@ mod tests {
     const REV: &str = "0123456789abcdef0123456789abcdef01234567";
     fn checked() -> Check {
         serde_json::from_value(json!({"schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":{}})).unwrap()
+    }
+    #[test]
+    fn source_map_file_requires_wrapper_and_reports_safe_actionable_shape() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("repos.json");
+        let args = Args {
+            source_mode: SourceMode::Remote,
+            source_map: Some(path.clone()),
+            export_subjects: vec![],
+        };
+        let mapping = json!({"provider":"gitlab","webBase":"https://gitlab.example.invalid/team/repository.git","origin":"ssh://git@gitlab.example.invalid/team/repository.git.git"});
+        let valid = json!({"schema":"codeclew-source-repositories/1.0","repositories":{"retained-id":mapping}});
+        std::fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
+        let policy = args.policy().unwrap();
+        assert_eq!(
+            policy.repositories["retained-id"].web_base,
+            "https://gitlab.example.invalid/team/repository.git"
+        );
+        assert_eq!(
+            policy.repositories["retained-id"].origin.as_deref(),
+            Some("ssh://gitlab.example.invalid/team/repository.git")
+        );
+        for bad in [
+            json!({"retained-id":mapping}),
+            json!({"schema":"codeclew-source-repositories/1.0","repositories":{"private-repository-key":{"provider":"gitlab","webBase":[]}}}),
+            json!({"schema":"codeclew-source-repositories/1.0","repositories":{},"private-unknown-key":"private-value"}),
+            json!([]),
+        ] {
+            std::fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            let error = args.policy().unwrap_err();
+            let diagnostic = serde_json::to_string(&error).unwrap();
+            assert!(error.details.is_some());
+            assert!(diagnostic.contains("codeclew-source-repositories/1.0"));
+            assert!(diagnostic.contains("repository IDs"));
+            for secret in [
+                "private-repository-key",
+                "private-unknown-key",
+                "private-value",
+            ] {
+                assert!(!diagnostic.contains(secret), "{diagnostic}");
+            }
+        }
+        std::fs::write(&path, br#"{"schema":"unsupported","repositories":{}}"#).unwrap();
+        assert!(
+            args.policy()
+                .unwrap_err()
+                .message
+                .contains("codeclew-source-repositories/1.0")
+        );
     }
     #[test]
     fn summary_without_url_requires_complete_exact_source_identity_and_span() {

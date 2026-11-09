@@ -16,6 +16,8 @@ pub(super) enum Input {
     SourcePart,
     SourceBatch,
     SourceSelection,
+    NativePageSelections,
+    SourceRepositories,
 }
 
 impl Input {
@@ -25,6 +27,10 @@ impl Input {
             Self::DraftContext => "codeclew-documentation-operation-draft-execution/1.1",
             Self::Proposal => "codeclew-documentation-proposal/1.0",
             Self::DataModel => "codeclew-data-model-plan/1.0",
+            Self::NativePageSelections => {
+                "native page declaration selections (array; no schema field)"
+            }
+            Self::SourceRepositories => "codeclew-source-repositories/1.0",
             Self::SourcePart => "codeclew-documentation-source-part-request/1.0",
             Self::SourceBatch | Self::SourceSelection => {
                 "codeclew-documentation-work-batch-request/1.0"
@@ -43,6 +49,8 @@ impl Input {
             Self::DataModel => "Required: schema, publication, snapshot, models. Field shape: {id,path,meaning:{title,text,evidence},representations:[{label,typeLabel,requiredness,nullability,mapping:{title,text,evidence}}]}. SOURCE evidence shape: {kind:\"SOURCE\",service,sourceId,textDigest,startLine,endLine}; copy exact values from the selected snapshot. RETAINED evidence instead names an exact subject/operation/fragmentId/textDigest. Use payloadViews with coverage.status observed-fields for partial source observations, or unknown with fields:[] when the field definition is unavailable. Source DTO properties/observed payloads do not establish a wire schema; contracts require an actual retained JSON schema source. Next: clew docs render --help; see schemas/documentation/data-model-plan.schema.json".into(),
             Self::SourcePart => "Required: {\"schema\":\"codeclew-documentation-source-part-request/1.0\",\"reference\":\"RETURNED_SOURCE_REFERENCE\"}; optional cursor copied from this source part. No projection field. The response schema source-part/1.0 is not request input. Read until nextCursor is null. See schemas/source-part-request.schema.json in the installed skill; clew docs work read-part --help.".into(),
             Self::SourceBatch => "Required: {\"schema\":\"codeclew-documentation-work-batch-request/1.0\",\"selections\":[{\"projection\":\"SOURCE_ROWS\",\"references\":[\"RETURNED_SOURCE_REFERENCE\"]}]}. Use 1..64 tracked SOURCE selections. Inspect each result.page.nextCursor, result.page.omitted or result.error independently; a successful envelope is not complete delivery. See schemas/work-batch-request.schema.json in the installed skill; clew docs work read-batch --help.".into(),
+            Self::NativePageSelections => "--input is a file path containing a closed JSON array, not an inline selector or scenario:ID. Minimal example: [{\"id\":\"selected-operation\",\"service\":\"SERVICE_ID\",\"endpointDeclaration\":\"RETURNED_DECLARATION_ID\",\"workerDeclaration\":\"RETURNED_DECLARATION_ID\"}]. Both declaration slots may use the same exact ID; slot names do not establish HTTP/worker roles. Discover IDs with clew docs context --root ROOT --snapshot SNAP --service SERVICE_ID. For a saved service/process publication use --publication PUB instead of --input. See installed references/service-documentation.md, Render exact retained declarations.".into(),
+            Self::SourceRepositories => "--source-map is a file path with wrapper {\"schema\":\"codeclew-source-repositories/1.0\",\"repositories\":{\"IMMUTABLE_REPOSITORY_ID\":{\"provider\":\"gitlab\",\"webBase\":\"https://gitlab.example.invalid/group/subgroup/repository\"}}}. Keys are retained repository IDs, not service IDs. Optional origin must match the exact historical clone origin. The output sourceExport policy is not this input wrapper. See installed references/service-documentation.md, Source links for shared documentation.".into(),
             Self::SourceSelection => "One batch selection must be a closed Selection: {\"projection\":\"SOURCE_ROWS\",\"references\":[\"RETURNED_SOURCE_REFERENCE\"]} or {\"query\":{\"kind\":\"SOURCE\"}} with its own optional cursor. At most8 references; tracked SOURCE only. A malformed selection is returned as its own result.error; other selections remain independent. See installed schemas/work-batch-request.schema.json#/$defs/sourceSelection.".into(),
         }
     }
@@ -218,6 +226,33 @@ fn property_names() -> BTreeSet<String> {
             &mut names,
         );
     }
+    // Static properties of the two Rust-only export input contracts. Dynamic
+    // repository IDs and arbitrary unknown keys remain redacted.
+    names.extend(
+        [
+            "schema",
+            "repositories",
+            "provider",
+            "webBase",
+            "origin",
+            "id",
+            "service",
+            "endpointDeclaration",
+            "workerDeclaration",
+            "wiringDeclaration",
+            "question",
+            "documentationLanguage",
+            "noteIds",
+            "authoredParagraphs",
+            "expandSourceCalls",
+            "expandDataState",
+            "bundle",
+            "operation",
+            "fragment",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
     names
 }
 

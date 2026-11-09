@@ -187,12 +187,17 @@ function, both required slots can refer to that same declaration:
 ]
 ```
 
-Save the selection and run `clew docs pages render --root <docs> --snapshot <check>
+Save this closed JSON array in `selection.json`: `--input` takes a file path,
+not inline JSON or a `scenario:ID`. Required fields are shown above; unknown
+fields are rejected. Run `clew docs pages render --root <docs> --snapshot <check>
 --input <selection.json> --output <new-directory>`. Slot names alone do not prove
 an endpoint or worker role. SOURCE pages retain syntax authority; compiler-backed
 pages retain their corresponding compiler facts and explicit limits. Use the
 same snapshot and selection when checking publication exclusions. Do not create
-extra pages or gaps for unselected internal helpers.
+extra pages or gaps for unselected internal helpers. These are native declaration
+pages. Saved authored service/process subjects use `--publication PUB` and, for
+remote selection, `--export-subject service:ID` or `scenario:ID`; that route
+cannot be combined with `--input`. See [source links for shared documentation](#source-links-for-shared-documentation).
 
 ## Start or recover
 
@@ -562,6 +567,16 @@ behavior or coverage of functions explicitly outside that scope.
 The reader's primary source action opens all snippets bound to the paragraph;
 it does not require following a long list of opaque step numbers. `eventIds`
 remain necessary for machine-checked coverage and source inspection.
+
+### Troubleshoot generated JavaScript
+
+Raw `${esc(...)}` expressions inside a generated `<script>` can be JavaScript
+template literals; their presence in HTML text alone is not a rendering defect.
+Open the page, inspect the actual visible DOM and browser console, and exercise
+the affected control. Static hosting can execute JavaScript. If the expression
+is visible to the reader or a console error prevents rendering, retain the exact
+page, browser error and a small neutral reproducer for investigation. Do not
+replace template text or sanitize generated HTML blindly.
 
 ## Interface contracts
 
@@ -1188,20 +1203,37 @@ the policy to auxiliary downloads and shared objects too. Authored quotations,
 contract examples, semantic identities and provenance remain; review them before
 sharing. Export into a new directory and share that directory, not the local root.
 
-`clew docs render --root "$DOCS_ROOT" --snapshot "$SNAPSHOT" --source-mode remote
---output site` exports the current saved publication. This form requires output
-and refuses input, refresh, publish and require-complete flags. Perform local
-publication first, or use pages render with an explicit publication.
+For an exact historical replay, keep the original publication and immutable
+snapshot handles. Both supported routes select that same retained publication:
 
-To share selected service/process documentation, repeat `--export-subject
-service:orders` or `--export-subject scenario:checkout` on remote `docs render`,
-or on `docs pages render --publication "$PUBLICATION"`. Use the original exact
-`--snapshot`; this exports accepted authored sections and retained historical
-citations, without capture, reinitialization or proposal replacement. The manifest
-reports requested/effective subjects, omitted pages and input accounting. Shared
-overview, status and answer context remains global; omitted service/process links
-are inert. Ambiguous diagram-owner prefixes require selecting both subjects or
-exporting the full publication.
+```sh
+clew docs pages render --root "$DOCS_ROOT" --publication "$PUBLICATION" --snapshot "$SNAPSHOT" --source-mode remote --export-subject service:orders --source-map repos.json --output new-export
+clew docs render --root "$DOCS_ROOT" --publication "$PUBLICATION" --snapshot "$SNAPSHOT" --source-mode remote --export-subject service:orders --source-map repos.json --output another-new-export
+```
+
+Replace `service:orders` with the saved `scenario:checkout` for a process, or
+repeat `--export-subject` for several subjects; omit it for the full publication.
+`--publication` requires `--snapshot` and excludes `--input`, `--refresh`,
+`--publish` and `--require-complete`. It neither captures source nor replaces
+proposals. Without `--publication`, remote `docs render` exports the current
+saved publication and still requires output; perform local publication first.
+The two readers need not be byte-identical.
+
+An embedded frozen-input limit can be handled by the remote route above,
+subject to its separate limits below. Do not try to narrow a publication using
+`--input`, change its snapshot, or fall back to refresh. The manifest reports
+requested/effective subjects, omitted pages and input accounting. Shared overview,
+status and answer context remains global; omitted service/process links are inert.
+Ambiguous diagram-owner prefixes require selecting both subjects or exporting
+the full publication.
+
+Output must be a new or empty regular directory. This protects existing files;
+there is no automatic merge into a mixed human/generated site. Keep custom human
+pages in their own namespace and stage a complete export in a separate subtree,
+for example `site/generated/run-2/`. If relocating it, preserve the entire export,
+including manifests, assets and any declared evidence/object closure, then verify
+page, source and download links at the final location. The export subtree is a
+portable reader artifact, not a replacement for the local authoring evidence root.
 
 A full remote export verifies frozen files as streams, then projects each
 service/process HTML/Markdown group before retaining it. A selected export loads
@@ -1216,18 +1248,42 @@ its bounded original record is read before filtering. If a selected record or
 closure fails validation, preserve the error and original publication. Narrow
 subjects when appropriate; deleting caches is not an export workaround.
 
-For a self-managed host, pass `--source-map repos.json` with schema
-`codeclew-source-repositories/1.0` and a `repositories` object keyed by immutable
-repository IDs. Each mapping has `provider` (`github` or `gitlab`) and HTTPS
-`webBase`, for example `https://git.example.invalid:8443/gitlab/team/orders`.
-Optional `origin`, for example `ssh://git@git.example.invalid:2222/team/orders.git`,
-binds historical repositories absent from the selected snapshot. Never infer a
-provider from an unknown host or substitute current/main for old source revisions.
-Missing exact bindings, dirty/generated evidence and ambiguous mappings fail.
-No authentication or provider availability request occurs; committed does not
-mean pushed or accessible. The manifest records mode, mapping policy and export
-identity. Source digests still identify original local evidence; remote exports
-are reading artifacts and cannot replace local evidence for authoring or reimport.
+For a self-managed host, `--source-map repos.json` takes a file with this
+complete wrapper, not a bare mapping or the output manifest's `sourceExport`
+policy object:
+
+```json
+{
+  "schema": "codeclew-source-repositories/1.0",
+  "repositories": {
+    "IMMUTABLE_REPOSITORY_ID": {
+      "provider": "gitlab",
+      "webBase": "https://gitlab.example.invalid/group/subgroup/repository",
+      "origin": "ssh://git@gitlab.example.invalid/group/subgroup/repository.git"
+    }
+  }
+}
+```
+
+Copy the immutable `repositoryId` from the selected retained inputs/provenance;
+it is not the service ID. The current service catalog cannot establish an older
+repository identity after inputs have changed. `origin` is optional; include it
+only when known, matching the exact historical clone origin to bind repositories
+absent from the selected snapshot. Never guess it from a current/main checkout.
+
+`provider` is `github` or `gitlab`. `webBase` is the HTTPS browser project root
+without credentials, query, fragment, blob suffix, commit or line anchor. For
+GitLab the renderer appends `/-/blob/<retained-commit>/<encoded-file>#Lx-y`,
+encoding file path segments individually; copy commits from retained sources.
+Do not strip `.git` blindly: a project can literally be named `repository.git`.
+Never infer a provider from an unknown host or substitute current/main for old
+source revisions. Missing exact bindings, dirty/generated evidence and ambiguous
+mappings fail. No authentication or provider availability request occurs;
+committed does not mean pushed or accessible. The manifest records mode, mapping
+policy and export identity. Source digests still identify original local evidence;
+remote exports are reading artifacts and cannot replace local evidence for
+authoring or reimport. Remote mode does not scrub authored quotations or semantic
+data, and does not purge local retained evidence.
 
 
 ### Clone origins and browser links

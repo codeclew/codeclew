@@ -247,7 +247,10 @@ pub enum Command {
         /// Exact immutable handle returned by docs check. No capture or latest fallback.
         #[arg(long)]
         snapshot: String,
-        /// JSON array of exact declaration selectors and optional captured note IDs.
+        /// File path to a JSON array of exact declaration selectors; not inline JSON or scenario:ID.
+        /// Minimal item: {id, service, endpointDeclaration, workerDeclaration}. Copy exact IDs from
+        /// docs context --root ROOT --snapshot SNAP --service SERVICE. Both slots may use the same ID.
+        /// See installed references/service-documentation.md: Render exact retained declarations.
         #[arg(
             long,
             required_unless_present = "publication",
@@ -328,7 +331,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             }
             let input =
                 input.ok_or_else(|| invalid("native pages require input or publication"))?;
-            let selections: Vec<model::Selection> = store::read(&input, 1024 * 1024)?;
+            let selections: Vec<model::Selection> = super::input_diagnostics::read(
+                &input,
+                1024 * 1024,
+                super::input_diagnostics::Input::NativePageSelections,
+            )?;
             if selections.is_empty() || selections.len() > 128 {
                 return Err(invalid(
                     "native pages require 1 to 128 exact declaration selections",

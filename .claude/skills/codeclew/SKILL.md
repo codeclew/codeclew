@@ -26,7 +26,8 @@ then return to the same human-page route.
 | Service/process documentation, including a broad generate/update request | [Human pages](references/compose-original.md#frozen-source-to-reviewed-pages) |
 | Bounded SOURCE question or saved-answer maintenance | [Prepared SOURCE](README.md) |
 | Explicit native Work, proposal or coordinator deliverable | [Native authoring](references/authoring-example.md#choose-the-existing-authoring-route) |
-| Explicit historical native `docs render` or frozen native publication replay | [Service documentation](references/service-documentation.md) |
+| Exact retained declaration pages (`docs pages render --input`) | [Declaration selection](references/service-documentation.md#render-exact-retained-declarations) |
+| Frozen publication replay or remote source export | [Source links and export](references/service-documentation.md#source-links-for-shared-documentation) |
 
 Before reporting documentation done, apply the
 [requested-scope completion check](references/compose-original.md#requested-scope-completion)

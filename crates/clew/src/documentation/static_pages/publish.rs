@@ -2564,7 +2564,7 @@ fn write_inner(
         }
         if fs::read_dir(output).map_err(io_error)?.next().is_some() {
             return Err(invalid(
-                "native pages output must be empty; choose a new directory",
+                "native pages output must be empty; choose a new directory; existing files are protected. Stage the complete export in a new separate path/subtree alongside custom human pages. Preserve all manifests, assets and closure files when relocating, then verify links. See installed references/service-documentation.md: Source links for shared documentation.",
             ));
         }
     } else {
