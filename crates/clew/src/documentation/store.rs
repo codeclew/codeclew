@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -83,8 +83,36 @@ pub fn relative(path: &str) -> Result<(), ClewError> {
 
 pub fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, ClewError> {
     let data = read_bytes(path, limit)?;
-    serde_yaml_ng::from_slice(&data)
-        .map_err(|_| invalid("documentation input violates its closed JSON/YAML schema"))
+    parse_input(&data, &path.display().to_string())
+}
+
+fn parse_input<T: DeserializeOwned>(data: &[u8], input: &str) -> Result<T, ClewError> {
+    serde_yaml_ng::from_slice(data).map_err(|_| {
+        let detail = serde_path_to_error::deserialize::<_, T>(serde_yaml_ng::Deserializer::from_slice(data)).err();
+        let safe = |text: &str| text.len() <= 256 && text.chars().all(|c| c.is_ascii_alphanumeric() || "_.[]".contains(c));
+        let mut field = detail.as_ref().map(|e| e.path().to_string()).filter(|p| safe(p)).unwrap_or_else(|| "$".into());
+        let message = detail.as_ref().map(|e| e.inner().to_string()).unwrap_or_default();
+        let mut reason = "CLOSED_SCHEMA_OR_SYNTAX_VIOLATION";
+        for (pattern, kind) in [("missing field `", "MISSING_REQUIRED_FIELD"), ("unknown field `", "UNKNOWN_FIELD")] {
+            if let Some(rest) = message.split_once(pattern).map(|(_, rest)| rest) {
+                reason = kind;
+                if let Some(name) = rest.split('`').next().filter(|v| safe(v)) {
+                    field = if field == "." || field == "$" { name.into() } else { format!("{field}.{name}") };
+                }
+                break;
+            }
+        }
+        let mut error = invalid("documentation input violates its closed JSON/YAML schema");
+        error.details = Some(Box::new(json!({"reason":reason,"input":input,"field":field,"constraint":"one record matching the closed JSON/YAML schema; no bytes were applied"})));
+        if data.len() <= 256 * 1024 {
+            if let Ok(value) = serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(data) {
+                if let Some(id) = value.get("id").and_then(|id| id.as_str()).filter(|id| valid_id(id)) {
+                    error.details.as_mut().unwrap()["recordId"] = json!(id);
+                }
+            }
+        }
+        error
+    })
 }
 
 pub(super) fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
@@ -97,6 +125,36 @@ pub(super) fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> 
         return Err(invalid("documentation input grew beyond its bound"));
     }
     Ok(data)
+}
+
+/// Explicit authored-put transport; other readers retain regular-file-only semantics.
+pub(super) fn read_authored<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, ClewError> {
+    if path.as_os_str() != std::ffi::OsStr::new("-") {
+        return read(path, limit);
+    }
+    read_authored_stream(std::io::stdin().lock(), limit)
+}
+
+fn read_authored_stream<T: DeserializeOwned>(
+    reader: impl Read,
+    limit: u64,
+) -> Result<T, ClewError> {
+    let mut data = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut data)
+        .map_err(io_error)?;
+    if data.len() as u64 > limit {
+        return Err(invalid(
+            "authored stdin exceeds its command byte limit; no input was applied",
+        ));
+    }
+    if data.iter().all(u8::is_ascii_whitespace) {
+        return Err(invalid(
+            "authored stdin is empty; supply one JSON/YAML record",
+        ));
+    }
+    parse_input(&data, "stdin")
 }
 
 pub fn safe_url(url: &str) -> bool {
@@ -261,7 +319,30 @@ impl Repository {
                 title: String::new(),
             },
         };
-        let manifest: Manifest = read(&provisional.path("codeclew-docs.yaml")?, MAX_RECORD)?;
+        let manifest_path = provisional.path("codeclew-docs.yaml")?;
+        if !manifest_path.try_exists().map_err(io_error)? {
+            let has_state = [".codeclew", "catalog", "scenarios"]
+                .iter()
+                .any(|p| provisional.root.join(p).exists());
+            let mut error = super::object_layout::state_problem(
+                if has_state {
+                    "ROOT_MANIFEST_MISSING"
+                } else {
+                    "ROOT_NOT_INITIALIZED"
+                },
+                "codeclew-docs.yaml",
+                if has_state {
+                    "root manifest is absent but documentation state or authored directories remain"
+                } else {
+                    "no documentation root manifest or state was found; use docs init only if a new empty root is intended"
+                },
+            );
+            if !has_state {
+                error.code = ErrorCode::InvalidInput;
+            }
+            return Err(error);
+        }
+        let manifest: Manifest = read(&manifest_path, MAX_RECORD)?;
         validate_manifest_schema(&manifest)?;
         if !provisional
             .path(".codeclew")?
@@ -457,7 +538,13 @@ impl Repository {
                     continue;
                 }
             }
-            result.insert(id, read(&record_path, MAX_RECORD)?);
+            let value = read(&record_path, MAX_RECORD).map_err(|mut error| {
+                let details = error.details.get_or_insert_with(|| Box::new(json!({})));
+                details["recordId"] = json!(id);
+                details["recordPath"] = json!(format!("{directory}/{id}.{extension}"));
+                error
+            })?;
+            result.insert(id, value);
         }
         Ok(result)
     }
@@ -500,16 +587,30 @@ impl Repository {
             .into_keys()
             .collect();
         for (id, value) in &rows {
+            let fail = |field: &str, reason: &str, constraint: &str| {
+                let mut e = super::processes::validation_error(value, field, reason, constraint);
+                e.details.as_mut().unwrap()["recordPath"] = json!(format!("scenarios/{id}.yaml"));
+                e.details.as_mut().unwrap()["recordId"] = json!(id);
+                e
+            };
             if !matches!(
                 value.schema.as_str(),
                 "codeclew-documentation-process/1.0" | "codeclew-documentation-view/1.0"
-            ) || id != &value.id
-                || !valid_id(id)
-                || value.max_depth > 16
-                || value.max_nodes == 0
-                || value.max_nodes > 512
-            {
-                return Err(invalid("invalid scenario identity or traversal bounds"));
+            ) {
+                return Err(fail(
+                    "schema",
+                    "UNSUPPORTED_SCHEMA",
+                    "current process or view schema",
+                ));
+            }
+            if id != &value.id || !valid_id(id) {
+                return Err(fail("id", "ID_FILENAME_MISMATCH", id));
+            }
+            if value.max_depth > 16 {
+                return Err(fail("maxDepth", "TRAVERSAL_LIMIT", "at most16"));
+            }
+            if value.max_nodes == 0 || value.max_nodes > 512 {
+                return Err(fail("maxNodes", "TRAVERSAL_LIMIT", "1..=512"));
             }
             super::processes::validate_with_external(value, &services, &external_services)?;
             super::dataflow::validate_definition(value, &services)?;
@@ -529,6 +630,16 @@ impl Repository {
     }
 
     pub fn inputs(&self) -> Result<RepositoryInputs, ClewError> {
+        self.validated_inputs().map_err(|mut error| {
+            let details = error.details.get_or_insert_with(|| Box::new(json!({})));
+            details["validationScope"] = json!("GLOBAL_DOCUMENTATION_INPUTS");
+            details["inputDigestStatus"] = json!("UNAVAILABLE");
+            details["nextAction"] = json!("Repair the named authored input without deleting Work, proposals or latest-check. Service selection does not bypass global declaration integrity; no capture is needed to diagnose this failure.");
+            error
+        })
+    }
+
+    fn validated_inputs(&self) -> Result<RepositoryInputs, ClewError> {
         self.ensure_manifest_current()?;
         // Parse independently authored files without rewriting their bytes/comments.
         let scenarios = self.scenarios()?;
@@ -579,10 +690,16 @@ impl Repository {
             );
         }
         if expected != Some(current.as_str()) {
-            return Err(ClewError::new(
+            let mut error = ClewError::new(
                 ErrorCode::WwConflict,
-                "documentation input digest changed; reload the catalogue and retry with its current inputDigest",
+                "documentation input digest changed or is required; reload and reconcile the catalogue before retrying",
+            );
+            error.details = Some(Box::new(
+                json!({"reason":if expected.is_none(){"EXPECTED_INPUT_DIGEST_REQUIRED"}else{"STALE_INPUT_DIGEST"},
+                "currentInputDigest":current,"expectedInputDigest":expected,
+                "nextAction":"Reload the current catalogue, reconcile your intended edit, then explicitly retry with that inputDigest. Do not automatically retry or overwrite."}),
             ));
+            return Err(error);
         }
         self.atomic(path, &data)?;
         Ok(
@@ -670,9 +787,23 @@ impl Repository {
 
 fn validate_manifest_schema(manifest: &Manifest) -> Result<(), ClewError> {
     if manifest.schema != format!("codeclew-documentation/{VERSION}") {
-        return Err(invalid(
-            "DOCS_REINDEX_REQUIRED: unsupported documentation root schema; initialize a fresh documentation root and reindex its sources",
-        ));
+        let legacy = manifest.schema == "codeclew-documentation/1.0";
+        let reason = if legacy {
+            "LEGACY_ROOT_SCHEMA"
+        } else {
+            "ROOT_SCHEMA_UNSUPPORTED"
+        };
+        let mut error = super::object_layout::state_problem(
+            reason,
+            "codeclew-docs.yaml",
+            if legacy {
+                "DOCS_REINDEX_REQUIRED: known legacy manifest; preserve it and use a separate fresh root for explicit reindexing; this is not lost-snapshot recovery"
+            } else {
+                "unsupported root manifest schema; its storage layout cannot be inferred"
+            },
+        );
+        error.code = ErrorCode::InvalidInput;
+        return Err(error);
     }
     Ok(())
 }
@@ -1013,6 +1144,204 @@ mod tests {
     }
 
     #[test]
+    fn docs_state_process_diagnostics_are_specific_and_external_actors_remain_legal() {
+        let services = BTreeMap::from([("orders".into(), service("orders"))]);
+        let external = std::collections::BTreeSet::from(["remote".into()]);
+        let mut valid = scenario("checkout", "orders");
+        valid
+            .process
+            .as_mut()
+            .unwrap()
+            .participants
+            .push("remote".into());
+        super::super::processes::validate_with_external(&valid, &services, &external).unwrap();
+        for (field, reason, change) in [
+            ("process.scope", "REQUIRED_TEXT", 0),
+            ("process.outcomes", "ITEM_COUNT", 1),
+            ("process.participants[2]", "UNKNOWN_PARTICIPANT", 2),
+            ("process.participants[2]", "DUPLICATE_ID", 3),
+            ("process.linkedSubviews[0]", "INVALID_ID", 4),
+            ("root.service", "ROOT_NOT_CAPTURED", 5),
+        ] {
+            let mut value = valid.clone();
+            let p = value.process.as_mut().unwrap();
+            match change {
+                0 => p.scope.clear(),
+                1 => p.outcomes.clear(),
+                2 => p.participants.push("unknown".into()),
+                3 => p.participants.push("remote".into()),
+                4 => p.linked_subviews.push("../bad".into()),
+                _ => value.root.service = "remote".into(),
+            };
+            let error =
+                super::super::processes::validate_with_external(&value, &services, &external)
+                    .unwrap_err();
+            let d = error.details.unwrap();
+            assert_eq!(d["recordId"], "checkout");
+            assert_eq!(d["recordPath"], "scenarios/checkout.yaml");
+            assert_eq!(d["field"], field);
+            assert_eq!(d["reason"], reason);
+        }
+    }
+
+    #[test]
+    fn docs_state_selected_service_reports_invalid_global_scenario_before_acquisition() {
+        let (_temp, repo) = setup();
+        for id in ["orders", "billing"] {
+            repo.service_add(service(id), Some(&repo.input_digest().unwrap()))
+                .unwrap();
+        }
+        let mut invalid = scenario("billing-flow", "billing");
+        invalid
+            .process
+            .as_mut()
+            .unwrap()
+            .participants
+            .push("unknown".into());
+        repo.atomic("scenarios/billing-flow.yaml", &bytes(&invalid).unwrap())
+            .unwrap();
+        let error = super::super::check::run_selected(
+            &repo,
+            &std::collections::BTreeSet::from(["orders".into()]),
+        )
+        .unwrap_err();
+        let d = error.details.unwrap();
+        assert_eq!(d["recordId"], "billing-flow");
+        assert_eq!(d["reason"], "UNKNOWN_PARTICIPANT");
+        assert_eq!(d["validationScope"], "GLOBAL_DOCUMENTATION_INPUTS");
+        assert_eq!(d["inputDigestStatus"], "UNAVAILABLE");
+        assert!(d.get("inputDigest").is_none());
+    }
+
+    #[test]
+    fn docs_state_missing_schema_field_retains_record_and_global_identity() {
+        let (_temp, repo) = setup();
+        repo.service_add(service("orders"), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let mut value = serde_json::to_value(scenario("checkout", "orders")).unwrap();
+        value["process"].as_object_mut().unwrap().remove("scope");
+        repo.atomic("scenarios/checkout.yaml", &bytes(&value).unwrap())
+            .unwrap();
+        let error = super::super::check::run_selected(
+            &repo,
+            &std::collections::BTreeSet::from(["orders".into()]),
+        )
+        .unwrap_err();
+        let d = error.details.unwrap();
+        assert_eq!(d["reason"], "MISSING_REQUIRED_FIELD");
+        assert_eq!(d["field"], "process.scope");
+        assert_eq!(d["recordPath"], "scenarios/checkout.yaml");
+        assert_eq!(d["inputDigestStatus"], "UNAVAILABLE");
+    }
+
+    #[test]
+    fn docs_state_regular_input_keeps_symlink_and_nonregular_guards() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("record.json");
+        fs::write(&file, b"true").unwrap();
+        assert_eq!(read::<Value>(&file, 4).unwrap(), json!(true));
+        assert!(read::<Value>(&file, 3).is_err());
+        let link = temp.path().join("link.json");
+        symlink(&file, &link).unwrap();
+        assert!(read::<Value>(&link, 16).is_err());
+        assert!(read::<Value>(temp.path(), 16).is_err());
+    }
+
+    #[test]
+    fn docs_state_cas_chains_current_and_stale_writes_without_mutation() {
+        let (_temp, repo) = setup();
+        let initial = repo.input_digest().unwrap();
+        let first = repo.service_add(service("orders"), Some(&initial)).unwrap();
+        let d1 = first["inputDigest"].as_str().unwrap();
+        let second = repo.service_add(service("billing"), Some(d1)).unwrap();
+        let d2 = second["inputDigest"].as_str().unwrap();
+        assert_ne!(d1, d2);
+        let current = repo.service_add(service("billing"), Some(d1)).unwrap();
+        assert_eq!(current["status"], "CURRENT");
+        assert_eq!(current["inputDigest"], d2);
+        for expected in [Some(d1), None] {
+            let err = repo
+                .service_add(service("warehouse"), expected)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::WwConflict);
+            assert_eq!(err.details.unwrap()["currentInputDigest"], d2);
+            assert_eq!(repo.input_digest().unwrap(), d2);
+            assert!(
+                !repo
+                    .path("catalog/services/warehouse.json")
+                    .unwrap()
+                    .exists()
+            );
+        }
+    }
+
+    #[test]
+    fn docs_state_concurrent_cas_writers_do_not_overwrite_each_other() {
+        let (temp, repo) = setup();
+        let initial = repo.input_digest().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = ["orders", "billing"]
+            .into_iter()
+            .map(|id| {
+                let root = temp.path().to_owned();
+                let expected = initial.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    let r = Repository::open(&root).unwrap();
+                    b.wait();
+                    r.service_add(service(id), Some(&expected))
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| r.as_ref().is_err_and(|e| e.code == ErrorCode::WwConflict))
+                .count(),
+            1
+        );
+        assert_eq!(repo.services().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn docs_state_stdin_is_bounded_and_parses_one_closed_record() {
+        use std::io::Cursor;
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Record {
+            ok: bool,
+        }
+        for data in [b"{\"ok\":true}".as_slice(), b"ok: true\n".as_slice()] {
+            assert!(
+                read_authored_stream::<Record>(Cursor::new(data), 32)
+                    .unwrap()
+                    .ok
+            );
+        }
+        for data in [b"".as_slice(), b" \n", b"{broken", b"{\"unknown\":true}"] {
+            assert!(read_authored_stream::<Record>(Cursor::new(data), 32).is_err());
+        }
+        let mut exact = b"{\"ok\":true}".to_vec();
+        exact.resize(16, b' ');
+        assert!(
+            read_authored_stream::<Record>(Cursor::new(&exact), 16)
+                .unwrap()
+                .ok
+        );
+        exact.push(b' ');
+        let mut cursor = Cursor::new(exact);
+        assert!(read_authored_stream::<Record>(&mut cursor, 16).is_err());
+        assert_eq!(cursor.position(), 17);
+        let mut long = Cursor::new(vec![b' '; 1000]);
+        assert!(read_authored_stream::<Record>(&mut long, 16).is_err());
+        assert_eq!(long.position(), 17);
+    }
+
+    #[test]
     fn write_lock_subprocess_holder() {
         let (Some(root), Some(ready)) = (
             std::env::var_os("CODECLEW_DOCS_LOCK_ROOT"),
@@ -1324,12 +1653,9 @@ mod tests {
             Repository::init(old.path(), "Architecture").map(|_| ()),
             Repository::open(old.path()).map(|_| ()),
         ] {
-            assert!(
-                result
-                    .unwrap_err()
-                    .message
-                    .contains("DOCS_REINDEX_REQUIRED")
-            );
+            let error = result.unwrap_err();
+            assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
+            assert_eq!(error.details.unwrap()["reason"], "LEGACY_ROOT_SCHEMA");
         }
         assert_eq!(
             fs::read(old.path().join("codeclew-docs.yaml")).unwrap(),
@@ -1356,7 +1682,7 @@ mod tests {
             Repository::init(root.path(), "Architecture")
                 .unwrap_err()
                 .message
-                .contains("DOCS_REINDEX_REQUIRED")
+                .contains("OBJECT_LAYOUT_UNDETERMINED")
         );
         assert_eq!(fs::read(retained).unwrap(), b"keep");
         assert!(!marker.exists());

@@ -37,72 +37,164 @@ pub struct Details {
 pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<(), ClewError> {
     validate_with_external(s, services, &BTreeSet::new())
 }
+pub(super) fn validation_error(
+    s: &Scenario,
+    field: &str,
+    reason: &str,
+    constraint: &str,
+) -> ClewError {
+    let constraint: String = constraint.chars().take(256).collect();
+    let id = store::valid_id(&s.id).then_some(s.id.as_str());
+    let mut error = invalid(format!(
+        "invalid saved process {} at {field}: {reason} ({constraint})",
+        id.unwrap_or("<invalid-id>")
+    ));
+    error.details = Some(Box::new(
+        json!({"diagnostic":"INVALID_SAVED_PROCESS","recordId":id,
+        "recordPath":id.map(|id|format!("scenarios/{id}.yaml")),"field":field,"reason":reason,"constraint":constraint}),
+    ));
+    error
+}
 pub(super) fn validate_with_external(
     s: &Scenario,
     services: &BTreeMap<String, Service>,
     external: &BTreeSet<String>,
 ) -> Result<(), ClewError> {
+    let fail = |field: &str, reason: &str, constraint: &str| {
+        validation_error(s, field, reason, constraint)
+    };
     let Some(p) = &s.process else {
         return if s.schema == "codeclew-documentation-view/1.0" && s.view.is_some() {
             Ok(())
         } else {
-            Err(invalid(
-                "saved definitions require current process or view metadata",
+            Err(fail(
+                "process",
+                "PROCESS_METADATA_REQUIRED",
+                "current process or view metadata",
             ))
         };
     };
     if s.view.is_some() {
-        return Err(invalid(
-            "a saved definition cannot be both a process and an entity view",
+        return Err(fail(
+            "view",
+            "CONFLICTING_DEFINITION_KINDS",
+            "process and view are mutually exclusive",
         ));
     }
-    let bounded = |v: &str| !v.trim().is_empty() && v.len() <= 2048;
-    if s.schema != "codeclew-documentation-process/1.0"
-        || !bounded(&s.title)
-        || !bounded(&s.summary)
-        || !bounded(&p.scope)
-        || !bounded(&p.trigger)
-        || p.participants.is_empty()
-        || p.participants.len() > 64
-        || p.objects.len() > 64
-        || p.outcomes.is_empty()
-        || p.outcomes.len() > 32
-        || !p.outcomes.iter().all(|s| bounded(s))
-        || p.linked_subviews.len() > 32
-        || !p.participants.contains(&s.root.service)
-        || !services.contains_key(&s.root.service)
-        || p.participants
-            .iter()
-            .any(|id| !services.contains_key(id) && !external.contains(id))
-        || p.objects
-            .iter()
-            .any(|id| !id.strip_prefix("entity:").is_some_and(store::valid_id))
-        || p.linked_subviews.iter().any(|id| !store::valid_id(id))
-        || [&p.participants, &p.objects, &p.linked_subviews]
-            .iter()
-            .any(|v| v.iter().collect::<BTreeSet<_>>().len() != v.len())
-    {
-        return Err(invalid(
-            "invalid saved process scope, participants, objects, outcomes or linked subview bounds",
+    if s.schema != "codeclew-documentation-process/1.0" {
+        return Err(fail(
+            "schema",
+            "UNSUPPORTED_SCHEMA",
+            "codeclew-documentation-process/1.0",
         ));
+    }
+    for (field, value) in [
+        ("title", &s.title),
+        ("summary", &s.summary),
+        ("process.scope", &p.scope),
+        ("process.trigger", &p.trigger),
+    ] {
+        if value.trim().is_empty() {
+            return Err(fail(field, "REQUIRED_TEXT", "nonempty text"));
+        }
+        if value.len() > 2048 {
+            return Err(fail(field, "TEXT_LIMIT", "at most 2048 UTF-8 bytes"));
+        }
+    }
+    for (field, len, min, max) in [
+        ("process.participants", p.participants.len(), 1, 64),
+        ("process.objects", p.objects.len(), 0, 64),
+        ("process.outcomes", p.outcomes.len(), 1, 32),
+        ("process.linkedSubviews", p.linked_subviews.len(), 0, 32),
+    ] {
+        if !(min..=max).contains(&len) {
+            return Err(fail(field, "ITEM_COUNT", &format!("{min}..={max} items")));
+        }
+    }
+    if !services.contains_key(&s.root.service) {
+        return Err(fail(
+            "root.service",
+            "ROOT_NOT_CAPTURED",
+            "root must name a captured service declaration; registered external actors cannot be roots",
+        ));
+    }
+    if !p.participants.contains(&s.root.service) {
+        return Err(fail(
+            "process.participants",
+            "ROOT_NOT_PARTICIPANT",
+            "include root.service",
+        ));
+    }
+    for (field, values) in [
+        ("process.participants", &p.participants),
+        ("process.objects", &p.objects),
+        ("process.linkedSubviews", &p.linked_subviews),
+    ] {
+        let mut seen = BTreeSet::new();
+        for (i, value) in values.iter().enumerate() {
+            let item_field = format!("{field}[{i}]");
+            if !seen.insert(value) {
+                let mut error = fail(&item_field, "DUPLICATE_ID", "distinct IDs within this list");
+                error.details.as_mut().unwrap()["value"] =
+                    json!(value.chars().take(100).collect::<String>());
+                return Err(error);
+            }
+            let valid = match field {
+                "process.participants" => services.contains_key(value) || external.contains(value),
+                "process.objects" => value.strip_prefix("entity:").is_some_and(store::valid_id),
+                _ => store::valid_id(value),
+            };
+            if !valid {
+                let (reason, constraint) = match field {
+                    "process.participants" => (
+                        "UNKNOWN_PARTICIPANT",
+                        "a registered service or external actor; NOT_CAPTURED alone is legal",
+                    ),
+                    "process.objects" => ("INVALID_ID", "entity: followed by a valid entity ID"),
+                    _ => ("INVALID_ID", "a valid saved subview ID"),
+                };
+                let mut error = fail(&item_field, reason, constraint);
+                error.details.as_mut().unwrap()["value"] =
+                    json!(value.chars().take(100).collect::<String>());
+                return Err(error);
+            }
+        }
+    }
+    for (i, outcome) in p.outcomes.iter().enumerate() {
+        if outcome.trim().is_empty() || outcome.len() > 2048 {
+            return Err(fail(
+                &format!("process.outcomes[{i}]"),
+                "INVALID_OUTCOME",
+                "1..=2048 UTF-8 bytes of nonempty text",
+            ));
+        }
     }
     if let Some(query) = &p.extraction {
-        query.validate()?;
+        query
+            .validate()
+            .map_err(|e| fail("process.extraction", "INVALID_EXTRACTION", &e.message))?;
     }
     if let Some(thread) = &p.thread {
-        thread.validate(&p.participants)?;
-        if thread
-            .methods
-            .iter()
-            .any(|m| !services.contains_key(&m.service))
-            || thread
-                .process_pages
-                .iter()
-                .any(|p| !services.contains_key(&p.service))
-        {
-            return Err(invalid(
-                "process thread method and retained-page bindings require captured service declarations; external participants are declared actors only",
-            ));
+        thread
+            .validate(&p.participants)
+            .map_err(|e| fail("process.thread", "INVALID_THREAD", &e.message))?;
+        for (i, method) in thread.methods.iter().enumerate() {
+            if !services.contains_key(&method.service) {
+                return Err(fail(
+                    &format!("process.thread.methods[{i}].service"),
+                    "METHOD_SERVICE_NOT_CAPTURED",
+                    "method bindings require captured service declarations; external participants are declared actors only",
+                ));
+            }
+        }
+        for (i, page) in thread.process_pages.iter().enumerate() {
+            if !services.contains_key(&page.service) {
+                return Err(fail(
+                    &format!("process.thread.processPages[{i}].service"),
+                    "PAGE_SERVICE_NOT_CAPTURED",
+                    "retained-page bindings require captured service declarations; external participants are declared actors only",
+                ));
+            }
         }
     }
     Ok(())
@@ -190,6 +282,7 @@ pub enum Command {
         #[arg(long)]
         id: String,
     },
+    /// Save a process from a JSON/YAML file or --input - (stdin, at most 256 KiB).
     Put {
         #[arg(long)]
         root: PathBuf,
@@ -367,7 +460,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             expected_input_digest,
             ..
         } => {
-            let definition = load_definition(&repo, &input)?;
+            let definition = validate_definition(&repo, store::read_authored(&input, 256 * 1024)?)?;
             if repo
                 .scenarios()?
                 .get(&definition.id)
@@ -491,15 +584,40 @@ fn validate_suppress_entry(entry: &str) -> Result<(), ClewError> {
     Ok(())
 }
 fn load_definition(repo: &Repository, path: &std::path::Path) -> Result<Scenario, ClewError> {
-    let s: Scenario = store::read(path, 256 * 1024)?;
-    if s.schema != "codeclew-documentation-process/1.0"
-        || !store::valid_id(&s.id)
-        || s.id == OVERVIEW
-        || s.max_depth > 16
-        || s.max_nodes == 0
-        || s.max_nodes > 512
-    {
-        return Err(invalid("invalid process identity or traversal bounds"));
+    validate_definition(repo, store::read(path, 256 * 1024)?)
+}
+fn validate_definition(repo: &Repository, s: Scenario) -> Result<Scenario, ClewError> {
+    if s.schema != "codeclew-documentation-process/1.0" {
+        return Err(validation_error(
+            &s,
+            "schema",
+            "UNSUPPORTED_SCHEMA",
+            "codeclew-documentation-process/1.0",
+        ));
+    }
+    if !store::valid_id(&s.id) || s.id == OVERVIEW {
+        return Err(validation_error(
+            &s,
+            "id",
+            "INVALID_PROCESS_ID",
+            "non-reserved valid process ID",
+        ));
+    }
+    if s.max_depth > 16 {
+        return Err(validation_error(
+            &s,
+            "maxDepth",
+            "TRAVERSAL_LIMIT",
+            "at most 16",
+        ));
+    }
+    if s.max_nodes == 0 || s.max_nodes > 512 {
+        return Err(validation_error(
+            &s,
+            "maxNodes",
+            "TRAVERSAL_LIMIT",
+            "1..=512",
+        ));
     }
     validate_with_external(
         &s,
@@ -518,16 +636,15 @@ fn load_definition(repo: &Repository, path: &std::path::Path) -> Result<Scenario
         return Err(invalid("process has a dangling or duplicate interaction"));
     }
     let entities = super::entities::records(repo)?;
-    if s.process
-        .as_ref()
-        .unwrap()
-        .objects
-        .iter()
-        .any(|id| !entities.contains_key(&id[7..]))
-    {
-        return Err(invalid(
-            "process object must name an existing explicit entity identity",
-        ));
+    for (i, id) in s.process.as_ref().unwrap().objects.iter().enumerate() {
+        if !entities.contains_key(&id[7..]) {
+            return Err(validation_error(
+                &s,
+                &format!("process.objects[{i}]"),
+                "UNKNOWN_ENTITY",
+                id,
+            ));
+        }
     }
     Ok(s)
 }

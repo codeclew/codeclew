@@ -7,6 +7,9 @@ older releases do not implement it. Confirm capabilities before using it.
 
 ## Keep stage and identity explicit
 
+For invalid global declarations, damaged storage, returned digest chaining and
+bounded authored-put stdin, use [documentation state recovery](documentation-state-recovery.md).
+
 Retain one root, service, source revision, snapshot, Work ID and entrypoint.
 A prepared Work is not a read context. A submitted proposal is not a published
 operation. `NEEDS_REPAIR` is blocked, not done; a draft is still a draft. Only

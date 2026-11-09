@@ -274,6 +274,7 @@ pub enum ServiceCommand {
 }
 #[derive(Debug, Subcommand)]
 pub enum InteractionCommand {
+    /// Save an interaction from a JSON/YAML file or --input - (stdin, at most 128 MiB).
     Put(InputArgs),
     List(ListArgs),
     Show {
@@ -438,7 +439,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
         },
         Command::Interaction { command } => match command {
             InteractionCommand::Put(args) => Repository::open(&args.root)?.interaction_put(
-                store::read(&args.input, store::MAX_RECORD)?,
+                store::read_authored(&args.input, store::MAX_RECORD)?,
                 args.expected_input_digest.as_deref(),
             ),
             InteractionCommand::List(args) => {

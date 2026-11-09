@@ -226,6 +226,7 @@ pub(super) fn attach(
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Save a declaration from a JSON/YAML file or --input - (stdin, at most 64 KiB).
     Put {
         #[command(flatten)]
         input: InputArgs,
@@ -245,7 +246,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::Put { input: args, human } => {
             let repo = Repository::open(&args.root)?;
-            let value: ExternalService = store::read(&args.input, 64 * 1024)?;
+            let value: ExternalService = store::read_authored(&args.input, 64 * 1024)?;
             validate(&value)?;
             let previous = records(&repo)?.remove(&value.id);
             if !human
