@@ -34,7 +34,7 @@ export function validateDocsetRoutes(value,nav,docset,version){
  for(const a of actors.values()){shape(a,['id','title'],'/externalActors');text(a.title,'/externalActors',160)}
  function actor(a,p,recipient=false){
   fail(a&&typeof a==='object',p,'expected actor');
-  if(a.kind==='service'){shape(a,['kind','docset','service'],p);fail(services.has(serviceKey(a)),p,'unknown service namespace')}
+  if(a.kind==='service'){shape(a,['kind','docset','service'],p);id(a.docset,p+'/docset');id(a.service,p+'/service');fail(services.has(serviceKey(a)),p,'unknown service namespace')}
   else if(a.kind==='external'){shape(a,['kind','id'],p);fail(actors.has(a.id),p,'unknown external actor')}
   else if(recipient&&a.kind==='unknown'){shape(a,['kind','reason'],p);text(a.reason,p)}
   else if(recipient&&a.kind==='none')shape(a,['kind'],p);
@@ -93,10 +93,10 @@ export function validateDocsetRoutes(value,nav,docset,version){
 // Self-contained so exactly the same pure evaluator runs in Node and the reader.
 export function filterRoutes(registry,query={}){
  if(!query||typeof query!=='object'||Array.isArray(query)||Object.keys(query).some(k=>!['start','end','intermediate','outcomeKinds'].includes(k)))throw Error('Unknown filter property');
- const key=a=>{if(typeof a==='string')return a;if(!a||a.kind!=='service'||Object.keys(a).some(k=>!['kind','docset','service'].includes(k)))throw Error('Expected service filter identity');return a.docset+'/'+a.service};
+ const key=a=>{if(typeof a==='string')return a;if(!a||typeof a!=='object'||Array.isArray(a)||a.kind!=='service'||typeof a.docset!=='string'||typeof a.service!=='string'||Object.keys(a).some(k=>!['kind','docset','service'].includes(k)))throw Error('Expected service filter identity');return a.docset+'/'+a.service};
  const available=new Set(registry.docsets.flatMap(d=>d.services.map(s=>d.id+'/'+s.id)));
- const selected={};for(const field of ['start','end','intermediate']){const values=query[field]||[];if(!Array.isArray(values)||values.some(v=>!available.has(key(v))))throw Error('Unknown filter service namespace');selected[field]=new Set(values.map(key))}
- const kinds=query.outcomeKinds||[];if(!Array.isArray(kinds)||kinds.some(k=>!['normal','error','handoff','unknown'].includes(k)))throw Error('Unknown outcome filter');
+ const selected={};for(const field of ['start','end','intermediate']){const values=Object.hasOwn(query,field)?query[field]:[];if(!Array.isArray(values)||values.some(v=>!available.has(key(v))))throw Error('Unknown filter service namespace');selected[field]=new Set(values.map(key))}
+ const kinds=Object.hasOwn(query,'outcomeKinds')?query.outcomeKinds:[];if(!Array.isArray(kinds)||kinds.some(k=>!['normal','error','handoff','unknown'].includes(k)))throw Error('Unknown outcome filter');
  const test=(actor,set)=>!set.size?1:actor?.kind==='service'?(set.has(key(actor))?1:-1):actor?.kind==='external'?-1:0;
  const name=n=>n===1?'MATCH':n===-1?'NO_MATCH':'UNCLASSIFIED';
  return registry.routes.map(route=>{

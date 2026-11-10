@@ -78,3 +78,23 @@ test('filter input rejects typos and external actors masquerading as service sel
  const local=nav('orders-docs');local.byFile.get('incoming.md').html+='<span id="request"></span>';
  assert.throws(()=>validateDocsetRoutes(registry,local,'orders-docs',version('orders-docs')),/ambiguous/);
 });
+
+test('explicit facet values and typed service identities reject coercion',()=>{
+ for(const field of ['start','end','intermediate','outcomeKinds']){
+  for(const value of [false,null,0,'',undefined,{},'orders-docs/api'])assert.throws(()=>filterRoutes(registry,{[field]:value}),undefined,field+': '+String(value));
+ }
+ for(const field of ['start','end','intermediate']){
+  for(const property of ['docset','service'])for(const value of [['orders-docs'],['api'],null,false,0,{},undefined]){
+   const actor={kind:'service',docset:'orders-docs',service:'api',[property]:value};assert.throws(()=>filterRoutes(registry,{[field]:[actor]}),undefined,field+'/'+property);
+  }
+  assert.deepEqual(filterRoutes(registry,{[field]:[{kind:'service',docset:'orders-docs',service:'api'}]}),filterRoutes(registry,{[field]:['orders-docs/api']}));
+ }
+ assert.deepEqual(filterRoutes(registry),filterRoutes(registry,{start:[],end:[],intermediate:[],outcomeKinds:[]}));
+});
+test('registry service actors reject non-string namespace IDs before key construction',()=>{
+ for(const position of ['occurrence','recipient'])for(const property of ['docset','service'])for(const value of [['orders-docs'],['api'],null,false,0,{},undefined]){
+  const v=clone(),actor=position==='occurrence'?v.routes[1].occurrences[0].actor:v.routes[1].outcomes[1].end.recipient;
+  assert.equal(actor.kind,'service');actor[property]=value;
+  assert.throws(()=>validateDocsetRoutes(v,nav('portal'),'portal',version('portal')),undefined,position+'/'+property);
+ }
+});
