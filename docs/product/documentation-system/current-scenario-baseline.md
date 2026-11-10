@@ -198,3 +198,20 @@ See [scenario cards](scenario-cards.md) and the
 path was independently exercised in Java/Kotlin with compiler and SOURCE_SYNTAX
 authority kept distinct. Publication still requires qualification of the exact
 accepted package; source tests alone do not establish a public release.
+
+## 0.15.0 human-route instruction overlay
+
+The [scenario-card overlay](scenario-cards.md#0150-guided-human-route-overlay-source-instructions)
+adds a guided human authoring path and same-author scope reconciliation to
+S02/S07/S08/S10, preserving explicit native review and all historical results.
+It reuses capture/Work/compose/bind/export rather than adding another planner or
+proof store. Catalogue edits are recomposed from the original capture before
+preparing new Work; external reports retain declared/unverified authority.
+
+This records source instruction changes, not a new live completeness/UX result.
+Mechanical examples cannot establish author behavior or full service explanation.
+The bounded compiler and SOURCE_SYNTAX author/reader gates remain due on an admitted
+exact package. Imported-B citation-helper and external human-binding limits remain
+explicit. Required cross-docset navigation/filters follow as a separate 0.15.0
+implementation slice; neither the historical graph nor its growth status is
+silently promoted by this overlay.

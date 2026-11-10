@@ -806,3 +806,33 @@ Local update configure/enqueue/reconcile/run/status and history list/show/compar
 ### T14 implementation evidence
 
 T14 implements versioned local/CI jobs, exact event forwarding, retained idempotency results, conservative acceptance before evidence transfer, coordinator locks, configured publication and a GitLab resource-group recipe. The configured qualification entry point triggers pipelines and compares returned artifacts with local outcomes. Thirteen fake contract tests and an actual local source-launcher capture/import/status flow passed; this is not actual GitLab qualification. Existing S12 graph transitions are unchanged.
+
+## 0.15.0 guided human-route overlay (source instructions)
+
+This overlay extends existing journeys; it does not rewrite their historical
+results or require the native coordinator/reviewer path for default human pages.
+The [guided route](../../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages)
+keeps the full user question through discovery, reads, originals, self-check,
+checked export and reader inspection. No new planner/ledger or semantic generator.
+
+| Journey | Human-route instruction delta | Acceptance still required |
+| --- | --- | --- |
+| S02 | Broad documentation uses authored human pages; existing notes map requested starts/data/contracts/egress/settings to pages. Native/Q&A routes stay explicit. | A bounded author closes the whole given scope, not just one handler. |
+| S07 | Explain individual source-named fields and evidence-backed aliases/representations; link request/response/error/message shapes to actions. | Reader distinguishes field meanings, nesting/defaults and effects without reading code. |
+| S08 | The same author compares actual draft with the original question/read input and repairs omissions before DONE. No mandatory second critic. This is not native self-approval. | Independent acceptance after DONE; proof/render PASS alone is insufficient. |
+| S10 | Retain collector-attributed report via existing externalInputs, with origin/method/claimed time and original artifact hash when supplied. Catalogue edits require recompose ORIGINAL_CAPTURE and Work on its returned snapshot. | Genuine external-input→human binding is not established by this instruction slice; preserve unverified authority and any required binding blocker. |
+| S05/S06 | Reconcile current CAS digest/intent; preserve originals, immutable history and full recovery closure. | No reset, stale overwrite or HTML-to-evidence reconstruction. |
+| S03/S04 | Independent evidence roots/docsets/hosting remain distinct. | Required 0.15.0 cross-docset navigation/filters are a subsequent reviewed implementation slice, not delivered by these instructions. |
+
+Historical S08 separate-review/coordinator assertions remain scoped to that explicit
+native workflow. Default human self-check does not create native review authority.
+Available-but-unread definitions are work; unavailable evidence and unsupported
+helper binding are specific retained blockers. Imported-B RECORD_CHANGED remains
+unfixed; do not claim full library-backed service closure around it. External Work
+retention is not SOURCE citation authority and cannot be hidden as an unbound fact.
+
+This source slice has focused mechanical/example checks only. On the admitted
+0.15.0 package, run the bounded compiler and SOURCE_SYNTAX author cases separately,
+then independent meaning/reader acceptance against the original request. Keep
+review rubrics out of the author's control run and record costs/time separately
+from capture. No paid authoring or broad historical benchmark is implied here.

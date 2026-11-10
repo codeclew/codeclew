@@ -2,40 +2,45 @@
 
 ## Frozen source to reviewed pages
 
-This is the default route for broad service/process documentation requests and
-updates. Author reader-facing Markdown through the existing original-fragment, bind and
-export commands, with a checked local HTML/standalone preview. Explicit MDX or
-Docusaurus requests keep their existing selected export route. Interaction
-is optional. Essential purpose, behavior and failures are visible immediately;
-source, provenance and technical detail are secondary.
-For checked previews, include the mechanical per-page
-[Sources footer](../examples/markdown-renderer/README.md#checked-local-sources-footer)
-from existing bindings and cited retained excerpts; do not reauthor source lists.
+For broad generate/update requests, follow this path. Preserve the complete
+original question; outputs below live in existing author notes/originals, not a
+new planner, ledger or evidence store. Load technical references only when needed.
 
-Resolve one installed CODECLEW_SKILL_DIR and admitted CLEW launcher. For a new
-repository, use [supported registration and capture](service-documentation.md#start-or-recover)
-first, then return here with the resulting root/service/snapshot. For an existing
-frozen root, reuse its retained evidence without recapture. The presence or absence
-of those arguments does not select a different documentation result.
+| Step | Do / output | Read when needed |
+| --- | --- | --- |
+| 1. Admit | Retain the question and exact root/service/snapshot; reuse frozen evidence. Register/capture only if no usable evidence exists. | [Acquisition](service-documentation.md#start-or-recover) |
+| 2. Cover scope | Map requested HTTP/Kafka/scheduled/internal starts, data, contracts, egress and settings to intended pages in your notes. | [Discovery below](#discover-and-read); [threads](thread-preparation.md) |
+| 3. Read | Batch consequential bodies/types/configs; finish continuations. Obtain real handles or a specific blocker/next action. Available-but-unread is unfinished. | [References](#retained-source-references); [parts](source-read-parts.md) |
+| 4. Author | Write originals: entry→thread/sequence, individual fields/aliases, request/response/error/message shapes, effects and external identities. DataFlow only if requested. | [Original format](#original-pages-and-completion); [HTTP closure](http-reader-closure.md) |
+| 5. Self-check | The same author compares the actual draft with the original question and read input; repairs missing entries, branches, fields, settings and effects before DONE. | [Scope completion](#requested-scope-completion); [same-author closure](http-reader-closure.md#same-author-closure-before-finalization) |
+| 6. Export | Compose/bind once; finalize checked HTML with local Sources. Preserve originals, manifests/index and full export. | [Commands](#original-pages-and-completion); [footer](../examples/markdown-renderer/README.md#checked-local-sources-footer) |
+| 7. Read as user | Open pages/links at desktop and narrow widths; explain inputs, changes, returns and effects without code. Only then report scope completed or the retained blocker. | [Reader checklist](task-oriented-readers.md) |
 
-A loose HTML directory or copied bindings manifest is not an original frozen root.
-Reuse requires the original root or a complete supported export/recovery route,
-including its declared evidence object closure and required Work state. If missing,
-name that missing input and leave authoring blocked; do not reconstruct proof from
-HTML, inspect private stores or silently recapture source. Preserve the original
-publication, texts and provenance; write the new human pages separately.
+No second author/critic is required by this default path. Self-check is not native
+review approval, source authority or semantic proof from a helper. Explicit native
+and Q&A workflows keep [their own routes](../SKILL.md#choose-the-requested-result).
 
-Bounded SOURCE Q&A, explicitly requested native Work/proposal/coordinator output
-and historical native `docs render` keep their routes in [SKILL.md](../SKILL.md).
-Keep a running experiment on its admitted runtime. A skill-only delta is not a new
-runtime release: record the installed version and exact selected skill identity.
+## Repair at the failed step
 
-Source facts MUST come through supported APIs. Use the supplied frozen root;
-do not clone it again. Failure is not permission to bypass clew with shell/file
-tools on target source, GitHub/web/raw URLs or private-store/cache access, unless
-the user explicitly authorizes that fallback. This is agent guidance, not
-OS/filesystem sandbox enforcement. Ordinary product implementation follows its
-repository workflow. Read saved helper artifacts through the supported inspector.
+| Situation | Exact next action / reference |
+| --- | --- |
+| Native catalogue/render substituted for human pages | Return to originals, then `page_citations.py compose` and `reader_export_check.py finalize`; use the complete [invocations](#original-pages-and-completion). `compose-original` is not a CLI command. |
+| Wrong Git mapping input | Human bind/finalize uses service-keyed `--repositories`; native export uses repositoryId-keyed `--source-map`. [Formats](library-sources.md#checked-sources-footer-for-human-pages). |
+| Missing root/closure or partial export | Preserve originals; restore the complete supported root/closure. HTML alone is not evidence. [Recovery](service-documentation.md#start-or-recover). Use a new output directory, not an overwrite. |
+| CAS `WW_CONFLICT` / stale Work after catalogue edit | Reconcile current declaration and `currentInputDigest`, retry with `--expected-input-digest`; then recompose ORIGINAL_CAPTURE and use its returned snapshot for new Work. [Recipe](service-documentation.md#preserve-collected-external-information). |
+| Library SOURCE failure | Keep status/ref/scope; ROW matching differs from RECORD revision checks. [Boundary and safe next steps](library-sources.md#library-reads-and-citation-helper-boundaries); no relabelling/recapture bypass. |
+| External report ref is not a cite-handle | Retain the report/Work and unverified authority; do not fake SOURCE or remove substantive annotations for a pass. [Current limitation](service-documentation.md#preserve-collected-external-information). |
+| Scope still open despite proof/render PASS | Repair the missing read/explanation in originals; [completion](#requested-scope-completion) is reader-level, not an exit code. |
+
+## Discover and read
+
+Resolve one installed CODECLEW_SKILL_DIR/CLEW and exact saved snapshot. Keep a
+running task on its admitted runtime. A skill-only delta is not a release.
+A copied HTML directory/bindings manifest is not a frozen root: complete supported
+recovery includes its object closure and required Work state. Do not reconstruct
+proof from HTML, bypass supported reads through target Git/raw files/private caches,
+or silently recapture. An explicitly user-authorized fallback retains its limits.
+Inspect saved helper results through their supported inspector.
 
 Choose discovery from the retained capture's supported inventory. The file route
 below requires a registered `SOURCE_SCOPE`; it is not the entry route for every
@@ -292,34 +297,32 @@ claim before READY; adding a generic caveat does not repair the claim.
 
 ## Requested-scope completion
 
-Before reporting DONE, compare the actual request with the rendered reader pages.
-For broad service/process documentation, account for the requested surfaces:
+Before DONE the author compares the original question, read input and actual pages,
+then repairs originals. No mandatory second critic; this is not native approval.
+For broad service/process scope account for:
 
-- Purpose, responsibilities, scope and useful reading order.
-- Threads from trigger/input through local helpers, consequential branches,
-  effects, failures and outcomes; supported continuations must be explained.
-- Domain concepts and individual field tables with exact identifiers, types,
-  nesting/requiredness where evidenced, and distinct human meanings.
-- Ingress and full in-scope request, response and error contracts. Identify
-  observed source shapes separately from an actual published contract.
-- Egress grouped by destination and operation: known method/path/topic, destination
-  configuration keys and supplied address/profile; distinguish an unknown host
-  from a known logical operation. Preserve declared versus observed authority.
-- Local errors beside their steps, and useful links to populated process, domain,
-  contract and dependency explanations. Optional DataFlow is required only if asked.
+- Purpose, responsibilities and reading order.
+- Every requested trigger/thread through consequential helpers, branches, effects,
+  errors and outcomes, including supported continuations.
+- Domain concepts and individual field meanings: source identifiers, types,
+  nesting/requiredness and evidence-backed aliases with distinct representations.
+- Ingress/request/response/error contracts; source shapes are not published wire proof.
+- Egress grouped by external identity/operation: known method/path/topic, config
+  key/default and supplied address/profile. Unknown host does not erase a known
+  logical operation; declared and observed authority remain separate.
+- Errors beside steps and links to populated process/domain/contract/dependency
+  explanations. DataFlow only when asked.
 
-Keep concise requested pages concise; this is not a mandatory universal template.
-Name genuine evidence limits explicitly. Unknown runtime settings or unsupported
-edges remain unknown, while delivered-but-unread helpers and supported unexplained
-targets remain unfinished work. A raw catalogue, auto-structure, GAP card, render
-exit zero or binding-helper PASS cannot make that draft complete. Do not narrow a
-broad task to one handler or hide essential explanations inside source disclosures.
+For HTTP use [same-author closure](http-reader-closure.md#same-author-closure-before-finalization).
+Available-but-unread or unexplained supported inputs remain work. Keep genuine
+unavailable evidence/unknown runtime facts explicit. Do not narrow a broad request
+to one handler or hide essential explanation in source disclosures. Catalogue,
+GAP, render or proof PASS is not semantic completeness.
 
-Review the actual local HTML on desktop and a narrow viewport, follow the reader
-links, and check visible language and content. Keep semantic/reader acceptance
-separate from proof integrity and helper success. Use the
-[reader checklist](task-oriented-readers.md); retain the complete supported export
-and its original source bindings for independent review. Private output stays local.
+Open local HTML at desktop/narrow widths and follow links using the
+[reader checklist](task-oriented-readers.md). Preserve originals/bindings and the
+complete export for independent review; private output stays local. Concise page
+requests stay concise; this is not a universal page template.
 
 ## Original pages and completion
 

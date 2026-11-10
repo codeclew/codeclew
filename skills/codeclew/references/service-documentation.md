@@ -1368,6 +1368,62 @@ acquiring source again. Review `docs external remove --id forecast-provider`
 and apply with the expected input digest only after current references are
 removed explicitly; no cascade or historical rewrite is performed.
 
+### Preserve collected external information
+
+Keep external identity/repository/wiki in the registry above. For addresses, read
+`clew docs interaction show --root "$DOCS_ROOT" --id "$INTERACTION_ID"`, preserve
+the real callSite/selector and edit the full interaction. This is only its fragment:
+
+```json
+{"addresses":[{"url":"https://forecast.example.invalid/api","environment":"test","source":"inventory-01; config export; claimed collectedAt=2026-11-10T09:00:00Z"}]}
+```
+
+Put collector origin/rationale in existing declaration fields, not invented typed
+fields. Save a small UTF-8 report at `external-evidence/inventory-01.json` in the
+docs root. This example is an author convention, not a clew schema or collector:
+
+```json
+{"collectionId":"inventory-01","collectedAt":"2026-11-10T09:00:00Z","method":"owner-supplied config export","sourceURI":"https://inventory.example.invalid/forecast","environment":"test","revision":null,"artifactSha256":null,"facts":[{"externalService":"forecast-provider","address":"https://forecast.example.invalid/api"}]}
+```
+
+Use supplied facts; unknown revision/hash stays null. Hash the actual permitted
+artifact bytes, not a different serialization. Claimed collection time is not
+clew observation/registration/render time; a hash establishes identity, not truth.
+Use current inputDigest for each put. On WW_CONFLICT reconcile intent/current
+record and retry with `--expected-input-digest` from currentInputDigest.
+
+After catalogue edits, recompose the **original capture** and set SNAPSHOT to the
+exact returned value. With unchanged declarations reuse the suitable snapshot;
+recompose does not repair changed source selection or recapture:
+
+```sh
+clew docs recompose --root "$DOCS_ROOT" --snapshot "$ORIGINAL_CAPTURE"
+```
+
+Save request.json, then prepare/read the new Work:
+
+```json
+{"schema":"codeclew-documentation-work-request/1.0","audience":"Service documentation","externalInputs":["external-evidence/inventory-01.json"],"maxItems":100,"maxBytes":49152}
+```
+
+```sh
+clew docs work prepare --root "$DOCS_ROOT" --subject "service:$SERVICE" --snapshot "$SNAPSHOT" --input request.json
+clew docs work read --root "$DOCS_ROOT" --work "$WORK" --input external-read.json
+```
+
+WORK comes from prepare; external-read.json is
+`{"references":["RETURNED_EXTERNAL_INPUT_REFERENCE"]}`. Finish delivery/cursors;
+unread/omitted is not reviewed. At most 64 UTF-8 files, each 256 KiB; do not split
+to evade limits. Work retains text/digest with HUMAN_OR_IMPORTED_UNVERIFIED
+authority; that internal text digest is not the artifact's raw-byte SHA256.
+Keep report/Work; changed text needs a new Work, not rewritten history.
+
+External refs are not SOURCE cite-handles. SOURCE/SOURCE_NATIVE human helpers do
+not establish external-input→human claim/footer compatibility; check that path on
+the exact candidate. Do not fake sourceId, elevate authority or strip factual
+annotations for a pass. Retain the attributed report and required binding blocker;
+registration does not rewrite authored pages. No new provenance engine/collector.
+
 ## Retained route and OpenAPI comparison
 
 Use `clew docs contract check --root DOCS --snapshot SNAPSHOT --service ID`
