@@ -6,7 +6,7 @@ use crate::error::ClewError;
 
 const KOTLIN_SCHEMA: &str = "declaration-descriptor/0.1";
 
-pub(super) fn candidate(observation: &Observation) -> bool {
+pub(in crate::documentation) fn candidate(observation: &Observation) -> bool {
     observation.normalized["schema"] == KOTLIN_SCHEMA
         || observation.normalized["schema"]
             .as_str()
@@ -15,7 +15,10 @@ pub(super) fn candidate(observation: &Observation) -> bool {
         || observation.symbol.starts_with("callable:")
 }
 
-pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCallable, ClewError> {
+pub(in crate::documentation) fn project(
+    context: &mut Context<'_>,
+    id: &str,
+) -> Result<ProjectedCallable, ClewError> {
     let observation = context
         .evidence
         .observations

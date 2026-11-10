@@ -1,6 +1,7 @@
 //! Source-free export projection over validated retained evidence. The local
 //! records remain untouched; remote output is not an evidence reimport format.
 use super::source_links as links;
+pub(super) use super::source_links::range_url;
 
 use super::{check::Check, digest, invalid, io_error, store};
 use crate::error::ClewError;
@@ -138,12 +139,6 @@ impl Policy {
             json!({"schema":"codeclew-source-export/1.0","mode":self.mode,"repositories":self.repositories,"subjects":self.subjects,"policyDigest":digest(self)?,"localEvidence":"UNCHANGED","authoredQuotations":"PRESERVED; this option removes automatic source attachments, not authored quotations or semantic identities"}),
         )
     }
-}
-
-/// SSH transport usernames are admitted locally, never emitted in web links.
-pub(super) fn safe_ssh_repository(value: &str) -> bool {
-    (value.starts_with("ssh://") || (!value.contains("://") && value.contains('@')))
-        && links::repository(value).is_ok()
 }
 
 type SourceKey = (String, String, String, String, String, String);
@@ -714,17 +709,6 @@ impl<'a> Projection<'a> {
             _ => {}
         }
         Ok(())
-    }
-}
-
-/// Range changes retain the selected provider's syntax, including old GitLab
-/// citations whose capture appended GitHub-style line fragments.
-pub(super) fn range_url(url: &str, start: u64, end: u64) -> String {
-    let base = url.split('#').next().unwrap_or(url);
-    if base.contains("/-/blob/") {
-        format!("{base}#L{start}-{end}")
-    } else {
-        format!("{base}#L{start}-L{end}")
     }
 }
 

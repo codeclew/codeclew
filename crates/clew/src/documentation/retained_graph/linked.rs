@@ -271,14 +271,14 @@ fn build(checked: &Check, pages: &[PageContent]) -> Result<SourceCallGraph, Clew
 }
 /// Same bounded expansion over explicit callable declarations; no process/handoff
 /// association is manufactured for model Work.
-pub(super) fn build_roots(
+pub(in crate::documentation) fn build_roots(
     checked: &Check,
     roots: &[(String, String)],
 ) -> Result<SourceCallGraph, ClewError> {
     build_roots_with_depth(checked, roots, MAX_DEPTH)
 }
 
-pub(super) fn build_roots_with_depth(
+pub(in crate::documentation) fn build_roots_with_depth(
     checked: &Check,
     roots: &[(String, String)],
     max_depth: usize,
@@ -504,7 +504,7 @@ pub(super) fn build_roots_with_depth(
     Ok(graph)
 }
 
-pub(super) fn expand_kotlin_edge(
+pub(in crate::documentation) fn expand_kotlin_edge(
     evidence: &ServiceEvidence,
     edge: &mut SourceCallEdge,
     depth: usize,
@@ -708,7 +708,7 @@ fn statement_paths(steps: &[Statement], path: &str, result: &mut BTreeMap<String
     }
 }
 
-pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
+pub(in crate::documentation) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
     let mut paths = BTreeMap::new();
     statement_paths(&node.callable.steps, "body", &mut paths);
     let own = &node.observations[&node.callable.declaration_id];
@@ -847,7 +847,7 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
 /// Revalidate the portable graph envelope before publishing it. This checks
 /// Kotlin’s copied exact-site records independently of the selected-page copy
 /// and leaves the frozen Java edge representation intact.
-pub(super) fn validate_graph(
+pub(in crate::documentation) fn validate_graph(
     graph: &SourceCallGraph,
     pages: &[PageContent],
 ) -> Result<(), ClewError> {
@@ -1170,7 +1170,10 @@ fn validate_selected_kotlin_roots(
     Ok(())
 }
 
-pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Result<(), ClewError> {
+pub(in crate::documentation) fn attach(
+    checked: &Check,
+    projection: &mut BundleProjection,
+) -> Result<(), ClewError> {
     if !projection
         .pages
         .iter()

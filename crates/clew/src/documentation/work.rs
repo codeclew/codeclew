@@ -2616,18 +2616,104 @@ pub fn capture_inputs_with_membership(
     Ok((note_paths, out))
 }
 
+pub(super) fn evidence_reference_allowed(handle: &Handle) -> bool {
+    matches!(
+        handle.kind.as_str(),
+        "DEPENDENCY" | "NOTE" | "ENTRYPOINT" | "SOURCE"
+    )
+}
+
+pub(super) fn operation_reference_allowed(work: &Work, handle: &Handle) -> bool {
+    if handle.kind == "DEPENDENCY" {
+        let selected = work
+            .subject
+            .strip_prefix("service:")
+            .and_then(|service| work.checked.services.get(service))
+            .zip(work.request.root_declaration.as_deref())
+            .and_then(|(evidence, declaration)| {
+                super::declaration_migration::canonical(evidence, declaration).ok()
+            });
+        if selected.as_deref() != Some(handle.id.as_str()) {
+            return false;
+        }
+        return super::process_graph::selected_internal_operation(work)
+            .is_some_and(|root| root.id == handle.id);
+    }
+    if !matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    ) {
+        return false;
+    }
+    work.request.entrypoint.as_ref().is_none_or(|entrypoint| {
+        entrypoint == &handle.id
+            || (handle.kind == "NOTE"
+                && handle
+                    .id
+                    .strip_prefix("note:")
+                    .is_some_and(|id| entrypoint == &super::notes::root(id)))
+    })
+}
+
+/// Resolve an operation target exactly as proposal materialization does. The
+/// scenario subject is the one target that intentionally has no Work handle.
+pub(super) fn operation_target_id(
+    work: &Work,
+    reference: &str,
+    handle: Option<&Handle>,
+) -> Option<String> {
+    if work.subject.starts_with("scenario:") && reference == work.subject {
+        return Some(
+            work.request
+                .entrypoint
+                .clone()
+                .unwrap_or_else(|| work.subject[9..].into()),
+        );
+    }
+    let handle = handle?;
+    if !operation_reference_allowed(work, handle) {
+        return None;
+    }
+    if handle.kind == "DEPENDENCY" {
+        return super::process_graph::selected_internal_operation(work)
+            .map(super::process_graph::internal_operation_id);
+    }
+    match handle.kind.as_str() {
+        "NOTE" => handle.id.strip_prefix("note:").map(super::notes::root),
+        "ENTRYPOINT" | "SECTION" | "PROCESS_ROOT" => Some(handle.id.clone()),
+        _ => None,
+    }
+}
+
+pub(super) fn gap_target_id(handle: &Handle) -> Option<String> {
+    if !gap_reference_allowed(handle) {
+        return None;
+    }
+    if handle.kind == "NOTE" {
+        return handle.id.strip_prefix("note:").map(super::notes::root);
+    }
+    Some(handle.id.clone())
+}
+
+pub(super) fn gap_reference_allowed(handle: &Handle) -> bool {
+    matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    )
+}
+
 fn reference_roles(work: &Work, reference: &str) -> Vec<&'static str> {
     let Some(handle) = work.handles.get(reference) else {
         return Vec::new();
     };
     let mut roles = Vec::new();
-    if super::proposals::evidence_reference_allowed(handle) {
+    if evidence_reference_allowed(handle) {
         roles.push("evidence");
     }
-    if super::proposals::operation_reference_allowed(work, handle) {
+    if operation_reference_allowed(work, handle) {
         roles.push("operation");
     }
-    if super::proposals::gap_reference_allowed(handle) {
+    if gap_reference_allowed(handle) {
         roles.push("gap");
     }
     roles

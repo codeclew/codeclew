@@ -9,14 +9,17 @@ use crate::documentation::{
 };
 use crate::error::ClewError;
 
-pub(super) fn candidate(owner: &Observation) -> bool {
+pub(in crate::documentation) fn candidate(owner: &Observation) -> bool {
     owner.kind == "SYMBOL"
         && owner.normalized["kind"] == "DECLARATION"
         && owner.normalized["authority"] == "SYNTAX"
         && owner.symbol.starts_with("source:")
 }
 
-pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCallable, ClewError> {
+pub(in crate::documentation) fn project(
+    context: &mut Context<'_>,
+    id: &str,
+) -> Result<ProjectedCallable, ClewError> {
     let owner = context
         .evidence
         .observations
@@ -216,7 +219,7 @@ fn source_symbol(normalized: &serde_json::Value) -> String {
         .into()
 }
 
-pub(in crate::documentation::static_pages) fn validate(
+pub(in crate::documentation) fn validate(
     service: &str,
     revision: &str,
     observations: &std::collections::BTreeMap<String, Observation>,

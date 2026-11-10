@@ -3373,7 +3373,7 @@ mod tests {
             .len()
                 <= super::super::source_data_context::MAX_PACKET_BYTES
         );
-        let native = super::super::static_pages::source_data_graph(
+        let native = super::super::retained_graph::source_data_graph(
             &work.checked,
             "orders",
             "endpoint-declaration",

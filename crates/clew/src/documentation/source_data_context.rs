@@ -115,13 +115,13 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
     let root =
         super::process_graph::resolve_work_root(&work.subject, &work.request, &work.checked)?;
     let graph = match work.request.source_data_max_depth {
-        Some(depth) => super::static_pages::source_data_graph_with_depth(
+        Some(depth) => super::retained_graph::source_data_graph_with_depth(
             &work.checked,
             &root.service,
             &root.declaration.id,
             depth.into(),
         )?,
-        None => super::static_pages::source_data_graph(
+        None => super::retained_graph::source_data_graph(
             &work.checked,
             &root.service,
             &root.declaration.id,
@@ -436,7 +436,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documentation::static_pages::model::NodeDataState;
+    use crate::documentation::retained_graph::model::NodeDataState;
     fn expanded(mut state: Value) -> Value {
         let tables = state.as_object_mut().unwrap().remove("shared").unwrap();
         state.as_object_mut().unwrap().remove("encoding");

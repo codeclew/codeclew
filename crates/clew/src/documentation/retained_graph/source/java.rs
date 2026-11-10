@@ -11,7 +11,7 @@ use tree_sitter::{Node, Parser};
 const JAVA_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const WRAP: &str = "class __Projection {\n";
 
-pub(in crate::documentation::static_pages) fn compiler(o: &Observation) -> bool {
+pub(in crate::documentation) fn compiler(o: &Observation) -> bool {
     o.kind == "SYMBOL"
         && o.normalized["schema"] == JAVA_SCHEMA
         && matches!(
@@ -65,12 +65,12 @@ fn active_nodes<'a>(parsed: &Parsed, node: Node<'a>, kind: &str) -> Vec<Node<'a>
     found
 }
 
-pub(in crate::documentation::static_pages) struct Parsed {
+pub(in crate::documentation) struct Parsed {
     text: String,
     tree: tree_sitter::Tree,
 }
 impl Parsed {
-    pub(in crate::documentation::static_pages) fn new(source: &str) -> Option<Self> {
+    pub(in crate::documentation) fn new(source: &str) -> Option<Self> {
         let text = format!("{WRAP}{source}\n}}");
         let mut parser = Parser::new();
         parser
@@ -79,19 +79,16 @@ impl Parsed {
         let tree = parser.parse(&text, None)?;
         Some(Self { text, tree })
     }
-    pub(in crate::documentation::static_pages) fn text(&self, node: Node<'_>) -> String {
+    pub(in crate::documentation) fn text(&self, node: Node<'_>) -> String {
         self.text[node.byte_range()].to_owned()
     }
-    pub(in crate::documentation::static_pages) fn range(&self, node: Node<'_>) -> (usize, usize) {
+    pub(in crate::documentation) fn range(&self, node: Node<'_>) -> (usize, usize) {
         (
             node.start_byte().saturating_sub(WRAP.len()),
             node.end_byte().saturating_sub(WRAP.len()),
         )
     }
-    pub(in crate::documentation::static_pages) fn callable(
-        &self,
-        o: &Observation,
-    ) -> Option<Node<'_>> {
+    pub(in crate::documentation) fn callable(&self, o: &Observation) -> Option<Node<'_>> {
         let name = o.normalized["name"].as_str().unwrap_or_else(|| {
             o.symbol
                 .split('#')
@@ -124,7 +121,7 @@ impl Parsed {
 }
 
 impl Context<'_> {
-    pub(super) fn java_handoff_input(
+    pub(in crate::documentation) fn java_handoff_input(
         &mut self,
         endpoint: &CallableProjection,
         worker: &CallableProjection,
@@ -483,7 +480,10 @@ impl Context<'_> {
         }
     }
 
-    pub(super) fn callable(&mut self, id: &str) -> Result<CallableProjection, ClewError> {
+    pub(in crate::documentation) fn callable(
+        &mut self,
+        id: &str,
+    ) -> Result<CallableProjection, ClewError> {
         let o = self
             .evidence
             .observations
@@ -1059,7 +1059,7 @@ impl Context<'_> {
     }
 }
 
-pub(in crate::documentation::static_pages) fn all_steps(steps: &[Statement]) -> Vec<&Statement> {
+pub(in crate::documentation) fn all_steps(steps: &[Statement]) -> Vec<&Statement> {
     let mut result = Vec::new();
     for step in steps {
         result.push(step);
@@ -1184,7 +1184,7 @@ fn target_name_matches(relation: &Observation, name: &str, construct: bool) -> b
     }
 }
 
-pub(in crate::documentation::static_pages) fn handoff(
+pub(in crate::documentation) fn handoff(
     context: &mut Context<'_>,
     endpoint: &CallableProjection,
     worker: &CallableProjection,

@@ -45,7 +45,7 @@ fn unavailable(callable: &mut CallableProjection, boundary: Option<&str>) {
 
 /// Attach only one graph whose service, compiler scope, full owner identity and
 /// source file all match the already-admitted Kotlin function.
-pub(super) fn attach(
+pub(in crate::documentation) fn attach(
     context: &mut Context<'_>,
     owner: &Observation,
     scope: &str,
@@ -232,7 +232,7 @@ fn same_node(left: &CompilerControlFlowNode, right: &LocalCfgNode) -> bool {
 
 /// Publisher preflight rechecks the copied panel against the exact typed graph
 /// and retained source bindings before any files are created.
-pub(in crate::documentation::static_pages) fn validate_callable(
+pub(in crate::documentation) fn validate_callable(
     service: &str,
     revision: &str,
     observations: &std::collections::BTreeMap<String, Observation>,
@@ -408,7 +408,7 @@ pub(in crate::documentation::static_pages) fn validate_callable(
     Ok(true)
 }
 
-pub(in crate::documentation::static_pages) fn validate_page(
+pub(in crate::documentation) fn validate_page(
     page: &super::super::model::PageContent,
 ) -> Result<usize, ClewError> {
     super::outline::validate_page(page)?;

@@ -81,6 +81,7 @@ mod reader_proofs;
 mod removal;
 pub mod render;
 mod retained_contracts;
+pub mod retained_graph;
 pub mod review;
 pub mod reviewed_answers;
 pub mod route_contracts;
@@ -107,6 +108,7 @@ mod syntax;
 mod syntax_file_cache;
 #[cfg(test)]
 mod syntax_file_cache_tests;
+mod text;
 mod thread_context;
 #[cfg(test)]
 mod thread_context_tests;

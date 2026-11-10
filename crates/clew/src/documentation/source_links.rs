@@ -370,3 +370,20 @@ mod tests {
         assert!(link("gitlab", "https://gitlab.com/org/repo", REV, "A.kt", 3, 2).is_err());
     }
 }
+
+/// SSH transport usernames are admitted locally, never emitted in web links.
+pub(super) fn safe_ssh_repository(value: &str) -> bool {
+    (value.starts_with("ssh://") || (!value.contains("://") && value.contains('@')))
+        && repository(value).is_ok()
+}
+
+/// Range changes retain the selected provider's syntax, including old GitLab
+/// citations whose capture appended GitHub-style line fragments.
+pub(super) fn range_url(url: &str, start: u64, end: u64) -> String {
+    let base = url.split('#').next().unwrap_or(url);
+    if base.contains("/-/blob/") {
+        format!("{base}#L{start}-{end}")
+    } else {
+        format!("{base}#L{start}-L{end}")
+    }
+}

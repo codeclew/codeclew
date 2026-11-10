@@ -5,7 +5,7 @@ use super::super::model::{CallableProjection, Gap, HandoffProjection};
 use super::{Context, gap};
 use std::collections::BTreeMap;
 
-pub(super) struct Input {
+pub(in crate::documentation) struct Input {
     pub endpoint_owner: String,
     pub worker_owner: String,
     pub endpoint_storage: String,
@@ -14,22 +14,22 @@ pub(super) struct Input {
     pub rows: Vec<Row>,
 }
 #[derive(Default)]
-pub(super) struct Row {
+pub(in crate::documentation) struct Row {
     pub bindings: Vec<Binding>,
     pub locals: Vec<LocalChange>,
 }
-pub(super) struct Binding {
+pub(in crate::documentation) struct Binding {
     pub owner: String,
     pub argument: String,
     pub argument_syntax: String,
     pub citation: String,
     pub storage_citation: String,
 }
-pub(super) struct LocalChange {
+pub(in crate::documentation) struct LocalChange {
     pub identity: String,
     pub value: LocalValue,
 }
-pub(super) enum LocalValue {
+pub(in crate::documentation) enum LocalValue {
     Allocation { id: String, citation: String },
     Reference(String),
     Unknown,
@@ -110,7 +110,7 @@ fn prove(
     }
 }
 
-pub(in crate::documentation::static_pages) fn project(
+pub(in crate::documentation) fn project(
     context: &mut Context<'_>,
     endpoint: &CallableProjection,
     worker: &CallableProjection,

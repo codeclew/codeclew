@@ -1,4 +1,5 @@
 //! Immutable declaration components. Prose and runtime meaning stay authored.
+pub(in crate::documentation) mod inline_contract;
 use super::{
     cache,
     check::Check,
@@ -68,14 +69,14 @@ fn implementation() -> String {
         &[
             include_bytes!("declaration_components.rs").as_slice(),
             include_bytes!("declaration_components/postgres.rs").as_slice(),
-            include_bytes!("static_pages/inline_contract.rs").as_slice(),
-            include_bytes!("static_pages/inline_contract/openapi.rs").as_slice(),
+            include_bytes!("declaration_components/inline_contract.rs").as_slice(),
+            include_bytes!("declaration_components/inline_contract/openapi.rs").as_slice(),
         ]
         .concat(),
     )
 }
 fn esc(s: &str) -> String {
-    super::render::escape(s)
+    super::text::escape(s)
 }
 fn tr<'a>(lang: &str, en: &'a str, ru: &'a str) -> &'a str {
     if lang == "ru" { ru } else { en }
@@ -264,12 +265,10 @@ fn ddl_html(p: &Value, lang: &str) -> String {
             }
             json!({"field":c["name"],"type":c["type"],"nullability":if c["acceptsNull"]==true {"Allowed"}else if c["acceptsNull"]==false {"Excluded"}else{"Not established"},"description":notes.join(". "),"literalConstraints":literals})
         }).collect::<Vec<_>>();
-        html.push_str(
-            &super::static_pages::inline_contract::table_html_without_presence(
-                &json!({"nodes":nodes}),
-                lang,
-            ),
-        );
+        html.push_str(&inline_contract::table_html_without_presence(
+            &json!({"nodes":nodes}),
+            lang,
+        ));
     }
     html
 }
@@ -286,12 +285,9 @@ fn project(selection: &Selection, binding: &Value, lang: &str) -> Result<Value, 
             let branch = document
                 .pointer(&selection.branch_pointer)
                 .ok_or_else(|| invalid("selected declaration branch is unavailable"))?;
-            let p = super::static_pages::inline_contract::project_document(
-                branch,
-                &selection.branch_pointer,
-                &document,
-            )?;
-            let body = super::static_pages::inline_contract::table_html(&p, lang);
+            let p =
+                inline_contract::project_document(branch, &selection.branch_pointer, &document)?;
+            let body = inline_contract::table_html(&p, lang);
             (p, body)
         }
         "POSTGRES_CREATE_TABLE" if selection.branch_pointer.is_empty() => {

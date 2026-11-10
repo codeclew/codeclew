@@ -7,22 +7,22 @@ use crate::documentation::{digest, invalid, model::Observation};
 use crate::error::ClewError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CallNavigation {
+pub(in crate::documentation) enum CallNavigation {
     JavaBehavioral,
     RetainedCompilerSites,
     UnresolvedSyntax,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct CallableCapabilities {
-    pub(super) producer: StructureProducer,
-    pub(super) source_structure: Option<StructureContract>,
-    pub(super) call_navigation: CallNavigation,
+pub(in crate::documentation) struct CallableCapabilities {
+    pub(in crate::documentation) producer: StructureProducer,
+    pub(in crate::documentation) source_structure: Option<StructureContract>,
+    pub(in crate::documentation) call_navigation: CallNavigation,
 }
 
 /// Declaration authority and body structure are admitted independently.
 /// Structure never grants Java's behavior/data consumers to other producers.
-pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> {
+pub(in crate::documentation) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> {
     let (producer, call_navigation) = if super::java::compiler(owner) {
         (StructureProducer::Javac, CallNavigation::JavaBehavioral)
     } else if csharp_admitted(owner) {
@@ -57,7 +57,7 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
     })
 }
 
-pub(super) fn rust_admitted(owner: &Observation) -> bool {
+pub(in crate::documentation) fn rust_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     owner.kind == "SYMBOL"
         && n["schema"] == "codeclew-rust-syntax-fact/1.2"
@@ -86,7 +86,7 @@ pub(super) fn rust_admitted(owner: &Observation) -> bool {
         )
 }
 
-pub(super) fn typescript_admitted(owner: &Observation) -> bool {
+pub(in crate::documentation) fn typescript_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     owner.kind == "SYMBOL"
         && n["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
@@ -102,7 +102,7 @@ pub(super) fn typescript_admitted(owner: &Observation) -> bool {
 }
 
 /// Retained input/return display only; a signature does not bind argument values.
-pub(in crate::documentation::static_pages) fn declared_signature<'a>(
+pub(in crate::documentation) fn declared_signature<'a>(
     owner: &'a Observation,
     sources: &std::collections::BTreeMap<String, crate::documentation::model::Source>,
 ) -> Option<&'a str> {
@@ -142,13 +142,13 @@ pub(in crate::documentation::static_pages) fn declared_signature<'a>(
     Some(signature)
 }
 
-pub(super) fn csharp_candidate(owner: &Observation) -> bool {
+pub(in crate::documentation) fn csharp_candidate(owner: &Observation) -> bool {
     owner.normalized["schema"]
         .as_str()
         .is_some_and(|schema| schema.starts_with("codeclew-csharp-compiler-fact/"))
 }
 
-pub(super) fn csharp_admitted(owner: &Observation) -> bool {
+pub(in crate::documentation) fn csharp_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     n["schema"] == crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA
         && owner.kind == "SYMBOL"
@@ -180,13 +180,13 @@ pub(super) fn csharp_admitted(owner: &Observation) -> bool {
             })
 }
 
-pub(in crate::documentation::static_pages) fn admitted(owner: &Observation) -> bool {
+pub(in crate::documentation) fn admitted(owner: &Observation) -> bool {
     capabilities(owner).is_some_and(|capabilities| {
         capabilities.call_navigation == CallNavigation::RetainedCompilerSites
     })
 }
 
-pub(in crate::documentation::static_pages) fn kotlin_admitted(owner: &Observation) -> bool {
+pub(in crate::documentation) fn kotlin_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     owner.kind == "SYMBOL"
         && n["schema"] == "declaration-descriptor/0.1"
@@ -199,9 +199,7 @@ pub(in crate::documentation::static_pages) fn kotlin_admitted(owner: &Observatio
         && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_ok()
 }
 
-pub(in crate::documentation::static_pages) fn kotlin_constructor_admitted(
-    owner: &Observation,
-) -> bool {
+pub(in crate::documentation) fn kotlin_constructor_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     owner.kind == "SYMBOL"
         && n["schema"] == "declaration-descriptor/0.1"
@@ -222,14 +220,14 @@ pub(in crate::documentation::static_pages) fn kotlin_constructor_admitted(
         && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_ok()
 }
 
-pub(in crate::documentation::static_pages) fn body_envelope(owner: &Observation) -> bool {
+pub(in crate::documentation) fn body_envelope(owner: &Observation) -> bool {
     capabilities(owner).is_some_and(|capabilities| {
         capabilities.call_navigation == CallNavigation::RetainedCompilerSites
             && capabilities.source_structure.is_some()
     })
 }
 
-pub(super) fn project_declaration(
+pub(in crate::documentation) fn project_declaration(
     context: &mut Context<'_>,
     id: &str,
 ) -> Result<ProjectedCallable, ClewError> {

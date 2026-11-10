@@ -1,6 +1,6 @@
 //! Opt-in source syntax transformations joined to compiler variable occurrences.
 //! No value evaluation, receiver alias analysis, runtime completion or new traversal.
-pub(super) mod input;
+pub(in crate::documentation) mod input;
 use super::model::*;
 use crate::{
     canonical::hash_bytes,
@@ -18,7 +18,7 @@ const AUTHORITY: &str = "SOURCE_SYNTAX_WITH_COMPILER_VARIABLE_IDENTITY";
 const MAX_BYTES: usize = 1024 * 1024; // Existing source expansion ceiling, not an additional traversal allowance.
 const MAX_ROWS: usize = 4096;
 type Env = BTreeMap<DataStorage, Vec<String>>;
-pub(super) fn supported_language(owner: &Observation) -> bool {
+pub(in crate::documentation) fn supported_language(owner: &Observation) -> bool {
     (super::source::compiler(owner)
         && owner.normalized["resolution"] == "COMPILER_EXACT"
         && matches!(
@@ -900,7 +900,10 @@ fn semantic_digest(state: &NodeDataState) -> Result<String, ClewError> {
     }
     digest(&semantic)
 }
-pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), ClewError> {
+pub(in crate::documentation) fn attach(
+    checked: &Check,
+    p: &mut BundleProjection,
+) -> Result<(), ClewError> {
     if !p.pages.iter().any(|page| page.selection.expand_data_state) {
         return Ok(());
     }
@@ -983,7 +986,7 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
 }
 
 /// Shared graph consumer: same fact, source, row and IR ceilings as native pages.
-pub(super) fn attach_graph(
+pub(in crate::documentation) fn attach_graph(
     checked: &Check,
     graph: &mut SourceCallGraph,
     selected: &BTreeSet<String>,

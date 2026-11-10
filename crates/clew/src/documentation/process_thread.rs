@@ -1146,7 +1146,7 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
                 .as_str()
                 .filter(|url| url.starts_with("https://"))
         {
-            return super::source_export::range_url(
+            return super::source_links::range_url(
                 url,
                 citation["startLine"].as_u64().unwrap_or(1),
                 citation["endLine"]

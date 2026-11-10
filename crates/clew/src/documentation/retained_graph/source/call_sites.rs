@@ -48,7 +48,7 @@ impl UnavailableReason {
 
 /// Attach the selected function's exact call-site evidence independently of
 /// statement parsing, source outlines, CFG, or expansion decisions.
-pub(super) fn attach(
+pub(in crate::documentation) fn attach(
     context: &mut Context<'_>,
     owner: &Observation,
     scope: &str,
@@ -429,7 +429,7 @@ fn augment_source_events(
     Ok(retained)
 }
 
-pub(in crate::documentation::static_pages) fn uses_source_events(
+pub(in crate::documentation) fn uses_source_events(
     callable: &CallableProjection,
     observations: &BTreeMap<String, Observation>,
 ) -> bool {
@@ -895,7 +895,7 @@ fn citation_id(source: &Source, start: usize, end: usize) -> String {
     )
 }
 
-pub(in crate::documentation::static_pages) fn expected_citation(source: &Source) -> Citation {
+pub(in crate::documentation) fn expected_citation(source: &Source) -> Citation {
     expected_citation_range(source, 0, source.text.len())
         .expect("full retained source range must be valid UTF-8")
 }
@@ -935,7 +935,7 @@ fn expected_citation_range(source: &Source, start: usize, end: usize) -> Option<
     })
 }
 
-pub(in crate::documentation::static_pages) fn validate_page(
+pub(in crate::documentation) fn validate_page(
     page: &super::super::model::PageContent,
     callable: &CallableProjection,
 ) -> Result<(), ClewError> {
@@ -949,7 +949,7 @@ pub(in crate::documentation::static_pages) fn validate_page(
     )
 }
 
-pub(in crate::documentation::static_pages) fn validate_node(
+pub(in crate::documentation) fn validate_node(
     service: &str,
     revision: &str,
     observations: &BTreeMap<String, Observation>,

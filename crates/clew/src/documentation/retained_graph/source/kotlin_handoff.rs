@@ -11,7 +11,7 @@ use super::{
 use crate::documentation::{digest, model::Observation};
 use crate::semantic_validation::{KotlinConstructorStorageProof, KotlinPropertyStorageProof};
 
-pub(super) fn input(
+pub(in crate::documentation) fn input(
     context: &mut Context<'_>,
     endpoint: &CallableProjection,
     worker: &CallableProjection,
@@ -356,7 +356,7 @@ fn constructor_slot(
     let citation = context.citation(&constructor_source, 0, constructor_source.text.len());
     Ok((binding.parameter_index, citation))
 }
-pub(super) fn retained_storage_source(
+pub(in crate::documentation) fn retained_storage_source(
     context: &Context<'_>,
     observation: &Observation,
 ) -> Result<crate::documentation::model::Source, Gap> {

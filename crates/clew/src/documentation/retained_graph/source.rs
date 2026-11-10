@@ -5,18 +5,22 @@ use crate::documentation::model::{Observation, ServiceEvidence, Source};
 use crate::error::ClewError;
 use std::collections::BTreeMap;
 
-pub(super) mod call_sites;
-pub(super) mod compiler;
-pub(super) mod control_flow;
-pub(super) mod handoff;
-pub(super) mod java;
-pub(super) mod kotlin;
+pub(in crate::documentation) mod call_sites;
+pub(in crate::documentation) mod compiler;
+pub(in crate::documentation) mod control_flow;
+pub(in crate::documentation) mod handoff;
+pub(in crate::documentation) mod java;
+pub(in crate::documentation) mod kotlin;
 mod kotlin_handoff;
-pub(super) mod outline;
+pub(in crate::documentation) mod outline;
 mod syntax;
-pub(super) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
+pub(in crate::documentation) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
 
-pub(super) fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Gap {
+pub(in crate::documentation) fn gap(
+    code: &str,
+    detail: impl Into<String>,
+    citation_id: Option<String>,
+) -> Gap {
     Gap {
         code: code.into(),
         detail: detail.into(),
@@ -25,29 +29,29 @@ pub(super) fn gap(code: &str, detail: impl Into<String>, citation_id: Option<Str
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CallableKey {
+pub(in crate::documentation) struct CallableKey {
     pub service: String,
     pub scope: String,
     pub symbol: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProjectedCallable {
+pub(in crate::documentation) struct ProjectedCallable {
     pub key: CallableKey,
     pub projection: CallableProjection,
     pub kind: super::model::ProjectionKind,
 }
 
-pub(super) struct Context<'a> {
-    pub(super) evidence: &'a ServiceEvidence,
-    pub(super) source_fallback: Option<&'a ServiceEvidence>,
-    pub(super) citations: BTreeMap<String, Citation>,
-    pub(super) observations: BTreeMap<String, Observation>,
-    pub(super) sources: BTreeMap<String, Source>,
+pub(in crate::documentation) struct Context<'a> {
+    pub(in crate::documentation) evidence: &'a ServiceEvidence,
+    pub(in crate::documentation) source_fallback: Option<&'a ServiceEvidence>,
+    pub(in crate::documentation) citations: BTreeMap<String, Citation>,
+    pub(in crate::documentation) observations: BTreeMap<String, Observation>,
+    pub(in crate::documentation) sources: BTreeMap<String, Source>,
 }
 
 impl<'a> Context<'a> {
-    pub(super) fn new(evidence: &'a ServiceEvidence) -> Self {
+    pub(in crate::documentation) fn new(evidence: &'a ServiceEvidence) -> Self {
         Self {
             evidence,
             source_fallback: None,
@@ -65,7 +69,7 @@ impl<'a> Context<'a> {
             }
         }
     }
-    pub(in crate::documentation::static_pages) fn valid_source(&self, source: &Source) -> bool {
+    pub(in crate::documentation) fn valid_source(&self, source: &Source) -> bool {
         source.service == self.evidence.service
             && (source.revision == self.evidence.revision
                 || crate::documentation::library_projection::verify_source(self.evidence, source)
@@ -124,7 +128,7 @@ impl<'a> Context<'a> {
     }
 }
 
-pub(super) fn project_java(
+pub(in crate::documentation) fn project_java(
     context: &mut Context<'_>,
     declaration: &str,
 ) -> Result<ProjectedCallable, ClewError> {
@@ -153,7 +157,7 @@ pub(super) fn project_java(
     })
 }
 
-pub(super) fn project_callable(
+pub(in crate::documentation) fn project_callable(
     context: &mut Context<'_>,
     declaration: &str,
 ) -> Result<ProjectedCallable, ClewError> {
@@ -222,7 +226,7 @@ pub(super) fn project_callable(
     ))
 }
 
-pub(super) fn has_exact_call_capability(owner: &Observation) -> bool {
+pub(in crate::documentation) fn has_exact_call_capability(owner: &Observation) -> bool {
     compiler::capabilities(owner).is_some_and(|capabilities| {
         capabilities.call_navigation == compiler::CallNavigation::RetainedCompilerSites
     })

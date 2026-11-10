@@ -1,6 +1,6 @@
 //! OpenAPI documents are operation containers, not JSON Schema root objects.
 use super::{project_document, table_at};
-use crate::documentation::render::escape;
+use crate::documentation::text::escape;
 use crate::error::ClewError;
 use serde_json::{Value, json};
 

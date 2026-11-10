@@ -37,14 +37,7 @@ const QUESTION_DATABASE: &str = include_str!("../../assets/documentation/tabler/
 const QUESTION_ICON_LICENSE: &str = include_str!("../../assets/documentation/tabler/LICENSE");
 const QUESTION_SCRIPT: &str = include_str!("../../assets/documentation/question-reader.js");
 
-pub(super) fn escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
+pub(super) use super::text::escape;
 pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     let payload = serde_json::to_string(data)
         .map_err(io_error)?

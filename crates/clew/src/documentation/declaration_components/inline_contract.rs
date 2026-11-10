@@ -1,6 +1,6 @@
 //! Display-only projection of an explicitly bound retained declaration.
 //! It does not execute JSON Schema rules or resolve references.
-use super::super::{invalid, language::label, render::escape};
+use super::super::{invalid, language::label, text::escape};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 
@@ -254,7 +254,7 @@ fn visit(
     }
 }
 
-pub(super) fn table(declaration: &Value, language: &str) -> String {
+pub(in crate::documentation) fn table(declaration: &Value, language: &str) -> String {
     table_at(declaration, language, true)
 }
 pub(in crate::documentation) fn table_html(declaration: &Value, language: &str) -> String {

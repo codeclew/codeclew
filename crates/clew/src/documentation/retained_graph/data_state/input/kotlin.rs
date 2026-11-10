@@ -134,7 +134,7 @@ pub(in super::super) fn prepare<'a>(
     prepare_sites(evidence, &node.callable.declaration_id, &node.scope, &sites)
 }
 
-pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
+pub(in crate::documentation) fn prepare_sites<'a>(
     evidence: &'a ServiceEvidence,
     declaration: &str,
     scope: &str,

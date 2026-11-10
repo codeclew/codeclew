@@ -12,14 +12,14 @@ use crate::error::ClewError;
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
-pub(super) struct OutlineProducer {
+pub(in crate::documentation) struct OutlineProducer {
     authority: &'static str,
     kotlin: bool,
     producer_label: &'static str,
     call_navigation: super::compiler::CallNavigation,
 }
 
-pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
+pub(in crate::documentation) fn producer(owner: &Observation) -> Option<OutlineProducer> {
     let contract = StructureContract::identify(&owner.normalized["documentation"])?;
     if super::compiler::capabilities(owner)?.producer != contract.producer {
         return None;
@@ -92,7 +92,7 @@ fn outline_gap(
 /// Attach an outline only to an already-admitted compiler declaration. Failed
 /// outline admission is represented as one cited unavailable marker; it never
 /// promotes the declaration into the causal source-behavior projection.
-pub(super) fn attach(
+pub(in crate::documentation) fn attach(
     context: &mut Context<'_>,
     owner: &Observation,
     scope: &str,
@@ -409,11 +409,11 @@ fn source_lines(source: &Source, start: u64, end: u64) -> Option<String> {
     Some(lines.get(first..=last)?.join("\n"))
 }
 
-pub(super) fn documented_payload(event: &Value) -> Value {
+pub(in crate::documentation) fn documented_payload(event: &Value) -> Value {
     strip_capture_coordinates(event)
 }
 
-pub(super) fn event_payload(normalized: &Value) -> Value {
+pub(in crate::documentation) fn event_payload(normalized: &Value) -> Value {
     let mut payload = normalized.clone();
     if let Some(object) = payload.as_object_mut() {
         object.remove("ordinal");
@@ -654,7 +654,7 @@ fn derive_tree(
 /// Rebuild with the same shared engine from the retained producer facts.
 /// Validation compares the complete tree, event set, local gaps and citations;
 /// no current checkout or reparsing participates in this preflight.
-pub(in crate::documentation::static_pages) fn validate_source_outline(
+pub(in crate::documentation) fn validate_source_outline(
     service: &str,
     revision: &str,
     observations: &std::collections::BTreeMap<String, Observation>,
@@ -755,7 +755,7 @@ pub(in crate::documentation::static_pages) fn validate_source_outline(
     Ok(())
 }
 
-pub(in crate::documentation::static_pages) fn validate_page(
+pub(in crate::documentation) fn validate_page(
     page: &super::super::model::PageContent,
 ) -> Result<(), ClewError> {
     for callable in std::iter::once(&page.endpoint)
