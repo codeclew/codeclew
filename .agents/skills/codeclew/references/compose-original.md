@@ -20,6 +20,10 @@ No second author/critic is required by this default path. Self-check is not nati
 review approval, source authority or semantic proof from a helper. Explicit native
 and Q&A workflows keep [their own routes](../SKILL.md#choose-the-requested-result).
 
+For independently rendered services, use the optional
+[docset/process navigation](../examples/markdown-renderer/README.md#independent-docsets-and-process-filters)
+when requested; it adds links/filters, never evidence or a mandatory shared root.
+
 ## Repair at the failed step
 
 | Situation | Exact next action / reference |

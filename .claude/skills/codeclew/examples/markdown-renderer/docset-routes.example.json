@@ -1,0 +1,24 @@
+{
+  "schema": "codeclew-cross-docset-routes/1.1",
+  "revision": "example-r1",
+  "catalog": {"docset":"portal","page":"index.html"},
+  "docsets": [
+    {"id":"orders-docs","title":"Orders","version":"orders-r1","baseURL":"https://docs.example.invalid/orders/","services":[{"id":"orders","title":"Orders","overview":{"docset":"orders-docs","page":"overview.html"}}]},
+    {"id":"inventory-docs","title":"Inventory","version":"inventory-r1","baseURL":"https://docs.example.invalid/inventory/","services":[{"id":"inventory","title":"Inventory","overview":{"docset":"inventory-docs","page":"overview.html"}}]},
+    {"id":"portal","title":"Directory","version":"portal-r1","baseURL":"https://docs.example.invalid/directory/","services":[]}
+  ],
+  "externalActors": [{"id":"client","title":"Caller"}],
+  "routes": [{
+    "id":"stock-query","version":"r1","title":"Query stock",
+    "narrative":{"docset":"orders-docs","page":"stock-query.html"},
+    "origin":{"status":"known","occurrence":"request","kind":"http","title":"Incoming query","summary":"The documented handler starts this example."},
+    "occurrences":[
+      {"id":"request","actor":{"kind":"service","docset":"orders-docs","service":"orders"},"role":"Accept the query","target":{"docset":"orders-docs","page":"incoming.html","anchor":"request"}},
+      {"id":"lookup","actor":{"kind":"service","docset":"inventory-docs","service":"inventory"},"role":"Look up stock","target":{"docset":"inventory-docs","page":"handler.html","anchor":"lookup"}},
+      {"id":"return","actor":{"kind":"service","docset":"orders-docs","service":"orders"},"role":"Return the result","target":{"docset":"orders-docs","page":"incoming.html","anchor":"response"}}
+    ],
+    "branches":[{"id":"success","title":"Success","condition":"The lookup succeeds in this scope.","target":{"docset":"orders-docs","page":"stock-query.html","anchor":"success"}}],
+    "outcomes":[{"id":"returned","branch":"success","kind":"normal","title":"Result returned","target":{"docset":"orders-docs","page":"stock-query.html","anchor":"returned"},"internal":{"coverage":"complete-for-this-outcome","occurrences":["lookup"]},"end":{"status":"known","ownerOccurrence":"return","boundary":"return","recipient":{"kind":"external","id":"client"}}}],
+    "coverage":{"outcomeInventory":"complete-for-declared-scope","scope":"Only the documented successful path, not all errors or runtime behavior.","reference":{"docset":"orders-docs","page":"stock-query.html","anchor":"scope"}}
+  }]
+}

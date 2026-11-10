@@ -836,3 +836,21 @@ This source slice has focused mechanical/example checks only. On the admitted
 then independent meaning/reader acceptance against the original request. Keep
 review rubrics out of the author's control run and record costs/time separately
 from capture. No paid authoring or broad historical benchmark is implied here.
+
+### 0.15.0 cross-docset navigation source delta
+
+S03/S04 now have an optional renderer-side declaration over independent docsets,
+not merged evidence roots. Explicit canonical ownership, origin occurrences,
+branch/outcome terminal owners and internal occurrences drive service/process
+links and three-valued filters. Repeated service roles retain distinct occurrence
+IDs; response recipients are not terminal owners. Local targets/anchors/ownership
+and version labels are checked; remote availability remains declared/unfetched.
+A portal or journeys docset needs no fake service. Singleton local menus omit
+only the redundant plural heading; multi-service grouping remains.
+
+Focused source tests cover the eleven specified filter examples, unknown-origin/
+zero-outcome cases, URL namespaces/traversal, local identity/anchor failures,
+independent renders, exact registry identity and resource bounds. Metadata-only
+indices are navigation, not source-checked service explanations. Independent
+navigation UX and exact-package author/reader acceptance remain separate gates;
+this source delta does not promote historical semantic results or fix imported B.

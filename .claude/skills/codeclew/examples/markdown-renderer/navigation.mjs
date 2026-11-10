@@ -6,10 +6,7 @@ function object(value,path,keys){need(value&&typeof value==='object'&&!Array.isA
 function label(value,path){need(typeof value==='string'&&value.trim().length>0,path,'expected nonempty text');return value}
 function array(value,path){need(Array.isArray(value),path,'expected array');return value}
 
-export function validateNavigation(value,pages){
- object(value,'/',['schema','home','services','routes']);need(value.schema==='codeclew-markdown-navigation/1','/schema','unsupported schema');
- const byFile=new Map(pages.map(p=>[p.file,p]));
- function target(value,path){
+export function localTarget(value,path,byFile){
   label(value,path);need(!/[\u0000-\u001f\\?]/u.test(value),path,'use a flat Markdown page and optional anchor');
   const split=value.indexOf('#'),file=split<0?value:value.slice(0,split),raw=split<0?'':value.slice(split+1);let fragment;
   try{fragment=decodeURIComponent(raw)}catch{need(false,path,'invalid anchor encoding')}
@@ -22,6 +19,11 @@ export function validateNavigation(value,pages){
   }
   return {file,fragment,href:encodeURIComponent(file.replace(/\.md$/,'.html'))+(fragment?'#'+encodeURIComponent(fragment):'')};
  }
+
+export function validateNavigation(value,pages){
+ object(value,'/',['schema','home','services','routes']);need(value.schema==='codeclew-markdown-navigation/1','/schema','unsupported schema');
+ const byFile=new Map(pages.map(p=>[p.file,p]));
+ const target=(value,path)=>localTarget(value,path,byFile);
  function link(v,path,trigger=false){
   object(v,path,trigger?['title','target','kind','summary']:['title','target']);label(v.title,path+'/title');
   if(trigger){need(kinds.has(v.kind),path+'/kind','expected http, kafka, scheduled, background, manual or other');label(v.summary,path+'/summary')}
@@ -57,7 +59,7 @@ export function validateNavigation(value,pages){
  return {home,services,routes,owners,others:pages.filter(p=>!used.has(p.file)),byFile};
 }
 
-export function navigationView(nav,file,words){
+export function navigationView(nav,file,words,extra={}){
  const service=nav.services.find(s=>s.id===nav.owners.get(file));
  function a(to,title,extra=''){
   const current=to.file===file&&!to.fragment?' aria-current="page"':'';
@@ -67,16 +69,16 @@ export function navigationView(nav,file,words){
  const group=(title,links)=>links.length?`<div class="navigation-category"><span class="navigation-label">${escape(title)}</span><ul>${links.map(x=>`<li>${x}</li>`).join('')}</ul></div>`:'';
  function participation(s){return nav.routes.flatMap(r=>r.participants.filter(p=>p.service===s.id).map(p=>({route:r,p})))}
  const menu=a(nav.home.to,escape(nav.home.title))+
-  (nav.services.length?`<h2 class="navigation-label">${escape(words.services)}</h2>`:'')+
+  (nav.services.length>1?`<h2 class="navigation-label">${escape(words.services)}</h2>`:'')+
   nav.services.map(s=>{
    const linked=new Set([s.overview.file,...s.starts.map(v=>v.to.file),...s.data.map(v=>v.to.file)]);
-   return `<details class="service-navigation"${s===service?' open':''}><summary>${escape(s.title)}</summary>${a(s.overview,escape(words.overview))}${group(words.starts,s.starts.map(v=>a(v.to,badge(v.kind)+escape(v.title))))}${group(words.data,s.data.map(v=>a(v.to,escape(v.title))))}${group(words.participation,participation(s).map(({route:r,p})=>a(p.section,escape(r.title)+'<span class="navigation-role">'+escape(p.title)+'</span>')))}${group(words.otherPages,s.pages.filter(f=>!linked.has(f)).map(f=>a({file:f,fragment:'',href:encodeURIComponent(f.replace(/\.md$/,'.html'))},escape(nav.byFile.get(f).title))))}</details>`;
+   return `<details class="service-navigation"${s===service?' open':''}><summary>${escape(s.title)}</summary>${a(s.overview,escape(words.overview))}${group(words.starts,s.starts.map(v=>a(v.to,badge(v.kind)+escape(v.title))))}${group(words.data,s.data.map(v=>a(v.to,escape(v.title))))}${group(words.participation,[...participation(s).map(({route:r,p})=>a(p.section,escape(r.title)+'<span class="navigation-role">'+escape(p.title)+'</span>')),...(extra.participation?.(s.id)||[])])}${group(words.otherPages,s.pages.filter(f=>!linked.has(f)).map(f=>a({file:f,fragment:'',href:encodeURIComponent(f.replace(/\.md$/,'.html'))},escape(nav.byFile.get(f).title))))}</details>`;
   }).join('')+
-  group(words.routes,nav.routes.map(r=>a(r.to,escape(r.title))))+
-  group(words.otherPages,nav.others.map(p=>a({file:p.file,fragment:'',href:encodeURIComponent(p.file.replace(/\.md$/,'.html'))},escape(p.title))));
+  group(words.routes,[...nav.routes.map(r=>a(r.to,escape(r.title))),...(extra.routes||[])])+
+  group(words.otherPages,nav.others.filter(p=>!extra.canonical?.has(p.file)).map(p=>a({file:p.file,fragment:'',href:encodeURIComponent(p.file.replace(/\.md$/,'.html'))},escape(p.title))));
  const crumb=[a(nav.home.to,escape(nav.home.title))];
  if(service&&file!==service.overview.file)crumb.push(a(service.overview,escape(service.title)));
- else if(!service&&nav.routes.some(r=>r.to.file===file))crumb.push(`<span>${escape(words.routes)}</span>`);
+ else if(!service&&(nav.routes.some(r=>r.to.file===file)||extra.canonical?.has(file)))crumb.push(`<span>${escape(words.routes)}</span>`);
  if(file!==nav.home.to.file)crumb.push(`<span aria-current="page">${escape(nav.byFile.get(file).title)}</span>`);
  const breadcrumb=`<nav class="reader-breadcrumb" aria-label="${escape(words.breadcrumb)}">${crumb.join('<span aria-hidden="true"> / </span>')}<span class="breadcrumb-section" hidden></span></nav>`;
  let hub='';

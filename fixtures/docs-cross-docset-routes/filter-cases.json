@@ -1,0 +1,289 @@
+{
+  "status": "EXPECTED_FILTER_RESULTS",
+  "identityKeys": {
+    "A": {
+      "kind": "service",
+      "docset": "orders-docs",
+      "service": "api"
+    },
+    "B": {
+      "kind": "service",
+      "docset": "inventory-docs",
+      "service": "api"
+    },
+    "C": {
+      "kind": "service",
+      "docset": "recovery-docs",
+      "service": "api"
+    }
+  },
+  "cases": [
+    {
+      "id": "all",
+      "query": {},
+      "expected": {
+        "stock-query": "MATCH",
+        "order-submit": "MATCH"
+      }
+    },
+    {
+      "id": "known-start-only",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ]
+      },
+      "expected": {
+        "stock-query": "MATCH",
+        "order-submit": "MATCH"
+      },
+      "note": "Outcome classification is not required by a start-only query."
+    },
+    {
+      "id": "return-via-b",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "end": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "intermediate": [
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "normal"
+        ]
+      },
+      "expected": {
+        "stock-query": "MATCH",
+        "order-submit": "MATCH"
+      }
+    },
+    {
+      "id": "b-is-not-origin",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          }
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "NO_MATCH"
+      }
+    },
+    {
+      "id": "b-is-not-proven-end",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "end": [
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          }
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "UNCLASSIFIED"
+      }
+    },
+    {
+      "id": "no-cross-branch-join",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "end": [
+          {
+            "kind": "service",
+            "docset": "recovery-docs",
+            "service": "api"
+          }
+        ],
+        "intermediate": [
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "normal",
+          "error"
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "UNCLASSIFIED"
+      },
+      "note": "No documented normal/error case matches both facets. Unknown/partial cases prevent a definitive route-level NO; never MATCH."
+    },
+    {
+      "id": "origin-can-be-internal",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "intermediate": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "normal"
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "MATCH"
+      },
+      "note": "Only a-callback is explicitly internal; entry and return alone do not match Intermediate A."
+    },
+    {
+      "id": "recipient-not-end",
+      "query": {
+        "end": [
+          {
+            "kind": "service",
+            "docset": "recovery-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "error"
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "MATCH"
+      },
+      "note": "The rejected case ends at C even though its recipient is A."
+    },
+    {
+      "id": "or-within-facet",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          }
+        ],
+        "end": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          {
+            "kind": "service",
+            "docset": "recovery-docs",
+            "service": "api"
+          }
+        ],
+        "intermediate": [
+          {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          },
+          {
+            "kind": "service",
+            "docset": "recovery-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "normal",
+          "error"
+        ]
+      },
+      "expected": {
+        "stock-query": "MATCH",
+        "order-submit": "MATCH"
+      }
+    },
+    {
+      "id": "known-unclassified-kind",
+      "query": {
+        "outcomeKinds": [
+          "unknown"
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "MATCH"
+      },
+      "note": "Explicitly finds the known pending/unclassified case; it does not assert a known end."
+    },
+    {
+      "id": "unknown-end-stays-unknown",
+      "query": {
+        "start": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "end": [
+          {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          }
+        ],
+        "outcomeKinds": [
+          "unknown"
+        ]
+      },
+      "expected": {
+        "stock-query": "NO_MATCH",
+        "order-submit": "UNCLASSIFIED"
+      }
+    }
+  ]
+}

@@ -215,3 +215,9 @@ exact package. Imported-B citation-helper and external human-binding limits rema
 explicit. Required cross-docset navigation/filters follow as a separate 0.15.0
 implementation slice; neither the historical graph nor its growth status is
 silently promoted by this overlay.
+
+The subsequent 0.15.0 navigation source delta implements optional independent-docset
+links and occurrence/outcome filtering; see the [card delta](scenario-cards.md#0150-cross-docset-navigation-source-delta).
+Its focused mechanical tests and neutral render artifacts do not replace independent
+UX, deployed-target or exact-package semantic acceptance. Registry versions and
+membership are navigation declarations, not source/runtime verification.

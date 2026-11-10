@@ -99,6 +99,61 @@ network request or application code execution is performed by this renderer;
 dependency installation is a separate explicit setup step. Keep the installed
 skill unchanged and retain its version/digest alongside your chosen renderer.
 
+## Independent docsets and process filters
+
+Optional `--docset-routes FILE --docset ID --docset-version VERSION` augments
+`--navigation FILE`; all four options are required together for this feature.
+Without them the existing flat export remains supported. One local service uses
+its own title without a redundant Services heading; multiple local services keep
+that heading. Evidence roots, authored docsets and hosting directories stay distinct.
+
+Start with [the complete declaration](docset-routes.example.json). Replace its
+example names/URLs with existing authored destinations, retaining the schema shape.
+Render each input/output separately with the same registry bytes:
+
+```sh
+node /path/to/renderer/render.mjs ORDERS_INPUT ORDERS_OUTPUT --navigation orders-nav.json --docset-routes routes.json --docset orders-docs --docset-version orders-r1
+node /path/to/renderer/render.mjs INVENTORY_INPUT INVENTORY_OUTPUT --navigation inventory-nav.json --docset-routes routes.json --docset inventory-docs --docset-version inventory-r1
+node /path/to/renderer/render.mjs PORTAL_INPUT PORTAL_OUTPUT --navigation portal-nav.json --docset-routes routes.json --docset portal --docset-version portal-r1
+```
+
+Use these options in the ordinary trusted renderer argv for checked finalize or
+render-only updates. `baseURL` must be an explicit HTTP(S) directory with a safe
+unencoded ASCII path and trailing slash, without credentials/query/fragment.
+Namespaces on one origin must be disjoint. Page is a raw flat `.html` filename;
+anchor is a raw identifier, encoded once. No slash/encoded traversal or filesystem
+URLs. Local `.html` maps to existing `.md`: anchors must be unique, service targets
+owned, and a local origin must match a declared start. Shared canonical pages and
+the optional catalog are not owned by a service; zero-service docsets are valid.
+Remote URLs never enter the local path resolver and are not fetched/verified.
+
+Route IDs stay stable; declaration/docset versions and the exact registry digest
+are recorded separately in HTML. Versions are owner declarations, not deployed
+content checks. Changed registry bytes invalidate old exact replay. Keep registry
+and renderer inputs with the export. No peer capture/importer, deploy or redirect
+engine is introduced. Navigation never changes source/Work/revision/claim authority.
+
+Occurrences have distinct IDs; a service may recur in several roles. Start is the
+explicit origin service, End the terminal operation owner (not recipient/last call),
+and Intermediate an explicit internal occurrence in that outcome. Values within a
+filter are OR; facets AND in one compatible branch/outcome. No cross-branch join.
+Start-only lookup works without classified outcomes. Known matches survive partial
+scope; absent metadata is unclassified, not a proven negative. Unknown origins/ends
+stay explicit; all routes appear unfiltered. External actors are not fake services.
+
+The portal shows declared service links, process cards and keyboard-accessible
+checkbox filters; narrow layouts collapse the filter panel. It distinguishes query
+uncertainty from overall classification gaps. A reported remote `problem` has kind
+`reported-missing`, `reported-renamed` or `reported-version-drift`, note and reportedBy
+(optional observedVersion): its entry remains visible with that link disabled.
+Unsafe or missing local targets still reject rendering. Remote availability/anchors
+need a separate authorized deployment check; a checked export does not provide it.
+
+Metadata-only index pages may be rendered as navigation; they are not source-checked
+service explanations. Do not invent claims/manifests to make an empty metadata page
+pass compose/bind. Real cross-service narrative claims still need their real source
+manifests; this feature does not repair imported-library/external-input bindings.
+
 ## Authored sequences
 
 The `clew-sequence` fence renders an authored sequence rather than a code listing.

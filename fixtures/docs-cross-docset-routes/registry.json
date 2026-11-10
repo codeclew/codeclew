@@ -1,0 +1,457 @@
+{
+  "schema": "codeclew-cross-docset-routes/1.1",
+  "revision": "proposal-r2",
+  "catalog": {
+    "docset": "portal",
+    "page": "index.html"
+  },
+  "docsets": [
+    {
+      "id": "orders-docs",
+      "title": "Orders",
+      "version": "orders-r7",
+      "baseURL": "https://docs.example.invalid/orders-docs/",
+      "services": [
+        {
+          "id": "api",
+          "title": "Orders API",
+          "overview": {
+            "docset": "orders-docs",
+            "page": "overview.html"
+          }
+        }
+      ]
+    },
+    {
+      "id": "inventory-docs",
+      "title": "Inventory",
+      "version": "inventory-r3",
+      "baseURL": "https://docs.example.invalid/inventory-docs/",
+      "services": [
+        {
+          "id": "api",
+          "title": "Inventory API",
+          "overview": {
+            "docset": "inventory-docs",
+            "page": "overview.html"
+          }
+        }
+      ]
+    },
+    {
+      "id": "recovery-docs",
+      "title": "Recovery",
+      "version": "recovery-r2",
+      "baseURL": "https://docs.example.invalid/recovery-docs/",
+      "services": [
+        {
+          "id": "api",
+          "title": "Recovery API",
+          "overview": {
+            "docset": "recovery-docs",
+            "page": "overview.html"
+          }
+        }
+      ]
+    },
+    {
+      "id": "journeys",
+      "title": "Shared journeys",
+      "version": "journeys-r2",
+      "baseURL": "https://docs.example.invalid/journeys/",
+      "services": []
+    },
+    {
+      "id": "portal",
+      "title": "Service and journey directory",
+      "version": "portal-r1",
+      "baseURL": "https://docs.example.invalid/portal/",
+      "services": []
+    }
+  ],
+  "externalActors": [
+    {
+      "id": "client",
+      "title": "External caller"
+    },
+    {
+      "id": "broker",
+      "title": "External worker"
+    }
+  ],
+  "routes": [
+    {
+      "id": "stock-query",
+      "version": "r1",
+      "title": "Query stock and return to the caller",
+      "narrative": {
+        "docset": "journeys",
+        "page": "stock-query.html"
+      },
+      "origin": {
+        "status": "known",
+        "occurrence": "a-entry",
+        "kind": "http",
+        "title": "Incoming stock query",
+        "summary": "The documented incoming request starts this example."
+      },
+      "occurrences": [
+        {
+          "id": "a-entry",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Accept the request",
+          "target": {
+            "docset": "orders-docs",
+            "page": "incoming.html",
+            "anchor": "request"
+          }
+        },
+        {
+          "id": "b-lookup",
+          "actor": {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          },
+          "role": "Perform the documented lookup",
+          "target": {
+            "docset": "inventory-docs",
+            "page": "handler.html",
+            "anchor": "lookup"
+          }
+        },
+        {
+          "id": "a-return",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Return the result",
+          "target": {
+            "docset": "orders-docs",
+            "page": "incoming.html",
+            "anchor": "response"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": "success",
+          "title": "Described successful path",
+          "condition": "The lookup succeeds in this described scope.",
+          "target": {
+            "docset": "journeys",
+            "page": "stock-query.html",
+            "anchor": "success"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "returned",
+          "branch": "success",
+          "kind": "normal",
+          "title": "Result returned",
+          "target": {
+            "docset": "journeys",
+            "page": "stock-query.html",
+            "anchor": "returned"
+          },
+          "internal": {
+            "coverage": "complete-for-this-outcome",
+            "occurrences": [
+              "b-lookup"
+            ]
+          },
+          "end": {
+            "status": "known",
+            "ownerOccurrence": "a-return",
+            "boundary": "return",
+            "recipient": {
+              "kind": "external",
+              "id": "client"
+            }
+          }
+        }
+      ],
+      "coverage": {
+        "outcomeInventory": "complete-for-declared-scope",
+        "scope": "Only the single documented successful-query path; not all program errors or runtime behavior.",
+        "reference": {
+          "docset": "journeys",
+          "page": "stock-query.html",
+          "anchor": "scope"
+        }
+      }
+    },
+    {
+      "id": "order-submit",
+      "version": "r2",
+      "title": "Submit an order with return, rejection and handoff cases",
+      "narrative": {
+        "docset": "journeys",
+        "page": "order-submit.html"
+      },
+      "origin": {
+        "status": "known",
+        "occurrence": "a-entry",
+        "kind": "http",
+        "title": "Incoming order request",
+        "summary": "The documented order request is the single origin of these cases."
+      },
+      "occurrences": [
+        {
+          "id": "a-entry",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Accept the request",
+          "target": {
+            "docset": "orders-docs",
+            "page": "submit.html",
+            "anchor": "entry"
+          }
+        },
+        {
+          "id": "b-reserve",
+          "actor": {
+            "kind": "service",
+            "docset": "inventory-docs",
+            "service": "api"
+          },
+          "role": "Reserve stock on the completed branch",
+          "target": {
+            "docset": "inventory-docs",
+            "page": "reservation.html",
+            "anchor": "reserve"
+          }
+        },
+        {
+          "id": "a-callback",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Process the documented callback internally",
+          "target": {
+            "docset": "orders-docs",
+            "page": "submit.html",
+            "anchor": "callback"
+          }
+        },
+        {
+          "id": "a-return",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Return the completed result",
+          "target": {
+            "docset": "orders-docs",
+            "page": "submit.html",
+            "anchor": "completed"
+          }
+        },
+        {
+          "id": "c-reject",
+          "actor": {
+            "kind": "service",
+            "docset": "recovery-docs",
+            "service": "api"
+          },
+          "role": "Own the described terminal rejection operation",
+          "target": {
+            "docset": "recovery-docs",
+            "page": "reject.html",
+            "anchor": "rejected"
+          }
+        },
+        {
+          "id": "a-send",
+          "actor": {
+            "kind": "service",
+            "docset": "orders-docs",
+            "service": "api"
+          },
+          "role": "Initiate the described handoff",
+          "target": {
+            "docset": "orders-docs",
+            "page": "submit.html",
+            "anchor": "publish"
+          }
+        },
+        {
+          "id": "broker-terminal",
+          "actor": {
+            "kind": "external",
+            "id": "broker"
+          },
+          "role": "Own the last described external operation; no delivery/ACK inferred",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "handoff"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "id": "completed",
+          "title": "Completed",
+          "condition": "The described reservation and callback complete.",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "completed"
+          }
+        },
+        {
+          "id": "rejected",
+          "title": "Rejected",
+          "condition": "The explicitly alternative rejection case applies.",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "rejected"
+          }
+        },
+        {
+          "id": "delegated",
+          "title": "Delegated",
+          "condition": "The described boundary ends at an external operation.",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "handoff"
+          }
+        },
+        {
+          "id": "pending",
+          "title": "Unclassified",
+          "condition": "The reported pending case has not been classified.",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "pending"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "returned",
+          "branch": "completed",
+          "kind": "normal",
+          "title": "Normal return",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "completed"
+          },
+          "internal": {
+            "coverage": "complete-for-this-outcome",
+            "occurrences": [
+              "b-reserve",
+              "a-callback"
+            ]
+          },
+          "end": {
+            "status": "known",
+            "ownerOccurrence": "a-return",
+            "boundary": "return",
+            "recipient": {
+              "kind": "external",
+              "id": "client"
+            }
+          }
+        },
+        {
+          "id": "rejected",
+          "branch": "rejected",
+          "kind": "error",
+          "title": "Terminal operation is owned by Recovery, recipient is Orders",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "rejected"
+          },
+          "internal": {
+            "coverage": "complete-for-this-outcome",
+            "occurrences": []
+          },
+          "end": {
+            "status": "known",
+            "ownerOccurrence": "c-reject",
+            "boundary": "return",
+            "recipient": {
+              "kind": "service",
+              "docset": "orders-docs",
+              "service": "api"
+            }
+          }
+        },
+        {
+          "id": "handed-off",
+          "branch": "delegated",
+          "kind": "handoff",
+          "title": "Last described operation belongs to an external actor",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "handoff"
+          },
+          "internal": {
+            "coverage": "complete-for-this-outcome",
+            "occurrences": [
+              "a-send"
+            ]
+          },
+          "end": {
+            "status": "known",
+            "ownerOccurrence": "broker-terminal",
+            "boundary": "handoff",
+            "recipient": {
+              "kind": "none"
+            }
+          }
+        },
+        {
+          "id": "pending",
+          "branch": "pending",
+          "kind": "unknown",
+          "title": "End and internal steps remain unclassified",
+          "target": {
+            "docset": "journeys",
+            "page": "order-submit.html",
+            "anchor": "pending"
+          },
+          "internal": {
+            "coverage": "unknown",
+            "occurrences": []
+          },
+          "end": {
+            "status": "unknown",
+            "reason": "The terminal operation has not been described."
+          }
+        }
+      ],
+      "coverage": {
+        "outcomeInventory": "partial",
+        "scope": "These four documented cases are not asserted to exhaust the request lifecycle.",
+        "reference": {
+          "docset": "journeys",
+          "page": "order-submit.html",
+          "anchor": "scope"
+        }
+      }
+    }
+  ]
+}

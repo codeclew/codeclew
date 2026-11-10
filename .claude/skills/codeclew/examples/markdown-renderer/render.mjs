@@ -1,7 +1,10 @@
-import {readFile,writeFile,readdir,mkdir,realpath} from 'node:fs/promises';
+import {readFile,writeFile,readdir,mkdir,realpath,open} from 'node:fs/promises';
 import {resolve,join,basename} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
+import {createHash} from 'node:crypto';
+import {validateDocsetRoutes,REGISTRY_BYTES} from './docset-routes.mjs';
+import {docsetView,routeStyle,routeWords} from './route-view.mjs';
 import {validateNavigation,navigationView,insertHub} from './navigation.mjs';
 import {renderSequence,checkSequenceTargets} from './sequence.mjs';
 import {loadSources,sourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
@@ -38,7 +41,16 @@ function decoration(svg){
  return svg.slice(svg.indexOf('<svg')).replace(/<title\b[^>]*>.*?<\/title>/gs,'').replace(/\s(?:role|aria-labelledby)="[^"]*"/g,'').replace('<svg','<svg aria-hidden="true" focusable="false"');
 }
 
-export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation,sources}={}){
+async function registryBytes(path){
+ const file=await open(path,'r');try{
+  const stat=await file.stat();if(!stat.isFile()||stat.size>REGISTRY_BYTES)throw Error('Docset routes require a regular file at most 1 MiB');
+  const data=Buffer.alloc(REGISTRY_BYTES+1);let used=0;
+  while(used<data.length){const {bytesRead}=await file.read(data,used,data.length-used,null);if(!bytesRead)break;used+=bytesRead}
+  if(used>REGISTRY_BYTES)throw Error('Docset routes input exceeds 1 MiB');return data.subarray(0,used);
+ }finally{await file.close()}
+}
+
+export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation,sources,docsetRoutes,docset,docsetVersion}={}){
  if(!['codeclew','neutral'].includes(theme)||!['en','ru'].includes(language))throw new Error('Use --theme codeclew|neutral and --lang en|ru');
  input=resolve(input);output=resolve(output);
  const files=(await readdir(input)).filter(x=>x.endsWith('.md')).sort();
@@ -56,6 +68,15 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  checkSequenceTargets(sequences,pages);
  const sequenceStyle=sequences.length?await readFile(new URL('./assets/sequence.css',import.meta.url),'utf8'):'';
  const explicit=navigation===undefined?null:validateNavigation(typeof navigation==='string'?JSON.parse(await readFile(navigation,'utf8')):navigation,pages);
+ let registryInfo=null,registryModel=null;
+ const routeOptions=[docsetRoutes,docset,docsetVersion];
+ if(routeOptions.some(x=>x!==undefined)){
+  if(routeOptions.some(x=>x===undefined)||!explicit)throw Error('Docset routes require --navigation, --docset-routes, --docset and --docset-version');
+  const raw=typeof docsetRoutes==='string'?await registryBytes(docsetRoutes):Buffer.from(JSON.stringify(docsetRoutes));
+  if(raw.length>REGISTRY_BYTES)throw Error('Docset routes input exceeds 1 MiB');
+  registryModel=validateDocsetRoutes(JSON.parse(raw),explicit,docset,docsetVersion);
+  registryInfo={docset,version:docsetVersion,registryDigest:'sha256:'+createHash('sha256').update(raw).digest('hex'),remoteTargets:'DECLARED_NOT_FETCHED',localTargets:'CHECKED'};
+ }
  await mkdir(output,{recursive:true});
  let assets;
  if(theme==='codeclew'){
@@ -68,27 +89,34 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  const ordered=[...pages].sort((a,b)=>Number(b.file==='index.md')-Number(a.file==='index.md'));
  const home=explicit?explicit.home.to.href:files.includes('index.md')?'index.html':files[0]?.replace(/\.md$/,'.html');
  for(const {file,html,title} of pages){
+  let prefix='clew-route';while(html.includes('id="'+prefix)||html.includes("id='"+prefix))prefix+='-nav';
+  const cross=registryModel?docsetView(registryModel,file,{...routeWords,...locale?.docsets,triggerLabels:Object.fromEntries(['http','kafka','scheduled','background','manual','other'].map(k=>[k,words['kind_'+k]]))},prefix):null;
   let page;
   if(theme==='neutral'){page=neutralPage(html,files,label);if(sequenceStyle)page=page.replace('</style>',sequenceStyle+'</style>')}
   else{
    let mainId='clew-reader-main';while(html.includes(`id="${mainId}"`))mainId+='-content';
-   const view=explicit?navigationView(explicit,file,words):null;
+   const view=explicit?navigationView(explicit,file,words,cross?.extra):null;
    const links=view?view.menu:ordered.map(p=>`<a href="${escape(p.file.replace(/\.md$/,'.html'))}"${p.file===file?' aria-current="page"':''}>${escape(p.title)}</a>`).join('');
    const script=`const sequenceNarrow=matchMedia('(max-width:700px)');const syncSequences=()=>{for(const trace of document.querySelectorAll('.sequence-text'))trace.open=sequenceNarrow.matches};syncSequences();sequenceNarrow.addEventListener('change',syncSequences);const menu=document.querySelector('.guide-local-navigation');const narrow=matchMedia('(max-width:950px)');const resize=()=>{menu.open=!narrow.matches};resize();narrow.addEventListener('change',resize);for(const table of document.querySelectorAll('main table')){const region=document.createElement('div');region.className='table-scroll';region.tabIndex=0;region.setAttribute('role','region');region.setAttribute('aria-label',${JSON.stringify(words.table)});table.before(region);region.append(table);for(const th of table.querySelectorAll('thead th'))th.scope='col'}`;
    const locationScript=`const syncLocation=()=>{let id='';try{id=decodeURIComponent(location.hash.slice(1))}catch{}const target=id?document.getElementById(id):null;const heading=target&&target.tagName!=='MAIN'?(target.matches('h1,h2,h3,h4,h5,h6')?target:target.querySelector('h1,h2,h3,h4,h5,h6')):null;const crumb=document.querySelector('.breadcrumb-section');if(crumb){crumb.hidden=!heading;crumb.replaceChildren();if(heading){crumb.append(' / ');const link=document.createElement('a');link.href='#'+encodeURIComponent(id);link.textContent=heading.textContent;link.setAttribute('aria-current','location');crumb.append(link)}}for(const link of document.querySelectorAll('.guide-local-navigation a[data-page]')){if(link.dataset.page===document.body.dataset.readerPage&&link.dataset.fragment){if(link.dataset.fragment===id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}};syncLocation();addEventListener('hashchange',syncLocation);`;
-   page=`<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12334e"><title>${escape(title)} — ${escape(label)}</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>${assets.style}</style></head><body class="markdown-reader" data-reader-page="${escape(file)}"><a class="skip-link" href="#${mainId}">${escape(words.skip)}</a><header class="reader-nav"><a class="reader-brand" href="${escape(home||'#')}">${decoration(assets.icon)}<span>Codeclew</span></a><span class="reader-project">${escape(label)}</span></header><div class="guide-layout"><aside class="guide-toc"><details class="guide-local-navigation" open><summary>${escape(words.pages)}</summary><nav aria-label="${escape(words.navigation)}">${links}</nav></details></aside><main class="reader-guide" id="${mainId}">${view?view.breadcrumb:''}${insertHub(html,view?.hub)}<footer class="markdown-footer">${decoration(assets.cat)}<span>Codeclew · ${escape(words.documentation)}</span></footer></main></div><script>${script}${view?locationScript:''}</script></body></html>`;
+   page=`<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12334e"><title>${escape(title)} — ${escape(label)}</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>${assets.style}</style></head><body class="markdown-reader" data-reader-page="${escape(file)}"><a class="skip-link" href="#${mainId}">${escape(words.skip)}</a><header class="reader-nav"><a class="reader-brand" href="${escape(home||'#')}">${decoration(assets.icon)}<span>Codeclew</span></a><span class="reader-project">${escape(label)}</span></header><div class="guide-layout"><aside class="guide-toc"><details class="guide-local-navigation" open><summary>${escape(words.pages)}</summary><nav aria-label="${escape(words.navigation)}">${links}</nav></details></aside><main class="reader-guide" id="${mainId}">${view?view.breadcrumb:''}${insertHub(html,(view?.hub||'')+(cross?.hub||''))}<footer class="markdown-footer">${decoration(assets.cat)}<span>Codeclew · ${escape(words.documentation)}</span></footer></main></div><script>${script}${view?locationScript:''}</script></body></html>`;
+  }
+  if(cross){
+   if(theme==='neutral')page=page.replace('<main>'+html,'<main>'+insertHub(html,cross.hub));
+   page=page.replace('</style>',routeStyle+'</style>').replace('<meta charset="utf-8">','<meta charset="utf-8"><meta name="codeclew-docset" content="'+escape(docset)+'"><meta name="codeclew-docset-version" content="'+escape(docsetVersion)+'"><meta name="codeclew-registry-digest" content="'+registryInfo.registryDigest+'">').replace('</body>',cross.script+'</body>');
+   if(theme==='neutral')page=page.replace('</html>',cross.script+'</html>');
   }
   if(sourceBundle)page=page.replace('</style>',sourcesStyle+'</style>').replace('</main>','</main><script>'+sourcesScript+'</script>');
   await writeFile(join(output,file.replace(/\.md$/,'.html')),page);
  }
- return {input,output,files,theme,language,renderer:'marked; authored Markdown and checked source components retained'};
+ return {input,output,files,theme,language,renderer:'marked; authored Markdown and checked source components retained',...(registryInfo?{crossDocsetRoutes:registryInfo}:{})};
 }
 
 const entry=process.argv[1]?await realpath(process.argv[1]).catch(()=>null):null;
 if(entry&&pathToFileURL(entry).href===import.meta.url){
  const args=process.argv.slice(2);const input=args.shift(),output=args.shift();
- if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE]');
+ if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE] [--docset-routes FILE --docset ID --docset-version VERSION]');
  const options={};if(args.length&&!args[0].startsWith('--'))options.label=args.shift();
- while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else throw new Error('Unknown renderer option: '+key)}
+ while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else if(key==='--docset-routes')options.docsetRoutes=value;else if(key==='--docset')options.docset=value;else if(key==='--docset-version')options.docsetVersion=value;else throw new Error('Unknown renderer option: '+key)}
  console.log(JSON.stringify(await renderDirectory(input,output,options)));
 }
