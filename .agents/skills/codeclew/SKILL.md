@@ -14,6 +14,10 @@ metadata:
 
 Choose by the requested result, not the presence of a root/snapshot:
 
+For HTTP documentation, read [HTTP closure](references/http-reader-closure.md)
+**before drafting**: each evidenced method/path needs its own page and
+handler-started sequence.
+
 | Result | Read next |
 | --- | --- |
 | Generate/update durable service or process documentation | [Guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages) |
@@ -27,7 +31,8 @@ renderer for checked local HTML. Interaction is optional; explicit MDX/Docusauru
 keeps its selected export route. Reuse frozen evidence. A new repository first
 needs [registration/capture](references/service-documentation.md#start-or-recover),
 then the same human route. Native output is not the fallback for new repositories.
-A catalogue, GAP cards, render success or proof PASS is not a complete explanation.
+`EXPORT_CHECKED` is technical success; completion also requires requested pages/
+sequences and the same-author scope check.
 
 ## Prepared SOURCE shortcut
 

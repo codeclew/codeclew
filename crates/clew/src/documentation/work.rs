@@ -579,18 +579,22 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     }
     if selection.query.as_ref().is_some_and(|query| {
         query.projection == QueryProjection::Navigation
-            && !matches!(query.kind.as_str(), "SYMBOL" | "SOURCE")
+            && !matches!(
+                query.kind.as_str(),
+                "SYMBOL" | "SOURCE" | "RETAINED_RESOURCE"
+            )
     }) {
         return Err(invalid(
-            "NAVIGATION query projection requires kind SYMBOL or SOURCE",
+            "NAVIGATION query projection requires kind SYMBOL, SOURCE or RETAINED_RESOURCE",
         ));
     }
     if selection.query.as_ref().is_some_and(|q| {
-        (q.projection == QueryProjection::Files || q.file.is_some() || !q.file_contains.is_empty())
-            && q.kind != "SOURCE"
+        (q.projection == QueryProjection::Files && q.kind != "SOURCE")
+            || ((q.file.is_some() || !q.file_contains.is_empty())
+                && !matches!(q.kind.as_str(), "SOURCE" | "RETAINED_RESOURCE"))
     }) {
         return Err(invalid(
-            "file selection and FILES projection require kind SOURCE",
+            "file selection requires SOURCE or RETAINED_RESOURCE; FILES projection requires SOURCE",
         ));
     }
     if selection
@@ -608,6 +612,15 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     }) {
         return Err(invalid(
             "WHOLE_FILE requires kind SOURCE and one exact file; omit fileContains",
+        ));
+    }
+    if selection
+        .query
+        .as_ref()
+        .is_some_and(|q| q.kind == "RETAINED_RESOURCE" && !q.symbol_contains.is_empty())
+    {
+        return Err(invalid(
+            "RETAINED_RESOURCE has no symbol field; select a retained file or returned source reference",
         ));
     }
     Ok(())
@@ -3017,6 +3030,8 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
             } else {
                 source_inventory_rows(work, query)?
             }
+        } else if query.kind == "RETAINED_RESOURCE" {
+            retained_resource_rows(work, query)?
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {
                 (kind != "service" || dependency.in_service_scope(id))
@@ -3421,6 +3436,64 @@ fn whole_file_row(work: &Work, query: &Query) -> Result<Value, ClewError> {
         "source":metadata,"recordDigest":digest(source)?,
         "fullRecordReference":reverse.get(&("SOURCE",id.as_str())).copied(),
         "authority":"NAVIGATION_ONLY","textDelivered":false,"wholeFileCapture":"EXACT_RETAINED_FILE"}}))
+}
+
+/// File evidence retained by the compiler capture, not a programming SOURCE_SCOPE
+/// or resolved application configuration. No repository or producer is consulted.
+fn retained_resource_rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> {
+    let service = work
+        .subject
+        .strip_prefix("service:")
+        .ok_or_else(|| invalid("RETAINED_RESOURCE requires a service Work subject"))?;
+    let evidence = work
+        .checked
+        .services
+        .get(service)
+        .ok_or_else(|| invalid("RETAINED_RESOURCE requires retained service evidence"))?;
+    let files: BTreeSet<_> = evidence
+        .boundaries
+        .iter()
+        .filter_map(|boundary| boundary.strip_prefix("STATIC_CONFIGURATION_FILE_ONLY:"))
+        .collect();
+    let reverse = reverse_handles(work);
+    evidence.sources.iter().filter(|(_, source)| {
+        files.contains(source.file.as_str())
+            && query.file.as_ref().is_none_or(|file| file == &source.file)
+            && source.file.contains(&query.file_contains)
+    }).map(|(id, source)| {
+        let occurrence = source.occurrence.as_ref()
+            .ok_or_else(|| invalid("RETAINED_RESOURCE_BINDING_INVALID: missing original occurrence"))?;
+        let reference = reverse.get(&("SOURCE", id.as_str()))
+            .ok_or_else(|| invalid("RETAINED_RESOURCE_BINDING_INVALID: source is not registered in this Work"))?;
+        if evidence.service != service || source.service != service || source.id != *id
+            || source.revision != evidence.revision || source.authority != "EXACT_SNAPSHOT_TEXT"
+            || source.library_origin.is_some() || source.text_origin.is_some()
+            || source.text.is_empty() || source.text.len() > 2 * 1024 * 1024
+            || source.start_line != 1 || source.end_line != source.text.lines().count() as u64
+            || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+            || occurrence.start_byte != 0 || occurrence.end_byte != source.text.len()
+            || occurrence.generated_origin.is_some() || occurrence.blob != source.text_digest
+            || occurrence.snapshot.strip_prefix("sha256:").is_none_or(|hash| {
+                hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            || *id != super::analysis::source_id(service, &format!("configuration-resource:{}", source.file))?
+            || source.evidence_digest != digest(&(
+                SOURCE_EXTRACTOR, &occurrence.snapshot, &source.text_digest, 0usize, source.text.len(),
+            ))?
+        {
+            return Err(invalid("RETAINED_RESOURCE_BINDING_INVALID: original resource bytes, identity or provenance differ"));
+        }
+        if query.projection == QueryProjection::Raw {
+            return Ok(json!({"kind":"SOURCE","id":id,"record":source}));
+        }
+        let mut metadata = serde_json::to_value(source).map_err(io_error)?;
+        metadata.as_object_mut().unwrap().remove("text");
+        Ok(json!({"kind":"SOURCE_NAVIGATION","id":id,"record":{
+            "source":metadata,"recordDigest":digest(source)?,
+            "fullRecordReference":reference,"resourceKind":"STATIC_CONFIGURATION_FILE",
+            "authority":"NAVIGATION_ONLY","textDelivered":false
+        }}))
+    }).collect()
 }
 
 fn source_inventory_rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> {
@@ -4732,6 +4805,276 @@ mod section_context_tests {
             .insert(scope.id.clone(), scope.digest.clone());
         work.checked.dependencies.insert(scope.id.clone(), scope);
         work
+    }
+
+    fn retained_resource_fixture(text: &str) -> Work {
+        let mut work = exact_retained_file_proposal_fixture("FILE_ONLY");
+        work.checked.dependencies.clear();
+        work.influence.clear();
+        work.handles.clear();
+        work.request.entrypoint = None;
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        evidence.observations.clear();
+        evidence.extractor = "codeclew-documentation-jvm/1.3".into();
+        evidence.coverage = "PARTIAL".into();
+        let mut source = evidence.sources.remove("retained-source").unwrap();
+        source.file = "src/main/resources/application.properties".into();
+        source.id = super::super::analysis::source_id(
+            "orders",
+            &format!("configuration-resource:{}", source.file),
+        )
+        .unwrap();
+        source.text = text.into();
+        source.text_digest = crate::canonical::hash_bytes(text.as_bytes());
+        source.start_line = 1;
+        source.end_line = text.lines().count() as u64;
+        source.library_origin = None;
+        source.text_origin = None;
+        source.url = None;
+        source.occurrence = Some(SourceOccurrence {
+            snapshot: format!("sha256:{}", "a".repeat(64)),
+            blob: source.text_digest.clone(),
+            start_byte: 0,
+            end_byte: text.len(),
+            generated_origin: None,
+        });
+        source.evidence_digest = digest(&(
+            SOURCE_EXTRACTOR,
+            &source.occurrence.as_ref().unwrap().snapshot,
+            &source.text_digest,
+            0usize,
+            text.len(),
+        ))
+        .unwrap();
+        evidence.boundaries = vec![format!("STATIC_CONFIGURATION_FILE_ONLY:{}", source.file)];
+        work.handles.insert(
+            "s1".into(),
+            Handle {
+                kind: "SOURCE".into(),
+                id: source.id.clone(),
+            },
+        );
+        evidence.sources.insert(source.id.clone(), source);
+        work
+    }
+
+    fn resource_selection(projection: &str) -> Selection {
+        serde_json::from_value(json!({"query":{
+            "kind":"RETAINED_RESOURCE","projection":projection,
+            "file":"src/main/resources/application.properties"
+        }}))
+        .unwrap()
+    }
+
+    #[test]
+    #[ignore = "explicit frozen Work resource replay; requires CODECLEW_RESOURCE_REPLAY inputs"]
+    fn retained_resource_saved_work_replay() {
+        let root = std::env::var("CODECLEW_RESOURCE_REPLAY_ROOT").unwrap();
+        let id = std::env::var("CODECLEW_RESOURCE_REPLAY_WORK").unwrap();
+        let repo = Repository::open(std::path::Path::new(&root)).unwrap();
+        let navigation: Selection = serde_json::from_value(json!({"query":{
+            "kind":"RETAINED_RESOURCE","projection":"NAVIGATION"
+        }}))
+        .unwrap();
+        let page = read(&repo, &id, navigation).unwrap();
+        assert!(page["nextCursor"].is_null());
+        assert_eq!(page["omitted"], json!([]));
+        let items = page["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        let mut sources = Vec::new();
+        for item in items {
+            let selection: Selection = serde_json::from_value(json!({
+                "projection":"SOURCE_ROWS",
+                "references":[item["record"]["fullRecordReference"]]
+            }))
+            .unwrap();
+            let source_page = read(&repo, &id, selection).unwrap();
+            assert_eq!(source_page["snapshot"], page["snapshot"]);
+            assert_eq!(source_page["omitted"], json!([]));
+            assert!(source_page["nextCursor"].is_null());
+            assert!(source_page["items"].as_array().unwrap().iter().any(|row| {
+                row["kind"] == "SOURCE" && !row["record"]["text"].as_str().unwrap().is_empty()
+            }));
+            sources.push(source_page);
+        }
+        println!("{}", json!({"navigation":page,"sources":sources}));
+    }
+
+    #[test]
+    fn retained_resources_discover_exact_compiler_file_without_source_scope() {
+        let text = "client.url=https://example.invalid/api\nclient.timeout=40\n";
+        let work = retained_resource_fixture(text);
+        assert!(rows(&work, &source_inventory_selection()).is_err());
+        let navigation = rows(&work, &resource_selection("NAVIGATION")).unwrap();
+        assert_eq!(navigation.len(), 1);
+        assert_eq!(navigation[0]["record"]["fullRecordReference"], "s1");
+        assert_eq!(navigation[0]["record"]["textDelivered"], false);
+        assert!(navigation[0]["record"]["source"].get("text").is_none());
+        let selected: Selection = serde_json::from_value(json!({
+            "projection":"SOURCE_ROWS","references":[navigation[0]["record"]["fullRecordReference"]]
+        }))
+        .unwrap();
+        let sources = rows(&work, &selected).unwrap();
+        let source = sources.iter().find(|row| row["kind"] == "SOURCE").unwrap();
+        assert_eq!(source["reference"], "s1");
+        assert_eq!(source["record"]["text"], text);
+        assert_eq!(source["record"]["authority"], "EXACT_SNAPSHOT_TEXT");
+        assert_eq!(source["record"]["revision"], "c".repeat(40));
+        assert_eq!(
+            rows(&work, &resource_selection("RAW")).unwrap()[0]["record"],
+            source["record"]
+        );
+        let mut absent = resource_selection("RAW");
+        absent.query.as_mut().unwrap().file = Some("src/main/resources/absent.properties".into());
+        assert!(rows(&work, &absent).unwrap().is_empty());
+        let mut unrelated = work.clone();
+        unrelated
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .boundaries
+            .clear();
+        assert!(
+            rows(&unrelated, &resource_selection("RAW"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(work.checked.dependencies.is_empty());
+    }
+
+    #[test]
+    fn retained_resources_reject_changed_bytes_identity_and_unregistered_refs() {
+        let work = retained_resource_fixture("client.timeout=40\n");
+        for field in [
+            "text",
+            "digest",
+            "revision",
+            "range",
+            "blob",
+            "authority",
+            "id",
+            "reference",
+        ] {
+            let mut bad = work.clone();
+            let source = bad
+                .checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .values_mut()
+                .next()
+                .unwrap();
+            match field {
+                "text" => source.text.push('x'),
+                "digest" => source.evidence_digest = "stale".into(),
+                "revision" => source.revision = "foreign".into(),
+                "range" => source.occurrence.as_mut().unwrap().end_byte -= 1,
+                "blob" => source.occurrence.as_mut().unwrap().blob = "foreign".into(),
+                "authority" => source.authority = "DECLARED_OPENAPI".into(),
+                "id" => source.id = "foreign".into(),
+                _ => {
+                    bad.handles.clear();
+                }
+            }
+            assert!(rows(&bad, &resource_selection("RAW")).is_err(), "{field}");
+        }
+        for query in [
+            json!({"kind":"RETAINED_RESOURCE","projection":"FILES"}),
+            json!({"kind":"RETAINED_RESOURCE","projection":"WHOLE_FILE","file":"a.properties"}),
+            json!({"kind":"RETAINED_RESOURCE","symbolContains":"timeout"}),
+        ] {
+            let selection: Selection = serde_json::from_value(json!({"query":query})).unwrap();
+            assert!(validate_selection(&selection).is_err());
+        }
+    }
+
+    #[test]
+    fn retained_resources_paginate_navigation_and_keep_selectors_bound_to_cursor() {
+        let mut work = retained_resource_fixture("client.timeout=40\n");
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        let mut other = evidence.sources.values().next().unwrap().clone();
+        other.file = "src/main/resources/application-test.properties".into();
+        other.id = super::super::analysis::source_id(
+            "orders",
+            &format!("configuration-resource:{}", other.file),
+        )
+        .unwrap();
+        evidence
+            .boundaries
+            .push(format!("STATIC_CONFIGURATION_FILE_ONLY:{}", other.file));
+        work.handles.insert(
+            "s2".into(),
+            Handle {
+                kind: "SOURCE".into(),
+                id: other.id.clone(),
+            },
+        );
+        evidence.sources.insert(other.id.clone(), other);
+        work.request.max_items = 1;
+        work.request.max_bytes = 4096;
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Retained resource pagination fixture").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let mut selection: Selection = serde_json::from_value(json!({"query":{
+            "kind":"RETAINED_RESOURCE","projection":"NAVIGATION","fileContains":"resources/"
+        }}))
+        .unwrap();
+        let first = read_loaded(&repo, &work, selection.clone()).unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), 1);
+        assert_eq!(first["total"], 2);
+        assert_eq!(first["omitted"], json!([]));
+        selection.cursor = Some(first["nextCursor"].as_str().unwrap().into());
+        let second = read_loaded(&repo, &work, selection.clone()).unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 1);
+        assert!(second["nextCursor"].is_null());
+        let references = [&first, &second]
+            .into_iter()
+            .map(|page| {
+                page["items"][0]["record"]["fullRecordReference"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(references, BTreeSet::from(["s1", "s2"]));
+        selection.query.as_mut().unwrap().file_contains = "absent".into();
+        assert!(read_loaded(&repo, &work, selection).is_err());
+    }
+
+    #[test]
+    fn retained_resources_large_body_uses_existing_recorded_source_parts() {
+        let text = "client.label=retained configuration\n".repeat(2000);
+        let mut work = retained_resource_fixture(&text);
+        work.request.max_bytes = 4096;
+        work.request.max_items = 1;
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Retained resource source parts fixture").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let page = read_loaded(&repo, &work, resource_selection("RAW")).unwrap();
+        assert_eq!(page["items"], json!([]));
+        assert_eq!(page["omitted"][0]["reference"], "s1");
+        let mut request = SourcePartRequest {
+            schema: "codeclew-documentation-source-part-request/1.0".into(),
+            reference: "s1".into(),
+            cursor: None,
+        };
+        let mut received = String::new();
+        loop {
+            let part =
+                super::super::work_parts::read_part_loaded(&repo, &work, request.clone()).unwrap();
+            assert!(bytes(&part).unwrap().len() < work.request.max_bytes);
+            received.push_str(part["text"].as_str().unwrap());
+            let Some(cursor) = part["nextCursor"].as_str() else {
+                break;
+            };
+            request.cursor = Some(cursor.into());
+        }
+        assert_eq!(received, text);
+        assert_eq!(
+            completed_source_references(&work, &read_state(&repo, &work.id).unwrap()).unwrap(),
+            BTreeSet::from(["s1".into()])
+        );
     }
 
     fn source_inventory_selection() -> Selection {

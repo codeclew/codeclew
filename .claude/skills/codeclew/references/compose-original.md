@@ -12,7 +12,7 @@ new planner, ledger or evidence store. Load technical references only when neede
 | 2. Cover scope | Map requested HTTP/Kafka/scheduled/internal starts, data, contracts, egress and settings to intended pages in your notes. | [Discovery below](#discover-and-read); [threads](thread-preparation.md) |
 | 3. Read | Batch consequential bodies/types/configs; finish continuations. Obtain real handles or a specific blocker/next action. Available-but-unread is unfinished. | [References](#retained-source-references); [parts](source-read-parts.md) |
 | 4. Author | Write originals: entry→thread/sequence, individual fields/aliases, request/response/error/message shapes, effects and external identities. DataFlow only if requested. | [Original format](#original-pages-and-completion); [HTTP closure](http-reader-closure.md) |
-| 5. Self-check | The same author compares the actual draft with the original question and read input; repairs missing entries, branches, fields, settings and effects before DONE. | [Scope completion](#requested-scope-completion); [same-author closure](http-reader-closure.md#same-author-closure-before-finalization) |
+| 5. Self-check | The same author compares the actual draft with the original question and read input; repairs entries, branches, fields, settings and effects; reconciles HTTP inventory ↔ endpoint pages/handler sequences before DONE. | [Scope completion](#requested-scope-completion); [same-author closure](http-reader-closure.md#same-author-closure-before-finalization) |
 | 6. Export | Compose/bind once; finalize checked HTML with local Sources. Preserve originals, manifests/index and full export. | [Commands](#original-pages-and-completion); [footer](../examples/markdown-renderer/README.md#checked-local-sources-footer) |
 | 7. Read as user | Open pages/links at desktop and narrow widths; explain inputs, changes, returns and effects without code. Only then report scope completed or the retained blocker. | [Reader checklist](task-oriented-readers.md) |
 
@@ -166,6 +166,10 @@ read` with `{"query":{"kind":"CONTRACT"}}`, continuing pagination and inspecting
 omissions. Returned dependency rows expose their original `sourceIds` and
 `sourceReferences`; use those exact Work-local references below. A global SOURCE
 ID returned by `docs context` alone is not a Work-local reference.
+
+For compiler static files, Work query `{"kind":"RETAINED_RESOURCE","projection":"NAVIGATION"}`
+accepts `file`/`fileContains` without SOURCE_SCOPE. Follow `fullRecordReference`
+below; RAW returns retained text, not resolved settings.
 
 For compiler declaration/thread source, or contracts/configuration exposed by a
 native dependency's `sourceReferences`,
@@ -322,7 +326,6 @@ For broad service/process scope account for:
 - Errors beside steps and links to populated process/domain/contract/dependency
   explanations. DataFlow only when asked.
 
-For HTTP use [same-author closure](http-reader-closure.md#same-author-closure-before-finalization).
 Available-but-unread or unexplained supported inputs remain work. Keep genuine
 unavailable evidence/unknown runtime facts explicit. Do not narrow a broad request
 to one handler or hide essential explanation in source disclosures. Catalogue,

@@ -239,7 +239,7 @@
     },
     "selection": {
       "type": "object",
-      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE supports RAW, NAVIGATION, FILES grouping or WHOLE_FILE with an exact file, and requires omitted/empty symbolContains; nonempty symbol filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION supports SOURCE metadata and SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
+      "description": "Choose nonempty references, nonempty symbols, or query; do not mix modes. Query kind matches Observation.kind; * lists dependencies only, and DEPENDENCY is not a kind. SOURCE requires registered service SOURCE_SCOPE; RAW reads source, NAVIGATION is metadata, FILES groups paths, WHOLE_FILE requires exact retained Kotlin/non-code file. RETAINED_RESOURCE reads retained static resource files without SOURCE_SCOPE: RAW or NAVIGATION, file/fileContains, no configuration resolution. Both source kinds reject nonempty symbolContains and scenario subjects. NAVIGATION is noncitable: expand returned references, drain cursors and recover omitted parts before citing. Discovery establishes neither complete delivery nor parsed/runtime semantics.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -266,23 +266,23 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 100,
-                  "description": "Matches a dependency record's Observation.kind, or SOURCE for registered service source inventory. Use * for every dependency kind only."
+                  "description": "Observation.kind, SOURCE, RETAINED_RESOURCE, or * (dependencies only)."
                 },
                 "symbolContains": {
                   "type": "string",
                   "maxLength": 512,
-                  "description": "Case-sensitive substring of captured dependency symbols or method names. SOURCE has no symbol field and requires this field omitted or empty; nonempty SOURCE filters are rejected."
+                  "description": "Case-sensitive dependency symbol substring; SOURCE/RETAINED_RESOURCE require omitted or empty."
                 },
                 "file": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 4096,
-                  "description": "Exact retained SOURCE path; WHOLE_FILE selects one complete original committed Kotlin file or registered non-code input."
+                  "description": "Exact retained SOURCE/resource path; WHOLE_FILE requires SOURCE."
                 },
                 "fileContains": {
                   "type": "string",
                   "maxLength": 1024,
-                  "description": "Case-sensitive retained SOURCE path substring; omit with WHOLE_FILE."
+                  "description": "Case-sensitive retained SOURCE/resource path substring; omit with WHOLE_FILE."
                 },
                 "projection": {
                   "type": "string",
@@ -292,7 +292,7 @@
                     "FILES",
                     "WHOLE_FILE"
                   ],
-                  "description": "NAVIGATION supports SYMBOL/SOURCE; FILES is SOURCE navigation grouping only; WHOLE_FILE requires SOURCE and exact file."
+                  "description": "NAVIGATION: SYMBOL/SOURCE/RETAINED_RESOURCE; FILES/WHOLE_FILE: SOURCE only."
                 },
                 "ids": {
                   "type": "array",
@@ -346,6 +346,25 @@
                         "RAW",
                         "NAVIGATION",
                         "FILES"
+                      ]
+                    },
+                    "symbolContains": {
+                      "const": ""
+                    },
+                    "file": {},
+                    "fileContains": {}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "RETAINED_RESOURCE"
+                    },
+                    "projection": {
+                      "enum": [
+                        "RAW",
+                        "NAVIGATION"
                       ]
                     },
                     "symbolContains": {
