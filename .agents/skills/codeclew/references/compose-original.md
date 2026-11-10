@@ -42,9 +42,14 @@ Resolve one installed CODECLEW_SKILL_DIR/CLEW and exact saved snapshot. Keep a
 running task on its admitted runtime. A skill-only delta is not a release.
 A copied HTML directory/bindings manifest is not a frozen root: complete supported
 recovery includes its object closure and required Work state. Do not reconstruct
-proof from HTML, bypass supported reads through target Git/raw files/private caches,
-or silently recapture. An explicitly user-authorized fallback retains its limits.
-Inspect saved helper results through their supported inspector.
+proof from HTML or silently recapture.
+
+Source facts MUST come through supported APIs. Use the supplied frozen root;
+do not clone it again. Failure is not permission to bypass clew with shell/file
+tools on target source, GitHub/web/raw URLs or private-store/cache access, unless
+the user explicitly authorizes that fallback. This is agent guidance, not
+OS/filesystem sandbox enforcement. Ordinary product implementation follows its
+repository workflow. Read saved helper artifacts through the supported inspector.
 
 Choose discovery from the retained capture's supported inventory. The file route
 below requires a registered `SOURCE_SCOPE`; it is not the entry route for every
