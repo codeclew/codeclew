@@ -608,7 +608,15 @@ final class CodeclewJavaAnalyzer {
                 return node("v" + positions.getStartPosition(unit, tree) + "_" + positions.getEndPosition(unit, tree), tree, operation, guards);
             }
             private String node(String id, Tree tree, Map<String, Object> operation, List<String> guards) {
-                if (nodes.size() >= LIMIT || !hasSourceRange(tree)) throw new IllegalStateException();
+                // Generated trees can share a source range (for example Lombok's
+                // canEqual parameter and instanceof expression). A range is not
+                // a unique definition in that case: retain the unsupported-body
+                // frontier instead of replacing an input or inventing positions.
+                CompilationUnitTree unit = getCurrentPath().getCompilationUnit();
+                if (nodes.size() >= LIMIT || nodes.containsKey(id) || !hasSourceRange(tree)
+                        || positions.getStartPosition(unit, tree) == positions.getEndPosition(unit, tree)) {
+                    throw new IllegalStateException();
+                }
                 Map<String, Object> value = new LinkedHashMap<>();
                 value.put("id", id); value.put("operation", operation); value.put("guards", guards);
                 anchor(value, tree); nodes.put(id, value); return id;

@@ -110,6 +110,7 @@ ci_run checks python3 -I -S scripts/test_check_repository_privacy.py
 ci_run checks python3 -I -S scripts/test_check_english_content.py
 ci_run checks python3 -I -S scripts/check_english_content.py
 ci_run checks python3 -I -S scripts/test_documentation_selection_contract.py
+ci_run checks python3 -I -S scripts/test_java_value_projection.py
 ci_run checks python3 -I -S scripts/test_first_document.py
 ci_run checks python3 -I -S scripts/build_cli_documentation.py --check
 ci_run checks python3 -I -S scripts/test_agent_skill.py
