@@ -3024,8 +3024,8 @@ mod tests {
             files["scenarios/example.json"].clone(),
         );
         let tmp = tempfile::tempdir().unwrap();
-        super::super::store::Repository::init(tmp.path(), "Payload fixture").unwrap();
-        let mut inputs = super::super::store::Repository::open(tmp.path())
+        crate::documentation::store::Repository::init(tmp.path(), "Payload fixture").unwrap();
+        let mut inputs = crate::documentation::store::Repository::open(tmp.path())
             .unwrap()
             .inputs()
             .unwrap();
