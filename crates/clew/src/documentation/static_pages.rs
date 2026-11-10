@@ -19,11 +19,7 @@ mod source;
 #[path = "static_pages/frozen_export.rs"]
 mod frozen_export;
 
-use super::{
-    check::Check,
-    invalid,
-    store::{self, Repository},
-};
+use super::{check::Check, invalid, store::Repository};
 use crate::error::{ClewError, ErrorCode};
 use clap::Subcommand;
 use serde_json::{Value, json};

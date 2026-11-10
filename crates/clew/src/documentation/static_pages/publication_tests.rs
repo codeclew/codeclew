@@ -4,7 +4,7 @@ use crate::documentation::{
     check::{SOURCE_INPUTS_SCHEMA, SourceInputs},
     endpoint_publication::{self, Policy},
     model::{Observation, Service, ServiceEvidence, Source},
-    reader,
+    reader, store,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

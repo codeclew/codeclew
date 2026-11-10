@@ -104,12 +104,11 @@ fn parse_input<T: DeserializeOwned>(data: &[u8], input: &str) -> Result<T, ClewE
         }
         let mut error = invalid("documentation input violates its closed JSON/YAML schema");
         error.details = Some(Box::new(json!({"reason":reason,"input":input,"field":field,"constraint":"one record matching the closed JSON/YAML schema; no bytes were applied"})));
-        if data.len() <= 256 * 1024 {
-            if let Ok(value) = serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(data) {
-                if let Some(id) = value.get("id").and_then(|id| id.as_str()).filter(|id| valid_id(id)) {
-                    error.details.as_mut().unwrap()["recordId"] = json!(id);
-                }
-            }
+        if data.len() <= 256 * 1024
+            && let Ok(value) = serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(data)
+            && let Some(id) = value.get("id").and_then(|id| id.as_str()).filter(|id| valid_id(id))
+        {
+            error.details.as_mut().unwrap()["recordId"] = json!(id);
         }
         error
     })
