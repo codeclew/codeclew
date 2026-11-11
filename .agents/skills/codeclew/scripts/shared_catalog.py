@@ -230,7 +230,8 @@ def load_inventory(directory):
     directory = Path(directory)
     need(directory.is_dir() and not directory.is_symlink(), 'CATALOG_INVENTORY_UNAVAILABLE')
     value = read_json(directory/'inventory.json')
-    need(value.get('schema') == INVENTORY and value.get('digest') == digest({k:v for k,v in value.items() if k!='digest'})
+    need(isinstance(value,dict) and value.get('schema') == INVENTORY
+         and value.get('digest') == digest({k:v for k,v in value.items() if k!='digest'})
          and isinstance(value.get('services'),list) and len(value['services'])<=256
          and isinstance(value.get('records'),list) and len(value['records'])<=65536,
          'INVALID_CATALOG_INVENTORY')
@@ -248,11 +249,12 @@ def load_inventory(directory):
              and basis['snapshot']==record['snapshot'] and basis['contextDigest']==record['contextDigest']
              and basis['recordDigest']==record['recordDigest']
              and basis['dependencyRecordDigest']==record['dependencyRecordDigest']
+             and isinstance(record['recordDigest'],str) and re.fullmatch(r'sha256:[0-9a-f]{64}',record['recordDigest']) is not None
              and re.fullmatch(r'[0-9a-f]{64}\.json',record['object']) is not None
              and record['object']==record['recordDigest'].removeprefix('sha256:')+'.json',
              'CATALOG_RECORD_BINDING_MISMATCH')
         original = read_json(directory/'objects'/record['object'])
-        need(digest(original)==record['recordDigest']
+        need(isinstance(original,dict) and digest(original)==record['recordDigest']
              and digest(project(record['kind'],original,record['service']))==record['projectionDigest'],
              'CACHED_DECLARATION_CHANGED')
     counts = Counter(record_key(r)[:2] for r in value['records'])
@@ -282,6 +284,29 @@ def inspect(directory, selectors=()):
         selected.append({'id':selector,'body':bodies[identity]['id']})
     return {'status':'SAVED_DECLARED_INFORMATION_NOT_SOURCE_PROOF','selected':selected,
             'bodies':list(bodies.values())}
+
+
+def citations(directory, alias, output):
+    value = load_inventory(directory)
+    records = [r for r in value['records'] if r['input']==alias]
+    need(value['complete'] and 0<len(records)<=4096,'COMPLETE_SELECTED_DECLARED_INPUT_REQUIRED')
+    output = Path(output)
+    need(not output.exists() and '.codeclew' not in output.parts
+         and not output.resolve().is_relative_to(Path(directory).resolve()), 'INVALID_DECLARED_CITATION_OUTPUT')
+    output.mkdir(); (output/'objects').mkdir()
+    entries = []
+    for index,record in enumerate(records):
+        entry = {k:record[k] for k in ('service','id','kind','localId','scope','title','work','snapshot',
+                                     'contextDigest','basis','authority')}
+        entry.update(key='r'+str(index+1),value='objects/'+record['object']); entries.append(entry)
+        destination = output/entry['value']
+        if not destination.exists(): write_json(destination,read_json(Path(directory)/'objects'/record['object']))
+    manifest = {'schema':'codeclew-author-declared-citations/1.0','input':alias,'records':entries}
+    manifest['id'] = digest(manifest); write_json(output/'citations.json',manifest)
+    tag = 'd'+manifest['id'].split(':')[1][:12]
+    return {'status':'DECLARED_CITATIONS_SAVED','manifestId':manifest['id'],'input':alias,
+        'records':[{'id':alias+'/'+r['service']+'/'+r['id'],'cite':tag+':'+r['key'],'title':r['title']} for r in entries],
+        'nextAction':'Assign this manifestId to its input in caller-trusted evidence-inputs before binding; these handles cannot satisfy SOURCE claims.'}
 
 
 def check(collection_path, roots_path, clew, directory, output):
@@ -401,11 +426,15 @@ def main(argv=None):
     command=sub.add_parser('inspect',help='List saved records or read at most 64 exact selected declarations')
     command.add_argument('--inventory',required=True,type=Path)
     command.add_argument('--record',action='append',default=[])
+    command=sub.add_parser('citations',help='Save separately typed declared citations; binding reloads native headers')
+    for name in ('inventory','output-dir'):command.add_argument('--'+name,required=True,type=Path)
+    command.add_argument('--input',required=True)
     args=parser.parse_args(argv)
     try:
         if args.action=='collect':result=collect(args.collection,args.roots,args.clew,args.output_dir,args.previous_inventory)
         elif args.action=='check':result=check(args.collection,args.roots,args.clew,args.inventory,args.output_dir)
-        else:result=inspect(args.inventory,args.record)
+        elif args.action=='inspect':result=inspect(args.inventory,args.record)
+        else:result=citations(args.inventory,args.input,args.output_dir)
         print(encode(result),end='');return 2 if args.action=='check' and not result['complete'] else 0
     except (Stop,OSError,ValueError,KeyError,TypeError) as error:
         print(encode({'status':error.status if isinstance(error,Stop) else 'INVALID_CATALOG_INPUT',

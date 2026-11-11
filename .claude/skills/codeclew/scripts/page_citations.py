@@ -21,6 +21,7 @@ D = runpy.run_path(str(Path(__file__).with_name("declaration_components.py")))
 Stop, digest, encode = (C[k] for k in ("Stop", "digest", "encode"))
 REQUEST = "codeclew-page-claims/1.0"
 INDEX = "codeclew-authored-page-index/1.0"
+TYPED_MAP = 'codeclew-authored-evidence/1.0'
 MAX_FILE = 2 * 1024 * 1024
 MAX_MAP = 32 * 1024 * 1024
 MAX_TOTAL = 16 * 1024 * 1024
@@ -130,8 +131,9 @@ def extract(raw, spec):
     lines = line_ranges(raw)
     for item in selected:
         require(isinstance(item, dict) and not set(item) - {
-            "id", "evidence", "startByte", "endByte", "startLine", "endLine", "textDigest"
+            "id", "evidence", "declaredEvidence", "startByte", "endByte", "startLine", "endLine", "textDigest"
         }, "INVALID_LOCATION_CLAIM")
+        require(('evidence' in item) != ('declaredEvidence' in item), 'AMBIGUOUS_OR_MISSING_EVIDENCE_BASIS')
         identity = item.get("id")
         require(isinstance(identity, str) and 0 < len(identity) <= 512 and identity not in ids,
                 "INVALID_OR_DUPLICATE_PAGE_CLAIM")
@@ -157,7 +159,7 @@ def extract(raw, spec):
         matches = [match.start() for match in re.finditer(re.escape(text), markdown)]
         require(len(prefix) in matches, "LOCATION_NOT_REPRESENTABLE_BY_LITERAL_CONTRACT")
         claims.append({"id": identity, "text": text, "occurrence": matches.index(len(prefix)) + 1,
-                       "evidence": item.get("evidence")})
+                       **{k:item[k] for k in ('evidence','declaredEvidence') if k in item}})
         ranges.append((a, b))
         selected_bytes += b - a
         require(selected_bytes <= MAX_TOTAL, "SELECTED_BYTES_LIMIT")
@@ -166,6 +168,9 @@ def extract(raw, spec):
 
 def compile_page(raw, spec, cat, mapping, temporary, previous=None, manifest_ids=None, replay=False):
     claims, ranges = extract(raw, spec)
+    if any('declaredEvidence' in claim for claim in claims) or (
+            previous is not None and json_file(previous).get('schema')==TYPED_MAP):
+        return compile_typed_page(raw,spec,cat,mapping,temporary,claims,ranges,previous,manifest_ids,replay)
     identities, handles = cat
     selected = set()
     for claim in claims:
@@ -211,6 +216,99 @@ def compile_page(raw, spec, cat, mapping, temporary, previous=None, manifest_ids
             "selectedBytes": sum(b - a for a, b in ranges)}
 
 
+def compile_typed_page(raw,spec,cat,mapping,temporary,claims,ranges,previous,manifest_ids,replay):
+    identities, handles = cat
+    selected = set()
+    for claim in claims:
+        evidence = claim.get('evidence',claim.get('declaredEvidence'))
+        require(isinstance(evidence,list) and 0<len(evidence)<=64
+                and len(set(evidence))==len(evidence)
+                and all(isinstance(h,str) and h in handles for h in evidence), 'UNKNOWN_OR_FOREIGN_CITATION_HANDLE')
+        selected.update(handles[h] for h in evidence)
+    if manifest_ids is not None:
+        require(isinstance(manifest_ids,list) and len(set(manifest_ids))==len(manifest_ids)
+                and selected<=set(manifest_ids)<=identities.keys(),'PAGE_MANIFEST_CLOSURE_MISMATCH')
+        selected = set(manifest_ids)
+    entries, source_manifests = {}, []
+    for identity in sorted(selected):
+        manifest,_,_,found = C['load'](identities[identity]); entries.update(found)
+        if manifest['schema']!='codeclew-author-declared-citations/1.0':source_manifests.append(identities[identity])
+    source_claims = [claim for claim in claims if 'evidence' in claim]
+    for claim in source_claims:
+        require(all(entries[h].get('basisKind')!='DECLARED' for h in claim['evidence']),
+                'DECLARED_EVIDENCE_CANNOT_BIND_SOURCE_CLAIM')
+    temporary.mkdir(parents=True)
+    markdown = temporary/'authored.md'; markdown.write_bytes(raw)
+    if source_claims:
+        request = temporary/'source-claims.json'; request.write_text(encode({'claims':source_claims}),encoding='utf8')
+        bound = temporary/'source-bound'
+        C['compile_map'](source_manifests,markdown,request,bound,mapping=mapping)
+        body = (bound/'index.md').read_bytes(); source_map = json_file(bound/'sources.json')
+        checks = json_file(bound/'checks.json')
+    else:
+        require('cite:' not in raw.decode('utf8'), 'UNBOUND_MARKDOWN_CITATION')
+        mapping_value = json_file(mapping)
+        links = [m.group(1) for m in C['LINK'].finditer(raw.decode('utf8'))]
+        require(not any(link.startswith(config['repository'].rstrip('/')+'/')
+                        for link in links for config in mapping_value.values()), 'SOURCE_LINK_NOT_BOUND_TO_SELECTED_SPAN')
+        body = raw; source_map = {'claims':[]}
+        checks = {'schema':'codeclew-authored-citation-check/1.0','status':'MECHANICALLY_VALID',
+            'semanticTruthAssessed':False,'sourceFallbackAllowed':False,'nativeCommands':0,
+            'claims':0,'sourceLinks':[],'unverifiedOtherLinks':links,'missingLinkMappings':[],
+            'linkMapping':'COMPLETE','inputMarkdownDigest':sha(raw),'markdownBytesUnchanged':True}
+    source_by_id = {claim['id']:claim for claim in source_map['claims']}
+    urls = {h:s['url'] for claim in source_map['claims'] for h,s in zip(claim['evidence'],claim['sources'])}
+    original = raw.decode('utf8'); edits = []
+    for match in C['LINK'].finditer(original):
+        if match.group(1).startswith('cite:'):
+            a = len(original[:match.start(1)].encode()); b = len(original[:match.end(1)].encode())
+            edits.append((a,b,len(urls[match.group(1)[5:]].encode())-(b-a)))
+    mapped_claims = []
+    for claim,(a,b) in zip(claims,ranges):
+        require(all(not (left<pos<right) for left,right,_ in edits for pos in (a,b)),
+                'SELECTION_INTERSECTS_CITATION_TARGET')
+        start = a+sum(delta for _,end,delta in edits if end<=a)
+        end = b+sum(delta for _,right,delta in edits if right<=b)
+        if 'evidence' in claim:
+            mapped = source_by_id[claim['id']]
+            require(mapped['location']['startByte']==start and mapped['location']['endByte']==end,
+                    'BOUND_SELECTION_LOCATION_CHANGED')
+        else:
+            declarations = [C['declared_module']()['binding'](entries[h]) for h in claim['declaredEvidence']]
+            mapped = {**claim,'text':body[start:end].decode('utf8'),'declarations':declarations,
+                'location':{'startByte':start,'endByte':end,'startLine':body[:start].count(b'\n')+1,
+                            'endLine':body[:end].count(b'\n')+1}}
+            if mapped['text']!=claim['text']:mapped['authoredText']=claim['text']
+        mapped_claims.append(mapped)
+    changes = {key:spec.get(key,[]) for key in ('remove','replace')}
+    if previous is None:
+        require(replay or not any(changes.values()),'REPAIR_REQUIRES_PREVIOUS_MAP')
+    else:
+        old = json_file(previous)
+        require(old.get('schema') in ('codeclew-authored-sources/1.0',TYPED_MAP)
+                and old.get('mapDigest')==digest({k:v for k,v in old.items() if k!='mapDigest'})
+                and isinstance(old.get('claims'),list),'INVALID_PREVIOUS_MAP')
+        old_claims = {c['id']:c for c in old['claims']}; new_claims = {c['id']:c for c in mapped_claims}
+        require(len(old_claims)==len(old['claims']),'INVALID_PREVIOUS_MAP')
+        fields = ('evidence','sources','declaredEvidence','declarations')
+        replaced = {key for key,c in new_claims.items() if key in old_claims
+                    and any(c.get(field)!=old_claims[key].get(field) for field in fields)}
+        missing = old_claims.keys()-new_claims.keys()
+        require(missing==set(changes['remove']) and replaced==set(changes['replace']),
+                'EXPLICIT_CLAIM_REMOVAL_OR_REBIND_REQUIRED',remove=sorted(missing),replace=sorted(replaced))
+    if not any('declaredEvidence' in c for c in mapped_claims):
+        return {'markdown':body,'map':encode(source_map).encode(),'checks':encode(checks).encode(),
+                'value':source_map,'selectedBytes':sum(b-a for a,b in ranges)}
+    value = {'schema':TYPED_MAP,'claims':mapped_claims,'manifests':sorted(selected),'markdownDigest':sha(body),
+             'semanticTruthAssessed':False,'runtimeVerified':False,'nativePublicationApproval':False}
+    value['mapDigest']=digest(value)
+    checks.update(claims=len(mapped_claims),declaredClaims=sum('declaredEvidence' in c for c in mapped_claims),
+        declaredBasis='IMMUTABLE_DECLARED_RECORDS_NOT_SOURCE_PROOF',nativeCommands=None,
+        nativeCommandAccounting='Owning Work read ledger; immutable headers cached per Work during validation.')
+    return {'markdown':body,'map':encode(value).encode(),'checks':encode(checks).encode(),
+            'value':value,'selectedBytes':sum(b-a for a,b in ranges)}
+
+
 def paths(page, expanded=False):
     return {"markdown": "markdown/" + page, "inputMarkdown": ("inputs/" if expanded else "markdown/") + page,
             "map": "maps/" + page + ".json", "selection": "selectors/" + page + ".json",
@@ -253,24 +351,27 @@ def compose_pages(request):
                                        "startByte": start, "endByte": len(raw), "htmlDigest": sha(text)})
                 raw.extend(b"\n\n")
                 continue
-            require(isinstance(fragment, dict) and not set(fragment) - {"text", "id", "evidence"}
+            require(isinstance(fragment, dict) and not set(fragment) - {"text", "id", "evidence", "declaredEvidence"}
                     and isinstance(fragment.get("text"), str), "INVALID_COMPOSE_FRAGMENT")
-            annotated = "id" in fragment or "evidence" in fragment
+            annotated = "id" in fragment or "evidence" in fragment or 'declaredEvidence' in fragment
             if annotated:
-                require("id" in fragment and "evidence" in fragment, "UNPAIRED_COMPOSE_ANNOTATION",
+                basis = 'declaredEvidence' if 'declaredEvidence' in fragment else 'evidence'
+                require(not ('evidence' in fragment and 'declaredEvidence' in fragment),'AMBIGUOUS_OR_MISSING_EVIDENCE_BASIS')
+                require("id" in fragment and basis in fragment, "UNPAIRED_COMPOSE_ANNOTATION",
                         page=name, fragmentIndex=fragment_index,
                         fragmentPointer=f"/pages/{page_index}/fragments/{fragment_index}",
-                        missingFields=[field for field in ("id", "evidence") if field not in fragment],
+                        missingFields=[field for field in ("id", basis) if field not in fragment],
                         nextAction="Plain headings/navigation: use {text}, omitting both id and evidence. "
-                                   "Substantive bound fragments: provide {id,text,evidence} with returned evidence handles.")
-                evidence = fragment["evidence"]
+                                   "Bound SOURCE fragments: use {id,text,evidence}; declared information: use "
+                                   "{id,text,declaredEvidence}. Use returned handles of the corresponding type.")
+                evidence = fragment[basis]
                 require(isinstance(evidence, list) and evidence
                         and all(isinstance(h, str) and h.strip() for h in evidence)
                         and len(set(evidence)) == len(evidence), "EMPTY_OR_AMBIGUOUS_CLAIM_EVIDENCE")
             start = len(raw); raw.extend(fragment["text"].encode("utf-8"))
             require(len(raw) <= MAX_FILE, "PAGE_BYTES_LIMIT")
             if annotated:
-                selected.append({"id": fragment["id"], "evidence": evidence, "startByte": start, "endByte": len(raw)})
+                selected.append({"id": fragment["id"], basis: evidence, "startByte": start, "endByte": len(raw)})
         raw = bytes(raw); total += len(raw); claims += len(selected)
         require(total <= MAX_TOTAL and claims <= MAX_CLAIMS, "PAGE_BYTES_LIMIT" if total > MAX_TOTAL else "PAGE_CLAIMS_LIMIT")
         spec = {"page": name, "markdownDigest": sha(raw), "claims": selected,

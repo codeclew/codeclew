@@ -25,22 +25,32 @@ def materialize(index, manifests, output, views=()):
         _, _, _, found = C['load'](Path(manifest))
         need(not entries.keys() & found.keys(), 'AMBIGUOUS_CITATION_MANIFEST')
         entries.update(found); owners.update({h:manifest for h in found})
-    pages, used = [], {}
+    pages, used, used_declared = [], {}, {}
     for p in value['pages']:
         body, raw = read(root, p['markdown']), read(root, p['map'], M['MAX_MAP'])
         mapped = json.loads(raw)
         need(sha(body) == p['markdownDigest'] == mapped['markdownDigest'], 'PAGE_MARKDOWN_DIGEST_MISMATCH')
         need(mapped['mapDigest'] == p['mapDigest'] == digest({k:v for k,v in mapped.items() if k != 'mapDigest'}), 'PAGE_MAP_DIGEST_MISMATCH')
-        handles = set()
+        handles, declared_handles = set(), set()
         for claim in mapped['claims']:
             loc = claim['location']
             need(body[loc['startByte']:loc['endByte']].decode('utf8') == claim['text'], 'BOUND_SELECTION_LOCATION_CHANGED')
+            if 'declaredEvidence' in claim:
+                need(mapped.get('schema')==M['TYPED_MAP'] and 'evidence' not in claim
+                     and len(claim['declaredEvidence'])==len(claim['declarations']), 'DECLARED_BINDING_UNAVAILABLE')
+                for handle, declaration in zip(claim['declaredEvidence'],claim['declarations']):
+                    need(handle in entries and C['declared_module']()['binding'](entries[handle])==declaration,
+                         'DECLARED_BINDING_UNAVAILABLE')
+                    used_declared[handle] = declaration; declared_handles.add(handle)
+                continue
             need(len(claim['evidence']) == len(claim['sources']), 'CITATION_BINDING_UNAVAILABLE')
             for handle, source in zip(claim['evidence'], claim['sources']):
                 need(handle in entries and C['mapped_source'](entries[handle], mapping) == source, 'CITATION_BINDING_UNAVAILABLE')
                 used[handle] = source; handles.add(handle)
         pages.append({'page':p['page'], 'markdownDigest':p['markdownDigest'], 'map':str(root / p['map']),
                       'mapFileDigest':sha(raw), 'handles':sorted(handles)})
+        if declared_handles:
+            pages[-1]['declarations'] = [{'cite':h,'record':used_declared[h]} for h in sorted(declared_handles)]
     texts = {}
     for path in views:
         view = json.loads(Path(path).read_bytes())
@@ -87,7 +97,7 @@ def materialize(index, manifests, output, views=()):
         for key in sorted(groups, key=lambda k:tuple(str(x) for x in k)):
             group = groups[key]; group['ranges'] = [group['ranges'][s] for s in sorted(group['ranges'])]; page['groups'].append(group)
     index_reference = str(index)
-    if any(s.get('evidenceInput') for s in used.values()):
+    if any(s.get('evidenceInput') for s in [*used.values(),*used_declared.values()]):
         bundle_root = output.absolute().parent.resolve()
         need(index.is_relative_to(bundle_root)
              and all(Path(page['map']).is_relative_to(bundle_root) for page in pages),
@@ -98,7 +108,9 @@ def materialize(index, manifests, output, views=()):
     bundle = {'schema':'codeclew-reader-sources/1', 'checkedIndex':index_reference,
               'indexFileDigest':sha(index.read_bytes()),'pages':pages}
     with output.open('x', encoding='utf8') as stream: json.dump(bundle, stream, ensure_ascii=False, sort_keys=True, separators=(',',':'))
-    return {'status':'SOURCE_FOOTERS_MATERIALIZED','pages':len(pages),'citations':len(used),'output':str(output),'semanticTruthAssessed':False}
+    return {'status':'SOURCE_FOOTERS_MATERIALIZED','pages':len(pages),'citations':len(used),
+            **({'declaredCitations':len(used_declared)} if used_declared else {}),
+            'output':str(output),'semanticTruthAssessed':False}
 
 
 if __name__ == '__main__':

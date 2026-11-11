@@ -86,6 +86,42 @@ records as deleted. `check` exits nonzero when selected inputs cannot be verifie
 Restore the owning retained root/closure or finish the specifically missing input;
 do not recapture every service to hide a gap.
 
+## Bind declared references in human pages
+
+Create a separately typed citation manifest for each selected input:
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" citations --inventory inventory-r1 --input east --output-dir east-declarations
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" citations --inventory inventory-r1 --input west --output-dir west-declarations
+```
+
+Copy each returned `manifestId` into `local-roots.json` under `manifests`, mapping
+it to the corresponding input alias. These exact caller-selected assignments are
+mandatory during binding. The saved manifest never supplies a launcher or root.
+Binding reloads the owning immutable Work inventory and checks the original value
+digest/pointer against its native header; a self-consistent edited manifest alone
+cannot supply that proof.
+
+Use the returned `d...:r...` handle in an original fragment's `declaredEvidence`
+array, for example `{"id":"declared-name","text":"Authored declared information.",
+"declaredEvidence":["RETURNED_DECLARED_HANDLE"]}`. Keep compiler/SOURCE fragments
+in the existing `evidence` field. A fragment selects one basis; a page can contain
+both kinds. Declared handles cannot satisfy SOURCE claims, and SOURCE handles
+cannot silently become declared catalog references.
+
+Continue through the same [compose/bind/finalize route](compose-original.md#original-pages-and-completion),
+passing both source and declared manifests. For multiple roots, pass the trusted
+mapping using `--clew "$CLEW" --evidence-inputs local-roots.json` instead of
+`--root`. With `--source-footers`, the packaged renderer displays declared
+references separately from actual code excerpts. A declared-only page requires
+no unrelated SOURCE claim or fake captured service. Typed maps preserve native
+authority and exact provenance without asserting that the prose is true.
+
+An incremental rebind or removal still needs the existing explicit `replace` or
+`remove` claim intent. Changing a declared definition, a mapping proposal and
+refreshing mechanical references are separate decisions. Keep unchanged originals
+and checked outputs; do not reauthor every service to refresh a common catalog.
+
 ## Cache boundaries
 
 Prefer original retained documentation roots. `snapshot recover --from-export`

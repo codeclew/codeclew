@@ -26,6 +26,7 @@ LINK = re.compile(r'\[[^\]\n]*\]\(([^\s)]+)\)')
 NATIVE_ENGINE = None
 EVIDENCE_INPUTS = None
 NATIVE_MODULE = None
+DECLARED_MODULE = None
 
 
 def configure_engine(clew=None, root=None, evidence_inputs=None):
@@ -33,6 +34,8 @@ def configure_engine(clew=None, root=None, evidence_inputs=None):
     global NATIVE_ENGINE, EVIDENCE_INPUTS
     NATIVE_ENGINE = None
     EVIDENCE_INPUTS = None
+    if DECLARED_MODULE is not None:
+        DECLARED_MODULE['RELOADED'].clear()
     if evidence_inputs is not None:
         if clew is None or root is not None:
             raise Stop("EVIDENCE_INPUTS_REQUIRE_CLEW_WITHOUT_DEFAULT_ROOT", exit_code=2)
@@ -100,6 +103,14 @@ def native_module():
     return NATIVE_MODULE
 
 
+def declared_module():
+    global DECLARED_MODULE
+    if DECLARED_MODULE is None:
+        DECLARED_MODULE = runpy.run_path(str(Path(__file__).with_name('declared_citations.py')),
+            init_globals={'Stop':Stop,'digest':digest,'encode':encode})
+    return DECLARED_MODULE
+
+
 def warning_leaves(value, path=""):
     """Group equal diagnostic leaves; full positional metadata stays in packet."""
     if isinstance(value, dict):
@@ -138,6 +149,9 @@ def manifest_value(packet, discovery):
 
 def project(packet, discovery, directory, *, include_reused=False, save=True, source_union=False, include_texts=True):
     """Called directly by READ, not an extra model-visible verbose acquisition."""
+    if packet.get('kind') == 'DECLARED':
+        raise Stop('DECLARED_INFORMATION_IS_NOT_A_SOURCE_VIEW', exit_code=2,
+                   nextAction='Use shared_catalog.py inspect for saved declared information.')
     if packet.get("kind") == "NATIVE":
         if source_union:
             raise Stop("NATIVE_SOURCE_UNION_UNSUPPORTED", exit_code=2)
@@ -197,6 +211,8 @@ def load(path):
     if not isinstance(manifest, dict):
         raise Stop("CITATION_MANIFEST_MISMATCH", exit_code=2)
     alias, engine = evidence_input(manifest)
+    if manifest.get('schema') == 'codeclew-author-declared-citations/1.0':
+        return declared_module()['load'](path, manifest, alias, engine)
     if isinstance(manifest, dict) and manifest.get("schema") == "codeclew-author-native-citations/1.0":
         result = native_module()["load"](path, engine)
         result[1]["nativeManifest"] = result[0]
@@ -485,6 +501,8 @@ def location(markdown, claim):
 
 
 def mapped_source(entry, mapping):
+    if entry.get('basisKind') == 'DECLARED':
+        raise Stop('DECLARED_EVIDENCE_CANNOT_BIND_SOURCE_CLAIM', exit_code=2)
     if "nativeBinding" in entry:
         result = native_module()["mapped_source"](entry)
     else:
