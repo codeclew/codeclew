@@ -144,10 +144,10 @@ fn owned_serializer_accepts_reported_typed_sources_observations_and_entrypoints(
     println!("{}", statistics(&manifest, &loaded));
     let package = loaded.unwrap();
     let roundtrip = package.evidence().unwrap();
-    assert_eq!(roundtrip, e);
-    assert_eq!(package.records["sources"].len(), 114_777);
-    assert_eq!(package.records["observations"].len(), 116_282);
-    assert_eq!(package.records["entrypoints"].len(), 23);
+    assert_eq!(roundtrip, &e);
+    assert_eq!(roundtrip.sources.len(), 114_777);
+    assert_eq!(roundtrip.observations.len(), 116_282);
+    assert_eq!(roundtrip.entrypoints.len(), 23);
 }
 
 fn reported_typed_evidence() -> (Service, ServiceEvidence) {
@@ -291,7 +291,7 @@ fn retained_export_is_selected_historical_and_independent_of_current_catalog_or_
     let package = load(&output).unwrap();
     assert_eq!(package.manifest.schema, RETAINED_SCHEMA);
     assert_eq!(package.manifest.service, original_service);
-    assert_eq!(package.evidence().unwrap(), e);
+    assert_eq!(package.evidence().unwrap(), &e);
     assert!(export_snapshot(&repo, "sibling", &snapshot, &temp.path().join("sibling")).is_err());
     assert!(export_snapshot(&repo, "unknown", &snapshot, &temp.path().join("unknown")).is_err());
     assert!(
@@ -734,7 +734,7 @@ fn composed_retained_export_binds_unchanged_capture_to_original_inputs() {
     assert_eq!(result["retained"]["snapshot"], snapshot);
     assert_eq!(result["retained"]["inputDigest"], derived.input_digest);
     let package = load(&output).unwrap();
-    assert_eq!(package.evidence().unwrap(), evidence(&service()));
+    assert_eq!(package.evidence().unwrap(), &evidence(&service()));
     assert_eq!(
         package.manifest.retained.unwrap().cacheability,
         "NON_CACHEABLE"
@@ -809,4 +809,249 @@ fn composed_retained_export_refuses_substituted_parent_source_and_capture_bindin
             error.message
         );
     }
+}
+
+/// One caller-owned byte-scale fixture. No compiler, model, private source or
+/// manual database edits. Explicit invocation keeps this outside routine tests.
+#[test]
+#[ignore = "writes a caller-selected complete large resource fixture"]
+fn generate_owned_byte_scale_fixture() {
+    let output = std::env::var_os("CODECLEW_TEST_BYTE_SCALE_ROOT").expect("new owned fixture root");
+    let root = PathBuf::from(output);
+    assert!(root.is_absolute() && !root.exists());
+    fs::create_dir_all(&root).unwrap();
+    let (service, mut e) = reported_typed_evidence();
+    e.coverage = "PARTIAL".into();
+    e.boundaries = vec!["OWNED_TYPED_BYTE_SCALE_NOT_A_PRIVATE_COMPILER_CAPTURE".into()];
+    for (i, source) in e.sources.values_mut().enumerate() {
+        let prefix = format!("class Owned{i} {{ int value() {{ return {i}; }} /*");
+        let suffix = "*/ }";
+        source.text = format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(512 - prefix.len() - suffix.len())
+        );
+        source.file = format!("src/Owned{i}.java");
+        source.text_digest = canonical::hash_bytes(source.text.as_bytes());
+    }
+    for observation in e.observations.values_mut() {
+        observation.normalized["payload"] = json!("owned-byte-payload-".repeat(67));
+        observation.digest = digest(&observation.normalized).unwrap();
+    }
+    analysis::verify_evidence(&e).unwrap();
+    let oracle_digest = digest(&e).unwrap();
+    let source_text_bytes: usize = e.sources.values().map(|s| s.text.len()).sum();
+    let (directory, mut manifest) = serialize(service.clone(), &e);
+    let total: u64 = manifest.parts.iter().map(|p| p.bytes).sum();
+    assert!(
+        total > 237_487_403 && total < 512 * 1024 * 1024,
+        "actual bytes {total}"
+    );
+    let (repo, snapshot) = retained_fixture(&root.join("docs"), &service, e, false);
+    let saved = super::super::check::Check::load_snapshot_manifest(&repo, &snapshot).unwrap();
+    let capture = &saved.service_manifests["orders"];
+    manifest.schema = RETAINED_SCHEMA.into();
+    manifest.retained = Some(RetainedOrigin {
+        schema: "codeclew-documentation-retained-export/1.0".into(),
+        snapshot: snapshot.clone(),
+        input_digest: saved.input_digest,
+        context_digest: saved.context_digest,
+        capture_digest: digest(capture).unwrap(),
+        cacheability: capture.cacheability.clone(),
+        cacheability_reason: capture.reason.clone(),
+        source_authority: "RETAINED_SOURCE_NOT_REVERIFIED".into(),
+        automatic_reuse: "DISALLOWED_HISTORICAL_EXPORT".into(),
+    });
+    rewrite_part(directory.path(), &mut manifest, "report", |part| {
+        part["records"][0]["stage"] = json!("RETAINED_SNAPSHOT_EXPORT");
+    });
+    let total: u64 = manifest.parts.iter().map(|p| p.bytes).sum();
+    let mut rows = BTreeMap::<String, usize>::new();
+    for part in &manifest.parts {
+        *rows.entry(part.kind.clone()).or_default() += part.records;
+    }
+    let fixture = json!({"status":"OWNED_COMPLETE_TYPED_BYTE_SCALE_FROZEN",
+        "snapshot":snapshot,"service":"orders","originalService":service,
+        "sources":114777,"observations":116282,"entrypoints":23,
+        "expectedEvidenceDigest":oracle_digest,"captureCacheability":capture.cacheability,
+        "serializedBytes":total,"serializedParts":manifest.parts.len(),"recordsByKind":rows,
+        "maxPartBytes":manifest.parts.iter().map(|p|p.bytes).max(),
+        "sourceTextBytes":source_text_bytes,"coverage":"PARTIAL",
+        "treatment":"Complete owned typed synthetic data through native serializer/cache APIs; no capture/model/private source; oracle frozen before export"});
+    fs::write(root.join("OWNED-FIXTURE.json"), bytes(&fixture).unwrap()).unwrap();
+    fs::rename(directory.path(), root.join("baseline-package")).unwrap();
+    println!("{}", fixture);
+}
+
+#[test]
+fn guarded_raw_pages_preserve_first_middle_final_and_legacy_shape() {
+    let service = service();
+    let mut e = evidence(&service);
+    e.contracts = (0..1030)
+        .map(|i| (format!("owned-{i:04}"), json!({"nullable":null,"value":i})))
+        .collect();
+    let (directory, manifest) = serialize(service, &e);
+    let expected: Vec<_> = e
+        .contracts
+        .iter()
+        .map(|(id, value)| json!({"id":id,"value":value}))
+        .collect();
+    let binding = digest(&(digest(&manifest).unwrap(), "contracts")).unwrap();
+    for start in [0, 511, 1029, 1030] {
+        let cursor = (start > 0).then(|| format!("{}:{start}", &binding[7..]));
+        let actual = run(Command::Read {
+            input: directory.path().into(),
+            kind: "contracts".into(),
+            cursor: cursor.clone(),
+            limit: 2,
+        })
+        .unwrap();
+        let expected = super::super::cli::page(&binding, expected.clone(), cursor.as_deref(), 2,
+            json!({"schema":"codeclew-docs-evidence-read/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":digest(&manifest).unwrap(),"kind":"contracts"})).unwrap();
+        assert_eq!(actual, expected);
+    }
+    let loaded = load(directory.path()).unwrap();
+    let late = manifest
+        .parts
+        .iter()
+        .rfind(|p| p.kind == "contracts")
+        .unwrap();
+    fs::write(
+        directory.path().join(&late.path),
+        b"changed after validation",
+    )
+    .unwrap();
+    let error = super::super::cli::page_iter(
+        &binding,
+        1030,
+        part_io::RawRows::new(directory.path(), &loaded.manifest, "contracts"),
+        Some(&format!("{}:1029", &binding[7..])),
+        2,
+        json!({}),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("digest mismatch"));
+    // In particular, skipping a prefix must not swallow reread errors.
+}
+
+#[test]
+fn import_late_input_change_keeps_selection_and_leaves_no_partial_namespace() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = service();
+    let mut e = evidence(&service);
+    e.contracts.insert("late".into(), json!({"type":"string"}));
+    let (input, manifest) = serialize(service.clone(), &e);
+    let root = temp.path().join("consumer");
+    Repository::init(&root, "Owned consumer").unwrap();
+    let repo = Repository::open(&root).unwrap();
+    repo.atomic("catalog/services/orders.json", &bytes(&service).unwrap())
+        .unwrap();
+    let policy = Expectation {
+        schema: POLICY_SCHEMA.into(),
+        service: service.id.clone(),
+        repository_id: service.repository_id.clone(),
+        service_digest: digest(&service).unwrap(),
+        revision: e.revision.clone(),
+        manifest_digest: digest(&manifest).unwrap(),
+        sequence: 1,
+    };
+    repo.atomic(&policy_path("orders").unwrap(), &bytes(&policy).unwrap())
+        .unwrap();
+    let late = manifest.parts.last().unwrap();
+    let path = input.path().join(&late.path);
+    let original = fs::read(&path).unwrap();
+    let loaded = load(input.path()).unwrap();
+    fs::write(&path, b"changed after full typed validation").unwrap();
+    assert!(import_loaded(&repo, input.path(), loaded).is_err());
+    assert!(
+        !repo
+            .path(&package_path(&policy.manifest_digest).unwrap())
+            .unwrap()
+            .exists()
+    );
+    assert!(
+        !repo
+            .path(&selection_path("orders").unwrap())
+            .unwrap()
+            .exists()
+    );
+    assert_eq!(
+        fs::read_dir(root.join("evidence/packages"))
+            .unwrap()
+            .count(),
+        0
+    );
+    fs::write(&path, &original).unwrap();
+    import(&repo, input.path()).unwrap();
+    let pointer_path = repo.path(&selection_path("orders").unwrap()).unwrap();
+    let before = fs::read(&pointer_path).unwrap();
+    let loaded = load(input.path()).unwrap();
+    fs::write(&path, b"changed again after full typed validation").unwrap();
+    assert!(import_loaded(&repo, input.path(), loaded).is_err());
+    assert_eq!(fs::read(&pointer_path).unwrap(), before);
+    assert_eq!(
+        selected(&repo, &service).unwrap().unwrap().contracts,
+        e.contracts
+    );
+}
+
+#[test]
+fn old_byte_envelope_and_late_malformed_or_deep_json_are_checked() {
+    for boundary in [
+        128 * 1024 * 1024 - 1,
+        128 * 1024 * 1024,
+        128 * 1024 * 1024 + 1,
+    ] {
+        let mut parts: Vec<_> = (0..boundary / MAX_PART)
+            .map(|i| descriptor(i as usize, MAX_PART, 1))
+            .collect();
+        if boundary % MAX_PART > 0 {
+            parts.push(descriptor(parts.len(), boundary % MAX_PART, 1));
+        }
+        validate_parts(&parts).unwrap();
+    }
+    for payload in [b"{not JSON".to_vec(), format!("{{\"schema\":\"{PART_SCHEMA}\",\"kind\":\"contracts\",\"records\":[{{\"id\":\"deep\",\"value\":{}0{}}}]}}", "[".repeat(130),"]".repeat(130)).into_bytes()] {
+        let service = service();
+        let mut e = evidence(&service);
+        e.contracts.insert("last".into(), json!(true));
+        let (directory, mut manifest) = serialize(service,&e);
+        let late = manifest.parts.last_mut().unwrap();
+        late.digest=canonical::hash_bytes(&payload);
+        late.path=format!("parts/{}.json", &late.digest[7..]);
+        late.bytes=payload.len() as u64;
+        fs::write(directory.path().join(&late.path),payload).unwrap();
+        fs::write(directory.path().join("manifest.json"),bytes(&manifest).unwrap()).unwrap();
+        let error=load(directory.path()).err().unwrap();
+        assert!(error.message.contains("invalid evidence part JSON or schema"));
+    }
+}
+
+#[test]
+fn raw_read_keeps_optional_null_fields_omitted_by_typed_reserialization() {
+    let service = service();
+    let mut e = evidence(&service);
+    let text = "class Owned {}";
+    let source:Source=serde_json::from_value(json!({"id":"owned","service":"orders","revision":e.revision,
+        "file":"Owned.java","startLine":1,"endLine":1,"text":text,
+        "textDigest":canonical::hash_bytes(text.as_bytes()),"evidenceDigest":canonical::hash_bytes(b"owned"),
+        "authority":"EXACT_SNAPSHOT_TEXT","url":null})).unwrap();
+    e.sources.insert(source.id.clone(), source);
+    let (directory, mut manifest) = serialize(service, &e);
+    rewrite_part(directory.path(), &mut manifest, "sources", |part| {
+        part["records"][0]["textOrigin"] = Value::Null;
+    });
+    let p = load(directory.path()).unwrap();
+    assert!(
+        serde_json::to_value(&p.evidence().unwrap().sources["owned"])
+            .unwrap()
+            .get("textOrigin")
+            .is_none()
+    );
+    let page = run(Command::Read {
+        input: directory.path().into(),
+        kind: "sources".into(),
+        cursor: None,
+        limit: 1,
+    })
+    .unwrap();
+    assert_eq!(page["items"][0].get("textOrigin"), Some(&Value::Null));
 }

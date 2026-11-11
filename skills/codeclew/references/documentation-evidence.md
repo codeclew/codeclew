@@ -164,16 +164,36 @@ can be imported as an explicit failure. A failure without a known revision is
 inspectable support material and cannot satisfy a revision expectation.
 
 The format supports uncompressed JSON only: at most 2 MiB and 131,072 records
-per part, 4,096 parts, 2,097,152 aggregate records and 128 MiB of referenced part
-bytes per service. The aggregate record budget matches 4,096 native chunks of
-512 records; the writer may split earlier for byte limits. Raising that record
-budget does not raise the byte/part budgets or truncate facts. Metadata preflight
-reports `EVIDENCE_PACKAGE_LIMIT_EXCEEDED` with the bound, declared counter and
-limit, before loading payloads. Declared counters are verified against actual
-part bytes/record counts before admission. Writer progress distinguishes limit
-validation from package verification. Do not repeat a long capture in response to
-an unchanged package limit; export the exact retained snapshot for diagnosis or
-adjust the supported selected source scope. Corrupt/missing
+per part, 4,096 parts, 2,097,152 aggregate records and 512 MiB (536,870,912 bytes)
+of referenced parts per service. Formats 1.0 and 1.1 are unchanged. The aggregate
+record budget matches 4,096 native chunks of 512 records; the writer may split
+earlier for byte limits. An additional aggregate budget charges at most
+67,108,864 JSON values and object keys, including each part wrapper. The fixed
+wrapper overhead keeps previously admitted 128 MiB part envelopes within this
+node allowance. Dense nested values cost more memory than equal-length source
+text; neither byte nor node limits are a hard process-memory guarantee.
+
+Metadata preflight reports `EVIDENCE_PACKAGE_LIMIT_EXCEEDED` with the bound,
+declared counter and limit before reading payloads. JSON accounting reports
+an observed counter after verifying each bounded part, before retaining its
+records. Declared counters are verified against actual bytes and record counts.
+The writer spools bounded parts to a private directory and validates the complete
+package before publication. Loading retains one typed evidence model and the
+current part. Inspect, read and import still validate the whole package; paginated
+output does not imply page-sized memory or avoid a full scan. Raw page records
+are reread with exact hash checks after validation. Import stages and rechecks
+all copied parts before installing the manifest and selected pointer. Cache and
+Check hydration have separate whole-service costs.
+
+For an existing successful recovered Check, export its exact saved snapshot.
+Do not repeat capture, recovery, refresh or the producer report to work around
+an unchanged package limit. Above a finite limit, keep the retained snapshot for
+local questions with `docs context --root DOCS --service ID --snapshot SNAPSHOT
+--format compact --limit 2`, or prepare bounded Work from that snapshot. A basic
+Work request omits `question`; a process question requires `process-graph-v1`.
+These routes bound returned context, may still load broad evidence internally,
+and do not produce a portable package. Preserve the explicit refusal if a full
+transfer is required. Corrupt/missing
 parts, path escapes, symlinks, duplicate identities, incompatible schemas/rules
 and stronger invented authority are rejected before selection. Work retains its
 own 64 MiB capture limit and may require a narrower scope. These packages represent

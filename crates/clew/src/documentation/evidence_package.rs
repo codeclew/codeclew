@@ -20,7 +20,7 @@ pub(super) const HISTORICAL_BOUNDARY: &str = "HISTORICAL_PORTABLE_EVIDENCE_NOT_R
 const PART_SCHEMA: &str = "codeclew-documentation-evidence-part/1.0";
 const POLICY_SCHEMA: &str = "codeclew-documentation-evidence-expectation/1.0";
 const MAX_PART: u64 = 2 * 1024 * 1024;
-const MAX_TOTAL: u64 = 128 * 1024 * 1024;
+const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 const MAX_PARTS: usize = 4096;
 const PART_RECORDS: usize = 512;
 // Preserve the old implied per-part record ceiling independently of the raised
@@ -29,8 +29,11 @@ const MAX_PART_RECORDS: usize = 131_072;
 // The native writer emits up to PART_RECORDS rows per part. Compiler facts can
 // expand into source, observation, entrypoint and contract rows; the aggregate
 // budget must cover the admitted part layout, not just one fact category.
-// The independent 128 MiB aggregate and 2 MiB per-part byte limits still apply.
+// The independent 512 MiB aggregate and 2 MiB per-part byte limits still apply.
 const MAX_RECORDS: usize = MAX_PARTS * PART_RECORDS;
+
+#[path = "evidence_package_io.rs"]
+mod part_io;
 
 #[cfg(test)]
 #[path = "evidence_package_scale_tests.rs"]
@@ -327,8 +330,8 @@ struct Selection {
 struct Package {
     manifest: Manifest,
     digest: String,
-    records: BTreeMap<String, Vec<Value>>,
-    raw_parts: BTreeMap<String, Vec<u8>>,
+    report: Value,
+    evidence: Option<ServiceEvidence>,
 }
 
 fn hash(s: &str) -> bool {
@@ -380,6 +383,7 @@ fn compatibility() -> Result<String, ClewError> {
         SOURCE_EXTRACTOR,
         canonical::hash_bytes(include_bytes!("analysis.rs")),
         canonical::hash_bytes(include_bytes!("evidence_package.rs")),
+        canonical::hash_bytes(include_bytes!("evidence_package_io.rs")),
         canonical::hash_bytes(include_bytes!("syntax.rs")),
         canonical::hash_bytes(include_bytes!("source_annotations.rs")),
         canonical::hash_bytes(include_bytes!("contracts.rs")),
@@ -561,74 +565,78 @@ fn load(input: &Path) -> Result<Package, ClewError> {
     // Check the entire declared envelope before any payload read/allocation.
     // These counts are declarations until each part's bytes and rows validate.
     validate_parts(&manifest.parts)?;
-    let mut records: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    let mut raw_parts = BTreeMap::new();
-    for part in &manifest.parts {
-        let data = read_bytes(input, &part.path, part.bytes)?;
-        if data.len() as u64 != part.bytes || canonical::hash_bytes(&data) != part.digest {
-            return Err(invalid("evidence part digest mismatch"));
-        }
-        let value: Part = serde_json::from_slice(&data)
-            .map_err(|_| invalid("invalid evidence part JSON or schema"))?;
-        if value.schema != PART_SCHEMA
-            || value.kind != part.kind
-            || value.records.len() != part.records
-        {
-            return Err(invalid("evidence part schema or count mismatch"));
-        }
-        records
-            .entry(part.kind.clone())
-            .or_default()
-            .extend(value.records);
-        raw_parts.insert(part.path.clone(), data);
-    }
-    if records.get("report").map(Vec::len) != Some(1) {
-        return Err(invalid("package requires exactly one diagnostic report"));
-    }
-    if manifest.outcome == "CAPTURED" {
-        if records.get("header").map(Vec::len) != Some(1) || manifest.revision.is_none() {
+    let mut header = None;
+    let mut report = None;
+    let mut sources = BTreeMap::new();
+    let mut observations = BTreeMap::new();
+    let mut entrypoints = Vec::new();
+    let mut contracts = BTreeMap::new();
+    let mut budget = part_io::JsonBudget::default();
+    for reference in &manifest.parts {
+        let part = part_io::verified_part(input, reference)?;
+        // Charge the verified part before retaining any of its typed records.
+        budget.part(&part)?;
+        if manifest.outcome != "CAPTURED" && part.kind != "report" {
             return Err(invalid(
-                "captured package requires exactly one evidence header and revision",
+                "diagnostic-only or failed capture cannot carry admitted source facts",
             ));
         }
-    } else if records.keys().any(|k| k != "report") {
-        return Err(invalid(
-            "diagnostic-only or failed capture cannot carry admitted source facts",
-        ));
+        for value in part.records {
+            match part.kind.as_str() {
+                "header" => {
+                    let value: Header = decode_record(value, "header")?;
+                    if header.replace(value).is_some() {
+                        return Err(invalid(
+                            "captured package requires exactly one evidence header and revision",
+                        ));
+                    }
+                }
+                "report" => {
+                    if report.replace(value).is_some() {
+                        return Err(invalid("package requires exactly one diagnostic report"));
+                    }
+                }
+                "sources" => {
+                    let value: Source = decode_record(value, "source")?;
+                    if sources.insert(value.id.clone(), value).is_some() {
+                        return Err(invalid("duplicate package source ID"));
+                    }
+                }
+                "observations" => {
+                    let value: Observation = decode_record(value, "observation")?;
+                    if observations.insert(value.id.clone(), value).is_some() {
+                        return Err(invalid("duplicate package observation ID"));
+                    }
+                }
+                "entrypoints" => entrypoints.push(decode_record(value, "entrypoint")?),
+                "contracts" => {
+                    let value: Contract = decode_record(value, "contract")?;
+                    if contracts.insert(value.id, value.value).is_some() {
+                        return Err(invalid("duplicate package contract ID"));
+                    }
+                }
+                _ => unreachable!("descriptor kind was validated"),
+            }
+        }
     }
-    let package = Package {
-        digest: digest(&manifest)?,
-        manifest,
-        records,
-        raw_parts,
-    };
-    if package.manifest.outcome == "CAPTURED" {
-        package.evidence()?;
-    }
-    validate_report(&package.records["report"][0])?;
-    let report: Report = decode_record(package.records["report"][0].clone(), "diagnostic")?;
-    if report.outcome != package.manifest.outcome
-        || report.source_included != (package.manifest.outcome == "CAPTURED")
-        || (package.manifest.outcome == "PRODUCER_FAILURE") != report.error_code.is_some()
+    let report = report.ok_or_else(|| invalid("package requires exactly one diagnostic report"))?;
+    validate_report(&report)?;
+    let diagnostic: Report = decode_record(report.clone(), "diagnostic")?;
+    if diagnostic.outcome != manifest.outcome
+        || diagnostic.source_included != (manifest.outcome == "CAPTURED")
+        || (manifest.outcome == "PRODUCER_FAILURE") != diagnostic.error_code.is_some()
     {
         return Err(invalid(
             "diagnostic report disagrees with package outcome or source inclusion",
         ));
     }
-    Ok(package)
-}
-
-impl Package {
-    fn evidence(&self) -> Result<ServiceEvidence, ClewError> {
-        let h: Header = decode_record(
-            self.records
-                .get("header")
-                .and_then(|r| r.first())
-                .cloned()
-                .ok_or_else(|| invalid("package contains no usable indexed evidence"))?,
-            "header",
-        )?;
-        let mut e = ServiceEvidence {
+    let evidence = if manifest.outcome == "CAPTURED" {
+        let h = header
+            .filter(|_| manifest.revision.is_some())
+            .ok_or_else(|| {
+                invalid("captured package requires exactly one evidence header and revision")
+            })?;
+        let evidence = ServiceEvidence {
             schema: h.schema,
             service: h.service,
             revision: h.revision,
@@ -637,90 +645,84 @@ impl Package {
             runtime_mode: h.runtime_mode,
             coverage: h.coverage,
             boundaries: h.boundaries,
-            entrypoints: vec![],
-            observations: BTreeMap::new(),
-            sources: BTreeMap::new(),
-            contracts: BTreeMap::new(),
+            sources,
+            observations,
+            entrypoints,
+            contracts,
         };
-        for (kind, values) in &self.records {
-            for value in values {
-                match kind.as_str() {
-                    "sources" => {
-                        let v: Source = decode_record(value.clone(), "source")?;
-                        if e.sources.insert(v.id.clone(), v).is_some() {
-                            return Err(invalid("duplicate package source ID"));
-                        }
-                    }
-                    "observations" => {
-                        let v: Observation = decode_record(value.clone(), "observation")?;
-                        if e.observations.insert(v.id.clone(), v).is_some() {
-                            return Err(invalid("duplicate package observation ID"));
-                        }
-                    }
-                    "entrypoints" => e
-                        .entrypoints
-                        .push(decode_record(value.clone(), "entrypoint")?),
-                    "contracts" => {
-                        let v: Contract = decode_record(value.clone(), "contract")?;
-                        if e.contracts.insert(v.id, v.value).is_some() {
-                            return Err(invalid("duplicate package contract ID"));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if e.service != self.manifest.service.id
-            || Some(&e.revision) != self.manifest.revision.as_ref()
-            || e.service_digest != self.manifest.service_digest
-        {
-            return Err(invalid(
-                "package evidence disagrees with selected service or revision",
-            ));
-        }
-        analysis::verify_evidence(&e)?;
-        if (e.extractor == SOURCE_EXTRACTOR
-            && (e.runtime_mode != "COMMITTED_SOURCE_NO_BUILD"
-                || !matches!(e.coverage.as_str(), "SYNTAX" | "PARTIAL")))
-            || (e.extractor == EXTRACTOR
-                && !matches!(e.runtime_mode.as_str(), "DEVELOPMENT" | "RELEASE"))
-        {
-            return Err(invalid(
-                "portable extractor cannot claim stronger runtime or coverage authority",
-            ));
-        }
-        let mut seen = BTreeSet::new();
-        for s in e.sources.values() {
-            let library_service = super::library_projection::source_service(&e, s)?;
-            let source_service = library_service.as_ref().unwrap_or(&self.manifest.service);
-            verify_portable_source(
-                s,
-                source_service,
-                e.extractor == EXTRACTOR || s.library_origin.is_some(),
-            )?;
-        }
-        for o in e.observations.values() {
-            if o.service != e.service || o.id.is_empty() || o.id.len() > 512 {
-                return Err(invalid("portable observation service or identity mismatch"));
-            }
-        }
-        for entry in &e.entrypoints {
-            if entry.service != e.service
-                || !seen.insert(&entry.id)
-                || entry
-                    .source_ids
-                    .iter()
-                    .any(|id| !e.sources.contains_key(id))
-                || entry
-                    .dependency_ids
-                    .iter()
-                    .any(|id| !e.observations.contains_key(id))
-            {
-                return Err(invalid("portable entrypoint graph has invalid references"));
-            }
-        }
-        Ok(e)
+        validate_evidence(&manifest, &evidence)?;
+        Some(evidence)
+    } else {
+        None
+    };
+    Ok(Package {
+        digest: digest(&manifest)?,
+        manifest,
+        report,
+        evidence,
+    })
+}
+
+#[cfg(test)]
+impl Package {
+    fn evidence(&self) -> Result<&ServiceEvidence, ClewError> {
+        self.evidence
+            .as_ref()
+            .ok_or_else(|| invalid("package contains no usable indexed evidence"))
     }
+}
+
+fn validate_evidence(manifest: &Manifest, e: &ServiceEvidence) -> Result<(), ClewError> {
+    if e.service != manifest.service.id
+        || Some(&e.revision) != manifest.revision.as_ref()
+        || e.service_digest != manifest.service_digest
+    {
+        return Err(invalid(
+            "package evidence disagrees with selected service or revision",
+        ));
+    }
+    analysis::verify_evidence(e)?;
+    if (e.extractor == SOURCE_EXTRACTOR
+        && (e.runtime_mode != "COMMITTED_SOURCE_NO_BUILD"
+            || !matches!(e.coverage.as_str(), "SYNTAX" | "PARTIAL")))
+        || (e.extractor == EXTRACTOR
+            && !matches!(e.runtime_mode.as_str(), "DEVELOPMENT" | "RELEASE"))
+    {
+        return Err(invalid(
+            "portable extractor cannot claim stronger runtime or coverage authority",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for s in e.sources.values() {
+        let library_service = super::library_projection::source_service(e, s)?;
+        let source_service = library_service.as_ref().unwrap_or(&manifest.service);
+        verify_portable_source(
+            s,
+            source_service,
+            e.extractor == EXTRACTOR || s.library_origin.is_some(),
+        )?;
+    }
+    for o in e.observations.values() {
+        if o.service != e.service || o.id.is_empty() || o.id.len() > 512 {
+            return Err(invalid("portable observation service or identity mismatch"));
+        }
+    }
+    for entry in &e.entrypoints {
+        if entry.service != e.service
+            || !seen.insert(&entry.id)
+            || entry
+                .source_ids
+                .iter()
+                .any(|id| !e.sources.contains_key(id))
+            || entry
+                .dependency_ids
+                .iter()
+                .any(|id| !e.observations.contains_key(id))
+        {
+            return Err(invalid("portable entrypoint graph has invalid references"));
+        }
+    }
+    Ok(())
 }
 
 /// A closed diagnostic envelope; source text is present only in separate index parts.
@@ -791,56 +793,27 @@ fn report(
     }).map_err(io_error)
 }
 
+#[cfg(test)]
 fn make_parts(
     kind: &str,
     values: Vec<Value>,
     parts: &mut BTreeMap<String, Vec<u8>>,
     refs: &mut Vec<PartRef>,
 ) -> Result<(), ClewError> {
-    let mut group = Vec::new();
-    let mut size = 0;
-    let flush = |group: &mut Vec<Value>,
-                 parts: &mut BTreeMap<String, Vec<u8>>,
-                 refs: &mut Vec<PartRef>|
-     -> Result<(), ClewError> {
-        if group.is_empty() {
-            return Ok(());
-        }
-        let records = group.len();
-        let data = bytes(&Part {
-            schema: PART_SCHEMA.into(),
-            kind: kind.into(),
-            records: std::mem::take(group),
-        })?;
-        if data.len() as u64 > MAX_PART {
-            return Err(invalid(
-                "one indexed record exceeds the portable part limit",
-            ));
-        }
-        let digest = canonical::hash_bytes(&data);
-        let path = format!("parts/{}.json", &digest[7..]);
-        refs.push(PartRef {
-            kind: kind.into(),
-            path: path.clone(),
-            digest,
-            bytes: data.len() as u64,
-            records,
-            encoding: "json".into(),
-        });
-        parts.insert(path, data);
-        Ok(())
-    };
-    for value in values {
-        let next = bytes(&value)?.len();
-        if size + next > 512 * 1024 || group.len() >= PART_RECORDS {
-            flush(&mut group, parts, refs)?;
-            size = 0;
-        }
-        group.push(value);
-        size += next;
-    }
-    flush(&mut group, parts, refs)
+    part_io::for_each_part(
+        kind,
+        values.into_iter().map(|value| {
+            let size = bytes(&value)?.len();
+            Ok((value, size))
+        }),
+        |reference, data, _| {
+            parts.insert(reference.path.clone(), data);
+            refs.push(reference);
+            Ok(())
+        },
+    )
 }
+
 fn capture(
     repo: &Repository,
     id: &str,
@@ -957,15 +930,14 @@ fn write_capture_result(
         report["limitations"].as_array_mut().ok_or_else(|| invalid("diagnostic report limitations are invalid"))?
             .push(json!("This package exports historical evidence without running or revalidating its compiler/build. producerVersion identifies the exporter; original producer identity remains in retained source and scope records."));
     }
-    let mut parts = BTreeMap::new();
-    let mut refs = Vec::new();
-    make_parts("report", vec![report.clone()], &mut parts, &mut refs)?;
+    let mut writer = part_io::Writer::new(output)?;
+    writer.emit("report", [report.clone()])?;
     let revision = if let Ok(e) = result {
         let revision = Some(e.revision.clone());
         if !diagnostic_only {
-            make_parts(
+            writer.emit(
                 "header",
-                vec![json!(Header {
+                [Header {
                     schema: e.schema,
                     service: e.service,
                     revision: e.revision,
@@ -973,37 +945,17 @@ fn write_capture_result(
                     extractor: e.extractor,
                     runtime_mode: e.runtime_mode,
                     coverage: e.coverage,
-                    boundaries: e.boundaries
-                })],
-                &mut parts,
-                &mut refs,
+                    boundaries: e.boundaries,
+                }],
             )?;
-            make_parts(
-                "sources",
-                e.sources.into_values().map(|v| json!(v)).collect(),
-                &mut parts,
-                &mut refs,
-            )?;
-            make_parts(
-                "observations",
-                e.observations.into_values().map(|v| json!(v)).collect(),
-                &mut parts,
-                &mut refs,
-            )?;
-            make_parts(
-                "entrypoints",
-                e.entrypoints.into_iter().map(|v| json!(v)).collect(),
-                &mut parts,
-                &mut refs,
-            )?;
-            make_parts(
+            writer.emit("sources", e.sources.into_values())?;
+            writer.emit("observations", e.observations.into_values())?;
+            writer.emit("entrypoints", e.entrypoints)?;
+            writer.emit(
                 "contracts",
                 e.contracts
                     .into_iter()
-                    .map(|(id, value)| json!(Contract { id, value }))
-                    .collect(),
-                &mut parts,
-                &mut refs,
+                    .map(|(id, value)| Contract { id, value }),
             )?;
         }
         revision
@@ -1023,37 +975,11 @@ fn write_capture_result(
         producer_version: env!("CARGO_PKG_VERSION").into(),
         compatibility_digest: compatibility()?,
         outcome: outcome.into(),
-        parts: refs,
+        parts: writer.parts(),
         retained,
     };
-    super::progress::run("VALIDATE_EVIDENCE_PACKAGE_LIMITS", || {
-        validate_parts(&manifest.parts)
-    })?;
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(io_error)?;
-    let parent = parent.canonicalize().map_err(io_error)?;
-    let output = parent.join(
-        output
-            .file_name()
-            .ok_or_else(|| invalid("package output requires a directory name"))?,
-    );
-    if output.exists() || fs::symlink_metadata(&output).is_ok() {
-        return Err(invalid(
-            "package output already exists; select a new immutable output directory",
-        ));
-    }
-    let temporary = tempfile::tempdir_in(&parent).map_err(io_error)?;
-    fs::create_dir(temporary.path().join("parts")).map_err(io_error)?;
-    for (path, data) in parts {
-        fs::write(temporary.path().join(path), data).map_err(io_error)?;
-    }
-    fs::write(temporary.path().join("manifest.json"), bytes(&manifest)?).map_err(io_error)?;
-    let package = super::progress::run("VERIFY_EVIDENCE_PACKAGE", || load(temporary.path()))?;
-    fs::rename(temporary.path(), &output).map_err(io_error)?;
-    let mut value = json!({"schema":"codeclew-docs-evidence-capture/1.0","status":outcome,"manifestDigest":package.digest,"service":id,"revision":manifest.revision,"serviceDigest":manifest.service_digest,"report":report});
+    let manifest_digest = writer.finish(&manifest)?;
+    let mut value = json!({"schema":"codeclew-docs-evidence-capture/1.0","status":outcome,"manifestDigest":manifest_digest,"service":id,"revision":manifest.revision,"serviceDigest":manifest.service_digest,"report":report});
     if let Some(origin) = &manifest.retained {
         value["schema"] = json!("codeclew-docs-evidence-export/1.0");
         value["status"] = json!("EXPORTED_RETAINED_SNAPSHOT");
@@ -1094,7 +1020,14 @@ fn check_expected(repo: &Repository, package: &Package) -> Result<Expectation, C
     Ok(policy)
 }
 fn import(repo: &Repository, input: &Path) -> Result<Value, ClewError> {
-    let package = load(input)?;
+    import_loaded(repo, input, load(input)?)
+}
+
+fn import_loaded(
+    repo: &Repository,
+    input: &Path,
+    mut package: Package,
+) -> Result<Value, ClewError> {
     if package.manifest.outcome == "DIAGNOSTICS_ONLY" {
         return Err(invalid(
             "a diagnostic-only report cannot become source evidence",
@@ -1104,10 +1037,33 @@ fn import(repo: &Repository, input: &Path) -> Result<Value, ClewError> {
     let policy = check_expected(repo, &package)?;
     super::updates::admit_package(repo, &policy.service, package.manifest.revision.as_deref())?;
     let root = package_path(&package.digest)?;
-    for (path, data) in &package.raw_parts {
-        repo.atomic(&format!("{root}/{path}"), data)?;
+    // Keep only admitted descriptors while copying. Recheck every source byte
+    // against those descriptors, so late input changes cannot reach selection.
+    drop(package.evidence.take());
+    let target = repo.path(&root)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| invalid("invalid package namespace"))?;
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let stage = tempfile::tempdir_in(parent).map_err(io_error)?;
+    fs::create_dir(stage.path().join("parts")).map_err(io_error)?;
+    for part in &package.manifest.parts {
+        let data = part_io::verified_bytes(input, part)?;
+        fs::write(stage.path().join(&part.path), data).map_err(io_error)?;
     }
-    repo.atomic(&format!("{root}/manifest.json"), &bytes(&package.manifest)?)?;
+    let manifest_bytes = bytes(&package.manifest)?;
+    fs::write(stage.path().join("manifest.json"), &manifest_bytes).map_err(io_error)?;
+    // New immutable directories become visible as a complete unit. Repairs of
+    // the same digest install only fully staged expected bytes, manifest last.
+    if repo.path(&root)?.exists() {
+        for part in &package.manifest.parts {
+            let data = part_io::verified_bytes(stage.path(), part)?;
+            repo.atomic(&format!("{root}/{}", part.path), &data)?;
+        }
+        repo.atomic(&format!("{root}/manifest.json"), &manifest_bytes)?;
+    } else {
+        fs::rename(stage.path(), repo.path(&root)?).map_err(io_error)?;
+    }
     let pointer = Selection {
         schema: "codeclew-documentation-evidence-selection/1.0".into(),
         service: policy.service.clone(),
@@ -1170,10 +1126,10 @@ pub(super) fn selected_with_expectation(
             "selected portable result is missing or superseded by the coordinator expectation",
         ));
     }
-    let package = load(&repo.path(&package_path(&pointer.manifest_digest)?)?)?;
+    let mut package = load(&repo.path(&package_path(&pointer.manifest_digest)?)?)?;
     check_expected_with(service, policy, &package)?;
     if package.manifest.outcome != "CAPTURED" {
-        let report: Report = decode_record(package.records["report"][0].clone(), "diagnostic")?;
+        let report: Report = decode_record(package.report.clone(), "diagnostic")?;
         let mut error = ClewError::new(
             report
                 .error_code
@@ -1183,10 +1139,13 @@ pub(super) fn selected_with_expectation(
                 policy.revision
             ),
         );
-        error.evidence.push(format!("documentation-evidence-report:{}",json!({"manifestDigest":package.digest,"revision":policy.revision,"report":package.records["report"][0]})));
+        error.evidence.push(format!("documentation-evidence-report:{}",json!({"manifestDigest":package.digest,"revision":policy.revision,"report":package.report})));
         return Err(error);
     }
-    let mut e = package.evidence()?;
+    let mut e = package
+        .evidence
+        .take()
+        .ok_or_else(|| invalid("package contains no usable indexed evidence"))?;
     let id = analysis::dependency_id(
         &e.service,
         "EVIDENCE_PACKAGE",
@@ -1316,7 +1275,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         }
         Command::Inspect { input } => {
             let p = load(&input)?;
-            let mut value = json!({"schema":"codeclew-docs-evidence-inspect/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"service":p.manifest.service.id,"repositoryId":p.manifest.service.repository_id,"serviceDigest":p.manifest.service_digest,"revision":p.manifest.revision,"compatible":p.manifest.compatibility_digest==compatibility()?,"outcome":p.manifest.outcome,"parts":p.manifest.parts.len(),"report":p.records["report"][0]});
+            let mut value = json!({"schema":"codeclew-docs-evidence-inspect/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"service":p.manifest.service.id,"repositoryId":p.manifest.service.repository_id,"serviceDigest":p.manifest.service_digest,"revision":p.manifest.revision,"compatible":p.manifest.compatibility_digest==compatibility()?,"outcome":p.manifest.outcome,"parts":p.manifest.parts.len(),"report":p.report});
             if let Some(origin) = &p.manifest.retained {
                 value["retained"] = json!(origin);
             }
@@ -1332,9 +1291,20 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 return Err(invalid("unknown portable index record kind"));
             }
             let mut p = load(&input)?;
-            let mut value = super::cli::page(
+            // Full package validation is complete. Pagination bounds output, not
+            // initial validation; reread original raw rows with exact hash checks.
+            drop(p.evidence.take());
+            let total = p
+                .manifest
+                .parts
+                .iter()
+                .filter(|part| part.kind == k)
+                .map(|part| part.records)
+                .sum();
+            let mut value = super::cli::page_iter(
                 &digest(&(&p.digest, &k))?,
-                p.records.remove(&k).unwrap_or_default(),
+                total,
+                part_io::RawRows::new(&input, &p.manifest, &k),
                 cursor.as_deref(),
                 limit as usize,
                 json!({"schema":"codeclew-docs-evidence-read/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"kind":k}),

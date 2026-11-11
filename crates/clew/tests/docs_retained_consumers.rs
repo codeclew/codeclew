@@ -396,3 +396,221 @@ fn caller_owned_retained_export_preflight() {
         "RETAINED_SOURCE_NOT_REVERIFIED"
     );
 }
+
+/// Explicit, ignored development gate for an owned large retained fixture. Each
+/// lifecycle command runs in a fresh authenticated fixture CLI process; time/RSS
+/// excludes compilation and the test parent. It never captures source or calls a model.
+#[test]
+#[ignore = "requires an owned frozen fixture and a new measurement directory"]
+fn caller_owned_byte_scale_lifecycle() {
+    use std::{path::PathBuf, process::Command};
+    let fixture_root =
+        PathBuf::from(std::env::var("CODECLEW_TEST_BYTE_SCALE_ROOT").expect("owned fixture root"));
+    let output = PathBuf::from(
+        std::env::var("CODECLEW_TEST_BYTE_SCALE_OUTPUT").expect("new measurement directory"),
+    );
+    assert!(!output.exists());
+    fs::create_dir_all(&output).unwrap();
+    let oracle: Value = read(fixture_root.join("OWNED-FIXTURE.json"));
+    let f = Fixture::new();
+    let launcher = f.helper_launcher();
+    let measured = |label: &str, args: &[&str], expected: i32| -> Value {
+        let mut command = Command::new("/usr/bin/time");
+        command
+            .args([
+                if cfg!(target_os = "macos") {
+                    "-l"
+                } else {
+                    "-v"
+                },
+                "-o",
+            ])
+            .arg(output.join(format!("{label}.time")))
+            .arg(&launcher)
+            .args(args);
+        let result = command.output().unwrap();
+        fs::write(output.join(format!("{label}.stdout.json")), &result.stdout).unwrap();
+        fs::write(output.join(format!("{label}.stderr.log")), &result.stderr).unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(expected),
+            "{label}: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice(&result.stdout).unwrap()
+    };
+    let retained = fixture_root.join("docs");
+    let package = output.join("package");
+    let export = measured(
+        "export",
+        &[
+            "docs",
+            "evidence",
+            "export",
+            "--root",
+            retained.to_str().unwrap(),
+            "--service",
+            "orders",
+            "--snapshot",
+            oracle["snapshot"].as_str().unwrap(),
+            "--output",
+            package.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(export["retained"]["snapshot"], oracle["snapshot"]);
+    assert_eq!(
+        export["retained"]["cacheability"],
+        oracle["captureCacheability"]
+    );
+    let inspect = measured(
+        "inspect",
+        &[
+            "docs",
+            "evidence",
+            "inspect",
+            "--input",
+            package.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(inspect["manifestDigest"], export["manifestDigest"]);
+    assert_eq!(inspect["report"]["sourceCount"], oracle["sources"]);
+    let first = measured(
+        "read-first",
+        &[
+            "docs",
+            "evidence",
+            "read",
+            "--input",
+            package.to_str().unwrap(),
+            "--kind",
+            "observations",
+            "--limit",
+            "2",
+        ],
+        0,
+    );
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["total"], oracle["observations"]);
+    let prefix = first["nextCursor"]
+        .as_str()
+        .unwrap()
+        .split_once(':')
+        .unwrap()
+        .0;
+    for (label, offset) in [("read-middle", 58_141), ("read-final", 116_281)] {
+        let cursor = format!("{prefix}:{offset}");
+        let page = measured(
+            label,
+            &[
+                "docs",
+                "evidence",
+                "read",
+                "--input",
+                package.to_str().unwrap(),
+                "--kind",
+                "observations",
+                "--limit",
+                "2",
+                "--cursor",
+                &cursor,
+            ],
+            0,
+        );
+        assert_eq!(page["total"], oracle["observations"]);
+        if label == "read-final" {
+            assert!(page["nextCursor"].is_null());
+        }
+    }
+    let consumer = output.join("consumer");
+    measured(
+        "consumer-init",
+        &["docs", "init", "--root", consumer.to_str().unwrap()],
+        0,
+    );
+    let repo = Repository::open(&consumer).unwrap();
+    repo.atomic(
+        "catalog/services/orders.json",
+        &clew::canonical::bytes(&oracle["originalService"]).unwrap(),
+    )
+    .unwrap();
+    let expectation = json!({"schema":"codeclew-documentation-evidence-expectation/1.0","service":"orders","repositoryId":"orders","serviceDigest":export["serviceDigest"],"revision":export["revision"],"manifestDigest":export["manifestDigest"],"sequence":1});
+    let expectation_path = output.join("expectation.json");
+    fs::write(
+        &expectation_path,
+        clew::canonical::bytes(&expectation).unwrap(),
+    )
+    .unwrap();
+    let input_digest = repo.input_digest().unwrap();
+    drop(repo);
+    measured(
+        "expect",
+        &[
+            "docs",
+            "evidence",
+            "expect",
+            "--root",
+            consumer.to_str().unwrap(),
+            "--input",
+            expectation_path.to_str().unwrap(),
+            "--expected-input-digest",
+            &input_digest,
+        ],
+        0,
+    );
+    let imported = measured(
+        "import",
+        &[
+            "docs",
+            "evidence",
+            "import",
+            "--root",
+            consumer.to_str().unwrap(),
+            "--input",
+            package.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(imported["status"], "IMPORTED_RETAINED_SNAPSHOT");
+    let replay = measured(
+        "reimport",
+        &[
+            "docs",
+            "evidence",
+            "import",
+            "--root",
+            consumer.to_str().unwrap(),
+            "--input",
+            package.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(replay["status"], "RETAINED_ALREADY_IMPORTED");
+    let checked = measured(
+        "historical-check",
+        &["docs", "check", "--root", consumer.to_str().unwrap()],
+        3,
+    );
+    let repo = Repository::open(&consumer).unwrap();
+    let (digest, size) = checked["snapshot"]
+        .as_str()
+        .unwrap()
+        .rsplit_once('/')
+        .unwrap();
+    let reference = cache::ObjectRef::new(
+        clew::documentation::check::CHECK_MANIFEST_SCHEMA.into(),
+        digest.into(),
+        size.parse().unwrap(),
+    );
+    let saved: clew::documentation::check::CheckManifest =
+        cache::get_json(&repo, &reference, 128 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        saved.service_manifests["orders"].cacheability,
+        cache::NON_CACHEABLE
+    );
+    fs::write(output.join("RESULT.json"),serde_json::to_vec_pretty(&json!({"status":"PASS_NATIVE_AUTHENTICATED_CLI","frozenOracle":oracle,"export":export,"import":imported,"reimport":replay,"historicalCheck":checked,"cacheability":cache::NON_CACHEABLE,"treatment":"Fresh authenticated development CLI processes; no capture/model. Full independent typed oracle gate remains separate."})).unwrap()).unwrap();
+}

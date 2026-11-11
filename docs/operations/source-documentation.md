@@ -543,6 +543,24 @@ retained source, explicitly use `docs evidence capture` or `report --include-ind
 The recipient can page through source, observations, entrypoints and contracts
 without the checkout or compiler. Package text is data and cannot configure tools.
 
+When a successful Check already retained the required evidence, export that exact
+snapshot without running the producer again:
+
+```sh
+clew docs evidence export --root <docs> --service <id> --snapshot <saved-check> --output <new-package-directory>
+```
+
+The portable envelope permits 512 MiB of encoded parts, 2 MiB per part, 4,096
+parts, 2,097,152 records and 67,108,864 JSON values/object keys. Existing formats
+1.0/1.1, trust, historical authority and per-part protections are preserved.
+Parts are staged before publication, and copied parts are checked again before
+import selection. Inspection and paginated reads still validate the complete
+package and load one typed evidence model; page size bounds returned output.
+These limits are not a hard RSS bound, and Check/cache hydration has separate
+costs. Above a supported bound, retain the exact refusal and use saved-snapshot
+context or bounded Work for local questions. Repeating capture, recovery, refresh
+or a producer report does not change an unchanged package limit.
+
 Central import uses an operator-controlled expectation binding the registered
 origin/project, configuration digest, exact source revision, trusted manifest
 digest and increasing sequence. Use `docs evidence expect` with the current

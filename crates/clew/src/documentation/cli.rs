@@ -704,6 +704,24 @@ pub fn page(
     items: Vec<Value>,
     cursor: Option<&str>,
     limit: usize,
+    meta: Value,
+) -> Result<Value, ClewError> {
+    page_iter(
+        binding,
+        items.len(),
+        items.into_iter().map(Ok),
+        cursor,
+        limit,
+        meta,
+    )
+}
+
+pub(super) fn page_iter(
+    binding: &str,
+    total: usize,
+    mut items: impl Iterator<Item = Result<Value, ClewError>>,
+    cursor: Option<&str>,
+    limit: usize,
     mut meta: Value,
 ) -> Result<Value, ClewError> {
     let prefix = binding.trim_start_matches("sha256:");
@@ -721,10 +739,9 @@ pub fn page(
                 .map_err(|_| invalid("invalid documentation cursor offset"))?
         }
     };
-    if start > items.len() {
+    if start > total {
         return Err(invalid("documentation cursor is out of range"));
     }
-    let total = items.len();
     let mut out = Vec::new();
     let mut omitted = Vec::new();
     let mut consumed = start;
@@ -734,7 +751,11 @@ pub fn page(
             "documentation page metadata exceeds stdout budget; inspect unresolved service records separately",
         ));
     }
-    for item in items.into_iter().skip(start).take(limit) {
+    for item in items.by_ref().take(start) {
+        item?;
+    }
+    for item in items.take(limit) {
+        let item = item?;
         let size = super::bytes(&item)?.len();
         if size > 48 * 1024 {
             omitted.push(

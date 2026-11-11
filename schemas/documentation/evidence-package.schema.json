@@ -223,7 +223,7 @@
           "encoding"
         ]
       },
-      "description": "Native verification enforces at most 2097152 aggregate records and 134217728 aggregate serialized part bytes, in addition to the structural per-part bounds."
+      "description": "Native verification enforces at most 2097152 aggregate records and 536870912 aggregate serialized part bytes and 67108864 JSON values plus object keys (including part wrappers), in addition to the structural per-part bounds."
     },
     "retained": {
       "type": "object",
