@@ -150,6 +150,59 @@ pub(super) fn validate_parent_manifest(
     Ok(())
 }
 
+/// Bind a selected, unchanged historical capture to its original input digest.
+/// This proves source identity only: declaration/prose payloads and sibling
+/// captures are not hydrated or admitted as a complete composition.
+pub(super) fn selected_capture_input_digest(
+    repo: &Repository,
+    derived: &check::CheckManifest,
+    service: &str,
+) -> Result<String, ClewError> {
+    let Some(reference) = &derived.composition else {
+        return Ok(derived.input_digest.clone());
+    };
+    if reference.schema != MANIFEST_SCHEMA {
+        return Err(invalid("retained composition manifest schema is invalid"));
+    }
+    let value: Manifest = cache::get_json(repo, reference, check::PORTABLE_CACHE_MAX_BYTES)
+        .map_err(|_| invalid("retained composition metadata is unavailable or corrupt"))?
+        .ok_or_else(|| invalid("retained composition metadata is unavailable"))?;
+    if value.schema != MANIFEST_SCHEMA
+        || value.input_digest != derived.input_digest
+        || !valid_digest(&value.composer)
+        || value.inputs.schema != source_inputs::DECLARATION_MANIFEST_SCHEMA
+        || !valid_digest(&value.inputs.digest)
+        || value.inputs.size == 0
+        || value.inputs.size > check::PORTABLE_CACHE_MAX_BYTES
+    {
+        return Err(invalid("retained composition input binding is invalid"));
+    }
+    let parent = Check::load_snapshot_manifest(repo, &value.parent)
+        .map_err(|_| invalid("retained composition original parent is unavailable or corrupt"))?;
+    if parent.composition.is_some()
+        || parent.source_inputs != derived.source_inputs
+        || parent.unresolved != derived.unresolved
+    {
+        return Err(invalid(
+            "retained composition original source-input binding is invalid",
+        ));
+    }
+    let original = parent
+        .service_manifests
+        .get(service)
+        .ok_or_else(|| invalid("retained composition parent lacks the selected capture"))?;
+    let selected = derived
+        .service_manifests
+        .get(service)
+        .ok_or_else(|| invalid("retained composition lacks the selected capture"))?;
+    if digest(original)? != digest(selected)? {
+        return Err(invalid(
+            "retained composition selected capture changed; export its exact original capture snapshot instead",
+        ));
+    }
+    Ok(parent.input_digest)
+}
+
 fn capture_retained(
     repo: &Repository,
     inputs: &RepositoryInputs,

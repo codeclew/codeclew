@@ -667,3 +667,146 @@ fn corruption_and_duplicate_rows_still_fail_after_limit_fix() {
             .contains("duplicate package contract ID")
     );
 }
+
+fn composed_fixture() -> (
+    tempfile::TempDir,
+    Repository,
+    String,
+    super::super::check::CheckManifest,
+    Value,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let s = service();
+    let (repo, original) = retained_fixture(&temp.path().join("docs"), &s, evidence(&s), true);
+    let mut parent = super::super::check::Check::load_snapshot_manifest(&repo, &original).unwrap();
+    // Match retained-only historical selection, without editing the object store.
+    let mut inputs: Value = super::super::cache::get_json(
+        &repo,
+        &parent.source_inputs,
+        super::super::check::PORTABLE_CACHE_MAX_BYTES,
+    )
+    .unwrap()
+    .unwrap();
+    inputs["selectedServices"] = json!([]);
+    inputs["retainedServices"] = json!(["orders"]);
+    parent.source_inputs =
+        super::super::cache::put_json(&repo, super::super::source_inputs::MANIFEST_SCHEMA, &inputs)
+            .unwrap();
+    let p =
+        super::super::cache::put_json(&repo, super::super::check::CHECK_MANIFEST_SCHEMA, &parent)
+            .unwrap();
+    let current_digest = canonical::hash_bytes(b"owned revised declarations");
+    let composition = json!({"schema":"codeclew-documentation-composition-manifest/1.0",
+        "parent":format!("{}/{}",p.digest,p.size), "composer":canonical::hash_bytes(b"owned composer"),
+        "inputDigest":current_digest,
+        // This unrelated declaration closure is intentionally unavailable. Export
+        // proves selected original capture binding, not whole composition validity.
+        "inputs":{"schema":super::super::source_inputs::DECLARATION_MANIFEST_SCHEMA,
+            "digest":canonical::hash_bytes(b"unavailable declaration closure"),"size":100},
+        "baseline":null,"operations":{},"acceptedVersions":{},"scopes":{}});
+    let c = super::super::cache::put_json(
+        &repo,
+        "codeclew-documentation-composition-manifest/1.0",
+        &composition,
+    )
+    .unwrap();
+    let mut derived = parent.clone();
+    derived.input_digest = current_digest;
+    derived.context_digest = canonical::hash_bytes(b"owned derived context");
+    derived.composition = Some(c);
+    let r =
+        super::super::cache::put_json(&repo, super::super::check::CHECK_MANIFEST_SCHEMA, &derived)
+            .unwrap();
+    (
+        temp,
+        repo,
+        format!("{}/{}", r.digest, r.size),
+        derived,
+        composition,
+    )
+}
+
+#[test]
+fn composed_retained_export_binds_unchanged_capture_to_original_inputs() {
+    let (temp, repo, snapshot, derived, _) = composed_fixture();
+    let output = temp.path().join("package");
+    let result = export_snapshot(&repo, "orders", &snapshot, &output).unwrap();
+    assert_eq!(result["retained"]["snapshot"], snapshot);
+    assert_eq!(result["retained"]["inputDigest"], derived.input_digest);
+    let package = load(&output).unwrap();
+    assert_eq!(package.evidence().unwrap(), evidence(&service()));
+    assert_eq!(
+        package.manifest.retained.unwrap().cacheability,
+        "NON_CACHEABLE"
+    );
+}
+
+#[test]
+fn composed_retained_export_refuses_substituted_parent_source_and_capture_bindings() {
+    let (temp, repo, _, derived, composition) = composed_fixture();
+    for case in ["input", "parent", "source", "capture", "nested"] {
+        let mut child = derived.clone();
+        let mut envelope = composition.clone();
+        match case {
+            "input" => {
+                envelope["inputDigest"] = json!(canonical::hash_bytes(b"wrong current inputs"))
+            }
+            "parent" => envelope["parent"] = json!(format!("sha256:{}/1", "f".repeat(64))),
+            _ => {
+                let mut parent = super::super::check::Check::load_snapshot_manifest(
+                    &repo,
+                    envelope["parent"].as_str().unwrap(),
+                )
+                .unwrap();
+                match case {
+                    "source" => {
+                        parent.source_inputs.digest =
+                            canonical::hash_bytes(b"wrong source input object")
+                    }
+                    "capture" => {
+                        parent
+                            .service_manifests
+                            .get_mut("orders")
+                            .unwrap()
+                            .service_digest = canonical::hash_bytes(b"wrong selected capture")
+                    }
+                    "nested" => parent.composition = child.composition.clone(),
+                    _ => unreachable!(),
+                }
+                let r = super::super::cache::put_json(
+                    &repo,
+                    super::super::check::CHECK_MANIFEST_SCHEMA,
+                    &parent,
+                )
+                .unwrap();
+                envelope["parent"] = json!(format!("{}/{}", r.digest, r.size));
+            }
+        }
+        child.composition = Some(
+            super::super::cache::put_json(
+                &repo,
+                "codeclew-documentation-composition-manifest/1.0",
+                &envelope,
+            )
+            .unwrap(),
+        );
+        let r = super::super::cache::put_json(
+            &repo,
+            super::super::check::CHECK_MANIFEST_SCHEMA,
+            &child,
+        )
+        .unwrap();
+        let error = export_snapshot(
+            &repo,
+            "orders",
+            &format!("{}/{}", r.digest, r.size),
+            &temp.path().join(case),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("composition"),
+            "{case}: {}",
+            error.message
+        );
+    }
+}

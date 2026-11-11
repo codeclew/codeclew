@@ -52,8 +52,18 @@ closure rather than compiling again automatically. Snapshots containing selected
 portable-evidence expectations, update policies or target events are not supported
 by this selected-input recovery path; use the original local-capture snapshot.
 
+For a declaration-recomposed snapshot, export verifies its composition envelope
+and direct original capture parent. The source-input object reference and selected
+capture manifest, including cacheability, must be unchanged. Only those metadata
+bindings and the selected capture are read; unrelated declaration/prose payloads
+and sibling captures are not hydrated. This is a selected source-identity proof,
+not admission of the complete composition. A changed/projected selected capture,
+missing parent, nested composition or substituted binding is refused. To export
+original data, explicitly select its original capture snapshot; export never
+silently switches snapshots.
+
 Historical packages use schema `codeclew-documentation-evidence-package/1.1`.
-Their digest binds `retained`: the exact snapshot/input/context/capture identities,
+Their digest binds `retained`: the selected snapshot and its input/context digests, original capture identity,
 original cacheability and reason, `RETAINED_SOURCE_NOT_REVERIFIED` authority and
 `DISALLOWED_HISTORICAL_EXPORT` automatic reuse. `producerVersion` identifies the
 exporting runtime; it does not claim that runtime captured the original source.

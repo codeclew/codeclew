@@ -359,3 +359,40 @@ fn portable_retained_export_cli_roundtrips_without_the_source_checkout() {
         "NON_CACHEABLE"
     );
 }
+
+/// Export-only preflight for a caller-owned historical fixture, using the same
+/// authenticated CLI harness as the portable tests. Never captures or edits it.
+#[test]
+#[ignore = "requires an explicit caller-owned retained fixture and new output"]
+fn caller_owned_retained_export_preflight() {
+    let root = std::env::var("CODECLEW_TEST_RETAINED_EXPORT_ROOT").expect("owned root");
+    let oracle = std::env::var("CODECLEW_TEST_RETAINED_EXPORT_ORACLE").expect("owned oracle");
+    let output = std::env::var("CODECLEW_TEST_RETAINED_EXPORT_OUTPUT").expect("new output");
+    let fixture: Value = read(oracle);
+    let f = Fixture::new();
+    let (code, result) = f.run_unrooted(&[
+        "docs",
+        "evidence",
+        "export",
+        "--root",
+        &root,
+        "--service",
+        fixture["service"].as_str().unwrap(),
+        "--snapshot",
+        fixture["snapshot"].as_str().unwrap(),
+        "--output",
+        &output,
+    ]);
+    fs::write(
+        format!("{output}.result.json"),
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["status"], "EXPORTED_RETAINED_SNAPSHOT");
+    assert_eq!(result["retained"]["snapshot"], fixture["snapshot"]);
+    assert_eq!(
+        result["retained"]["sourceAuthority"],
+        "RETAINED_SOURCE_NOT_REVERIFIED"
+    );
+}

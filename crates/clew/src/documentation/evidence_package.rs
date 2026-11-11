@@ -876,9 +876,10 @@ fn export_snapshot(
     // Neither live catalog state nor checkout availability changes authority.
     let saved = super::check::Check::load_snapshot_manifest(repo, snapshot)
         .map_err(|_| invalid("retained snapshot is unavailable, corrupt or unsupported"))?;
+    let source_input_digest = super::composition::selected_capture_input_digest(repo, &saved, id)?;
     let service = super::source_inputs::load_selected_services(
         &saved.source_inputs,
-        &saved.input_digest,
+        &source_input_digest,
         &BTreeSet::from([id.to_owned()]),
         |reference| {
             super::cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
