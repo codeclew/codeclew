@@ -234,3 +234,128 @@ fn unsupported_draft_request_never_reacquires_evidence_or_publishes() {
         1
     );
 }
+
+#[test]
+fn portable_retained_export_cli_roundtrips_without_the_source_checkout() {
+    let producer = Fixture::new();
+    let checkout = producer.service("orders");
+    let snapshot = capture(&producer, "orders");
+    let repo = Repository::open(&producer.docs).unwrap();
+    let original = Check::load_snapshot(&repo, &snapshot).unwrap();
+    let expected = original.services["orders"].clone();
+    let service: Value = read(producer.docs.join("catalog/services/orders.json"));
+    fs::rename(&checkout, checkout.with_extension("offline")).unwrap();
+    let package = producer.temp.path().join("retained-package");
+    let exported = producer.ok(&[
+        "docs",
+        "evidence",
+        "export",
+        "--service",
+        "orders",
+        "--snapshot",
+        &snapshot,
+        "--output",
+        package.to_str().unwrap(),
+    ]);
+    assert_eq!(exported["status"], "EXPORTED_RETAINED_SNAPSHOT");
+    assert_eq!(exported["retained"]["snapshot"], snapshot);
+    assert_eq!(
+        exported["retained"]["sourceAuthority"],
+        "RETAINED_SOURCE_NOT_REVERIFIED"
+    );
+    let (code, inspected) = producer.run_unrooted(&[
+        "docs",
+        "evidence",
+        "inspect",
+        "--input",
+        package.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{inspected}");
+    assert_eq!(inspected["status"], "INTEGRITY_CHECKED_NOT_ADMITTED");
+    let (code, page) = producer.run_unrooted(&[
+        "docs",
+        "evidence",
+        "read",
+        "--input",
+        package.to_str().unwrap(),
+        "--kind",
+        "sources",
+        "--limit",
+        "20",
+    ]);
+    assert_eq!(code, 0, "{page}");
+    assert!(!page["items"].as_array().unwrap().is_empty());
+
+    let consumer = Fixture::new();
+    let input = consumer.input("original-service.json", &service);
+    let digest = consumer.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    consumer.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+    assert_ne!(
+        consumer
+            .run(&[
+                "docs",
+                "evidence",
+                "import",
+                "--input",
+                package.to_str().unwrap()
+            ])
+            .0,
+        0
+    );
+    let expectation = consumer.input("trusted-expectation.json", &json!({
+        "schema":"codeclew-documentation-evidence-expectation/1.0", "service":"orders",
+        "repositoryId":service["repositoryId"], "serviceDigest":exported["serviceDigest"],
+        "revision":exported["revision"], "manifestDigest":exported["manifestDigest"], "sequence":1,
+    }));
+    let digest = consumer.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    consumer.ok(&[
+        "docs",
+        "evidence",
+        "expect",
+        "--input",
+        expectation.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+    let imported = consumer.ok(&[
+        "docs",
+        "evidence",
+        "import",
+        "--input",
+        package.to_str().unwrap(),
+    ]);
+    assert_eq!(imported["status"], "IMPORTED_RETAINED_SNAPSHOT");
+    let (code, checked) = consumer.run(&["docs", "check", "--service", "orders"]);
+    assert!(matches!(code, 0 | 3 | 4), "{checked}");
+    let repo = Repository::open(&consumer.docs).unwrap();
+    let result = Check::load_snapshot(&repo, checked["snapshot"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        result.source_authorities()["orders"],
+        "RETAINED_SOURCE_NOT_REVERIFIED"
+    );
+    let actual = &result.services["orders"];
+    assert_eq!(actual.sources, expected.sources);
+    assert_eq!(actual.entrypoints, expected.entrypoints);
+    assert_eq!(actual.contracts, expected.contracts);
+    for (id, observation) in &expected.observations {
+        assert_eq!(actual.observations.get(id), Some(observation));
+    }
+    assert_eq!(
+        result.store_manifest(&repo).unwrap().service_manifests["orders"].cacheability,
+        "NON_CACHEABLE"
+    );
+}

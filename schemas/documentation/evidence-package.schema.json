@@ -4,7 +4,10 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "codeclew-documentation-evidence-package/1.0"
+      "enum": [
+        "codeclew-documentation-evidence-package/1.0",
+        "codeclew-documentation-evidence-package/1.1"
+      ]
     },
     "service": {
       "type": "object",
@@ -219,7 +222,90 @@
           "records",
           "encoding"
         ]
-      }
+      },
+      "description": "Native verification enforces at most 2097152 aggregate records and 134217728 aggregate serialized part bytes, in addition to the structural per-part bounds."
+    },
+    "retained": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-retained-export/1.0"
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}/[1-9][0-9]*$"
+        },
+        "inputDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "contextDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "captureDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "cacheability": {
+          "enum": [
+            "REUSABLE",
+            "NON_CACHEABLE"
+          ]
+        },
+        "cacheabilityReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceAuthority": {
+          "const": "RETAINED_SOURCE_NOT_REVERIFIED"
+        },
+        "automaticReuse": {
+          "const": "DISALLOWED_HISTORICAL_EXPORT"
+        }
+      },
+      "required": [
+        "schema",
+        "snapshot",
+        "inputDigest",
+        "contextDigest",
+        "captureDigest",
+        "cacheability",
+        "sourceAuthority",
+        "automaticReuse"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cacheability": {
+                "const": "NON_CACHEABLE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cacheabilityReason"
+            ],
+            "properties": {
+              "cacheabilityReason": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cacheabilityReason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "required": [
@@ -231,5 +317,33 @@
     "compatibilityDigest",
     "outcome",
     "parts"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {
+            "const": "codeclew-documentation-evidence-package/1.1"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "retained"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "CAPTURED"
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "retained"
+          ]
+        }
+      }
+    }
   ]
 }

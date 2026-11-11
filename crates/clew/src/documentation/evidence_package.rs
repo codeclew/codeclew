@@ -518,6 +518,13 @@ fn validate_parts(parts: &[PartRef]) -> Result<(), ClewError> {
     Ok(())
 }
 
+fn decode_record<T: serde::de::DeserializeOwned>(
+    value: Value,
+    kind: &'static str,
+) -> Result<T, ClewError> {
+    serde_json::from_value(value).map_err(|_| invalid(format!("invalid portable {kind} record")))
+}
+
 fn load(input: &Path) -> Result<Package, ClewError> {
     if fs::symlink_metadata(input)
         .map_err(io_error)?
@@ -527,7 +534,8 @@ fn load(input: &Path) -> Result<Package, ClewError> {
         return Err(invalid("package root cannot be a symlink"));
     }
     let data = read_bytes(input, "manifest.json", store::MAX_RECORD)?;
-    let manifest: Manifest = serde_json::from_slice(&data).map_err(io_error)?;
+    let manifest: Manifest = serde_json::from_slice(&data)
+        .map_err(|_| invalid("invalid evidence manifest JSON or schema"))?;
     store::validate_service(&manifest.service)?;
     let valid_origin = match (manifest.schema.as_str(), &manifest.retained) {
         (SCHEMA, None) => true,
@@ -560,7 +568,8 @@ fn load(input: &Path) -> Result<Package, ClewError> {
         if data.len() as u64 != part.bytes || canonical::hash_bytes(&data) != part.digest {
             return Err(invalid("evidence part digest mismatch"));
         }
-        let value: Part = serde_json::from_slice(&data).map_err(io_error)?;
+        let value: Part = serde_json::from_slice(&data)
+            .map_err(|_| invalid("invalid evidence part JSON or schema"))?;
         if value.schema != PART_SCHEMA
             || value.kind != part.kind
             || value.records.len() != part.records
@@ -597,8 +606,7 @@ fn load(input: &Path) -> Result<Package, ClewError> {
         package.evidence()?;
     }
     validate_report(&package.records["report"][0])?;
-    let report: Report =
-        serde_json::from_value(package.records["report"][0].clone()).map_err(io_error)?;
+    let report: Report = decode_record(package.records["report"][0].clone(), "diagnostic")?;
     if report.outcome != package.manifest.outcome
         || report.source_included != (package.manifest.outcome == "CAPTURED")
         || (package.manifest.outcome == "PRODUCER_FAILURE") != report.error_code.is_some()
@@ -612,14 +620,14 @@ fn load(input: &Path) -> Result<Package, ClewError> {
 
 impl Package {
     fn evidence(&self) -> Result<ServiceEvidence, ClewError> {
-        let h: Header = serde_json::from_value(
+        let h: Header = decode_record(
             self.records
                 .get("header")
                 .and_then(|r| r.first())
                 .cloned()
                 .ok_or_else(|| invalid("package contains no usable indexed evidence"))?,
-        )
-        .map_err(io_error)?;
+            "header",
+        )?;
         let mut e = ServiceEvidence {
             schema: h.schema,
             service: h.service,
@@ -638,24 +646,22 @@ impl Package {
             for value in values {
                 match kind.as_str() {
                     "sources" => {
-                        let v: Source = serde_json::from_value(value.clone()).map_err(io_error)?;
+                        let v: Source = decode_record(value.clone(), "source")?;
                         if e.sources.insert(v.id.clone(), v).is_some() {
                             return Err(invalid("duplicate package source ID"));
                         }
                     }
                     "observations" => {
-                        let v: Observation =
-                            serde_json::from_value(value.clone()).map_err(io_error)?;
+                        let v: Observation = decode_record(value.clone(), "observation")?;
                         if e.observations.insert(v.id.clone(), v).is_some() {
                             return Err(invalid("duplicate package observation ID"));
                         }
                     }
                     "entrypoints" => e
                         .entrypoints
-                        .push(serde_json::from_value(value.clone()).map_err(io_error)?),
+                        .push(decode_record(value.clone(), "entrypoint")?),
                     "contracts" => {
-                        let v: Contract =
-                            serde_json::from_value(value.clone()).map_err(io_error)?;
+                        let v: Contract = decode_record(value.clone(), "contract")?;
                         if e.contracts.insert(v.id, v.value).is_some() {
                             return Err(invalid("duplicate package contract ID"));
                         }
@@ -746,7 +752,7 @@ struct Report {
     limitations: Vec<String>,
 }
 fn validate_report(value: &Value) -> Result<(), ClewError> {
-    let r: Report = serde_json::from_value(value.clone()).map_err(io_error)?;
+    let r: Report = decode_record(value.clone(), "diagnostic")?;
     if r.schema != "codeclew-documentation-diagnostic-report/1.0" || bytes(value)?.len() > 16 * 1024
     {
         return Err(invalid("unsupported or oversized diagnostic report"));
@@ -868,7 +874,8 @@ fn export_snapshot(
     // Load the exact envelope and selected declaration/capture only. An unrelated
     // service's missing/heavy closure must not block this bounded export.
     // Neither live catalog state nor checkout availability changes authority.
-    let saved = super::check::Check::load_snapshot_manifest(repo, snapshot)?;
+    let saved = super::check::Check::load_snapshot_manifest(repo, snapshot)
+        .map_err(|_| invalid("retained snapshot is unavailable, corrupt or unsupported"))?;
     let service = super::source_inputs::load_selected_services(
         &saved.source_inputs,
         &saved.input_digest,
@@ -877,7 +884,10 @@ fn export_snapshot(
             super::cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
                 .ok_or_else(|| invalid("retained source input object is unavailable"))
         },
-    )?
+    )
+    .map_err(|_| {
+        invalid("selected retained source inputs are unavailable, corrupt or unsupported")
+    })?
     .remove(id)
     .ok_or_else(|| invalid("selected service is absent from the retained snapshot"))?;
     let capture = saved
@@ -885,7 +895,8 @@ fn export_snapshot(
         .get(id)
         .ok_or_else(|| invalid("selected service has no retained capture in the snapshot"))?;
     super::cache::validate_capture(capture)?;
-    let evidence = super::cache::load_capture(repo, capture)?;
+    let evidence = super::cache::load_capture(repo, capture)
+        .map_err(|_| invalid("selected retained capture closure is unavailable or corrupt"))?;
     if capture.service != id
         || capture.service_digest != digest(&service)?
         || evidence.service_digest != capture.service_digest
@@ -1161,8 +1172,7 @@ pub(super) fn selected_with_expectation(
     let package = load(&repo.path(&package_path(&pointer.manifest_digest)?)?)?;
     check_expected_with(service, policy, &package)?;
     if package.manifest.outcome != "CAPTURED" {
-        let report: Report =
-            serde_json::from_value(package.records["report"][0].clone()).map_err(io_error)?;
+        let report: Report = decode_record(package.records["report"][0].clone(), "diagnostic")?;
         let mut error = ClewError::new(
             report
                 .error_code

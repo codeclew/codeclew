@@ -110,6 +110,7 @@ ci_run checks python3 -I -S scripts/test_check_repository_privacy.py
 ci_run checks python3 -I -S scripts/test_check_english_content.py
 ci_run checks python3 -I -S scripts/check_english_content.py
 ci_run checks python3 -I -S scripts/test_documentation_selection_contract.py
+ci_run checks python3 -I -S scripts/test_evidence_package_schema.py
 ci_run checks python3 -I -S scripts/test_java_value_projection.py
 ci_run checks python3 -I -S scripts/test_first_document.py
 ci_run checks python3 -I -S scripts/build_cli_documentation.py --check
@@ -161,7 +162,7 @@ ci_run checks cargo clippy --workspace --all-targets -- -D warnings
 ci_run checks qualify_csharp
 ci_run checks cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
 ci_run checks cargo test --locked -p clew --lib 'compiler_failure::tests::' -- --test-threads=1
-ci_run retained-docs cargo test --locked -p clew --test docs_work_reference_roles -- --test-threads=1
+ci_run retained-docs cargo test --locked -p clew --test docs_work_reference_roles --test docs_retained_consumers -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test documentation_system --test docs_declaration_profile --test docs_status_observation --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test support_collect -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test documentation_external_calls -- --test-threads=1

@@ -32,6 +32,51 @@ worker/Maven output: `clew --diagnostics <new-directory> --include-private-logs
 docs check --root <docs> --service <id>`. It runs that command once. Post-hoc
 collection does not recover old worker/Maven log files or perform another capture.
 
+## Export an exact retained snapshot without running the producer
+
+Starting with 0.15.3, when a successful Check already saved the required evidence, export that exact
+snapshot instead of repeating capture:
+
+```sh
+clew docs evidence export --root <docs> --service <id> --snapshot <saved-check> --output <new-package-directory>
+clew docs evidence inspect --input <new-package-directory>
+clew docs evidence read --input <new-package-directory> --kind sources --limit 20
+```
+
+This command reads the selected service's frozen declaration and capture only;
+it does not open a checkout, run Maven/compiler/Git, or hydrate sibling captures.
+The current catalogue may have changed. The package keeps the original service,
+revision, sources, observations, entrypoints and contracts. An unavailable or
+corrupt selected snapshot/input/capture is a refusal: restore its complete saved
+closure rather than compiling again automatically. Snapshots containing selected
+portable-evidence expectations, update policies or target events are not supported
+by this selected-input recovery path; use the original local-capture snapshot.
+
+Historical packages use schema `codeclew-documentation-evidence-package/1.1`.
+Their digest binds `retained`: the exact snapshot/input/context/capture identities,
+original cacheability and reason, `RETAINED_SOURCE_NOT_REVERIFIED` authority and
+`DISALLOWED_HISTORICAL_EXPORT` automatic reuse. `producerVersion` identifies the
+exporting runtime; it does not claim that runtime captured the original source.
+Fresh packages remain schema 1.0. A stored reusable capture also becomes historical
+on export; the origin preserves its original flag without granting automatic reuse.
+
+Use the same explicit trusted expectation/import procedure below. Historical
+import reports `IMPORTED_RETAINED_SNAPSHOT` (or `RETAINED_ALREADY_IMPORTED` on exact
+replay), never current-source admission. A subsequent Check keeps historical
+source authority and stores the selected capture as `NON_CACHEABLE`. The Maven
+external-build authority guard is unchanged. Retained export avoids a producer
+invocation; it does not bypass package byte/part/schema/integrity/trust limits or
+prove current checkout freshness. Both portable formats may contain source code
+fragments and literals; neither requires a full Git repository snapshot.
+
+For local analysis on earlier releases, `docs context --snapshot` and
+`docs work prepare --snapshot` already read an exact historical snapshot. They do
+not export its raw portable package. Upgrade to a release exposing the explicit
+`docs evidence export` command when that package is required; a diagnostics-only
+report does not preserve the raw evidence and still runs the producer.
+
+## Fresh producer reports and captures
+
 For a separately requested producer report, use the source-free report path:
 
 ```sh
@@ -108,8 +153,17 @@ relabel an import as a new producer result. A failed capture at a known revision
 can be imported as an explicit failure. A failure without a known revision is
 inspectable support material and cannot satisfy a revision expectation.
 
-The format supports uncompressed JSON only: at most 2 MiB per part, 4,096 parts,
-131,072 records and 128 MiB of referenced part bytes per service. Corrupt/missing
+The format supports uncompressed JSON only: at most 2 MiB and 131,072 records
+per part, 4,096 parts, 2,097,152 aggregate records and 128 MiB of referenced part
+bytes per service. The aggregate record budget matches 4,096 native chunks of
+512 records; the writer may split earlier for byte limits. Raising that record
+budget does not raise the byte/part budgets or truncate facts. Metadata preflight
+reports `EVIDENCE_PACKAGE_LIMIT_EXCEEDED` with the bound, declared counter and
+limit, before loading payloads. Declared counters are verified against actual
+part bytes/record counts before admission. Writer progress distinguishes limit
+validation from package verification. Do not repeat a long capture in response to
+an unchanged package limit; export the exact retained snapshot for diagnosis or
+adjust the supported selected source scope. Corrupt/missing
 parts, path escapes, symlinks, duplicate identities, incompatible schemas/rules
 and stronger invented authority are rejected before selection. Work retains its
 own 64 MiB capture limit and may require a narrower scope. These packages represent

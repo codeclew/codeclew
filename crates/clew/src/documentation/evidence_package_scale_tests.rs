@@ -117,7 +117,7 @@ fn statistics(manifest: &Manifest, result: &Result<Package, ClewError>) -> Value
 #[test]
 fn owned_serializer_accepts_original_threshold_and_reported_volume() {
     let mut failures = vec![];
-    for total in [131_071, 131_072, 131_073, 231_084] {
+    for total in [131_071, 131_072, 131_073, 157_267, 231_084] {
         let service = service();
         let mut e = evidence(&service);
         e.contracts = (0..total - 2)
@@ -542,4 +542,128 @@ fn reported_typed_scale_exports_from_retained_snapshot_without_capture() {
     if owned_root.is_some() {
         fs::write(root.join("OWNED-FIXTURE.json"), bytes(&handoff).unwrap()).unwrap();
     }
+}
+
+fn rewrite_part(
+    directory: &Path,
+    manifest: &mut Manifest,
+    kind: &str,
+    edit: impl FnOnce(&mut Value),
+) {
+    let part = manifest.parts.iter_mut().find(|p| p.kind == kind).unwrap();
+    let mut value: Value =
+        serde_json::from_slice(&fs::read(directory.join(&part.path)).unwrap()).unwrap();
+    edit(&mut value);
+    let data = bytes(&value).unwrap();
+    let digest = canonical::hash_bytes(&data);
+    part.path = format!("parts/{}.json", &digest[7..]);
+    part.digest = digest;
+    part.bytes = data.len() as u64;
+    fs::write(directory.join(&part.path), data).unwrap();
+    fs::write(directory.join("manifest.json"), bytes(manifest).unwrap()).unwrap();
+}
+
+#[test]
+fn malformed_package_and_retained_rows_do_not_echo_private_values() {
+    const PRIVATE: &str = "private-body-token /private/build-settings class Secret {}";
+    let service = service();
+    let e = evidence(&service);
+    let (directory, mut manifest) = serialize(service.clone(), &e);
+    rewrite_part(directory.path(), &mut manifest, "report", |part| {
+        part["records"][0]["errorCode"] = json!(PRIVATE);
+    });
+    let error = load(directory.path()).err().unwrap();
+    assert!(!serde_json::to_string(&error).unwrap().contains(PRIVATE));
+    assert!(error.message.contains("diagnostic"));
+    let (directory, mut manifest) = serialize(service.clone(), &e);
+    rewrite_part(directory.path(), &mut manifest, "header", |part| {
+        part[PRIVATE] = json!(PRIVATE);
+    });
+    let error = load(directory.path()).err().unwrap();
+    assert!(!serde_json::to_string(&error).unwrap().contains(PRIVATE));
+    assert!(error.message.contains("part JSON"));
+    let (directory, manifest) = serialize(service.clone(), &e);
+    let mut value = serde_json::to_value(manifest).unwrap();
+    value[PRIVATE] = json!(PRIVATE);
+    fs::write(
+        directory.path().join("manifest.json"),
+        bytes(&value).unwrap(),
+    )
+    .unwrap();
+    let error = load(directory.path()).err().unwrap();
+    assert!(!serde_json::to_string(&error).unwrap().contains(PRIVATE));
+    assert!(error.message.contains("manifest JSON"));
+
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, snapshot) = retained_fixture(&temp.path().join("docs"), &service, e, false);
+    let mut snapshot =
+        super::super::check::Check::load_snapshot_manifest(&repo, &snapshot).unwrap();
+    let source = json!({"owned":{"id":"owned","service":"orders","revision":"a".repeat(40),
+        "file":"Owned.java","startLine":PRIVATE,"endLine":1,"text":"class Owned {}",
+        "textDigest":canonical::hash_bytes(b"class Owned {}"),
+        "evidenceDigest":canonical::hash_bytes(b"owned"),"authority":"EXACT_SNAPSHOT_TEXT","url":null}});
+    snapshot
+        .service_manifests
+        .get_mut("orders")
+        .unwrap()
+        .sources =
+        super::super::cache::put_json(&repo, super::super::cache::SOURCES_OBJECT_SCHEMA, &source)
+            .unwrap();
+    let r =
+        super::super::cache::put_json(&repo, super::super::check::CHECK_MANIFEST_SCHEMA, &snapshot)
+            .unwrap();
+    let error = export_snapshot(
+        &repo,
+        "orders",
+        &format!("{}/{}", r.digest, r.size),
+        &temp.path().join("out"),
+    )
+    .unwrap_err();
+    assert!(!serde_json::to_string(&error).unwrap().contains(PRIVATE));
+    assert!(error.message.contains("closure is unavailable or corrupt"));
+}
+
+#[test]
+fn corruption_and_duplicate_rows_still_fail_after_limit_fix() {
+    let service = service();
+    let mut e = evidence(&service);
+    e.contracts.insert("owned".into(), json!({"type":"string"}));
+    let (directory, manifest) = serialize(service.clone(), &e);
+    let path = directory.path().join(&manifest.parts[0].path);
+    fs::write(path, b"private source bytes must not reach the diagnostic").unwrap();
+    let error = load(directory.path()).err().unwrap();
+    assert!(error.message.contains("digest mismatch"));
+    assert!(!error.message.contains("private source"));
+    let (directory, mut manifest) = serialize(service.clone(), &e);
+    rewrite_part(directory.path(), &mut manifest, "contracts", |part| {
+        part["records"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"owned","value":1}));
+    });
+    assert!(
+        load(directory.path())
+            .err()
+            .unwrap()
+            .message
+            .contains("schema or count mismatch")
+    );
+    manifest
+        .parts
+        .iter_mut()
+        .find(|p| p.kind == "contracts")
+        .unwrap()
+        .records = 2;
+    fs::write(
+        directory.path().join("manifest.json"),
+        bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        load(directory.path())
+            .err()
+            .unwrap()
+            .message
+            .contains("duplicate package contract ID")
+    );
 }
