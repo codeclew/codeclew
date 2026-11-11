@@ -60,7 +60,7 @@ fn object_database(repo: &Repository) -> std::path::PathBuf {
 }
 
 #[test]
-fn retained_work_proposal_and_render_survive_latest_replacement_and_unavailable_sources() {
+fn retained_work_reads_survive_latest_replacement_and_unavailable_sources() {
     let f = Fixture::new();
     let orders = f.service("orders");
     let other = f.service("other");
@@ -92,76 +92,11 @@ fn retained_work_proposal_and_render_survive_latest_replacement_and_unavailable_
         checked.services["orders"].revision
     );
     proposals::current(&repo, &frozen).unwrap();
-    let reference = |native: &str| {
-        frozen
-            .handles
-            .iter()
-            .find(|(_, h)| h.id == native)
-            .unwrap()
-            .0
-            .clone()
-    };
-    let returned = checked.services["orders"]
-        .observations
-        .values()
-        .find(|d| d.kind == "FLOW" && d.symbol == entry.symbol && d.normalized["kind"] == "RETURN")
-        .unwrap();
-    let proposed = f.input("proposal.json", &json!({"schema":"codeclew-documentation-proposal/1.0", "operations":[{
-        "entrypoint":reference(&entry.id), "title":"Reserve quantity",
-        "summary":{"text":"Processes the requested quantity.", "evidence":[reference(&entry.id)]},
-        "steps":[{"kind":"note","meaning":{"text":"Returns the normalized quantity.","evidence":[reference(&returned.id)]}}]
-    }]}));
-    let submitted = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &id,
-        "--input",
-        proposed.to_str().unwrap(),
-    ]);
-    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
-    let published = f.ok(&[
-        "docs",
-        "proposal",
-        "publish",
-        "--proposal",
-        submitted["proposal"].as_str().unwrap(),
-        "--unassessed",
-    ]);
-    assert_eq!(published["snapshot"], a);
-    assert_eq!(
-        published["evidenceAuthority"],
-        "PINNED_SNAPSHOT_NOT_REVERIFIED"
-    );
-    assert_eq!(published["documentedOperations"], 1);
-    let data = read(f.bundle(
-        published["bundle"].as_str().unwrap(),
-        "services/orders.json",
-    ));
-    assert_eq!(data["sectionState"]["freshness"], "UNVERIFIED");
-    assert_eq!(data["sectionState"]["verification"], "UNASSESSED");
-    assert!(
-        data["sectionState"]["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["reason"] == "PINNED_SNAPSHOT_NOT_REVERIFIED")
-    );
-    let rerender = f.ok(&["docs", "render", "--snapshot", &a]);
-    assert_eq!(rerender["documentedOperations"], 1);
     assert_eq!(fs::read(&latest).unwrap(), latest_b);
     assert_eq!(
         Check::load_snapshot(&repo, &a).unwrap().context_digest,
         checked.context_digest
     );
-    assert_ne!(
-        f.run(&["docs", "render", "--snapshot", &a, "--require-complete"])
-            .0,
-        0
-    );
-    // A later publication still invalidates work's optimistic content binding.
-    assert!(proposals::current(&repo, &frozen).is_err());
 }
 
 #[test]
@@ -211,7 +146,7 @@ fn retained_snapshot_corruption_and_missing_payload_never_fall_back_to_latest() 
             rusqlite::params![digest],
         )
         .unwrap();
-    assert_ne!(f.run(&["docs", "render", "--snapshot", &snapshot]).0, 0);
+    assert!(Check::load_snapshot(&repo, &snapshot).is_err());
     assert!(!f.docs.join("docs/index.html").exists());
     assert_eq!(fs::read(latest).unwrap(), latest_bytes);
     for invalid in [
@@ -260,11 +195,15 @@ fn retained_work_rejects_changed_declarations_and_unrelated_service_capture() {
     assert!(
         work::prepare_with_snapshot(&repo, "service:orders".into(), request, Some(&a)).is_err()
     );
-    assert_ne!(f.run(&["docs", "render", "--snapshot", &a]).0, 0);
+    assert_ne!(
+        f.run(&["docs", "context", "--service", "orders", "--snapshot", &a])
+            .0,
+        0
+    );
 }
 
 #[test]
-fn retained_work_generation_gap_never_reacquires_evidence() {
+fn unsupported_draft_request_never_reacquires_evidence_or_publishes() {
     let f = Fixture::new();
     let source = f.service("orders");
     let snapshot = capture(&f, "orders");
@@ -273,26 +212,18 @@ fn retained_work_generation_gap_never_reacquires_evidence() {
     fs::rename(&source, source.with_extension("offline")).unwrap();
     let latest = f.docs.join(".codeclew/cache/latest-check.json");
     fs::write(&latest, b"generation gap must use retained snapshot").unwrap();
-    let result = f.ok(&["docs", "work", "run", "--work", id]);
-    assert_eq!(result["status"], "GENERATION_GAP");
+    let (code, result) = f.run(&["docs", "work", "run", "--draft", "--work", id]);
+    assert_ne!(code, 0);
     assert!(
-        result["gap"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("MISSING_EXECUTION_CONFIGURATION")
+        result
+            .to_string()
+            .contains("OPERATION_DRAFT_PREPARE_REQUIRED"),
+        "{result}"
     );
+    assert!(!f.docs.join("docs/index.html").exists());
     assert_eq!(
         fs::read(latest).unwrap(),
         b"generation gap must use retained snapshot"
-    );
-    let data = read(f.bundle(
-        result["publication"]["bundle"].as_str().unwrap(),
-        "services/orders.json",
-    ));
-    assert!(
-        data["updateFailures"]
-            .to_string()
-            .contains("GENERATION_GAP")
     );
     let repo = Repository::open(&f.docs).unwrap();
     assert_eq!(

@@ -6,6 +6,7 @@ use super::{
 };
 use serde_json::{Value, json};
 
+#[cfg(test)]
 fn contract<'a>(
     reference: Option<&str>,
     receiver: &str,
@@ -74,6 +75,7 @@ fn contract<'a>(
     }
 }
 
+#[cfg(test)]
 pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
     let mut rows = Vec::new();
     for event in operation.events.iter().filter(|e| {
@@ -141,6 +143,7 @@ pub(super) fn project(operation: &Operation, checked: &Check) -> Vec<Value> {
 
 /// Keep the whole outgoing-call projection with its accepted operation. Never
 /// substitute a new declaration or contract into old prose, including legacy pages.
+#[cfg(test)]
 pub(super) fn retain(previous: Option<&Value>, checked: &Check) -> Value {
     let mut rows = previous
         .and_then(Value::as_array)

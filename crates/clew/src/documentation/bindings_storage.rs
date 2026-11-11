@@ -22,6 +22,7 @@ pub(super) const OBJECT_ROOT: &str = "docs/evidence/objects";
 const LEAF: &str = "codeclew-bindings-record-chunk/1.0";
 const PARTITION: &str = "codeclew-bindings-partition/1.0";
 const INDEX_MAX: u64 = 1024 * 1024;
+#[cfg(test)]
 const TARGET: usize = 1024 * 1024;
 const MAX: u64 = super::check::PORTABLE_CACHE_MAX_BYTES;
 
@@ -126,6 +127,7 @@ pub(super) struct ReadStats {
     pub logical_bytes: u64,
 }
 
+#[cfg(test)]
 pub(super) struct Encoded {
     pub manifest: Vec<u8>,
     pub new_objects: BTreeMap<String, Vec<u8>>,
@@ -312,10 +314,12 @@ fn record_kind(table: &str) -> &str {
     }
 }
 
+#[cfg(test)]
 struct PendingSource {
     payload: String,
     text: Option<String>,
 }
+#[cfg(test)]
 struct Pending {
     owner: Owner,
     table: String,
@@ -326,12 +330,15 @@ struct Pending {
     fragment: Option<String>,
 }
 
+#[cfg(test)]
 struct Builder {
     known: BTreeMap<String, Link>,
     records: BTreeMap<String, (Owner, Record)>,
 }
 
+#[cfg(test)]
 impl Builder {
+    #[cfg(test)]
     fn record(&mut self, owner: &Owner, kind: &str, value: Value) -> Result<String, ClewError> {
         let record = Record {
             kind: kind.into(),
@@ -344,6 +351,7 @@ impl Builder {
         }
         Ok(identity)
     }
+    #[cfg(test)]
     fn source(&mut self, owner: &Owner, mut value: Value) -> Result<PendingSource, ClewError> {
         let text = if let Some(text) = value.get("text").cloned() {
             if !text.is_string() {
@@ -371,6 +379,7 @@ impl Builder {
     }
 }
 
+#[cfg(test)]
 fn reference(schema: &str, raw: &[u8]) -> ObjectRef {
     ObjectRef::new(schema.into(), canonical::hash_bytes(raw), raw.len() as u64)
 }
@@ -388,6 +397,7 @@ fn checked_chunk(raw: &[u8]) -> Result<Chunk, ClewError> {
     Ok(chunk)
 }
 
+#[cfg(test)]
 fn prior_locations(
     repo: &Repository,
     raw: Option<&[u8]>,
@@ -410,6 +420,7 @@ fn prior_locations(
     Ok(known)
 }
 
+#[cfg(test)]
 fn link(known: &BTreeMap<String, Link>, id: &str) -> Result<Link, ClewError> {
     known
         .get(id)
@@ -440,6 +451,7 @@ fn member_refs(member: &Member) -> Vec<&ObjectRef> {
 
 /// Encode compact logical bindings; all heavy bytes remain in typed leaf units.
 /// No file is written until the complete plan has passed both aggregate budgets.
+#[cfg(test)]
 pub(super) fn encode(
     repo: &Repository,
     value: Value,
@@ -691,8 +703,10 @@ pub(super) fn encode(
     })
 }
 
+#[cfg(test)]
 impl Encoded {
     /// Called under the ordinary publication lock, before the pointer switch.
+    #[cfg(test)]
     pub fn persist(&self, repo: &Repository) -> Result<(), ClewError> {
         for reference in &self.references {
             if let Some(raw) = self.new_objects.get(&reference.digest) {
@@ -704,6 +718,7 @@ impl Encoded {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn files(&self) -> Result<BTreeMap<String, Vec<u8>>, ClewError> {
         self.references
             .iter()
@@ -721,6 +736,7 @@ impl Encoded {
 /// Publication IDs describe logical state. A previously written immutable bundle
 /// may have a different packing history; keep its exact verified representation
 /// instead of repacking it under the same ID or forcing a new render generation.
+#[cfg(test)]
 pub(super) fn encode_publication(
     repo: &Repository,
     bundle: &str,
@@ -1084,6 +1100,7 @@ pub(super) fn resolve(repo: &Repository, raw: &[u8]) -> Result<(Value, ReadStats
 
 /// Scoped reading material, not a replacement evidence envelope. The caller pins
 /// the original manifest hash and validates the resulting selected Bindings.
+#[cfg(test)]
 pub(super) fn resolve_subjects(
     repo: &Repository,
     raw: &[u8],
@@ -1203,6 +1220,7 @@ pub(super) fn logical_size(raw: &[u8]) -> Result<Option<u64>, ClewError> {
 
 /// Reading export packs only selected logical members after source projection.
 /// It must never attach the original reused chunks to a remote directory.
+#[cfg(test)]
 pub(super) fn export_files(
     repo: &Repository,
     raw: &[u8],
@@ -1231,11 +1249,7 @@ pub(super) fn export_files(
     Ok(files)
 }
 
-pub(super) fn export_file(name: &str) -> bool {
-    let name = name.strip_prefix("static/clew-bindings/").unwrap_or(name);
-    name == "frozen-bindings.json" || name.starts_with(&format!("{OBJECT_ROOT}/"))
-}
-
+#[cfg(test)]
 pub(super) fn resolve_export(
     files: &BTreeMap<String, Vec<u8>>,
     prefix: &str,

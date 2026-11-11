@@ -79,12 +79,9 @@ query and cursor. Use it in the same Work when another page is needed, with an
 explicit bounded `--max-pages` override. Exact-reference reads and mandatory
 initial, retained and proposal collection keep their existing behavior.
 
-The `work_session.py submit` participant preflight is service-only. For a
-scenario/DataFlow proposal, use supported native `docs proposal submit`, save
-stdout/stderr/exit status, then use `collect_proposal.py` on its returned proposal
-with an explicit page budget. Inspect every diagnostic through a terminal
-cursor; an incomplete collection cannot establish native readiness. This route
-does not bypass native participant, evidence or meaning validation.
+Describe the retained view in authored originals and use
+[compose/bind/finalize](compose-original.md#original-pages-and-completion).
+Keep declared transfers and unresolved mappings explicit.
 
 Read opaque Work/proposal IDs, source references, cursors and digests from the
 saved JSON into command argument arrays (for example with `json.loads` and

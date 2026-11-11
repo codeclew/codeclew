@@ -1,4 +1,4 @@
-//! Inert, source-bound content shared by the static HTML and MDX publishers.
+//! Source-bound projections shared by retained evidence readers.
 use crate::documentation::model::{Explanation, Observation, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,15 +17,7 @@ pub enum ProjectionKind {
     CompilerControlFlow,
 }
 
-impl ProjectionKind {
-    pub(crate) const fn is_declaration_view(self) -> bool {
-        matches!(self, Self::DeclarationOnly | Self::CompilerControlFlow)
-    }
-
-    pub(crate) const fn forbids_expansion(self) -> bool {
-        matches!(self, Self::DeclarationOnly | Self::CompilerControlFlow)
-    }
-}
+impl ProjectionKind {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

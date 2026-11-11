@@ -515,6 +515,7 @@ pub(super) fn completed_source_references(
     Ok(completed)
 }
 
+#[cfg(test)]
 pub(super) fn initial_context_complete_with_parts(
     work: &Work,
     state: &ReadState,
@@ -745,6 +746,7 @@ pub(super) fn delivered_source_references(
 
 /// Require packet-delivered parts for every SOURCE omitted from the default
 /// page walk, in addition to the independently validated persisted receipts.
+#[cfg(test)]
 pub(super) fn initial_context_complete_with_packet_parts(
     work: &Work,
     state: &ReadState,

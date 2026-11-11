@@ -18,24 +18,7 @@ pub(in crate::documentation) fn prepare<'a>(
         java::prepare(evidence, node)
     }
 }
-pub(in crate::documentation) fn prepare_handoff<'a>(
-    evidence: &'a crate::documentation::model::ServiceEvidence,
-    callable: &super::super::model::CallableProjection,
-) -> Result<Prepared<'a>, ClewError> {
-    let owner = &evidence.observations[&callable.declaration_id];
-    let scope = owner.normalized["scope"].as_str().unwrap_or_default();
-    let sites: Vec<_> = callable
-        .retained_call_sites
-        .as_ref()
-        .map(|r| {
-            r.sites
-                .iter()
-                .map(|site| (site, None, "ADMITTED_COMPILER_SITE".to_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
-    kotlin::prepare_sites(evidence, &callable.declaration_id, scope, &sites)
-}
+
 #[cfg(test)]
 pub(in crate::documentation) use java::site_range as java_site_range;
 

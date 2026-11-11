@@ -72,11 +72,6 @@ fn default_consumers_retain_one_saved_check_offline() {
     let latest_before = fs::read(&latest_path).unwrap();
     let marker = install_git_sentinel(&f);
 
-    let rendered = f.ok(&["docs", "render"]);
-    assert_eq!(
-        rendered["evidenceAuthority"],
-        "PINNED_SNAPSHOT_NOT_REVERIFIED"
-    );
     let input = request(&f);
     let first = f.ok(&[
         "docs",
@@ -147,7 +142,6 @@ fn missing_corrupt_and_stale_latest_fail_without_fallback() {
             input.to_str().unwrap(),
         ],
         vec!["docs", "context", "--service", "orders"],
-        vec!["docs", "render"],
     ] {
         let (code, value) = f.run(&args);
         assert_ne!(code, 0, "{args:?}: {value}");
@@ -200,7 +194,7 @@ fn missing_corrupt_and_stale_latest_fail_without_fallback() {
 }
 
 #[test]
-fn legacy_inline_work_requires_reindex_before_agent_run() {
+fn legacy_inline_work_requires_reprepare_before_agent_run() {
     let f = Fixture::new();
     let source = f.service("orders");
     let checked = f.checked();
@@ -222,19 +216,19 @@ fn legacy_inline_work_requires_reindex_before_agent_run() {
     runtime.snapshot = None;
     let legacy = write_inline(&repo, runtime);
     fs::rename(&source, source.with_extension("offline")).unwrap();
-    let (code, value) = f.run(&["docs", "work", "run", "--work", &legacy]);
+    let (code, value) = f.run(&["docs", "work", "run", "--draft", "--work", &legacy]);
     assert_ne!(code, 0);
-    assert!(value.to_string().contains("DOCS_REINDEX_REQUIRED"));
+    assert!(value.to_string().contains("DOCS_WORK_REPREPARE_REQUIRED"));
     assert!(
         work::load(&repo, &legacy)
             .unwrap_err()
             .message
-            .contains("DOCS_REINDEX_REQUIRED")
+            .contains("DOCS_WORK_REPREPARE_REQUIRED")
     );
 }
 
 #[test]
-fn default_work_remains_pinned_through_validation_and_failure_publication() {
+fn default_work_remains_pinned_through_validation_and_failed_execution() {
     let f = Fixture::new();
     let orders = f.service("orders");
     let inventory = f.service("inventory");
@@ -265,14 +259,15 @@ fn default_work_remains_pinned_through_validation_and_failure_publication() {
     let frozen = work::load(&repo, id).unwrap();
     assert_eq!(frozen.snapshot.as_deref(), Some(a.as_str()));
     clew::documentation::proposals::current(&repo, &frozen).unwrap();
-    let result = f.ok(&["docs", "work", "run", "--work", id]);
-    assert_eq!(result["status"], "GENERATION_GAP");
-    assert!(result["publication"]["bundle"].is_string(), "{result}");
-    let data = read(f.bundle(
-        result["publication"]["bundle"].as_str().unwrap(),
-        "services/orders.json",
-    ));
-    assert!(data["sectionState"]["reasons"].to_string().contains(&a));
+    let (code, result) = f.run(&["docs", "work", "run", "--draft", "--work", id]);
+    assert_ne!(code, 0);
+    assert!(
+        result
+            .to_string()
+            .contains("OPERATION_DRAFT_PREPARE_REQUIRED"),
+        "{result}"
+    );
+    assert!(!f.docs.join("docs/index.html").exists());
     assert!(!marker.exists());
     assert_eq!(fs::read(latest).unwrap(), b"unrelated unreadable latest");
 }
@@ -303,7 +298,7 @@ fn unrelated_service_snapshot_fails_without_capturing_available_source() {
     ] {
         let (code, value) = f.run(&args);
         assert_ne!(code, 0, "{value}");
-        assert!(value.to_string().contains("missing from retained evidence"));
+        assert!(value.to_string().contains("was not selected for capture"));
     }
     assert!(!marker.exists());
     assert_eq!(fs::read(latest).unwrap(), before);
@@ -362,8 +357,9 @@ fn auxiliary_readers_use_saved_evidence_with_producers_unavailable() {
     let f = Fixture::new();
     f.service("orders");
     f.service("inventory");
-    f.checked();
-    f.ok(&["docs", "render"]);
+    let checked = f.checked();
+    let original = f.author("orders", &checked);
+    f.retain_legacy(&checked, &original);
     let marker = install_git_sentinel(&f);
     let interaction=f.input("candidate.json",&json!({"schema":"codeclew-documentation-interaction/1.0","id":"candidate","title":"Declared relationship","from":{"service":"orders"},"to":{"service":"inventory"},"transport":{"kind":"http","method":"POST","path":"/quantity"},"declaration":{"origin":"human","rationale":"An explicit candidate, not proven runtime transport."}}));
     let candidate = f.ok(&[
@@ -387,43 +383,4 @@ fn auxiliary_readers_use_saved_evidence_with_producers_unavailable() {
     let changes = f.ok(&["docs", "changes"]);
     assert_eq!(changes["authority"], "PINNED_SNAPSHOT_NOT_REVERIFIED");
     assert!(!marker.exists(), "auxiliary consumer attempted acquisition");
-}
-
-#[test]
-fn retained_render_does_not_promote_unknown_to_stale_or_clear_observed_staleness() {
-    let f = Fixture::new();
-    let source = f.service("orders");
-    let checked = f.checked();
-    let narrative = f.author("orders", &checked);
-    let first = f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
-    let first_data = read(f.bundle(first["bundle"].as_str().unwrap(), "services/orders.json"));
-    let operation = first_data["operations"][0]["id"].as_str().unwrap();
-    assert_eq!(
-        first_data["operationStates"][operation]["freshness"],
-        "UNVERIFIED"
-    );
-    let repeated = f.ok(&["docs", "render"]);
-    let repeated_data =
-        read(f.bundle(repeated["bundle"].as_str().unwrap(), "services/orders.json"));
-    assert_eq!(
-        repeated_data["operationStates"][operation]["freshness"],
-        "UNVERIFIED"
-    );
-    fs::write(source.join("change.txt"), b"A committed participant change").unwrap();
-    support::commit(&source);
-    let observed = f.ok(&["docs", "refresh", "--status-only"]);
-    let observed_data =
-        read(f.bundle(observed["bundle"].as_str().unwrap(), "services/orders.json"));
-    assert_eq!(
-        observed_data["operationStates"][operation]["freshness"],
-        "STALE"
-    );
-    let republished = f.ok(&["docs", "render"]);
-    let data = read(f.bundle(
-        republished["bundle"].as_str().unwrap(),
-        "services/orders.json",
-    ));
-    assert_eq!(data["operationStates"][operation]["freshness"], "STALE");
-    assert_eq!(data["operationSources"], first_data["operationSources"]);
-    assert_eq!(data["operations"], first_data["operations"]);
 }

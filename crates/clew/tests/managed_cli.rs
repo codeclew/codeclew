@@ -4085,9 +4085,12 @@ fn working_tree_comparison_retains_exact_diff_after_session_and_storage_gc() {
     assert!(!missing.status.success());
 }
 
+#[path = "support/legacy_bindings.rs"]
+mod legacy_bindings;
+
 #[cfg(unix)]
 #[test]
-fn durable_documentation_cli_recovers_and_reports_route_fragments() {
+fn durable_documentation_cli_reads_legacy_bindings_and_reports_route_fragments() {
     use clew::documentation::{check::Check, model::*};
     use std::os::unix::fs::PermissionsExt;
 
@@ -4671,7 +4674,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     overview.boundaries = scenario.boundaries.clone();
     checkout.operations.push(overview);
     for narrative in &narratives {
-        clew::documentation::render::validate(narrative, &checked).unwrap();
+        clew::documentation::retained_validation::validate(narrative, &checked).unwrap();
     }
     let mut missing_guard = narratives[0].clone();
     missing_guard.operations[0]
@@ -4689,7 +4692,8 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         }],
         edges: vec![],
     });
-    let missing_flow = clew::documentation::render::validate(&missing_guard, &checked).unwrap_err();
+    let missing_flow =
+        clew::documentation::retained_validation::validate(&missing_guard, &checked).unwrap_err();
     assert!(
         missing_flow
             .message
@@ -4720,100 +4724,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             narrative.operations.push(section);
         }
     }
-    let mut inputs = Vec::new();
-    for (index, n) in narratives.iter().enumerate() {
-        let path = temporary.path().join(format!("narrative-{index}.json"));
-        fs::write(&path, serde_json::to_vec(n).unwrap()).unwrap();
-        inputs.push(path);
-    }
-    let mut args = vec![
-        "docs",
-        "render",
-        "--root",
-        root,
-        "--require-complete",
-        "--refresh",
-    ];
-    for path in &inputs {
-        args.extend(["--input", path.to_str().unwrap()]);
-    }
-    let (code, rendered) = run(&args);
-    assert_eq!(code, 0, "{rendered}");
-    assert_eq!(rendered["explicitGaps"], 0);
-    assert_eq!(rendered["evidenceAuthority"], "CURRENT_SOURCE_CHECK");
-    let conflict = run_managed(
-        &binary,
-        &state,
-        &runtime,
-        &lease,
-        &[
-            "docs",
-            "render",
-            "--root",
-            root,
-            "--refresh",
-            "--snapshot",
-            rendered["snapshot"].as_str().unwrap(),
-        ],
-        None,
-    );
-    assert!(!conflict.status.success());
-    assert!(
-        String::from_utf8_lossy(&conflict.stderr).contains("cannot be used with")
-            || String::from_utf8_lossy(&conflict.stderr).contains("conflict")
-    );
-    let bundle_root = docs
-        .join("docs/generated")
-        .join(rendered["bundle"].as_str().unwrap());
-    for page in [
-        docs.join("docs/index.html"),
-        bundle_root.join("overview.html"),
-    ] {
-        let html = fs::read_to_string(&page).unwrap();
-        let links: Vec<_> = html
-            .split("href=\"")
-            .skip(1)
-            .map(|part| part.split('"').next().unwrap())
-            .collect();
-        assert!(
-            links
-                .iter()
-                .any(|link| link.ends_with("services/orders.html"))
-        );
-        assert!(
-            links
-                .iter()
-                .any(|link| link.ends_with("scenarios/checkout.html"))
-        );
-        for link in links {
-            if let Some(encoded) = link.strip_prefix("data:image/svg+xml,") {
-                // Embedded favicons remain portable offline assets, not file paths.
-                assert!(html.contains(&format!(
-                    "rel=\"icon\" type=\"image/svg+xml\" href=\"{link}\""
-                )));
-                assert_eq!(encoded.len() % 3, 0);
-                let svg = encoded
-                    .as_bytes()
-                    .chunks_exact(3)
-                    .map(|chunk| {
-                        assert_eq!(chunk[0], b'%');
-                        u8::from_str_radix(std::str::from_utf8(&chunk[1..]).unwrap(), 16).unwrap()
-                    })
-                    .collect::<Vec<_>>();
-                let svg = String::from_utf8(svg).unwrap();
-                let document = roxmltree::Document::parse(&svg).unwrap();
-                assert_eq!(document.root_element().tag_name().name(), "svg");
-                continue;
-            }
-            if !link.contains("://") && !link.starts_with('#') {
-                assert!(
-                    page.parent().unwrap().join(link).is_file(),
-                    "broken link in {}: {link}",
-                    page.display()
-                );
-            }
-        }
-    }
+    legacy_bindings::retain(&docs, &checked, narratives);
     let current_page = fs::read(docs.join("docs/index.html")).unwrap();
     let (code, current) = run(&["docs", "check", "--root", root]);
     assert_eq!(code, 0, "{current}");
@@ -4823,16 +4734,23 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     for (id, repository) in &repositories {
         fs::rename(repository, offline.join(id)).unwrap();
     }
-    let (code, again) = run(&["docs", "render", "--root", root]);
-    assert_eq!(code, 0, "{again}");
-    assert_ne!(again["bundle"], rendered["bundle"]);
-    assert_eq!(again["evidenceAuthority"], "PINNED_SNAPSHOT_NOT_REVERIFIED");
+    // Saved context remains readable with no source checkout. Legacy output
+    // bytes are historical input, never regenerated by a read command.
+    let (code, offline_context) = run(&[
+        "docs",
+        "context",
+        "--root",
+        root,
+        "--service",
+        "orders",
+        "--snapshot",
+        context["snapshot"].as_str().unwrap(),
+        "--limit",
+        "100",
+    ]);
+    assert_eq!(code, 0, "{offline_context}");
     let before = fs::read(docs.join("docs/index.html")).unwrap();
-    assert_ne!(before, current_page);
-    let (code, repeated) = run(&["docs", "render", "--root", root]);
-    assert_eq!(code, 0, "{repeated}");
-    assert_eq!(repeated["bundle"], again["bundle"]);
-    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
+    assert_eq!(before, current_page);
     for (id, repository) in &repositories {
         fs::rename(offline.join(id), repository).unwrap();
     }
@@ -4851,19 +4769,6 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             "{}",
             String::from_utf8_lossy(&status.stdout)
         );
-    }
-    // Optional reproducible fixture export for visual review; never export private runtime state.
-    if let Some(destination) = std::env::var_os("CODECLEW_DOCS_EXAMPLE_OUTPUT") {
-        let destination = Path::new(&destination);
-        fs::create_dir(destination).expect("example output must be a new directory");
-        copy_tree(&docs.join("docs"), &destination.join("docs"));
-        for (index, narrative) in narratives.iter().enumerate() {
-            fs::write(
-                destination.join(format!("narrative-{index}.json")),
-                serde_json::to_vec_pretty(narrative).unwrap(),
-            )
-            .unwrap();
-        }
     }
     // Only inventory changes. The declared card, transport edge and contract row are affected.
     let inventory = &repositories["inventory"];
@@ -4940,8 +4845,6 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             .any(|v| v["fragment"].as_str().unwrap().contains("contract"))
     );
     assert_eq!(route_match, "MISMATCH");
-    let (code, refused) = run(&["docs", "render", "--root", root, "--require-complete"]);
-    assert_eq!(code, 4, "{refused}");
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
     // Restore the old available revision without rewriting the first source checkout.
     let clone_root = temporary.path().join("relocated");
@@ -5043,7 +4946,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
 
 #[test]
 #[cfg(unix)]
-fn durable_source_documentation_without_build_tools_rebinds_and_preserves_publication() {
+fn durable_source_documentation_without_build_tools_reads_and_preserves_legacy_publication() {
     use clew::documentation::check::Check;
     use std::os::unix::fs::{PermissionsExt, symlink};
     let temporary = tempfile::tempdir().unwrap();
@@ -5300,18 +5203,12 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
         );
     }
     fs::write(docs.join("docs/manual.md"), "Engineer-owned explanation.\n").unwrap();
-    let mut args = vec!["docs", "render", "--root", root];
-    for path in &inputs {
-        args.extend(["--input", path.to_str().unwrap()]);
-    }
-    let (code, rendered) = run(&args);
-    assert_eq!(code, 0, "{rendered}");
-    assert_eq!(rendered["documentedOperations"], 3);
+    let narratives = inputs
+        .iter()
+        .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+        .collect();
+    legacy_bindings::retain(&docs, &checked, narratives);
     let initial = fs::read(docs.join("docs/index.html")).unwrap();
-    assert_eq!(
-        run(&["docs", "render", "--root", root]).1["bundle"],
-        rendered["bundle"]
-    );
     let repo = &repositories["python"];
     let source = repo.join("orders.py");
     let original = fs::read_to_string(&source).unwrap();
@@ -5338,11 +5235,8 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
             .unwrap()
             .is_empty()
     );
-    let (code, value) = run(&["docs", "render", "--root", root]);
-    assert_eq!(code, 0, "{value}");
-    assert_ne!(value["bundle"], rendered["bundle"]);
     let relocated = fs::read(docs.join("docs/index.html")).unwrap();
-    assert_ne!(initial, relocated);
+    assert_eq!(initial, relocated);
     fs::write(repo.join("policy.py"), "MAX_QUANTITY = 25\n").unwrap();
     run_git(repo, &["add", "."]);
     run_git(
@@ -5382,10 +5276,6 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
             .iter()
             .any(|i| i["kind"] == "SOURCE_CHANGE" && i["beforeAvailable"] == true),
         "{dossier}"
-    );
-    assert_ne!(
-        run(&["docs", "render", "--root", root, "--require-complete"]).0,
-        0
     );
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), relocated);
     assert_eq!(
@@ -5510,8 +5400,12 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
         "{}",
         serde_json::to_string(&e.boundaries).unwrap()
     );
-    assert_eq!(run(&["docs", "render", "--root", root]).0, 0);
-    let published = fs::read(docs.join("docs/index.html")).unwrap();
+    fs::write(
+        docs.join("docs/manual.html"),
+        b"Owned historical explanation; preserve verbatim.",
+    )
+    .unwrap();
+    let published = fs::read(docs.join("docs/manual.html")).unwrap();
     fs::write(repo.join("pom.xml"), "<broken>\n").unwrap();
     commit();
     let (_, report) = run(&["docs", "check", "--root", root]);
@@ -5536,165 +5430,5 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
             .iter()
             .any(|b| b == "SEMANTIC_PROVIDER_UNAVAILABLE_SOURCE_REMAINS_READABLE")
     );
-    assert_ne!(
-        run(&["docs", "render", "--root", root, "--require-complete"]).0,
-        0
-    );
-    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), published);
-}
-
-#[test]
-#[cfg(unix)]
-fn flow_dsl_static_render_uses_original_supported_snapshot() {
-    use std::os::unix::fs::PermissionsExt;
-    let temporary = tempfile::tempdir().unwrap();
-    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
-    let state = temporary.path().join("state/v2");
-    let runtime = state.join("runtimes").join("1".repeat(64));
-    fs::create_dir_all(state.join("locks")).unwrap();
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
-    let binary = fd_runtime(&runtime);
-    let lease = state
-        .join("locks")
-        .join(format!("runtime-{}.lease", "1".repeat(64)));
-    let docs = temporary.path().join("docs");
-    let root = docs.to_str().unwrap();
-    let run = |args: &[&str]| {
-        let out = run_managed(&binary, &state, &runtime, &lease, args, None);
-        let value: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-            panic!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        assert!(
-            out.status.success() || value["status"] == "CHECKED",
-            "{value}"
-        );
-        value
-    };
-    run(&["docs", "init", "--root", root]);
-    let repo = temporary.path().join("source");
-    fs::create_dir(&repo).unwrap();
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/flow-dsl");
-    fs::copy(fixtures.join("Example.java"), repo.join("Example.java")).unwrap();
-    fs::create_dir_all(repo.join("compound-proc/src")).unwrap();
-    fs::copy(
-        fixtures.join("voltdb/OrderProc.java"),
-        repo.join("compound-proc/src/OrderProc.java"),
-    )
-    .unwrap();
-    run_git(&repo, &["init", "-q"]);
-    run_git(
-        &repo,
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://example.invalid/flow-dsl",
-        ],
-    );
-    run_git(&repo, &["add", "."]);
-    run_git(
-        &repo,
-        &[
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "-qm",
-            "Synthetic flow DSL",
-        ],
-    );
-    let service = temporary.path().join("service.json");
-    fs::write(&service,serde_json::to_vec(&json!({"schema":"codeclew-documentation-service/1.0","id":"example","title":"Example flow DSL","repositoryId":"example","repository":"https://example.invalid/flow-dsl","language":"java","profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":"21"}})).unwrap()).unwrap();
-    let catalog = run(&["docs", "service", "list", "--root", root]);
-    run(&[
-        "docs",
-        "service",
-        "add",
-        "--root",
-        root,
-        "--input",
-        service.to_str().unwrap(),
-        "--expected-input-digest",
-        catalog["inputDigest"].as_str().unwrap(),
-    ]);
-    run(&[
-        "docs",
-        "bind",
-        "--root",
-        root,
-        "--service",
-        "example",
-        "--repo",
-        repo.to_str().unwrap(),
-    ]);
-    let capture = run(&["docs", "check", "--root", root]);
-    let snapshot = capture["snapshot"].as_str().unwrap();
-    // Rendering succeeds after source checkout disappears; no recapture or compilation is possible.
-    fs::remove_dir_all(&repo).unwrap();
-    for family in ["builder", "queue", "voltdb"] {
-        let output = temporary.path().join(format!("output-{family}"));
-        let profile = fixtures.join(format!("{family}-profile.json"));
-        let result = run(&[
-            "docs",
-            "dsl",
-            "render",
-            "--root",
-            root,
-            "--snapshot",
-            snapshot,
-            "--service",
-            "example",
-            "--profile",
-            profile.to_str().unwrap(),
-            "--output",
-            output.to_str().unwrap(),
-        ]);
-        let items = result["projection"]["items"].as_array().unwrap();
-        assert!(items.iter().any(|i| i["kind"]
-            == if family == "queue" {
-                "initial-queue"
-            } else {
-                "callback-group"
-            }));
-        if family == "voltdb" {
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0]["members"], json!(["this::getData"]));
-            assert_eq!(items[1]["members"], json!(["this::processData"]));
-            assert_eq!(items[2]["members"], json!(["this::confirmOrder"]));
-        }
-        assert!(output.join("page.mdx").is_file() && output.join("page.html").is_file());
-        if let Some(review) = std::env::var_os("CODECLEW_FLOW_DSL_TEST_OUTPUT") {
-            let review = std::path::PathBuf::from(review).join(family);
-            copy_tree(&output, &review);
-        }
-    }
-    let failure = run_managed(
-        &binary,
-        &state,
-        &runtime,
-        &lease,
-        &[
-            "docs",
-            "dsl",
-            "render",
-            "--root",
-            root,
-            "--snapshot",
-            "not-a-snapshot",
-            "--service",
-            "example",
-            "--profile",
-            fixtures.join("queue-profile.json").to_str().unwrap(),
-            "--output",
-            temporary.path().join("invalid").to_str().unwrap(),
-        ],
-        None,
-    );
-    assert!(!failure.status.success());
-    assert!(!temporary.path().join("invalid").exists());
+    assert_eq!(fs::read(docs.join("docs/manual.html")).unwrap(), published);
 }

@@ -8,7 +8,6 @@ for the current human/agent without requiring manual cursor or handle copying.
 import argparse
 import json
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -79,7 +78,7 @@ def prepare(args):
     root = Path(args.root).resolve()
     if not (root / "codeclew-docs.yaml").is_file():
         raise ValueError("Initialize the documentation root first: clew docs init --root PATH")
-    # A fresh directory protects previous packets, notes and editable proposals.
+    # A fresh directory protects previous packets, notes and authored originals.
     authoring = root / "authoring"
     authoring.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="first-document-", dir=authoring))
@@ -150,8 +149,6 @@ def prepare(args):
         if any(row["kind"] != "SOURCE" for row in omitted):
             raise ValueError(f"A non-source context item was too large. Inspect {output}; "
                              "narrow the work or use docs work read-retained-part.")
-        target = next((row["reference"] for page in context for row in page["items"]
-                       if row["kind"] == "SECTION" and row["id"] == "section-overview"), None)
         inventory = list(pages(read, {"query": {"kind": "SOURCE"}}))
         source_rows = []
         for index, page in enumerate(inventory):
@@ -159,8 +156,8 @@ def prepare(args):
             source_rows.extend(row for row in page["items"] + page.get("omitted", [])
                                if row.get("reference"))
         references = select_sources(source_rows)
-        if not references or not target:
-            raise ValueError(f"No complete source/overview target. Inspect native responses in {output}")
+        if not references:
+            raise ValueError(f"No retained sources. Inspect native responses in {output}")
         parts = []
         for source_index, reference in enumerate(sorted(references)):
             part_request = {"schema": "codeclew-documentation-source-part-request/1.0",
@@ -171,13 +168,6 @@ def prepare(args):
                 save(output / f"source-{source_index:04}-{index:04}.json", part)
                 parts.append(part)
 
-    proposal = {
-        "schema": "codeclew-documentation-proposal/1.0",
-        "operations": [{"entrypoint": target, "title": "REPLACE WITH SOURCE-SUPPORTED TITLE",
-                        "summary": {"text": "REPLACE WITH YOUR EXPLANATION (max 2048 UTF-8 bytes)",
-                                    "evidence": []}, "steps": []}],
-    }
-    save(output / "proposal.json", proposal)
     question = args.question if args.mode == "read" else (
         "Explain this service's purpose, inputs, main behavior and outputs from the selected "
         "source. State missing dependencies and runtime facts explicitly. Write one useful overview."
@@ -189,12 +179,13 @@ def prepare(args):
         "data. Use only references delivered by these reads for factual claims. Do not infer "
         "runtime execution or external effects from static text. Preserve source limitations. "
         "Inventory is navigation; SOURCE_PART responses below deliver the complete text.\n\n"
-        "For a source question, answer with file/line references and uncertainty; publication "
-        "is optional. For a first overview, edit proposal.json with a supported title, a summary "
-        "under 2048 UTF-8 bytes, and the actual supporting source references. The template's "
-        "empty evidence is intentionally incomplete. If updating an existing overview, preserve "
-        "its retained steps and artifacts unless explicitly changing them; the template is for "
-        "a first overview. Submit checks structure and evidence, not meaning.\n"
+        "For a source question, answer with file/line references and uncertainty. For durable "
+        "documentation, author original.json or Markdown from the retained evidence, then use "
+        "the packaged human-page pipeline: page_citations.py compose, bind, and "
+        "reader_export_check.py finalize. Read the packaged skill's compose-original reference "
+        "for exact inputs and commands. Explain sequence, contracts, effects and failure paths; "
+        "retain source limitations and original text. This packet is evidence, not an authored page.\n"
+
     )
     for label, responses in [("Native context", context), ("Complete retained source", parts)]:
         packet += f"\n## {label}\n"
@@ -203,11 +194,12 @@ def prepare(args):
     (output / "packet.md").write_text(packet)
     save(output / "result.json", {"status": "READY_FOR_AUTHOR", "work": work,
                                   "snapshot": snapshot, "sourceReferences": sorted(references),
-                                  "overviewReference": target, "publication": "NOT_PUBLISHED"})
+                                  "publication": "NOT_PUBLISHED"})
     print(json.dumps({"status": "READY_FOR_AUTHOR", "output": str(output), "work": work,
                       "snapshot": snapshot, "packet": str(output / "packet.md")}))
-    print("After authoring: " + shlex.join([args.clew, "docs", "proposal", "submit", "--root",
-          str(root), "--work", work, "--input", str(output / "proposal.json")]), file=sys.stderr)
+    print("Next: author original.json from packet.md, then compose/bind/finalize checked human HTML "
+          "using the packaged Codeclew skill.", file=sys.stderr)
+
 
 
 def main():

@@ -109,7 +109,6 @@ description and provenance rather than heuristically stripping caveats.
   Repair through a new supported proposal using the same retained Work evidence;
   preserve the old publication/review and do not recapture or silently reapprove it.
 - Before submitting a process proposal, run
-  `python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_plan_preflight.py" --proposal proposal.json`.
   It checks structural meaning/evidence presence and individual field identities,
   including nested arms. It does not inspect semantic quality or prove complete
   branches: native validation and actual reader review remain required. Continue

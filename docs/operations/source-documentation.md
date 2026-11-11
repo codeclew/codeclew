@@ -190,142 +190,45 @@ payload compatibility or deployed behavior. Changing a registered contract or
 reference input invalidates dependent service/process claims, including when
 language source roots are unchanged.
 
-## Author one explanation, render several views
+## Read saved source and author the explanation
 
 ```sh
 clew docs context --root /work/architecture --service orders --symbol example.Reservations.reserve --format compact --limit 100
 clew docs context --root /work/architecture --service orders --source RETURNED_SOURCE_ID --format raw
 clew docs context --root /work/architecture --service orders --dependency RETURNED_DEPENDENCY_ID --format raw
-clew docs render --root /work/architecture --input /work/orders-narrative.json
-clew docs render --root /work/architecture --refresh --require-complete \
-  --input /work/orders-narrative.json
 ```
 
-Since release `0.13.15`, the retained `--dependency` drill reads the requested
-observations and a selected declaration's same-service, same-compilation-scope
-flow records before materializing unrelated observation payloads. It verifies the
-complete dependency membership inventory and the payloads it reads. Its
-`evidenceValidation` metadata explicitly reports `SELECTED_DEPENDENCY_CLOSURE`
-and `exhaustiveIntegrityAudit: false`: unread capture observation and contract
-objects, and unselected dependency payloads, have not been integrity-audited.
-Missing or corrupt required evidence fails explicitly. Source objects and the
-source-input contract still load in full; this does not claim fragment-level
-source IO. Other selectors and `--refresh` keep their existing full reads.
-Validation metadata counts toward the existing stdout budget, so page boundaries
-may differ near that budget. Continue with the returned cursor; the selection's
-complete item sequence and snapshot/selector cursor binding are preserved.
-This behavior is included in release `0.13.15`; earlier releases use the full retained read.
+Follow returned cursors, omissions and exact source references. A selected
+`--dependency` drill verifies the selected dependency closure; its validation
+metadata does not claim an exhaustive audit of unread evidence. Source input
+contracts and required immutable objects remain validated. Missing or corrupt
+required evidence fails explicitly.
 
-When the selected service actually has a retained semantic overlay or declaration
-migration, native identities require the complete saved check closure. Those
-explicit dependency drills report `RETAINED_SEMANTIC_OVERLAY_CLOSURE` and identify
-the full retained payload read. An ordinary native profile without such a record
-keeps the selected dependency read and its isolation from unrelated contract
-payloads; choosing a compiler profile alone does not widen the read.
-
-
-A qualified name must select exactly one declaration; overloads need an exact
-returned identity. Source entrypoints retain callable identities, including unannotated helpers.
-Java/Kotlin annotations with fully qualified names or explicit imports also
-supply Spring declaration triggers through shared Rust rules. These are source
-declarations with runtime-registration gaps. Compiler profiles retain their
-existing endpoint discovery. Use explicit gaps for discovered public boundaries
-within the requested publication scope whose behavior is not yet authored.
-Internal helpers are optional supporting context, not individually required
-pages or gaps. Follow `nextCursor` and inspect
-`omitted`; compact output is a projection of the same selected evidence, not a
-new context planner. `SOURCE_ALIAS` names a covering source fragment and provides
-an exact drill-down reference. Source ranges and flow records remain available.
-
-Write narrative schema 1.3 using the
-[authoring example](../../skills/codeclew/references/authoring-example.md).
-Explain inputs, decisions, state changes, and outcomes. Bind statements and
-diagram elements to source/observation IDs. The renderer checks references and
-requires relevant branch/return coverage; it cannot prove arbitrary prose true.
-For concise branch labels, useful optional calls, and corrective FLOW diagnostics,
-see [Author readable process narratives](readable-process-narratives.md).
 A unique source selector returns `SOURCE_MATCH`, never compiler `RESOLVED`.
-Lexical events retain parent ordinals, syntax kinds, and exact snippets. They do
-not establish runtime order, resolved call targets, overload selection, inferred
-types, extension dispatch, or coroutine scheduling. Engineer-declared HTTP/Kafka
-handoffs remain declarations when their linkage cannot be resolved.
+Lexical flow records retain source structure; they do not establish runtime
+order, resolved call targets, overload selection or coroutine scheduling.
+Engineer-declared handoffs remain declarations when their linkage is unproven.
 
-The same accepted explanation produces the existing offline HTML, Markdown,
-Mermaid, detailed sequence, and optional overview/state abstraction. Manual prose
-and existing generated-output edits remain protected. `--require-complete`
-rejects missing authored operations and partial source capture.
-By default, `docs render` consumes the latest saved check without running
-analyzers. Use `docs render --refresh` when the publication must acquire current
-source evidence; it runs the ordinary `docs check` path, saves the resulting
-snapshot, and can satisfy `--require-complete` only when that fresh check and
-publication are complete. `--refresh` cannot be combined with `--snapshot`.
+Prepare Work on the saved snapshot and use the
+[single authored-originals pipeline](../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages).
+Describe actual entries, inputs, steps, interactions, effects and failures.
+Keep contracts and service-fragment links beside the corresponding step, with
+technical support in disclosures. Existing originals and provenance are preserved.
+The former native narrative/page writers are retired.
 
 ## Check and selectively review changes
 
 ```sh
-clew docs check --root /work/architecture
 clew docs check --root /work/architecture --service orders
-clew docs refresh --root /work/architecture --status-only
 clew docs changes --root /work/architecture --limit 100
 clew docs changes --root /work/architecture --fragment RETURNED_FRAGMENT_ID --limit 100
 ```
 
-Default `docs render` publishes valid operations despite unrelated unavailable
-repositories or rejected inputs. A failed operation update retains its previous
-text, exact snippets and source revision; another operation on the same page may
-use newer evidence. Inspect `updateFailures` and operation states.
-
-A file that violates the closed narrative schema is rejected in full; valid
-operations in that same file are not applied. Its `input-N` failure reports
-`rejectionScope: ENTIRE_NARRATIVE`, `applied: false`, and up to 16 safe diagnostics.
-Unknown fields at the narrative or operation level identify the field and a
-zero-based location such as `operations[1]`. Unsafe field names are redacted;
-nested schema errors report a safe operation location without submitted values
-or source snippets. Correct the file and resubmit the complete narrative.
-`narrativeInputSummary.retainedNarrativeUsed` describes the publication as a
-whole: it is true only when retained authored content actually reaches that
-publication. A rejected file with no prior authored content, or an accepted
-complete replacement from another file, does not imply retained fallback.
-
-Selective `docs check --service` replaces only the selected service's check. Compatible
-saved sibling results remain available, with an explicit retained-source status:
-they have not been reverified against current sources by this command. Changed
-service declarations or check policy cannot borrow an incompatible old result;
-a failed selected check does not silently restore its previous result. Concurrent
-checks against one documentation root serialize their read/capture/save operation,
-even when their runtime homes differ.
-`--require-complete` retains the strict, non-publishing diagnostic behavior when
-any section is stale, unavailable, rejected or explicitly incomplete.
-The default render is a saved-evidence consumer and never starts an analyzer;
-request current acquisition explicitly with `docs render --refresh`.
-
-`docs refresh --status-only` publishes a new immutable status snapshot without
-calling an agent. It retains the old explanation and exact source snippets,
-shows content versus target revisions, and marks unavailable inputs locally.
-Meaning review remains unassessed for direct Narrative content. A status
-refresh cannot remove a prior review obligation or overwrite edited generated
-files. HTML, Markdown and diagram exports carry the same operation status.
-
-A logical source ID is separate from its immutable revision/blob/byte occurrence.
-Whitespace relocation preserves unique callable bindings and updates links.
-Token/tree fingerprints preserve literals, comments, docstrings, and Python
-nesting. Renames, changed signatures, duplicate declarations, or deleted roots
-are missing/ambiguous correspondence, not guessed matches.
-
-Every source-based fragment conservatively depends on the whole declared scope
-of each involved service. This catches changed helpers/configuration and added or
-deleted files, including formerly empty catalogues. It can over-invalidate within
-a service; it is not minimal semantic influence analysis. Independent services
-remain independent. Partial source capture is unresolved for freshness.
-
-The change dossier retains the old claim, affected view ID, changed observations,
-before/after source text, and references to more scope context. Older bundles
-without retained text explicitly report unavailable history. Pages and individual
-items have byte limits; omissions carry their identity and reason. No model runs
-inside this command. Supply a reviewed narrative with the new `contextDigest`
-when needed; unchanged explanations can be rebound during rendering. All views
-are written into one immutable bundle before its index pointer changes. A failed
-render leaves the prior pointer and manual content intact.
+`docs check` explicitly acquires current evidence. `docs changes` consumes saved
+evidence and a retained baseline; it does not discover unobserved live changes.
+Read old claims, changed observations, before/after source and explicit omissions.
+Keep missing historical context explicit. Apply reviewed changes to authored
+originals and finalize a new output directory; do not overwrite historical pages.
 
 ## Optional compiler enrichment
 
@@ -408,7 +311,7 @@ compiler resolution. See the [tested compatibility matrix](../../fixtures/docume
 
 Registration exposes five stable section roots: overview, responsibilities,
 domain entities, ingress contracts and egress contracts. They are immediately
-inspectable, even before source binding. `docs render` publishes the common page
+inspectable, even before source binding. Authored originals describe the selected scope
 structure with explicit gaps, including registered services whose source capture
 is unavailable. Author one section through the same bounded author/reviewer path:
 
@@ -655,116 +558,21 @@ The default report distinguishes declared Java/Kotlin versions from producer
 admission and the Kotlin worker's Java 21 requirement. Exact application and
 compiler inputs absent from the optional index remain an explicit diagnostic limit.
 
-## Coordinated updates and history
+## Revision events and retained history
 
-Configure accepted refs, then submit exact revision events through `docs update
-enqueue` or a revision set through `docs update reconcile`. The coordinator records
-targets independently of evidence arrival and immediately republishes conservative
-status. Import trusted packages for those targets and use `docs update run` with
-an external execution configuration and finite `--max-work` budget. A missing
-configuration leaves visible work pending. Retrying status publication cannot
-roll back an accepted target or overwrite concurrent human edits.
+Revision policies and exact events remain data records. They do not run the
+retired documentation coordinator or publish status pages. `docs history
+list/show/compare` inspect historical publication manifests offline. Preserve
+originals, event audits, evidence packages and historical bundles together.
 
-`docs history list/show/compare` inspect immutable publication manifests offline.
-The reader provides snapshot and previous-snapshot navigation. Retain the public
-catalogue, authored material, event audit, `evidence/packages` and generated bundles
-as one authorized documentation artifact. `.codeclew` selection cache can be
-reconstructed from retained trusted evidence. History records observed tag commits
-and reports missing files/packages explicitly; moving a tag cannot rewrite an old
-snapshot. See the [revision event and history examples](../../skills/codeclew/references/documentation-evidence.md#revision-events-and-retained-history).
+Saved native proposals and protected paragraph provenance remain readable;
+the former proposal submission and publication routes are retired. New wording
+belongs in authored originals and follows the same guarded compose/bind/finalize
+route. Keep original source bindings and explicitly distinguish user-declared
+wording from source-supported claims.
 
-The [isolated authoring and review reference](../../skills/codeclew/references/service-documentation.md#run-isolated-authoring-and-review)
-describes executable local jobs, sandbox/credential separation and durable budget
-ledgers. No separate portable CI guide is shipped. Keep `execution/accounts` with the durable records
-when reconstructing disposable work caches.
-
-## Publish a local proposal
-
-Use `docs work prepare/read` and `docs proposal submit` as described in the
-[local authoring guide](../../skills/codeclew/references/service-documentation.md#complete-local-authoring-without-an-external-runner).
-After the proposal is machine-ready, publish without a hosted model:
-
-```sh
-clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
-```
-
-The publication retains the captured influence and rechecks source, notes and
-prior authored content. It records UNASSESSED meaning; machine validation does
-not invent a reviewer. Unauthored callables require explicit proposal gaps.
-Standard section summaries are limited to 2,048 bytes; detailed sequences belong
-to operation narratives.
-
-For a title correction, a proposal may use an optional `retainedEdits` array
-with `operations: []`. Each closed edit names `kind: "RETAINED_OPERATION"`, the
-exact operation `id` and canonical `recordDigest`, `target: "operationTitle"`,
-`expectedOldValue`, and `replacement`. Read all parts through
-`docs work read-retained-part` first, using the same immutable Work and exact
-kind/id until `nextCursor` is null. The host clones the entire retained operation
-and changes only its title, preserving explanation, evidence, notes and visuals.
-Stale digests or old values, duplicate edits, replacement/gap collisions and unsupported
-targets are rejected. The edit is a presentation proposal requiring the existing
-meaning review and operation coverage; recorded reads alone do not establish
-that an automatic author or reviewer received the complete content. Automatic
-authoring rejects `retainedEdits` until full retained-operation delivery is
-supported for each role. Publication uses the normal conflict check, atomic merge and retained history.
-
-For a paragraph correction in the same retained operation, use
-`target: "explanationText"` with the exact `fragmentId`, a nonblank declared
-`author` (at most 256 UTF-8 bytes), and the exact `expectedOldValue` and
-`replacement`. Replacement is plain prose of at most 8,192 UTF-8 bytes. Read the
-whole retained record first; its total size may exceed one Work response. The
-host changes only that paragraph's text and authorship metadata, preserving its
-step links, source/dependency IDs, detail flag, and every unrelated field.
-Different paragraph edits and a title correction may share one proposal;
-duplicate targets are rejected.
-
-Submit with `docs proposal submit --root DOCS --work WORK --input proposal.json`,
-then publish the ready result with
-`docs proposal publish --root DOCS --proposal PROPOSAL --unassessed`. This manual
-path records `USER_DOCUMENTATION` with a declared author, an edit digest, the
-immutable source snapshot, and exact source/observation record digests. The author
-name is a declaration, not an authenticated identity. JSON, HTML and Markdown
-show UNASSESSED authorship; originally linked code is retained unverified context
-and does not become proof for the new wording. The normal machine-ready proposal,
-read completeness, input freshness, baseline conflict and atomic publication
-checks still apply. This is manual publication, not separate meaning review or
-automatic-role qualification.
-
-The first edit of an unauthored paragraph requires its linked context to match
-the selected Work snapshot. Later `explanationText` edits keep the paragraph's
-original pinned context, including when Work selects newer code. They never
-silently rebase that context. A status-only source update keeps authored text,
-provenance and original source bytes while marking local source freshness stale.
-
-An ordinary source-derived proposal supplies current summary, steps and generated
-explanation. Before review and publication, the host copies protected paragraphs
-from immutable Work, preserving their stable IDs, text, authorship, original
-bindings and influence scopes. The proposal does not need to fabricate authorship
-or repeat protected text as newly supported claims. Every protected step anchor
-must survive; a removed anchor or conflicting authored paragraph is rejected.
-New generated explanation covers current steps independently of stale user text.
-Publication keeps both original and current source revisions in the existing
-bindings. A paragraph's source drawer uses its exact fragment-owned original
-bytes, while generated fields use current operation code, even for the same
-logical SOURCE ID. Missing fragment context shows a gap without a current-code
-fallback. JSON, HTML and Markdown show each protected paragraph's local source
-freshness and UNASSESSED meaning separately from the operation's current fields.
-
-A direct narrative input cannot forge authorship or remove protected text. This
-slice does not implement explicit context rebasing, a native static-page authored
-paragraph consumer, or separate semantic verification for user documentation.
-Snapshot editing remains historical; observing current target freshness is a
-separate status check.
-
-Portable bindings 1.3 share identical evidence within a snapshot and derive
-duplicate dependency digest maps from the same retained observations. A fragment
-that retains an older observation or source occurrence keeps that exact version;
-sharing never replaces historical evidence with current source. Bindings 1.0
-and 1.1 remain readable. The 64 MiB per-record output limit remains enforced.
-
-Budget ledgers live in `execution/accounts`, outside the disposable work cache.
-Preserve them with documentation history. Legacy `.codeclew/accounts` ledgers
-migrate on the next reservation, including rejected reservations.
+Budget ledgers live in `execution/accounts`, outside disposable Work caches.
+Preserve failed attempts and ledgers together with saved answers and evidence.
 
 ## Attach a note or comment to a specific object
 

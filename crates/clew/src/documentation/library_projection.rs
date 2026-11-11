@@ -423,42 +423,6 @@ pub(super) fn source_service(
     Ok(Some(binding.service))
 }
 
-/// Compact automatic reader context. Full provenance remains a separate Work
-/// record; source snippets retain their independent B revisions and citations.
-pub(super) fn page(e: &ServiceEvidence) -> Value {
-    let mut rows = Vec::new();
-    for link in e.observations.values().filter(|o| o.kind == LINK) {
-        let Some(root) = link.normalized["targetMethodId"]
-            .as_str()
-            .and_then(|id| e.observations.get(id))
-        else {
-            continue;
-        };
-        let graph =
-            match super::process_graph::collect_bounded(e, root, "", "", Some(&Default::default()))
-            {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-        let methods=graph["methods"].as_array().into_iter().flatten().filter_map(|m|m["id"].as_str()).filter_map(|id|e.observations.get(id)).map(|m|json!({"id":m.id,"name":m.normalized["name"],"sources":m.source_ids.iter().filter_map(|id|e.sources.get(id)).collect::<Vec<_>>() })).collect::<Vec<_>>();
-        let caller = link.normalized["eventId"]
-            .as_str()
-            .and_then(|id| e.observations.get(id))
-            .and_then(|flow| {
-                e.observations.values().find(|m| {
-                    super::process_graph::callable_observation(m)
-                        && scope(m) == scope(flow)
-                        && m.symbol == flow.symbol
-                })
-            });
-        rows.push(json!({"status":"CANDIDATE","caller":caller.map(|m|&m.normalized["name"]),"target":root.normalized["name"],"library":link.normalized["binding"],"callAuthority":link.normalized["callAuthority"],"artifactAuthority":link.normalized["artifactAuthority"],"sourceBindingAuthority":"DECLARED_SOURCE_BINDING","sourceToBinaryEquivalence":"NOT_ESTABLISHED","execution":"IN_PROCESS_LIBRARY","methods":methods}));
-    }
-    for boundary in e.observations.values().filter(|o| o.kind == BOUNDARY) {
-        rows.push(json!({"status":"NOT_LINKED","library":boundary.normalized["binding"],"reason":boundary.normalized["reason"],"nextAction":boundary.normalized["nextAction"]}));
-    }
-    json!(rows)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::library_bindings::{Input, LibrarySelection};

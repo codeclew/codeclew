@@ -49,6 +49,7 @@ fn is_false(value: &bool) -> bool {
 
 /// Share identical evidence within one portable snapshot. Older versions of an
 /// observation or source remain attached to their original fragment.
+#[cfg(test)]
 pub(super) fn compact(binding: &mut Bindings) {
     prune_influence_scopes(binding);
     binding.schema = if binding.reviewed_answers.is_empty() {
@@ -91,6 +92,7 @@ pub(super) fn compact(binding: &mut Bindings) {
 
 /// Keep only scopes that still own published fragments or accepted versions.
 /// Replacing one operation must not discard a scope retained by its siblings.
+#[cfg(test)]
 pub(super) fn prune_influence_scopes(binding: &mut Bindings) {
     let referenced: BTreeSet<_> = binding
         .fragments
@@ -403,24 +405,6 @@ fn read_baseline_index(repo: &Repository) -> Result<Option<(String, String)>, Cl
     Ok(Some((id.to_owned(), index_text)))
 }
 
-/// Select the working publication without hydrating its bindings or closure.
-/// Its immutable manifest pins the exact generated overview bytes; selected
-/// records are validated later by the publication export reader.
-pub(super) fn working_publication(repo: &Repository) -> Result<Option<String>, ClewError> {
-    let Some((id, index)) = read_baseline_index(repo)? else {
-        return Ok(None);
-    };
-    let publication = super::history::load(repo, &id)?;
-    if publication.files.get("root-overview.html") != Some(&canonical::hash_bytes(index.as_bytes()))
-    {
-        return Err(ClewError::new(
-            ErrorCode::WwConflict,
-            "generated overview was edited; preserve the edit as manual prose before regeneration",
-        ));
-    }
-    Ok(Some(id))
-}
-
 /// Bind provenance to the exact bytes parsed and validated below, never to a
 /// second read of the mutable pointer or its selected bindings file.
 pub(super) fn capture_baseline(
@@ -654,6 +638,7 @@ fn validate_decoded_binding(
 
 /// A reading export validates each expanded occurrence, then restores its compact
 /// references. It never retains all copies of the same source simultaneously.
+#[cfg(test)]
 pub(super) fn validate_retained_reading_bindings(
     repo: &Repository,
     raw: &[u8],
@@ -758,7 +743,7 @@ pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result
         let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
         // Budget rejection is a distinct typed outcome from tampering: an
         // output that spilled past the portable budget is a resource-bound
-        // failure (mirroring the pre-flight gate in render::commit_bundle),
+        // failure (mirroring the pre-flight gate in retained_validation::commit_bundle),
         // not a manual edit/digest conflict.
         if metadata.len() > super::check::PORTABLE_CACHE_MAX_BYTES {
             return Err(ClewError::new(
@@ -1289,7 +1274,7 @@ mod tests {
                     gaps: BTreeMap::new(),
                 },
             );
-            super::super::status::update_states(&mut binding, &checked);
+            super::super::freshness::update_states(&mut binding, &checked);
             let state = &binding.section_states["scenario:checkout"];
             assert_eq!(
                 state.target_revisions.contains_key("external-provider"),

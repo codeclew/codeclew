@@ -132,13 +132,16 @@ ci_run checks python3 -I -S scripts/test_grouped_source_display.py
 ci_run checks python3 -I -S scripts/test_computation_view.py
 ci_run checks python3 -I -S scripts/test_structural_review.py
 ci_run checks python3 -I -S scripts/test_citation_evidence.py
+CODECLEW_MARKDOWN_RENDERER="$TEST_TMP_ROOT/markdown-renderer"
+export CODECLEW_MARKDOWN_RENDERER
+ci_run checks python3 -I -S -c 'import shutil,sys; shutil.copytree(sys.argv[1],sys.argv[2])' skills/codeclew/examples/markdown-renderer "$CODECLEW_MARKDOWN_RENDERER"
+ci_run checks npm ci --ignore-scripts --no-audit --no-fund --prefix "$CODECLEW_MARKDOWN_RENDERER"
+ci_run checks node --test scripts/test_markdown_renderer.mjs scripts/test_markdown_sequence.mjs scripts/test_docset_renderer.mjs scripts/test_docset_routes.mjs
 ci_run checks python3 -I -S scripts/test_reader_markdown_repair.py
-ci_run checks python3 -I -S scripts/test_reader_metadata.py
 ci_run checks python3 -I -S scripts/test_page_citations.py
 ci_run checks python3 -I -S scripts/test_page_compose.py
 ci_run checks python3 -I -S scripts/test_reader_export_check.py
 ci_run checks python3 -I -S scripts/test_reader_sources.py
-ci_run checks python3 -I -S scripts/test_reader_plan_preflight.py
 ci_run checks python3 -I -S scripts/test_prepared_source.py
 ci_run checks python3 -I -S scripts/test_pilot.py
 ci_run checks python3 -I -S scripts/test_macos_distribution.py
@@ -148,32 +151,29 @@ ci_run checks python3 -I -S scripts/test_build_macos_release.py
 ci_run checks python3 -I -S scripts/test_prepare_release_candidate.py
 ci_run checks python3 -I -S scripts/test_build_local_release_candidate.py
 ci_run checks python3 -I -S scripts/test_runtime_attach_canary.py
-ci_run checks node --test scripts/test_documentation_markdown.cjs scripts/test_documentation_visual_reader.cjs scripts/test_working_tree_report_reader.cjs scripts/test_data_model_reader.cjs scripts/test_documentation_packs.cjs
+ci_run checks node --test scripts/test_working_tree_report_reader.cjs
 ci_run checks cargo fmt --all --check
 ci_run checks cargo clippy --workspace --all-targets -- -D warnings
 ci_run checks qualify_csharp
 ci_run checks cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
 ci_run checks cargo test --locked -p clew --lib 'compiler_failure::tests::' -- --test-threads=1
+ci_run retained-docs cargo test --locked -p clew --test docs_work_reference_roles -- --test-threads=1
+ci_run retained-docs cargo test --locked -p clew --test documentation_system --test docs_declaration_profile --test docs_status_observation --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test support_collect -- --test-threads=1
-ci_run retained-docs cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
-ci_run retained-docs cargo test --locked -p clew --test docs_proposal_diagnostics --test docs_work_reference_roles -- --test-threads=1
 ci_run retained-docs cargo test --locked -p clew --test documentation_external_calls -- --test-threads=1
-ci_run retained-docs cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
-ci_run retained-docs cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 ci_run kotlin cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --lib documentation::thread_context_tests::owned_fixture_real_compiler_and_source_capture -- --exact --ignored --test-threads=1
+ci_run java cargo test --locked -p clew --lib java_values::tests:: -- --test-threads=1
+ci_run java cargo test --locked -p clew --lib java_values::tests::native_javac_extracts_values_and_fails_closed_on_writes_control_calls_and_budget -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --lib java_project_model::tests::native_maven_effective_parent_profile_release_without_convenience_property -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --lib documentation::thread_context_tests::native_java_spring_registration_preserves_distinct_beans_and_overrides -- --exact --ignored --test-threads=1
 ci_run kotlin ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest --tests dev.semanticthread.worker.JavaAnalysisSourcesTest \
   :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.JavaAnalysisSourcesTest
 ci_run java cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
-ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_documentation_cli_recovers_and_reports_route_fragments -- --exact --test-threads=1
-ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_source_documentation_without_build_tools_rebinds_and_preserves_publication -- --exact --test-threads=1
+ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_documentation_cli_reads_legacy_bindings_and_reports_route_fragments -- --exact --test-threads=1
+ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_source_documentation_without_build_tools_reads_and_preserves_legacy_publication -- --exact --test-threads=1
 ci_run managed-docs cargo test --locked -p clew --test managed_cli durable_source_documentation_java_enrichment_recovers_on_the_same_source_roots -- --exact --ignored --test-threads=1
-ci_run managed-docs cargo test --locked -p clew --test managed_cli flow_dsl_static_render_uses_original_supported_snapshot -- --exact --test-threads=1
 ci_run native-pages cargo test --locked -p clew --test docs_dependency_targets -- --ignored --test-threads=1
-ci_run native-pages cargo test --locked -p clew --test docs_static_pages -- --ignored --test-threads=1
-ci_run native-pages cargo test --locked -p clew --test docs_static_linked_processes -- --ignored --test-threads=1
 ci_run checks cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 ci_run java cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
 ci_run checks cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1

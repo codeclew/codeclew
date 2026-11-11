@@ -183,45 +183,9 @@ pub(super) fn link(
     }
 }
 
-/// Credential-free identity for matching a retained clone origin. SSH ports
-/// belong to this identity, not to the HTTPS browser endpoint.
-pub(super) fn remote_identity(value: &str) -> Result<String, String> {
-    let (base, _) = repository(value)?;
-    if value.starts_with("https://") {
-        return Ok(base);
-    }
-    let authority = if let Some(rest) = value.strip_prefix("ssh://") {
-        rest.split('/').next().unwrap()
-    } else {
-        value.split(':').next().unwrap()
-    };
-    let authority = authority.rsplit('@').next().unwrap();
-    let authority = host(authority, true)?;
-    let authority = authority.strip_suffix(":22").unwrap_or(&authority);
-    let path = base
-        .strip_prefix("https://")
-        .unwrap()
-        .split_once('/')
-        .unwrap()
-        .1;
-    Ok(format!("ssh://{authority}/{path}"))
-}
-
-pub(super) fn file_matches(tail: &str, file: &str) -> bool {
-    if tail == file
-        || tail
-            .strip_prefix(file)
-            .is_some_and(|rest| rest.starts_with('#'))
-    {
-        return true;
-    }
-    tail.split('#')
-        .next()
-        .unwrap_or("")
-        .split('/')
-        .map(decode)
-        .collect::<Result<Vec<_>, _>>()
-        .is_ok_and(|parts| parts.join("/") == file)
+pub(super) fn safe_ssh_repository(value: &str) -> bool {
+    (value.starts_with("ssh://") || (!value.contains("://") && value.contains('@')))
+        && repository(value).is_ok()
 }
 
 #[cfg(test)]
@@ -368,22 +332,5 @@ mod tests {
         );
         assert!(link("github", "https://github.com/org/repo", REV, "A.kt", 0, 2).is_err());
         assert!(link("gitlab", "https://gitlab.com/org/repo", REV, "A.kt", 3, 2).is_err());
-    }
-}
-
-/// SSH transport usernames are admitted locally, never emitted in web links.
-pub(super) fn safe_ssh_repository(value: &str) -> bool {
-    (value.starts_with("ssh://") || (!value.contains("://") && value.contains('@')))
-        && repository(value).is_ok()
-}
-
-/// Range changes retain the selected provider's syntax, including old GitLab
-/// citations whose capture appended GitHub-style line fragments.
-pub(super) fn range_url(url: &str, start: u64, end: u64) -> String {
-    let base = url.split('#').next().unwrap_or(url);
-    if base.contains("/-/blob/") {
-        format!("{base}#L{start}-{end}")
-    } else {
-        format!("{base}#L{start}-L{end}")
     }
 }

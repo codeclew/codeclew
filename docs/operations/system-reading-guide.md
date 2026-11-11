@@ -1,23 +1,12 @@
-# Evidence-bound system reading guide
+# System reading guides
 
-A full `docs pages render --publication ... --reading-plan PLAN.json` may add a
-system orientation before the frozen overview inventory. In a
-`codeclew-question-reading-plans/1.0` collection, add one plan with schema
-`codeclew-system-reading-plan/1.0` and subject `system:overview`. It uses the same
-bounded title, purpose, sections, blocks, conclusion and exact evidence references
-as process reading plans. Block links must resolve to saved service/process
-operations; retained claim text digests and source objects are validated.
+Author a guide around practical entry points and link each process to its service fragments and contracts. Use disclosures for technical support and source links. Preserve unknown boundaries instead of inventing a cross-service execution path.
 
-The view is labelled editorial guidance, not accepted prose or runtime proof.
-Original descriptions, source bytes, review states and revisions remain intact.
-The native output includes `system-reading-guide.json` with the complete guide
-and bound evidence, plus `retained-overview.html` with the original inventory.
-Unknown lifecycle or ownership facts must remain unknown; a structural schema or
-service name is insufficient to establish them.
+Use the single [authored-originals publication route](../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages):
+read saved evidence, author the explanation, compose and bind it, then finalize
+checked HTML. Keep originals, source manifests and historical exports. No new
+source capture is required when the saved evidence is sufficient.
 
-The contract reader displays literal `const` and `enum` constraints without
-inventing an object type when `type` is absent. Unsupported-schema limits remain
-visible. A response-source action locates its exact JSON path in the retained
-contract and selects that line span while preserving the full source and digest.
-Unsupported, ambiguous or non-JSON locations explicitly fall back to the full
-retained source; this is navigation, not additional schema interpretation.
+Existing native HTML/Markdown/MDX exports remain historical files. Removed
+native publishing commands cannot regenerate them. For source acquisition and
+bounded reads, see [source documentation](source-documentation.md).

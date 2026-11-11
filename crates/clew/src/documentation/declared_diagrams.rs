@@ -1,27 +1,24 @@
 //! Declared architecture is separate from source-resolved transitions.
 #[cfg(test)]
-use super::render::escape;
+use super::text::escape;
+#[cfg(not(test))]
+use super::{check::Check, external_services, invalid, model::Event};
+#[cfg(test)]
 use super::{
     check::Check,
     external_services, invalid,
     model::{Event, Participant},
 };
 use crate::error::ClewError;
+#[cfg(test)]
 use serde_json::{Value, json};
+#[cfg(not(test))]
+use std::collections::BTreeSet;
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn boundary(kind: &str) -> bool {
     matches!(kind, "declared-boundary" | "declared-boundary-return")
-}
-
-pub(super) fn participant_href(p: &Participant) -> Option<String> {
-    if let Some(id) = &p.external_service {
-        Some(format!("../external-services/{id}.html"))
-    } else {
-        p.service
-            .as_ref()
-            .map(|id| format!("../services/{id}.html"))
-    }
 }
 
 fn in_scope(checked: &Check, subject: &str, id: &str, caller: &str) -> bool {
@@ -129,6 +126,7 @@ pub(super) fn supported_refs(
 }
 
 /// Project immutable catalogue input, never a live repository read or invented call.
+#[cfg(test)]
 pub(super) fn graph(checked: &Check, subject: Option<&str>) -> Value {
     let Some(inputs) = external_services::declaration_inputs(checked) else {
         return json!({"nodes":[],"edges":[]});
@@ -312,6 +310,7 @@ pub(super) fn markdown(g: &Value) -> String {
     out
 }
 
+#[cfg(test)]
 pub(super) fn mermaid(g: &Value) -> String {
     let mut out="flowchart LR\n    %% Declared architecture; external source not captured; runtime unverified; no execution order.\n".to_owned();
     let mut ids = BTreeMap::new();
@@ -319,7 +318,7 @@ pub(super) fn mermaid(g: &Value) -> String {
         let alias = format!("n{index}");
         ids.insert(node["id"].as_str().unwrap_or(""), alias.clone());
         // JSON string quoting is not enough for Mermaid: encode directive characters.
-        let label = super::render::mermaid_label(node["label"].as_str().unwrap_or(""));
+        let label = super::text::mermaid_label(node["label"].as_str().unwrap_or(""));
         out += &format!(
             "    {alias}[\"{label}\"]\n    click {alias} \"{}\" \"Documentation\"\n",
             node["href"].as_str().unwrap_or("")
@@ -332,7 +331,7 @@ pub(super) fn mermaid(g: &Value) -> String {
         ) {
             out += &format!(
                 "    {a} -.\"{}\".-> {b}\n",
-                super::render::mermaid_label(&format!(
+                super::text::mermaid_label(&format!(
                     "{} · {} · declared; runtime unverified",
                     edge["id"].as_str().unwrap_or(""),
                     edge["transport"]["kind"].as_str().unwrap_or("")
@@ -379,10 +378,10 @@ mod tests {
     fn boundary_reader_keeps_retained_explanation_closure_and_its_own_freshness_sources() {
         use super::super::{
             model::{ExecutionMeaning, Fragment, StepReader},
-            render,
+            retained_validation,
         };
         let (checked, mut narrative) = reader_fixture();
-        render::validate(&narrative, &checked).unwrap();
+        retained_validation::validate(&narrative, &checked).unwrap();
         let original = serde_json::to_value(&narrative.operations[0]).unwrap();
         let context = serde_json::to_value(&checked).unwrap();
         let proof = Fragment {
@@ -399,7 +398,7 @@ mod tests {
                 meaning: proof,
             }),
         });
-        render::validate(&narrative, &checked).unwrap();
+        retained_validation::validate(&narrative, &checked).unwrap();
         let event = &narrative.operations[0].events[0];
         assert_eq!(event.dependency_ids, ["interaction:http"]);
         assert!(event.source_ids.is_empty());
@@ -407,7 +406,7 @@ mod tests {
             serde_json::to_value(&narrative.operations[0].explanation).unwrap(),
             original["explanation"]
         );
-        let bindings = render::make_bindings(
+        let bindings = retained_validation::make_bindings(
             &checked,
             BTreeMap::from([("scenario:process".into(), narrative.clone())]),
         )
@@ -453,7 +452,7 @@ mod tests {
         leaked.operations[0].events[0]
             .dependency_ids
             .push("caller-method".into());
-        assert!(render::validate(&leaked, &checked).is_err());
+        assert!(retained_validation::validate(&leaked, &checked).is_err());
         let mut unbound = narrative.clone();
         unbound.operations[0].events[0]
             .reader
@@ -463,20 +462,20 @@ mod tests {
             .as_mut()
             .unwrap()
             .source_ids = vec!["missing".into()];
-        assert!(render::validate(&unbound, &checked).is_err());
+        assert!(retained_validation::validate(&unbound, &checked).is_err());
         let mut foreign = checked.clone();
         foreign
             .dependencies
             .get_mut("caller-method")
             .unwrap()
             .service = "unselected".into();
-        assert!(render::validate(&narrative, &foreign).is_err());
+        assert!(retained_validation::validate(&narrative, &foreign).is_err());
     }
     #[test]
     fn declaration_label_is_specific_to_its_boundary_and_never_establishes_execution() {
         use super::super::{
             model::{ExecutionMeaning, Fragment, StepReader},
-            render,
+            retained_validation,
         };
         let (mut checked, mut narrative) = reader_fixture();
         let proof = Fragment {
@@ -490,7 +489,7 @@ mod tests {
             label: Some(proof.clone()),
             execution: None,
         });
-        render::validate(&narrative, &checked).unwrap();
+        retained_validation::validate(&narrative, &checked).unwrap();
         let mut unrelated = narrative.clone();
         unrelated.operations[0].events[0]
             .reader
@@ -500,7 +499,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .dependency_ids = vec!["interaction:event".into()];
-        assert!(render::validate(&unrelated, &checked).is_err());
+        assert!(retained_validation::validate(&unrelated, &checked).is_err());
         let mut execution = narrative.clone();
         execution.operations[0].events[0]
             .reader
@@ -510,18 +509,18 @@ mod tests {
             mode: "wait".into(),
             meaning: proof.clone(),
         });
-        assert!(render::validate(&execution, &checked).is_err());
+        assert!(retained_validation::validate(&execution, &checked).is_err());
         let mut ordinary = narrative.clone();
         ordinary.operations[0].events[0].kind = "message".into();
         ordinary.operations[0].events[0].dependency_ids = vec!["caller-method".into()];
         ordinary.operations[0].events[0].source_ids = vec!["caller-source".into()];
-        assert!(render::validate(&ordinary, &checked).is_err());
+        assert!(retained_validation::validate(&ordinary, &checked).is_err());
         checked
             .dependencies
             .get_mut("interaction:http")
             .unwrap()
             .normalized["transport"]["kind"] = json!("kafka");
-        assert!(render::validate(&narrative, &checked).is_err());
+        assert!(retained_validation::validate(&narrative, &checked).is_err());
     }
 
     #[test]
@@ -604,19 +603,19 @@ mod tests {
         checked.scenarios.insert("process".into(),serde_json::from_value(json!({"id":"process","steps":[{"id":"root","service":"owned","symbol":"submit","kind":"SOURCE_DECLARATION","dependencyIds":["method"],"sourceIds":["source"],"detail":{},"depth":0}],"boundaries":[],"truncated":false,"dependencyIds":[]})).unwrap());
         checked.dependencies.insert("method".into(),serde_json::from_value(json!({"id":"method","kind":"SYMBOL","service":"owned","symbol":"submit","digest":"d","sourceIds":["source"],"normalized":{}})).unwrap());
         let n:super::super::model::Narrative=serde_json::from_value(json!({"schema":"codeclew-documentation-narrative/1.4","subject":"scenario:process","contextDigest":"c","operations":[{"id":"process","title":"Declared boundary","summary":{"id":"summary","text":"Source root with a declared boundary.","dependencyIds":["method"],"sourceIds":["source"]},"participants":[{"id":"service-owned","label":"Owned","service":"owned"},{"id":"provider","label":"Provider","service":null,"externalService":"provider"}],"events":[e],"explanation":[{"id":"explanation","text":"Declared only; receiver execution is unknown.","eventIds":["step"],"dependencyIds":["interaction:http"],"sourceIds":[],"detail":false}]}],"gaps":{}})).unwrap();
-        super::super::render::validate(&n, &checked).unwrap();
+        super::super::retained_validation::validate(&n, &checked).unwrap();
         let mut old = n.clone();
         old.schema = "codeclew-documentation-narrative/1.3".into();
-        assert!(super::super::render::validate(&old, &checked).is_err());
+        assert!(super::super::retained_validation::validate(&old, &checked).is_err());
         let mut wrong = n.clone();
         wrong.operations[0].events[0].to = Some("service-owned".into());
-        assert!(super::super::render::validate(&wrong, &checked).is_err());
+        assert!(super::super::retained_validation::validate(&wrong, &checked).is_err());
         let mut message = n.clone();
         message.operations[0].events[0].kind = "message".into();
-        assert!(super::super::render::validate(&message, &checked).is_err());
+        assert!(super::super::retained_validation::validate(&message, &checked).is_err());
         let mut both = n.clone();
         both.operations[0].participants[1].service = Some("owned".into());
-        assert!(super::super::render::validate(&both, &checked).is_err());
+        assert!(super::super::retained_validation::validate(&both, &checked).is_err());
     }
 
     #[test]

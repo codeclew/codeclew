@@ -6,7 +6,7 @@ artwork around ordinary Markdown. Human page titles, an active page menu and
 keyboard-scrollable tables make the same authored content easier to read. It
 uses Node.js 20 or later and the pinned `marked` 16.4.2 dependency, not a
 new rendering engine or a replacement for explicitly selected native
-HTML/MDX/Docusaurus workflows. It renders plain Markdown, not native MDX components;
+document workflows. It renders authored Markdown;
 installation and trusted argv selection remain explicit.
 
 Copy this directory to your own tooling directory before installing dependencies:

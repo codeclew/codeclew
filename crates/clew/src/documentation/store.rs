@@ -253,7 +253,7 @@ impl Repository {
                 .as_bytes(),
             )?;
         }
-        let instructions = "# Documentation ownership\n\nRead codeclew-docs.yaml and catalog records first. Use clew docs commands for\nvalidated operations. Bind relocated checkouts with clew docs bind.\nManual notes belong outside docs/generated and narratives; never overwrite them.\nCover discovered public entrypoints with operations or actionable gaps.\nSource helper declarations are optional internal candidates, not a publication checklist.\nInternal candidates are hidden by default; showInternalProcesses explicitly enables discovery.\nUse docs pages render --input for exact retained declaration selection.\nUse current narrative 1.3; earlier narrative formats are unsupported.\nRetained consumers read saved snapshots without automatic source checks.\nPrefer docs work prepare/read and docs proposal submit for local authoring.\nPublish a machine-ready proposal with docs proposal publish --unassessed;\nthis retains captured influence and explicitly leaves meaning review UNASSESSED.\nSeparate configured review is required for VERIFIED meaning.\nUse domain explanation paragraphs linked to every diagram step.\nExplain business inputs, checks, state changes, failures and outcomes from source.\nPreserve callback scheduling and asynchronous message boundaries.\nDeclared interactions are not compiler or runtime proof. Use a saved snapshot\nfor retained reads; run clew docs check when new source evidence is needed\n(initial capture or an authorized refresh).\nPreserve stable declaration and scenario IDs.\nKotlin/Java source-syntax authoring does not require an optional compiler provider.\nFor an existing failed Check, use clew support collect before another capture.\nCollect required logs/cache locally; transfer only within the authorized sharing scope.\nRetain evidence/packages, execution/accounts and immutable history with the docs.\n";
+        let instructions = "# Documentation ownership\n\nUse clew docs commands to register services, capture evidence and read saved Work.\nBind relocated checkouts with clew docs bind. Reuse saved snapshots when available;\nrun clew docs check only for initial capture or an authorized evidence refresh.\nFor documentation, author original.json or Markdown from the retained evidence,\nthen use the packaged skill's page_citations.py compose/update-original/bind and\nreader_export_check.py finalize with its Markdown renderer. This is the supported\ndocument publication path; no native proposal, page or coordinator writer remains.\nExplain inputs, sequence, contracts, effects, failures and outcomes with source\nreferences. Preserve asynchronous and declared boundaries and all limitations.\nSyntax/declarations are not compiler or runtime proof. Read pagination and\ncontinuations fully before claiming coverage. Keep user originals, notes, source\nbindings, caches, execution accounts and immutable history. Old exports remain\nreadable; regenerate only from explicitly authored originals via the human path.\nFor a failed Check collect supported diagnostics before retrying capture.\nTransfer source fragments or logs only within the user's sharing authorization.\n";
         let instructions_path = if repo.path("AGENTS.md")?.exists() {
             "AGENTS.codeclew-docs.md"
         } else {
@@ -263,6 +263,14 @@ impl Repository {
             repo.atomic(instructions_path, instructions.as_bytes())?;
         }
         for (name, content) in [
+            (
+                "docs/help.html",
+                include_str!("../../assets/documentation/help.html"),
+            ),
+            (
+                "docs/runbooks.html",
+                include_str!("../../assets/documentation/runbooks.html"),
+            ),
             (
                 "examples/first-document.py",
                 include_str!("../../assets/documentation/examples/first-document.py"),
@@ -288,7 +296,6 @@ impl Repository {
                 repo.atomic(name, content.as_bytes())?;
             }
         }
-        super::reader::init(&repo)?;
         let first_document = repo.path("examples/first-document.py")?;
         let starter_command = format!(
             "python3 '{}' capture --help",
@@ -464,6 +471,7 @@ impl Repository {
     /// Publish a portable immutable unit without replacing a conflicting file.
     /// The repository lock coordinates normal writers; no-clobber also protects
     /// against a concurrent creator outside that lock.
+    #[cfg(test)]
     pub(super) fn immutable(&self, relative_path: &str, data: &[u8]) -> Result<(), ClewError> {
         self.writable()?;
         let verify = || -> Result<(), ClewError> {

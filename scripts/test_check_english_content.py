@@ -180,8 +180,12 @@ class GeneratedPublicationEnglishTest(unittest.TestCase):
         self.assertTrue(self.rejected(value, self.bindings_path))
 
     def test_actual_embedded_localization_assets_and_source_payload(self) -> None:
-        app = (english.ROOT / "crates/clew/assets/documentation/app.js").read_text()
-        reader = (english.ROOT / "crates/clew/assets/documentation/reader.js").read_text()
+        frozen = english.ROOT / "site/examples/codeclew-source/docs/generated/7c84c5220aa3bd456acf143043d657955a73bd4ff685f1f3322e4a258f89c86c/services/clew-public-workflow.html"
+        bodies = [match[2] for match in english.SCRIPT.finditer(frozen.read_text())
+                  if english.hashlib.sha256(match[2].encode()).hexdigest() in english.FROZEN_LOCALIZATION_SCRIPT_DIGESTS]
+        self.assertTrue(bodies)
+        app = bodies[0]
+        reader = bodies[-1]
         payload = json.dumps(self.document(), ensure_ascii=False).replace("<", "\\u003c")
         content = ('<html><body><p>English narrative</p>\n'
                    '<script type="application/json" id="document-data">' + payload + '</script>\n'

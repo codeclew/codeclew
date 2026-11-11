@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     canonical::hash_bytes,
     documentation::digest,
-    documentation::static_pages::{model::SourceCallNode, source::Parsed},
+    documentation::retained_graph::{model::SourceCallNode, source::Parsed},
     documentation::{
         invalid,
         model::{Observation, ServiceEvidence},
@@ -309,7 +309,7 @@ fn offset(text: &str, line: u64, column: usize, first: u64) -> Option<usize> {
     (at <= end && text.is_char_boundary(at)).then_some(at)
 }
 /// No substring search: exact global line/column to local callable range.
-pub(in super::super) fn site_range(
+pub(in crate::documentation) fn site_range(
     o: &Observation,
     e: &ServiceEvidence,
     body: &Source,

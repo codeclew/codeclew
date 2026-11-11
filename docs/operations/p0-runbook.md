@@ -812,36 +812,14 @@ after synchronizing the package; it checks version matching, all package files,
 and supported installer delivery. Publish the same canonical package to the
 public skill repository rather than maintaining separate instruction variants.
 
-## Export a saved publication without recapture
+## Publish authored documentation without recapture
 
-Use an existing exact Check handle and saved publication. Export into a new
-folder; keep the local documentation root as the evidence workspace.
-
-```sh
-clew docs pages render --root "$DOCS_ROOT" --snapshot "$SNAPSHOT" \
-  --publication "$PUBLICATION" --source-mode remote --source-map repos.json \
-  --export-subject service:orders --export-subject scenario:checkout \
-  --output selected-site
-```
-
-Omit both `--export-subject` options for a full saved-publication export. This
-preserves authored sections and their retained source context. The manifest
-reports selected/omitted subjects, actual closure reads and reserved rendering
-reads. Shared overview/status/answer context remains global. Omitted subject
-navigation is inert; it does not point at newly captured or substituted pages.
-
-The reader bounds individual files, selected bindings hydration, retained buffers
-and cumulative input work separately. It streams file validation and projects
-HTML/Markdown by service/process group. A limit error is not evidence that the
-whole cache was read. Keep the error, exact snapshot and publication identity;
-use a smaller explicit subject selection when suitable. Do not delete evidence,
-reinitialize documentation or replace accepted prose with bare declarations to
-make an export succeed. See [compatibility](documentation-compatibility.md).
-
-Unexpected bootstrap failures retain `errorType` and, when available,
-`osErrorNumber`, `osErrorName` and the public system `osErrorMessage`. Preserve
-these fields with the supported diagnostics. Caller filenames and arbitrary
-native exception messages are omitted from this public error envelope.
+Reuse saved Work and exact source references through the
+[authored-originals route](../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages).
+Keep originals and source manifests, compose and bind the pages, then finalize
+into a new output directory. Existing native publications remain historical
+artifacts; the retired native exporters cannot regenerate them. Missing evidence
+must be reported explicitly, without deleting caches or reinitializing the root.
 
 ## Documentation operations in 0.13.48
 

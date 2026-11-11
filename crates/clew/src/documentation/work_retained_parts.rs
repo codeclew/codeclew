@@ -6,15 +6,24 @@
 //! Captured dependency parts reuse the same cursor/range engine with a distinct
 //! kind, request schema and authority; they never waive required context.
 
+#[cfg(test)]
 use super::{
     bytes, digest, invalid,
     model::Operation,
     store::Repository,
     work::{self, ReadState, Work},
 };
+#[cfg(not(test))]
+use super::{
+    bytes, digest, invalid,
+    model::Operation,
+    store::Repository,
+    work::{self, Work},
+};
 use crate::{canonical::hash_bytes, error::ClewError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 pub(super) const REQUEST_SCHEMA: &str = "codeclew-documentation-retained-part-request/1.0";
@@ -104,6 +113,7 @@ pub(super) fn retained_operation<'a>(work: &'a Work, id: &str) -> Result<&'a Ope
     Ok(operation)
 }
 
+#[cfg(test)]
 pub(super) fn retained_record_digest(work: &Work, id: &str) -> Result<String, ClewError> {
     digest(retained_operation(work, id)?)
 }
@@ -389,6 +399,7 @@ pub(super) fn read_record_part_loaded(
 }
 
 /// Complete recorded delivery of exactly one retained operation's canonical JSON.
+#[cfg(test)]
 pub(super) fn retained_part_complete(
     work: &Work,
     state: &ReadState,
@@ -397,6 +408,7 @@ pub(super) fn retained_part_complete(
     part_complete(work, state, id, RECORD_KIND)
 }
 
+#[cfg(test)]
 fn part_complete(
     work: &Work,
     state: &ReadState,
@@ -456,6 +468,7 @@ fn part_complete(
     Ok(covered == record.text.len())
 }
 
+#[cfg(test)]
 pub(super) fn completed_retained_operation_ids(
     work: &Work,
     state: &ReadState,
@@ -475,6 +488,7 @@ pub(super) fn completed_retained_operation_ids(
     Ok(completed)
 }
 
+#[cfg(test)]
 pub(super) fn completed_dependency_references(
     work: &Work,
     state: &ReadState,

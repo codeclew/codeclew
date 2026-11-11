@@ -722,7 +722,7 @@ fn exact_function_descriptors<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documentation::{analysis, check, cli, model::*, render, store};
+    use crate::documentation::{analysis, check, cli, model::*, retained_validation, store};
 
     fn function_descriptor(
         callable: &str,
@@ -2253,8 +2253,8 @@ mod tests {
                 "events":[{"id":"send","kind":"message","text":"Accept the warehouse stock batch","from":"client","to":"p0","dependencyIds":step.dependency_ids,"sourceIds":step.source_ids}],
                 "explanation":[{"id":"acceptance","text":"The operator submits the available quantity for the warehouse. The importing service accepts the batch and prepares its propagation to the next service.","eventIds":["send"],"dependencyIds":step.dependency_ids,"sourceIds":step.source_ids}]}]
         })).unwrap();
-        render::validate(&narrative, &checked).unwrap();
-        let bindings = render::make_bindings(
+        retained_validation::validate(&narrative, &checked).unwrap();
+        let bindings = retained_validation::make_bindings(
             &checked,
             BTreeMap::from([(narrative.subject.clone(), narrative.clone())]),
         )
@@ -2279,8 +2279,8 @@ mod tests {
             }],
             boundaries: vec!["Broker delivery is not established.".into()],
         }];
-        render::validate(&narrative, &checked).unwrap();
-        let contract_bindings = render::make_bindings(
+        retained_validation::validate(&narrative, &checked).unwrap();
+        let contract_bindings = retained_validation::make_bindings(
             &checked,
             BTreeMap::from([(narrative.subject.clone(), narrative.clone())]),
         )
@@ -2292,16 +2292,16 @@ mod tests {
         );
         let mut overview = narrative.clone();
         overview.operations[0].overview_diagram = None;
-        render::validate(&overview, &checked).unwrap();
-        assert!(render::mermaid(&overview.operations[0]).starts_with("sequenceDiagram"));
+        retained_validation::validate(&overview, &checked).unwrap();
+
         overview.operations[0].overview_diagram = Some(serde_json::from_value(json!({
             "nodes":[{"id":"accept","text":"Accept stock","participant":"p0","column":0,"row":0,"eventIds":["send"]},
                 {"id":"received","text":"Batch received","participant":"p0","column":1,"row":0,"eventIds":["send"]}],
             "edges":[{"id":"accepted","from":"accept","to":"received","text":"accepted","eventIds":["send"]}]
         })).unwrap());
-        render::validate(&overview, &checked).unwrap();
-        assert!(render::mermaid(&overview.operations[0]).starts_with("flowchart LR"));
-        let overview_bindings = render::make_bindings(
+        retained_validation::validate(&overview, &checked).unwrap();
+
+        let overview_bindings = retained_validation::make_bindings(
             &checked,
             BTreeMap::from([(overview.subject.clone(), overview.clone())]),
         )
@@ -2318,7 +2318,7 @@ mod tests {
             .unwrap()
             .nodes[0]
             .event_ids = vec!["missing".into()];
-        assert!(render::validate(&overview, &checked).is_err());
+        assert!(retained_validation::validate(&overview, &checked).is_err());
         overview.operations[0].overview_diagram = valid.clone();
         overview.operations[0]
             .overview_diagram
@@ -2326,7 +2326,7 @@ mod tests {
             .unwrap()
             .nodes[1]
             .column = 0;
-        assert!(render::validate(&overview, &checked).is_err());
+        assert!(retained_validation::validate(&overview, &checked).is_err());
         overview.operations[0].overview_diagram = valid.clone();
         overview.operations[0]
             .overview_diagram
@@ -2334,14 +2334,14 @@ mod tests {
             .unwrap()
             .nodes[1]
             .participant = "p1".into();
-        assert!(render::validate(&overview, &checked).is_err());
+        assert!(retained_validation::validate(&overview, &checked).is_err());
         overview.operations[0].overview_diagram = valid.clone();
         overview.operations[0]
             .overview_diagram
             .as_mut()
             .unwrap()
             .nodes = vec![valid.as_ref().unwrap().nodes[0].clone(); 13];
-        assert!(render::validate(&overview, &checked).is_err());
+        assert!(retained_validation::validate(&overview, &checked).is_err());
         let mut changed = checked.clone();
         changed
             .dependencies
@@ -2367,19 +2367,19 @@ mod tests {
                 .any(|row| row["fragment"] == "scenario:import/import/overview/accept")
         );
         narrative.operations[0].interface_contracts[0].rows[0].source_ids = vec!["unbound".into()];
-        assert!(render::validate(&narrative, &checked).is_err());
+        assert!(retained_validation::validate(&narrative, &checked).is_err());
         narrative.operations[0].interface_contracts.clear();
         narrative.operations[0].explanation[0].event_ids = vec!["unknown".into()];
-        assert!(render::validate(&narrative, &checked).is_err());
+        assert!(retained_validation::validate(&narrative, &checked).is_err());
         narrative.operations[0].explanation.clear();
-        assert!(render::validate(&narrative, &checked).is_err());
+        assert!(retained_validation::validate(&narrative, &checked).is_err());
         overview.operations[0].overview_diagram = valid;
-        render::validate(&overview, &checked).unwrap();
+        retained_validation::validate(&overview, &checked).unwrap();
         for version in ["1.0", "1.1", "1.2"] {
             let mut obsolete = overview.clone();
             obsolete.schema = format!("codeclew-documentation-narrative/{version}");
             assert!(
-                render::validate(&obsolete, &checked)
+                retained_validation::validate(&obsolete, &checked)
                     .unwrap_err()
                     .message
                     .contains("only codeclew-documentation-narrative/1.3")

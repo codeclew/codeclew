@@ -73,17 +73,17 @@ class FirstDocumentTest(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()):
                 starter.prepare(args)
                 first = next((root / "authoring").iterdir())
-                (first / "proposal.json").write_text("My edited proposal")
+                (first / "original.json").write_text("My authored original")
                 starter.prepare(args)
             self.assertEqual(note.read_text(), "Retain this original guidance")
-            self.assertEqual((first / "proposal.json").read_text(), "My edited proposal")
+            self.assertEqual((first / "original.json").read_text(), "My authored original")
             second = next(path for path in (root / "authoring").iterdir() if path != first)
-            proposal = json.loads((second / "proposal.json").read_text())
-            self.assertEqual(proposal["operations"][0]["entrypoint"], "section7")
-            self.assertEqual(proposal["operations"][0]["summary"]["evidence"], [])
+            self.assertFalse((second / "proposal.json").exists())
+            self.assertFalse((second / "original.json").exists())
             packet = (second / "packet.md").read_text()
             self.assertIn("What returns?", packet)
             self.assertIn("return 1", packet)
+            self.assertIn("reader_export_check.py finalize", packet)
             self.assertEqual(sum(call[:2] == ("work", "read-part") for call in calls), 2)
 
     def test_different_existing_registration_stops_before_mutation(self):

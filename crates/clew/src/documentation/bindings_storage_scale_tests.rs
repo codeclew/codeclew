@@ -4,7 +4,7 @@ use crate::documentation::{
     bindings,
     check::Check,
     model::{Narrative, Observation, ServiceEvidence, Source},
-    render,
+    retained_validation,
 };
 use std::{path::Path, time::Instant};
 
@@ -189,7 +189,7 @@ fn fixed_structured_scale() {
     {
         let start = Instant::now();
         let (checked, narratives) = fixture(count, generation == 2, &input);
-        let binding = render::make_bindings(&checked, narratives).unwrap();
+        let binding = retained_validation::make_bindings(&checked, narratives).unwrap();
         assert_eq!(
             binding
                 .fragments

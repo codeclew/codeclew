@@ -241,13 +241,6 @@ pub fn overview(checked: &Check, subject: &str, root: &str) -> bool {
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Preview a declared thread linking frozen service pages; no authoring or capture.
-    LinkedPreview {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        output_dir: PathBuf,
-    },
     /// Discover structural process candidates from saved evidence without capture or model calls.
     Candidates {
         #[command(flatten)]
@@ -358,12 +351,6 @@ pub enum SuppressCommand {
     List {},
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
-    let command = match command {
-        Command::LinkedPreview { input, output_dir } => {
-            return super::process_linked_preview::render(&input, &output_dir);
-        }
-        command => command,
-    };
     let root = match &command {
         Command::List { page } | Command::Candidates { page, .. } => &page.root,
         Command::Show { root, .. }
@@ -373,11 +360,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         | Command::Graph { root, .. }
         | Command::Extract { root, .. }
         | Command::Suppress { root, .. } => root,
-        Command::LinkedPreview { .. } => unreachable!(),
     };
     let repo = Repository::open(root)?;
     match command {
-        Command::LinkedPreview { .. } => unreachable!(),
         Command::Candidates {
             page,
             service,
@@ -987,7 +972,7 @@ pub fn markdown(process: &Value) -> String {
     if process.is_null() {
         return String::new();
     }
-    let esc = |v: &Value| super::render::escape(v.as_str().unwrap_or(""));
+    let esc = |v: &Value| super::text::escape(v.as_str().unwrap_or(""));
     let d = &process["definition"]["process"];
     let mut out = format!(
         "\n## Saved process definition\n\nExplicit requested scope and outcomes; source support is assessed separately.\n\nScope: {}\n\nTrigger: {}\n\n",
@@ -1017,7 +1002,7 @@ pub fn markdown(process: &Value) -> String {
             })
         ));
         if let Some(summary) = c["accepted"]["summary"]["text"].as_str() {
-            out.push_str(&format!("\n  {}\n", super::render::escape(summary)));
+            out.push_str(&format!("\n  {}\n", super::text::escape(summary)));
         }
     }
     out

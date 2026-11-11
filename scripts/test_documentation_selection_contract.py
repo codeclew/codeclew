@@ -12,7 +12,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_PATH = ROOT / "schemas/documentation/section-author.schema.json"
+SCHEMA_PATH = ROOT / "schemas/documentation/work.schema.json"
 WORK_SCHEMA_PATH = ROOT / "schemas/documentation/work.schema.json"
 READER_PACKET_SCHEMA_PATH = ROOT / "schemas/documentation/reader-packet.schema.json"
 OPERATION_ANSWER_SCHEMA_PATH = ROOT / "schemas/documentation/operation-answer-1.2.schema.json"
@@ -36,6 +36,15 @@ def selection_errors(
     schema: dict[str, object] = SELECTION_SCHEMA,
     definitions: dict[str, object] = SCHEMA["$defs"],
 ) -> list[str]:
+    # default is an annotation, not a validation assertion. The local subset
+    # checker intentionally accepts only assertion keywords.
+    def assertions(value):
+        if isinstance(value, dict):
+            return {k: assertions(v) for k, v in value.items() if k != "default"}
+        if isinstance(value, list):
+            return [assertions(v) for v in value]
+        return value
+    schema, definitions = assertions(schema), assertions(definitions)
     errors: list[str] = []
     validator = mini_schema.MiniSchema(schema, errors)
     try:
@@ -661,25 +670,12 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             with self.subTest(selection=selection):
                 self.assertEqual(selection_errors(selection), [])
 
-    def test_nonempty_selection_modes_cannot_be_combined(self) -> None:
-        mixed = [
-            {
-                "references": ["d1"],
-                "query": {"kind": "SYMBOL", "symbolContains": "helper"},
-            },
-            {"references": ["d1"], "symbols": ["helper"]},
-            {"symbols": ["helper"], "query": {"kind": "SYMBOL"}},
+    def test_query_projection_remains_kind_scoped(self) -> None:
+        for selection in [
             {"query": {"kind": "HTTP", "projection": "NAVIGATION"}},
             {"query": {"kind": "SYMBOL", "projection": "SUMMARY"}},
-            {
-                "references": ["d1"],
-                "symbols": ["helper"],
-                "query": {"kind": "SYMBOL"},
-            },
-        ]
-        for selection in mixed:
-            with self.subTest(selection=selection):
-                self.assertNotEqual(selection_errors(selection), [])
+        ]:
+            self.assertNotEqual(selection_errors(selection), [])
 
     def test_public_work_projection_is_optional_raw_and_navigation_is_kind_scoped(self) -> None:
         for selection in [
@@ -733,7 +729,7 @@ class DocumentationSelectionContractTest(unittest.TestCase):
                     )
                     self.assertEqual(errors == [], accepted, errors)
 
-    def test_existing_bounds_and_registered_only_contract_remain(self) -> None:
+    def test_work_selection_bounds_and_explicit_untracked_flag_remain(self) -> None:
         self.assertEqual(selection_errors({"references": [f"d{i}" for i in range(8)]}), [])
         self.assertEqual(selection_errors({"symbols": [f"s{i}" for i in range(8)]}), [])
         self.assertEqual(
@@ -751,7 +747,8 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             [],
         )
         self.assertEqual(selection_errors({"untrackedReads": False}), [])
-        self.assertNotEqual(selection_errors({"untrackedReads": True}), [])
+        self.assertEqual(selection_errors({"untrackedReads": True}), [])
+        self.assertNotEqual(selection_errors({"untrackedReads": "true"}), [])
 
 
 if __name__ == "__main__":

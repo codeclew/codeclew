@@ -1,6 +1,12 @@
 //! Neutral exact call-site facts admitted from retained Kotlin compiler relations.
+#[cfg(test)]
 use super::super::model::{
-    CallableProjection, Citation, NeutralCallArgumentBinding, NeutralCallArgumentBindings,
+    CallableProjection, NeutralCallArgumentBinding, NeutralCallArgumentBindings,
+    NeutralExactCallSite, NeutralExactCallSiteOwnerKey, RetainedCallSites,
+};
+#[cfg(not(test))]
+use super::super::model::{
+    CallableProjection, NeutralCallArgumentBinding, NeutralCallArgumentBindings,
     NeutralExactCallSite, NeutralExactCallSiteOwnerKey, RetainedCallSites,
 };
 use super::{Context, gap};
@@ -893,145 +899,4 @@ fn citation_id(source: &Source, start: usize, end: usize) -> String {
             format!("{}:{start}:{end}:{}", source.id, source.text_digest).as_bytes()
         )[7..31]
     )
-}
-
-pub(in crate::documentation) fn expected_citation(source: &Source) -> Citation {
-    expected_citation_range(source, 0, source.text.len())
-        .expect("full retained source range must be valid UTF-8")
-}
-
-fn expected_citation_range(source: &Source, start: usize, end: usize) -> Option<Citation> {
-    let text = source.text.get(start..end)?;
-    let start_line = source.start_line
-        + source.text.as_bytes()[..start]
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count() as u64;
-    let end_line = source.start_line
-        + source.text.as_bytes()[..end.saturating_sub(1).max(start)]
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count() as u64;
-    let url = source.url.as_ref().map(|url| {
-        format!(
-            "{}#L{start_line}-L{end_line}",
-            url.split('#').next().unwrap_or(url)
-        )
-    });
-    Some(Citation {
-        id: citation_id(source, start, end),
-        source_id: source.id.clone(),
-        service: source.service.clone(),
-        revision: source.revision.clone(),
-        file: source.file.clone(),
-        start_line,
-        end_line,
-        start_byte: start,
-        end_byte: end,
-        text_digest: crate::canonical::hash_bytes(text.as_bytes()),
-        evidence_digest: source.evidence_digest.clone(),
-        authority: source.authority.clone(),
-        url,
-    })
-}
-
-pub(in crate::documentation) fn validate_page(
-    page: &super::super::model::PageContent,
-    callable: &CallableProjection,
-) -> Result<(), ClewError> {
-    validate_node(
-        &page.selection.service,
-        &page.service_revision,
-        &page.observations,
-        &page.sources,
-        &page.citations,
-        callable,
-    )
-}
-
-pub(in crate::documentation) fn validate_node(
-    service: &str,
-    revision: &str,
-    observations: &BTreeMap<String, Observation>,
-    sources: &BTreeMap<String, Source>,
-    citations: &BTreeMap<String, Citation>,
-    callable: &CallableProjection,
-) -> Result<(), ClewError> {
-    let Some(retained) = &callable.retained_call_sites else {
-        return Ok(());
-    };
-    let owner = observations
-        .get(&callable.declaration_id)
-        .ok_or_else(|| invalid("retained Kotlin call-site owner is not retained"))?;
-    if !super::compiler::admitted(owner) {
-        return Err(invalid(
-            "retained exact call sites require an admitted compiler declaration",
-        ));
-    }
-    let scope = owner.normalized["scope"]
-        .as_str()
-        .ok_or_else(|| invalid("retained Kotlin call-site owner scope is missing"))?;
-    let owner_key = NeutralExactCallSiteOwnerKey {
-        service: service.to_owned(),
-        scope: scope.to_owned(),
-        symbol: callable.symbol.clone(),
-    };
-    let owner_source = match owner.source_ids.as_slice() {
-        [id] => sources.get(id).filter(|source| source.id == *id),
-        _ => None,
-    };
-    let candidates = candidate_relations(observations, owner, scope);
-    let expected = derive_projection(
-        service,
-        revision,
-        &owner_key,
-        owner,
-        owner_source,
-        &candidates,
-        sources,
-        callable.citation_id.clone(),
-    )?;
-    let expected = augment_source_events(expected, owner, owner_source, observations, sources)?;
-    if retained != &expected {
-        return Err(invalid(
-            "retained Kotlin call-site payload differs from its copied compiler evidence",
-        ));
-    }
-    if expected.gaps.is_empty() {
-        for site in &expected.sites {
-            let source = sources
-                .get(&site.source_id)
-                .ok_or_else(|| invalid("retained Kotlin call-site source is missing"))?;
-            if citations.get(&site.citation_id) != Some(&expected_citation(source)) {
-                return Err(invalid(
-                    "retained Kotlin call-site citation differs from its exact source text",
-                ));
-            }
-            if let Some(bindings) = &site.argument_bindings
-                && bindings.gaps.is_empty()
-            {
-                for argument in &bindings.arguments {
-                    let (start, end) = argument_source_range(site, argument).ok_or_else(|| {
-                        invalid("retained Kotlin argument citation range is invalid")
-                    })?;
-                    if citations.get(&argument.citation_id)
-                        != expected_citation_range(source, start, end).as_ref()
-                    {
-                        return Err(invalid(
-                            "retained Kotlin argument citation differs from its exact source subspan",
-                        ));
-                    }
-                }
-            }
-        }
-    } else if expected.gaps[0]
-        .citation_id
-        .as_deref()
-        .is_none_or(|id| citations.get(id).is_none())
-    {
-        return Err(invalid(
-            "retained Kotlin call-site limitation has no declaration citation",
-        ));
-    }
-    Ok(())
 }

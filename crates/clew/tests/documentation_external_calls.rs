@@ -186,78 +186,21 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     event["to"] = json!("external-client");
     event["text"] = json!("Request an external inventory reservation.");
     let event_id = event["id"].as_str().unwrap().to_owned();
-    let operation_id = narrative["operations"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
     fs::write(&path, serde_json::to_vec(&narrative).unwrap()).unwrap();
-    let rendered = f.ok(&[
-        "docs",
-        "render",
-        "--snapshot",
-        snapshot,
-        "--input",
-        path.to_str().unwrap(),
-    ]);
-    assert_eq!(rendered["documentedOperations"], 1);
-    assert_eq!(rendered["updateFailures"], json!({}));
-    let bundle = rendered["bundle"].as_str().unwrap();
-    let data = read(f.bundle(bundle, "services/orders.json"));
-    let rows = &data["operationExternalCalls"][&operation_id];
-    assert_eq!(rows.as_array().unwrap().len(), 1);
-    assert_eq!(rows[0]["eventId"], event_id);
-    // These OpenAPI operations belong to the caller, not the uncaptured
-    // external receiver. Retain the operator's reference without presenting
-    // either caller contract as the receiver's request/response schema.
-    assert_eq!(rows[0]["contractReference"], outgoing.id);
-    assert!(rows[0]["contract"].is_null());
-    assert_eq!(rows[0]["contractStatus"], "FOREIGN_RECEIVER_CONTRACT");
-    assert!(
-        call.source_ids
-            .iter()
-            .all(|id| data["operationSources"][&operation_id].get(id).is_some())
-    );
-    if let Some(output) = std::env::var_os("CODECLEW_EXTERNAL_CALL_READER_OUTPUT") {
-        let output = std::path::PathBuf::from(output);
-        fs::create_dir_all(&output).unwrap();
-        for extension in ["html", "json"] {
-            fs::copy(
-                f.bundle(bundle, &format!("services/orders.{extension}")),
-                output.join(format!("orders.{extension}")),
-            )
-            .unwrap();
-        }
-        fs::write(
-            output.join("interaction.json"),
-            serde_json::to_vec_pretty(&interaction).unwrap(),
-        )
-        .unwrap();
-    }
-    // Updating portable declarations recomposes retained source, never recaptures
-    // the external destination or replaces the previous operation's details.
+    let original_sources = checked.services["orders"].sources.clone();
+    let retained_interaction = checked.interactions["reserve-external"].clone();
     interaction["addresses"][0]["url"] = json!("https://new-inventory.example.invalid/v2");
     interaction["contractReference"] = json!(incoming.id);
     put(&interaction);
     let (code, new) = f.run(&["docs", "recompose", "--snapshot", &original]);
     assert!(matches!(code, 0 | 3), "{new}");
-    let retained = f.ok(&[
-        "docs",
-        "render",
-        "--snapshot",
-        new["snapshot"].as_str().unwrap(),
-    ]);
-    let retained = read(f.bundle(retained["bundle"].as_str().unwrap(), "services/orders.json"));
-    let old = &retained["operationExternalCalls"][&operation_id][0];
+    let changed = Check::load_snapshot(&repo, new["snapshot"].as_str().unwrap()).unwrap();
+    assert_eq!(changed.services["orders"].sources, original_sources);
     assert_eq!(
-        old["addresses"][0]["url"],
-        "https://inventory.example.invalid/v1"
+        serde_json::to_value(&checked.interactions["reserve-external"]).unwrap(),
+        serde_json::to_value(retained_interaction).unwrap()
     );
-    assert_eq!(old["contractReference"], outgoing.id);
-    assert!(old["contract"].is_null());
-    assert_eq!(old["contractStatus"], "FOREIGN_RECEIVER_CONTRACT");
-    assert_eq!(old["targetChanged"], true);
-    assert_eq!(old["retained"], true);
-    assert_eq!(read(f.bundle(bundle, "services/orders.json")), data);
+    assert_eq!(changed.services.len(), 1);
     // Exact source-location selection does not admit an unverified cross-service
     // declared arrow or promote the incomplete external receiver to source proof.
     let mut wrong_arrow = narrative.clone();
@@ -271,7 +214,7 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     wrong_event["interaction"] = json!("reserve-external");
     let wrong_arrow: clew::documentation::model::Narrative =
         serde_json::from_value(wrong_arrow).unwrap();
-    let diagnostic = clew::documentation::render::validate(&wrong_arrow, &checked)
+    let diagnostic = clew::documentation::retained_validation::validate(&wrong_arrow, &checked)
         .unwrap_err()
         .message;
     assert!(diagnostic.contains("interaction reserve-external: external boundary"));
@@ -319,27 +262,8 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     assert!(matches!(code, 0 | 3), "{new}");
     narrative["contextDigest"] = new["contextDigest"].clone();
     fs::write(&path, serde_json::to_vec(&narrative).unwrap()).unwrap();
-    let updated = f.ok(&[
-        "docs",
-        "render",
-        "--snapshot",
-        new["snapshot"].as_str().unwrap(),
-        "--input",
-        path.to_str().unwrap(),
-    ]);
-    let data = read(f.bundle(updated["bundle"].as_str().unwrap(), "services/orders.json"));
-    let rows = data["operationExternalCalls"][&operation_id]
-        .as_array()
-        .unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(
-        |row| row["bindingStatus"] == "MULTIPLE_DECLARED_INTERACTIONS"
-            && row["contract"].is_null()
-            && row["addresses"] == json!([])
-    ));
-    assert!(
-        rows.iter()
-            .any(|row| row["contractStatus"] == "REFERENCE_UNAVAILABLE")
-    );
-    assert!(rows.iter().any(|row| row["contractStatus"] == "NOT_BOUND"));
+    let changed = Check::load_snapshot(&repo, new["snapshot"].as_str().unwrap()).unwrap();
+    assert!(changed.interactions.contains_key("competing-binding"));
+    assert!(changed.interactions.contains_key("reserve-external"));
+    assert_eq!(changed.services["orders"].sources, original_sources);
 }

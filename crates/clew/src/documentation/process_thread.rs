@@ -1,14 +1,18 @@
 //! Explicit, source-bound process steps. These declarations never grant compiler
 //! call-target or runtime authority. Only complete retained callable spans are
 //! admitted to the shared source section; rendering never opens a checkout.
+#[cfg(test)]
 use super::{
     check::Check,
     invalid,
     model::{Entrypoint, Source},
     source_steps, store,
 };
+#[cfg(not(test))]
+use super::{invalid, store};
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -434,6 +438,7 @@ impl Thread {
 
 // Remove only complete leading declaration annotations. Other executable
 // prefixes remain visible and are rejected, rather than included in source.
+#[cfg(test)]
 fn without_annotations(mut prefix: &str) -> Option<String> {
     let mut result = String::new();
     while !prefix.trim_start().is_empty() {
@@ -474,6 +479,7 @@ fn without_annotations(mut prefix: &str) -> Option<String> {
     Some(result)
 }
 
+#[cfg(test)]
 fn isolated_typescript_callable(text: &str, name: &str) -> bool {
     fn callable(node: tree_sitter::Node<'_>, text: &str, name: &str) -> bool {
         matches!(node.kind(), "function_declaration" | "method_definition")
@@ -534,6 +540,7 @@ fn isolated_typescript_callable(text: &str, name: &str) -> bool {
     nodes.len() == 1 && callable(nodes[0], &wrapped, name)
 }
 
+#[cfg(test)]
 fn after_csharp_attributes(mut prefix: &str) -> Option<&str> {
     prefix = prefix.trim_start();
     while prefix.starts_with('[') {
@@ -559,6 +566,7 @@ fn after_csharp_attributes(mut prefix: &str) -> Option<&str> {
 
 /// Check complete retained callable containment, without resolving calls or
 /// upgrading source declarations to compiler or runtime authority.
+#[cfg(test)]
 fn isolated_callable(source: &Source, entry: &Entrypoint) -> bool {
     let text = &source.text;
     if text.len() > 256 * 1024 {
@@ -746,6 +754,7 @@ fn isolated_callable(source: &Source, entry: &Entrypoint) -> bool {
         _ => false,
     }
 }
+#[cfg(test)]
 fn bind(
     method: &Method,
     source: &Source,
@@ -775,6 +784,7 @@ fn bind(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn project(
     checked: &Check,
     subject: &str,
@@ -966,6 +976,7 @@ pub(super) fn project(
 }
 
 /// Service pages reuse admitted process fragments, never a parallel explanation generator.
+#[cfg(test)]
 pub(super) fn service_fragments(checked: &Check, service: &str) -> Result<Vec<Value>, ClewError> {
     let mut result = Vec::new();
     for dependency in checked
@@ -987,7 +998,8 @@ pub(super) fn service_fragments(checked: &Check, service: &str) -> Result<Vec<Va
         }) {
             continue;
         }
-        let root_metadata = super::render::selected_process_root_metadata(checked, &scenario.id)?;
+        let root_metadata =
+            super::process_metadata::selected_process_root_metadata(checked, &scenario.id)?;
         let projected = project(
             checked,
             &format!("scenario:{}", scenario.id),
@@ -1053,222 +1065,6 @@ pub(super) fn service_fragments(checked: &Check, service: &str) -> Result<Vec<Va
         }
     }
     Ok(result)
-}
-
-/// Markdown keeps authored interpretation and exact selected sources together.
-/// Citation links open the HTML reader's original line range; they do not grant
-/// call-target authority. Choose a fence longer than any source backtick run.
-pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String {
-    if thread["status"] != "SOURCE_BOUND_DECLARATION" {
-        return String::new();
-    }
-    let label = |en| super::reader::process_thread_text(language, en);
-    let esc = super::render::escape;
-    let page = thread["sourcePage"]
-        .as_str()
-        .unwrap_or_else(|| subject.strip_prefix("scenario:").unwrap_or(""));
-    let mut out = format!(
-        "\n## {}\n\n{}\n\n",
-        label("Process steps"),
-        label(
-            "Declared reading order does not prove execution order. Call targets and delivery are not established."
-        )
-    );
-    for contract in thread["boundaryContracts"].as_array().into_iter().flatten() {
-        out.push_str(&format!("### Boundary contract: {}\n\nDeclared source interpretation; wire compatibility and runtime are unproven.\n\n", esc(contract["id"].as_str().unwrap_or(""))));
-        for key in ["operation", "request", "response", "failures", "guarantees"] {
-            let claims: Vec<&Value> = if key == "operation" {
-                vec![&contract[key]]
-            } else {
-                contract[key].as_array().into_iter().flatten().collect()
-            };
-            for claim in claims {
-                out.push_str(&format!(
-                    "- {}: {}\n",
-                    key,
-                    esc(claim["text"].as_str().unwrap_or(""))
-                ));
-                if let Some(missing) = claim["missingEvidence"].as_str() {
-                    out.push_str(&format!("  Unresolved: {}\n", esc(missing)));
-                }
-                for id in claim["evidenceRefs"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                {
-                    let e = &contract["evidence"][id];
-                    out.push_str(&format!(
-                        "  Evidence: {} / {} @ {} #L{}-L{}\n",
-                        esc(e["service"].as_str().unwrap_or("")),
-                        esc(e["source"]["file"].as_str().unwrap_or("")),
-                        esc(e["revision"].as_str().unwrap_or("")),
-                        e["startLine"],
-                        e["endLine"]
-                    ));
-                }
-            }
-        }
-        out.push('\n');
-    }
-    for fragment in thread["serviceFragments"].as_array().into_iter().flatten() {
-        let service =
-            thread["methods"][fragment["entryMethod"].as_str().unwrap_or("")]["source"]["service"]
-                .as_str()
-                .unwrap_or("");
-        out.push_str(&format!(
-            "[Receiving fragment {}](../services/{}.html#service-fragment-{}:{})\n\n",
-            esc(fragment["id"].as_str().unwrap_or("")),
-            service,
-            page,
-            fragment["id"].as_str().unwrap_or("")
-        ));
-    }
-    for link in thread["processPages"]
-        .as_object()
-        .into_iter()
-        .flat_map(|m| m.values())
-    {
-        out.push_str(&format!(
-            "[{}]({}) · {} @ {} · page digest: {} · internalNarrativeGeneration=false\n\n",
-            esc(link["title"].as_str().unwrap_or("")),
-            esc(link["href"].as_str().unwrap_or("")),
-            esc(link["service"].as_str().unwrap_or("")),
-            esc(link["revision"].as_str().unwrap_or("")),
-            esc(link["proof"]["pageDigest"].as_str().unwrap_or(""))
-        ));
-    }
-    fn href(citation: &Value, methods: &Value, page: &str) -> String {
-        let method = citation["method"].as_str().unwrap_or("");
-        let source = &methods[method]["source"];
-        if source["text"] == ""
-            && let Some(url) = source["url"]
-                .as_str()
-                .filter(|url| url.starts_with("https://"))
-        {
-            return super::source_links::range_url(
-                url,
-                citation["startLine"].as_u64().unwrap_or(1),
-                citation["endLine"]
-                    .as_u64()
-                    .or_else(|| citation["startLine"].as_u64())
-                    .unwrap_or(1),
-            );
-        }
-        format!(
-            "./{page}.html#thread-source-{method}-L{}",
-            citation["startLine"]
-        )
-    }
-    fn steps(out: &mut String, rows: &[Value], page: &str, depth: usize, methods: &Value) {
-        for row in rows {
-            let text = |key: &str| row[key].as_str().unwrap_or("");
-            out.push_str(&format!(
-                "{}- **{}**: {} ([source]({}), lines {}–{}).\n",
-                "  ".repeat(depth),
-                super::render::escape(text("title")),
-                super::render::escape(text("text")),
-                href(row, methods, page),
-                row["startLine"],
-                row["endLine"],
-            ));
-            for effect in row["effects"].as_array().into_iter().flatten() {
-                let c = &effect["citation"];
-                out.push_str(&format!(
-                    "{}- [{}] {} ([source]({})).\n",
-                    "  ".repeat(depth + 1),
-                    super::render::escape(effect["kind"].as_str().unwrap_or("")),
-                    super::render::escape(effect["label"].as_str().unwrap_or("")),
-                    href(c, methods, page)
-                ));
-            }
-            if let Some(group) = row.get("branchGroup") {
-                out.push_str(&format!(
-                    "{}- **Declared branches: {}**\n",
-                    "  ".repeat(depth + 1),
-                    super::render::escape(group["mode"].as_str().unwrap_or(""))
-                ));
-                for arm in group["arms"].as_array().into_iter().flatten() {
-                    out.push_str(&format!(
-                        "{}- **{}**\n",
-                        "  ".repeat(depth + 2),
-                        super::render::escape(arm["condition"].as_str().unwrap_or("Otherwise"))
-                    ));
-                    if let Some(guard) = arm.get("guard") {
-                        out.push_str(&format!(
-                            "{}- [guard source]({})\n",
-                            "  ".repeat(depth + 3),
-                            href(guard, methods, page)
-                        ));
-                    }
-                    if let Some(rows) = arm["steps"].as_array() {
-                        steps(out, rows, page, depth + 3, methods);
-                    }
-                }
-            }
-            if let Some(children) = row["children"].as_array() {
-                steps(out, children, page, depth + 1, methods);
-            }
-        }
-    }
-    if let Some(rows) = thread["steps"].as_array() {
-        steps(&mut out, rows, page, 0, &thread["methods"]);
-    }
-    out.push_str(&format!(
-        "\n### {}\n\n{}\n\n",
-        label("Scope and boundaries"),
-        esc(thread["scope"].as_str().unwrap_or(""))
-    ));
-    for boundary in thread["boundaries"].as_array().into_iter().flatten() {
-        out.push_str(&format!("- {}\n", esc(boundary.as_str().unwrap_or(""))));
-    }
-    out.push_str(&format!(
-        "\n<details><summary>{}</summary>\n\n",
-        label("Selected thread sources")
-    ));
-    for id in thread["methodOrder"].as_array().into_iter().flatten() {
-        let method = &thread["methods"][id.as_str().unwrap_or("")];
-        let source = &method["source"];
-        let text = source["text"].as_str().unwrap_or("");
-        if text.is_empty()
-            && let Some(url) = source["url"]
-                .as_str()
-                .filter(|url| url.starts_with("https://"))
-        {
-            out.push_str(&format!(
-                "### {}\n\n[{}:{}–{}]({}) · {}\n\nSource text is omitted from this export.\n\n",
-                esc(method["label"].as_str().unwrap_or("")),
-                esc(source["file"].as_str().unwrap_or("")),
-                source["startLine"],
-                source["endLine"],
-                url,
-                source["revision"]
-            ));
-            continue;
-        }
-        let fence = "`".repeat(
-            text.split(|ch| ch != '`')
-                .map(str::len)
-                .max()
-                .unwrap_or(0)
-                .max(2)
-                + 1,
-        );
-        out.push_str(&format!(
-            "### {}\n\n{} · {}:{}–{} · {}\n\n{}\n{}\n{}\n\n",
-            esc(method["label"].as_str().unwrap_or("")),
-            esc(source["service"].as_str().unwrap_or("")),
-            esc(source["file"].as_str().unwrap_or("")),
-            source["startLine"],
-            source["endLine"],
-            esc(source["revision"].as_str().unwrap_or("")),
-            fence,
-            text,
-            fence
-        ));
-    }
-    out.push_str("</details>\n");
-    out
 }
 
 #[cfg(test)]
@@ -1484,7 +1280,8 @@ mod tests {
                 composition: None,
             };
             let root =
-                super::super::render::selected_process_root_metadata(&checked, "order").unwrap();
+                super::super::process_metadata::selected_process_root_metadata(&checked, "order")
+                    .unwrap();
             assert_eq!(root["symbol"], symbol, "{language}");
             let thread = project(&checked, "scenario:order", &root).unwrap().unwrap();
             assert_eq!(thread["status"], "SOURCE_BOUND_DECLARATION");
@@ -1846,18 +1643,5 @@ mod tests {
             .steps
             .clone();
         assert!(thread.validate(&["svc".into()]).is_err());
-    }
-
-    #[test]
-    fn markdown_retains_source_bytes_and_fences_embedded_backticks() {
-        let code = "fun create() = \"```<script>\"";
-        let thread = json!({"status":"SOURCE_BOUND_DECLARATION","scope":"One method", "steps":[{"id":"step","title":"Return","text":"Declared return", "method":"create","startLine":10,"endLine":10}],"boundaries":["Delivery unknown"],"methodOrder":["create"],"methods":{"create":{"label":"Create","source":{"service":"svc","file":"Order.kt","revision":"rev","startLine":10,"endLine":10,"text":code}}}});
-        let output = markdown(&thread, "scenario:order", "en");
-        assert!(output.contains("./order.html#thread-source-create-L10"));
-        assert!(output.contains(&format!("````\n{code}\n````")));
-        assert_eq!(output.matches("<details>").count(), 1);
-        assert!(output.contains("Delivery unknown"));
-        assert_ne!(markdown(&thread, "scenario:order", "ru"), output);
-        assert!(markdown(&Value::Null, "scenario:order", "en").is_empty());
     }
 }

@@ -4,5 +4,5 @@ from pathlib import Path
 import runpy
 
 if __name__ == "__main__":
-    runpy.run_path(str(Path(__file__).with_name("collect_proposal.py")),
+    runpy.run_path(str(Path(__file__).with_name("work_transport.py")),
                   run_name="__main__", init_globals={"DEFAULT_COLLECTION_KIND": "work-initial"})

@@ -19,9 +19,8 @@ use std::{
 };
 
 pub use super::work_parts::{SourcePartReceipt, SourcePartRequest, read_part};
-pub(super) use super::work_parts::{
-    completed_source_references, initial_context_complete_with_parts,
-};
+#[cfg(test)]
+use super::work_parts::{completed_source_references, initial_context_complete_with_parts};
 pub use super::work_retained_parts::{
     RetainedPartReceipt, RetainedPartRequest, read_dependency_part, read_retained_part,
 };
@@ -49,8 +48,8 @@ pub enum Command {
         work: String,
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Produce one endpoint answer draft from compact packet evidence without publication.
-        #[arg(long)]
+        /// Save one bounded validated answer and its evidence as JSON.
+        #[arg(long, required = true)]
         draft: bool,
         /// Start a fresh attempt after a terminal unsuccessful draft; retains the prior report and accounting.
         #[arg(long, requires = "draft")]
@@ -76,23 +75,7 @@ pub enum Command {
         #[arg(long, value_parser = parse_run_identity)]
         retry_from_review: Option<String>,
     },
-    /// Inspect the exact catalogue baseline without captures, models or writes.
-    PublicationBaseline {
-        #[arg(long)]
-        root: PathBuf,
-    },
-    /// Explicitly publish one saved approved answer without authoring or review.
-    PublishAnswer {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long)]
-        work: String,
-        #[arg(long, value_parser = parse_run_identity)]
-        review_run: String,
-        /// Closed NONE/EXACT selector from publication-baseline or prior publication.
-        #[arg(long)]
-        baseline: PathBuf,
-    },
+
     /// Compare one historical approved answer with an explicit captured Check.
     AnswerContext {
         #[arg(long)]
@@ -174,153 +157,53 @@ pub enum Command {
         #[arg(long)]
         audit_output: Option<PathBuf>,
     },
-    /// Render a validated operation answer into a reusable local draft.
-    Explain {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long)]
-        work: String,
-        #[arg(
-            long,
-            required_unless_present = "review_run",
-            conflicts_with = "review_run"
-        )]
-        input: Option<PathBuf>,
-        /// Export one exact approved saved review without a config or model call.
-        #[arg(long, required_unless_present = "input", conflicts_with = "input", value_parser = parse_run_identity)]
-        review_run: Option<String>,
-        #[arg(long)]
-        output_dir: PathBuf,
-    },
 }
 
 #[cfg(test)]
-mod explanation_output_tests {
+mod answer_record_tests {
     use super::*;
-    use serde_json::json;
-
-    fn process_diagram() -> super::super::operation_answer::ProcessDiagram {
-        super::super::operation_answer::ProcessDiagram {
-            puml_filename: super::super::operation_answer::PROCESS_DIAGRAM_PUML_FILE.into(),
-            puml: "@startuml\nstart\n:Run;\nstop\n@enduml\n".into(),
-            tree: "Entry: run\nRun\n".into(),
-            source_reference: Some("source-root".into()),
-            source_anchor: Some("source-1".into()),
-            has_causal_projection: true,
-        }
-    }
-
     #[test]
-    fn explanation_writer_preserves_plantuml_and_records_svg_availability_and_draft_state() {
+    fn answer_retention_writes_only_json_and_preserves_existing_exports() {
         let temporary = tempfile::tempdir().unwrap();
-        let diagram = process_diagram();
-        let output = write_explanation_outputs(
-            temporary.path(),
-            "work-test",
-            &json!({"packetDigest":"sha256:packet"}),
-            &json!({"auditDigest":"sha256:audit"}),
-            &json!({"schema":"codeclew-operation-answer/1.2"}),
-            "# Draft\n<!--CODECLEW_PROCESS_DIAGRAM_SVG-->\n",
-            "<h1>DRAFT</h1><!--CODECLEW_PROCESS_DIAGRAM_SVG-->",
-            Some(&diagram),
-        )
-        .unwrap();
-
-        assert_eq!(output["status"], "DRAFT");
-        assert_eq!(output["reviewStatus"], "UNREVIEWED");
-        assert_eq!(output["publication"], "NOT_PUBLISHED");
-        assert_eq!(output["processDiagram"]["status"], "SOURCE_LOCAL");
+        let legacy = temporary.path().join("legacy.html");
+        fs::write(&legacy, b"<main>Saved historical export</main>").unwrap();
+        let packet = json!({"packetDigest":"owned packet"});
+        let audit = json!({"scope":"owned evidence"});
+        let answer = json!({"summary":"An authored answer"});
+        let result =
+            save_answer_records(temporary.path(), "owned-work", &packet, &audit, &answer).unwrap();
+        assert_eq!(result["publication"], "NOT_PUBLISHED");
+        let names: BTreeSet<_> = result["files"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
         assert_eq!(
-            output["processDiagram"]["sourceExcerpt"],
-            "index.html#source-1"
+            names,
+            BTreeSet::from([
+                "answer.json".into(),
+                "reader-packet.json".into(),
+                "reader-packet-audit.json".into()
+            ])
         );
-        let puml_path = temporary.path().join("process-flow.puml");
-        assert_eq!(fs::read_to_string(puml_path).unwrap(), diagram.puml);
-        let html = fs::read_to_string(temporary.path().join("index.html")).unwrap();
-        let markdown = fs::read_to_string(temporary.path().join("operation.md")).unwrap();
-        assert!(!html.contains("CODECLEW_PROCESS_DIAGRAM_SVG"));
-        assert!(!markdown.contains("CODECLEW_PROCESS_DIAGRAM_SVG"));
-
-        if output["processDiagram"]["svg"]["status"] == "RENDERED" {
-            assert!(output["files"].get("process-flow.svg").is_some());
-            assert!(temporary.path().join("process-flow.svg").is_file());
-            assert!(html.contains("href=\"process-flow.svg\""));
-            assert!(markdown.contains("](process-flow.svg)"));
-        } else {
-            assert_eq!(output["processDiagram"]["svg"]["status"], "UNAVAILABLE");
-            assert!(output["processDiagram"]["svg"]["reason"].is_string());
-            assert!(output["files"].get("process-flow.svg").is_none());
-            assert!(!temporary.path().join("process-flow.svg").exists());
-            assert!(html.contains("SVG unavailable"));
-            assert!(markdown.contains("SVG unavailable"));
-            assert!(!html.contains("href=\"process-flow.svg\""));
-            assert!(!markdown.contains("](process-flow.svg)"));
+        assert_eq!(
+            fs::read(&legacy).unwrap(),
+            b"<main>Saved historical export</main>"
+        );
+        for (name, expected) in [
+            ("answer.json", answer),
+            ("reader-packet.json", packet),
+            ("reader-packet-audit.json", audit),
+        ] {
+            let actual: Value =
+                store::read(&temporary.path().join(name), store::MAX_RECORD).unwrap();
+            assert_eq!(actual, expected);
         }
-    }
-
-    #[test]
-    fn explanation_writer_removes_stale_diagrams_when_svg_is_unavailable_or_not_applicable() {
-        let temporary = tempfile::tempdir().unwrap();
-        let output_dir = temporary.path();
-        let puml_path = output_dir.join(super::super::operation_answer::PROCESS_DIAGRAM_PUML_FILE);
-        let svg_path = output_dir.join(super::super::operation_answer::PROCESS_DIAGRAM_SVG_FILE);
-        let other_path = output_dir.join("keep.txt");
-        fs::write(&puml_path, "stale PlantUML").unwrap();
-        fs::write(&svg_path, "stale SVG").unwrap();
-        fs::write(&other_path, "keep this user file").unwrap();
-        let diagram = process_diagram();
-
-        let unavailable = write_explanation_outputs_with_svg_renderer(
-            output_dir,
-            "work-test",
-            &json!({"packetDigest":"sha256:packet"}),
-            &json!({"auditDigest":"sha256:audit"}),
-            &json!({"schema":"codeclew-operation-answer/1.2"}),
-            "# Draft\n<!--CODECLEW_PROCESS_DIAGRAM_SVG-->\n",
-            "<h1>DRAFT</h1><!--CODECLEW_PROCESS_DIAGRAM_SVG-->",
-            Some(&diagram),
-            |_| Ok(None),
-        )
-        .unwrap();
-
-        assert_eq!(fs::read_to_string(&puml_path).unwrap(), diagram.puml);
-        assert!(!svg_path.exists());
-        assert_eq!(
-            unavailable["processDiagram"]["svg"]["status"],
-            "UNAVAILABLE"
-        );
-        assert!(unavailable["processDiagram"]["svg"]["reason"].is_string());
-        assert!(unavailable["files"].get("process-flow.svg").is_none());
-        assert_eq!(
-            fs::read_to_string(&other_path).unwrap(),
-            "keep this user file"
-        );
-
-        fs::write(&svg_path, "stale SVG again").unwrap();
-        let not_applicable = write_explanation_outputs_with_svg_renderer(
-            output_dir,
-            "work-test",
-            &json!({"packetDigest":"sha256:packet"}),
-            &json!({"auditDigest":"sha256:audit"}),
-            &json!({"schema":"codeclew-operation-answer/1.2"}),
-            "# Draft\n",
-            "<h1>DRAFT</h1>",
-            None,
-            |_| panic!("renderer must not run without a process diagram"),
-        )
-        .unwrap();
-
-        assert!(!puml_path.exists());
-        assert!(!svg_path.exists());
-        assert_eq!(not_applicable["processDiagram"]["status"], "NOT_APPLICABLE");
-        assert!(not_applicable["files"].get("process-flow.puml").is_none());
-        assert!(not_applicable["files"].get("process-flow.svg").is_none());
-        assert_eq!(
-            fs::read_to_string(&other_path).unwrap(),
-            "keep this user file"
-        );
+        assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 4);
     }
 }
+
 #[derive(Debug, Args)]
 pub struct ReadArgs {
     #[arg(long)]
@@ -1078,7 +961,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     repair_from_review.as_deref(),
                 )
             } else {
-                super::agent_jobs::run(&repository, &work, config.as_deref())
+                Err(invalid(
+                    "native documentation coordination was removed; use authored originals and checked human HTML; bounded Q&A requires --draft",
+                ))
             }
         }
         Command::ReviewDraft {
@@ -1094,23 +979,6 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &config,
             retry_from_review.as_deref(),
         ),
-        Command::PublicationBaseline { root } => {
-            super::reviewed_answers::baseline(&Repository::open(&root)?)
-        }
-        Command::PublishAnswer {
-            root,
-            work,
-            review_run,
-            baseline,
-        } => {
-            let expected = store::read(&baseline, 4096)?;
-            super::reviewed_answers::publish(
-                &Repository::open(&root)?,
-                &work,
-                &review_run,
-                expected,
-            )
-        }
         Command::AnswerContext {
             root,
             work,
@@ -1208,42 +1076,32 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             }
             Ok(packet)
         }
-        Command::Explain {
-            root,
-            work: id,
-            input,
-            review_run,
-            output_dir,
-        } => {
-            let repo = Repository::open(&root)?;
-            if let Some(review_run) = review_run {
-                if input.is_some() {
-                    return Err(invalid("explain accepts input or review-run, not both"));
-                }
-                return super::agent_jobs::export_reviewed_operation_answer(
-                    &repo,
-                    &id,
-                    &review_run,
-                    &output_dir,
-                );
-            }
-            let input = input.ok_or_else(|| invalid("explain requires input or review-run"))?;
-            let loaded = load(&repo, &id)?;
-            let (packet, audit) = super::operation_packet::build(&loaded)?;
-            let answer: Value = store::read(&input, store::MAX_RECORD)?;
-            let rendered = super::operation_answer::validate_and_render(&packet, &audit, answer)?;
-            write_explanation_outputs(
-                &output_dir,
-                &loaded.id,
-                &packet,
-                &audit,
-                &rendered.answer,
-                &rendered.markdown,
-                &rendered.html,
-                rendered.process_diagram.as_ref(),
-            )
-        }
     }
+}
+
+/// Save bounded answer/evidence JSON; no document renderer or publication.
+pub(super) fn save_answer_records(
+    output_dir: &std::path::Path,
+    work: &str,
+    packet: &Value,
+    audit: &Value,
+    answer: &Value,
+) -> Result<Value, ClewError> {
+    fs::create_dir_all(output_dir).map_err(io_error)?;
+    let output_dir = fs::canonicalize(output_dir).map_err(io_error)?;
+    let mut paths = BTreeMap::new();
+    for (name, value) in [
+        ("answer.json", answer),
+        ("reader-packet.json", packet),
+        ("reader-packet-audit.json", audit),
+    ] {
+        let path = output_dir.join(name);
+        write_atomic_file(&path, &bytes(value)?)?;
+        paths.insert(name.to_owned(), path.to_string_lossy().into_owned());
+    }
+    Ok(
+        json!({"schema":"codeclew-documentation-operation-answer-draft/1.0", "work":work,"status":"DRAFT","reviewStatus":"UNREVIEWED","publication":"NOT_PUBLISHED", "packetDigest":packet["packetDigest"],"outputDirectory":output_dir.to_string_lossy(),"files":paths}),
+    )
 }
 
 fn parse_run_identity(value: &str) -> Result<String, String> {
@@ -1255,240 +1113,8 @@ fn parse_run_identity(value: &str) -> Result<String, String> {
 }
 
 // Keep artifact inputs explicit so output provenance remains visible at each call site.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_explanation_outputs(
-    output_dir: &std::path::Path,
-    work: &str,
-    packet: &Value,
-    audit: &Value,
-    answer: &Value,
-    markdown: &str,
-    html: &str,
-    process_diagram: Option<&super::operation_answer::ProcessDiagram>,
-) -> Result<Value, ClewError> {
-    write_explanation_outputs_with_svg_renderer(
-        output_dir,
-        work,
-        packet,
-        audit,
-        answer,
-        markdown,
-        html,
-        process_diagram,
-        |sources| super::plantuml::batch_render_svg(sources, None),
-    )
-}
 
 // The renderer is an injected seam; other explicit inputs are serialized artifacts.
-#[allow(clippy::too_many_arguments)]
-fn write_explanation_outputs_with_svg_renderer<F>(
-    output_dir: &std::path::Path,
-    work: &str,
-    packet: &Value,
-    audit: &Value,
-    answer: &Value,
-    markdown: &str,
-    html: &str,
-    process_diagram: Option<&super::operation_answer::ProcessDiagram>,
-    render_svg: F,
-) -> Result<Value, ClewError>
-where
-    F: FnOnce(&[(String, String)]) -> Result<Option<Vec<(String, Vec<u8>)>>, String>,
-{
-    fs::create_dir_all(output_dir).map_err(io_error)?;
-    let output_dir = fs::canonicalize(output_dir).map_err(io_error)?;
-    let mut paths = BTreeMap::new();
-    let mut output_html = html.to_owned();
-    let mut output_markdown = markdown.to_owned();
-    let mut process_diagram_record = json!({
-        "status":"NOT_APPLICABLE",
-        "reason":"the packet has no selected internal process root"
-    });
-    if let Some(diagram) = process_diagram {
-        let puml_path = output_dir.join(super::operation_answer::PROCESS_DIAGRAM_PUML_FILE);
-        write_atomic_file(&puml_path, diagram.puml.as_bytes())?;
-        paths.insert(
-            super::operation_answer::PROCESS_DIAGRAM_PUML_FILE.to_owned(),
-            puml_path.to_string_lossy().into_owned(),
-        );
-
-        let base = "process-flow".to_owned();
-        let batch = render_svg(&[(base.clone(), diagram.puml.clone())]);
-        let (svg, svg_reason) = match batch {
-            Ok(Some(artifacts)) => match artifacts.into_iter().find(|(name, _)| name == &base) {
-                Some((_, svg)) => (Some(svg), None),
-                None => (
-                    None,
-                    Some("PlantUML did not produce an SVG file.".to_owned()),
-                ),
-            },
-            Ok(None) => (
-                None,
-                Some("No PlantUML executable was found on PATH.".to_owned()),
-            ),
-            Err(reason) => (
-                None,
-                Some(format!(
-                    "PlantUML rendering failed: {}",
-                    reason.chars().take(512).collect::<String>()
-                )),
-            ),
-        };
-        if let Some(svg) = svg.as_deref() {
-            let svg_path = output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE);
-            write_atomic_file(&svg_path, svg)?;
-            paths.insert(
-                super::operation_answer::PROCESS_DIAGRAM_SVG_FILE.to_owned(),
-                svg_path.to_string_lossy().into_owned(),
-            );
-        } else {
-            remove_owned_diagram_file(
-                &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE),
-            )?;
-        }
-        let svg_status =
-            super::operation_answer::diagram_svg_status_html(svg.is_some(), svg_reason.as_deref());
-        let markdown_svg_status = super::operation_answer::diagram_svg_status_markdown(
-            svg.is_some(),
-            svg_reason.as_deref(),
-        );
-        output_html = output_html.replace(
-            super::operation_answer::PROCESS_DIAGRAM_HTML_MARKER,
-            &svg_status,
-        );
-        output_markdown = output_markdown.replace(
-            super::operation_answer::PROCESS_DIAGRAM_MARKDOWN_MARKER,
-            &markdown_svg_status,
-        );
-        process_diagram_record = json!({
-            "status":"SOURCE_LOCAL",
-            "projectionStatus":if diagram.has_causal_projection {"CAUSAL_SOURCE_PROJECTION"} else {"EVIDENCE_GAP_ONLY"},
-            "sourceReference":diagram.source_reference,
-            "sourceExcerpt":diagram.source_anchor.as_ref().map(|anchor|format!("index.html#{anchor}")),
-            "plantumlFile":super::operation_answer::PROCESS_DIAGRAM_PUML_FILE,
-            "svg":{
-                "status":if svg.is_some() {"RENDERED"} else {"UNAVAILABLE"},
-                "file":if svg.is_some() {Some(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE)} else {None::<&str>},
-                "reason":svg_reason
-            },
-            "executionEvidence":"NOT_ESTABLISHED"
-        });
-    } else {
-        remove_owned_diagram_file(
-            &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_PUML_FILE),
-        )?;
-        remove_owned_diagram_file(
-            &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE),
-        )?;
-    }
-    let files = [
-        ("answer.json", bytes(answer)?),
-        ("operation.md", output_markdown.as_bytes().to_vec()),
-        ("index.html", output_html.as_bytes().to_vec()),
-        ("reader-packet.json", bytes(packet)?),
-        ("reader-packet-audit.json", bytes(audit)?),
-    ];
-    for (name, contents) in files {
-        let path = output_dir.join(name);
-        write_atomic_file(&path, &contents)?;
-        paths.insert(name.to_owned(), path.to_string_lossy().into_owned());
-    }
-    Ok(json!({
-        "schema":"codeclew-documentation-operation-answer-draft/1.0",
-        "work":work,
-        "status":"DRAFT",
-        "reviewStatus":"UNREVIEWED",
-        "publication":"NOT_PUBLISHED",
-        "processDiagram":process_diagram_record,
-        "packetDigest":packet["packetDigest"],
-        "outputDirectory":output_dir.to_string_lossy(),
-        "files":paths
-    }))
-}
-
-/// Reviewed exports use a fresh staging directory and never overwrite an
-/// original author export. Publication and all repository records are untouched.
-pub(super) fn write_reviewed_explanation_outputs(
-    output_dir: &std::path::Path,
-    work: &str,
-    packet: &Value,
-    audit: &Value,
-    rendered: super::operation_answer::RenderedAnswer,
-    review: &Value,
-    provenance: &Value,
-) -> Result<Value, ClewError> {
-    if output_dir.exists()
-        && (!output_dir.is_dir() || fs::read_dir(output_dir).map_err(io_error)?.next().is_some())
-    {
-        return Err(invalid(
-            "REVIEWED_EXPORT_OUTPUT_NOT_EMPTY: choose a new or empty output directory",
-        ));
-    }
-    let parent = output_dir
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
-    fs::create_dir_all(parent).map_err(io_error)?;
-    let parent = fs::canonicalize(parent).map_err(io_error)?;
-    let name = output_dir
-        .file_name()
-        .ok_or_else(|| invalid("reviewed export requires a named output directory"))?;
-    let destination = parent.join(name);
-    let staging = tempfile::Builder::new()
-        .prefix(".codeclew-reviewed-answer-")
-        .tempdir_in(&parent)
-        .map_err(io_error)?;
-    let mut result = write_explanation_outputs(
-        staging.path(),
-        work,
-        packet,
-        audit,
-        &rendered.answer,
-        &rendered.markdown,
-        &rendered.html,
-        rendered.process_diagram.as_ref(),
-    )?;
-    for (name, value) in [
-        ("meaning-review.json", review),
-        ("review-provenance.json", provenance),
-    ] {
-        write_atomic_file(&staging.path().join(name), &bytes(value)?)?;
-        result["files"][name] = json!(destination.join(name).to_string_lossy());
-    }
-    if destination.exists() {
-        // Removal succeeds only for an empty directory, including after a race.
-        fs::remove_dir(&destination).map_err(io_error)?;
-    }
-    fs::rename(staging.path(), &destination).map_err(io_error)?;
-    for (_, value) in result["files"]
-        .as_object_mut()
-        .ok_or_else(|| invalid("export files are missing"))?
-    {
-        let file = std::path::Path::new(
-            value
-                .as_str()
-                .ok_or_else(|| invalid("export path is invalid"))?,
-        )
-        .file_name()
-        .ok_or_else(|| invalid("export filename is missing"))?;
-        *value = json!(destination.join(file).to_string_lossy());
-    }
-    result["schema"] = json!("codeclew-documentation-reviewed-operation-answer-export/1.0");
-    result["reviewStatus"] = json!("MODEL_APPROVED");
-    result["reviewRun"] = provenance["reviewRun"].clone();
-    result["snapshot"] = provenance["snapshot"].clone();
-    result["provenanceDigest"] = json!(digest(provenance)?);
-    result["outputDirectory"] = json!(destination.to_string_lossy());
-    Ok(result)
-}
-
-fn remove_owned_diagram_file(path: &std::path::Path) -> Result<(), ClewError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(io_error(error)),
-    }
-}
 
 pub(super) fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {
     use std::{fs::OpenOptions, io::Write};
@@ -2653,46 +2279,6 @@ pub(super) fn operation_reference_allowed(work: &Work, handle: &Handle) -> bool 
                     .strip_prefix("note:")
                     .is_some_and(|id| entrypoint == &super::notes::root(id)))
     })
-}
-
-/// Resolve an operation target exactly as proposal materialization does. The
-/// scenario subject is the one target that intentionally has no Work handle.
-pub(super) fn operation_target_id(
-    work: &Work,
-    reference: &str,
-    handle: Option<&Handle>,
-) -> Option<String> {
-    if work.subject.starts_with("scenario:") && reference == work.subject {
-        return Some(
-            work.request
-                .entrypoint
-                .clone()
-                .unwrap_or_else(|| work.subject[9..].into()),
-        );
-    }
-    let handle = handle?;
-    if !operation_reference_allowed(work, handle) {
-        return None;
-    }
-    if handle.kind == "DEPENDENCY" {
-        return super::process_graph::selected_internal_operation(work)
-            .map(super::process_graph::internal_operation_id);
-    }
-    match handle.kind.as_str() {
-        "NOTE" => handle.id.strip_prefix("note:").map(super::notes::root),
-        "ENTRYPOINT" | "SECTION" | "PROCESS_ROOT" => Some(handle.id.clone()),
-        _ => None,
-    }
-}
-
-pub(super) fn gap_target_id(handle: &Handle) -> Option<String> {
-    if !gap_reference_allowed(handle) {
-        return None;
-    }
-    if handle.kind == "NOTE" {
-        return handle.id.strip_prefix("note:").map(super::notes::root);
-    }
-    Some(handle.id.clone())
 }
 
 pub(super) fn gap_reference_allowed(handle: &Handle) -> bool {
@@ -5693,29 +5279,7 @@ mod section_context_tests {
     }
 
     #[test]
-    #[ignore = "explicit read-only Work/proposal replay; requires CODECLEW_CLAIM_REPLAY inputs"]
-    fn retained_file_claim_saved_work_replay() {
-        let root = std::env::var("CODECLEW_CLAIM_REPLAY_ROOT").unwrap();
-        let repo = Repository::open(std::path::Path::new(&root)).unwrap();
-        let work = load(&repo, &std::env::var("CODECLEW_CLAIM_REPLAY_WORK").unwrap()).unwrap();
-        let input: super::super::proposals::Proposal = serde_json::from_slice(
-            &fs::read(std::env::var("CODECLEW_CLAIM_REPLAY_INPUT").unwrap()).unwrap(),
-        )
-        .unwrap();
-        let state = read_state(&repo, &work.id).unwrap();
-        let (_, _, diagnostics) =
-            super::super::proposals::materialize(&work, &input, &state).unwrap();
-        if let Ok(expected) = std::env::var("CODECLEW_CLAIM_REPLAY_EXPECTED_DIAGNOSTIC") {
-            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-            assert_eq!(diagnostics[0]["nextAction"], expected);
-        } else {
-            assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        }
-        println!("{}", serde_json::to_string(&diagnostics).unwrap());
-    }
-
-    #[test]
-    fn retained_file_source_summary_materializes_exact_inventory_pin_without_phantom_facts() {
+    fn retained_file_scope_verifies_exact_inventory_pins_without_phantom_facts() {
         check_retained_file_source_summary("FILE_ONLY");
         check_retained_file_source_summary("SYNTAX");
     }
@@ -5723,159 +5287,75 @@ mod section_context_tests {
     fn check_retained_file_source_summary(coverage: &str) {
         let work = exact_retained_file_proposal_fixture(coverage);
         let source_id = work.handles["s1"].id.clone();
-        let file = work.checked.services["orders"].sources[&source_id]
-            .file
-            .clone();
+        let source = work.checked.services["orders"].sources[&source_id].clone();
+        let scope = work.checked.dependencies["orders:source-scope"].clone();
         let captured = bytes(&work.checked).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        Repository::init(temp.path(), "FILE_ONLY proposal fixture").unwrap();
-        let repo = Repository::open(temp.path()).unwrap();
-        for reference in ["section2", "s1", "d-scope"] {
-            read_loaded(
-                &repo,
-                &work,
-                Selection {
-                    references: vec![reference.into()],
-                    ..Selection::default()
-                },
+        assert!(
+            super::super::retained_validation::retained_file_scope_binds_source(
+                &scope,
+                &source,
+                &work.checked
             )
-            .unwrap();
-        }
-        let state = read_state(&repo, &work.id).unwrap();
-        for references in [vec!["s1"], vec!["d-scope", "s1"]] {
-            let input = serde_json::from_value(json!({
-                "schema":"codeclew-documentation-proposal/1.0",
-                "operations":[{"entrypoint":"section2","title":"Responsibilities",
-                    "summary":{"text":"The captured README records fixture documentation.","evidence":references},
-                    "explanation":[{"text":format!("| Field | Name | Comment |\n| --- | --- | --- |\n{}", "| `label` | Retained label | Whole captured field description. |\n".repeat(70)),"evidence":references}],"steps":[]}]
-            })).unwrap();
-            let (narrative, _, diagnostics) =
-                super::super::proposals::materialize(&work, &input, &state).unwrap();
-            assert!(diagnostics.is_empty(), "{diagnostics:?}");
-            assert_eq!(
-                narrative.operations[0].summary.dependency_ids,
-                vec!["orders:source-scope"]
-            );
-            assert_eq!(
-                narrative.operations[0].summary.source_ids,
-                vec![source_id.clone()]
-            );
-            super::super::render::validate(&narrative, &work.checked).unwrap();
-            assert!(narrative.operations[0].explanation[0].text.len() > 2048);
-            assert!(narrative.operations[0].explanation[0].event_ids.is_empty());
-            for defect in [
-                "partial",
-                "line",
-                "text",
-                "digest",
-                "file",
-                "service",
-                "revision",
-                "coverage",
-                "inventory-digest",
-                "influence",
-                "scope",
-            ] {
-                let mut forged = work.clone();
-                let source = forged
-                    .checked
+        );
+        for defect in [
+            "partial",
+            "line",
+            "text",
+            "digest",
+            "file",
+            "service",
+            "revision",
+            "coverage",
+            "inventory-digest",
+            "scope",
+        ] {
+            let mut candidate = source.clone();
+            let mut selected_scope = scope.clone();
+            let mut checked = work.checked.clone();
+            match defect {
+                "partial" => {
+                    let occurrence = candidate.occurrence.as_mut().unwrap();
+                    occurrence.start_byte = 1;
+                    occurrence.end_byte += 1;
+                }
+                "line" => candidate.start_line += 1,
+                "text" => candidate.text.push('x'),
+                "digest" => candidate.text_digest = crate::canonical::hash_bytes(b"other bytes"),
+                "file" => candidate.file = "other.md".into(),
+                "service" => candidate.service = "other".into(),
+                "revision" => candidate.revision = "e".repeat(40),
+                "scope" => checked
                     .services
                     .get_mut("orders")
                     .unwrap()
-                    .sources
-                    .get_mut(&source_id)
-                    .unwrap();
-                match defect {
-                    "partial" => {
-                        source.occurrence.as_mut().unwrap().start_byte = 1;
-                        source.occurrence.as_mut().unwrap().end_byte += 1;
-                        let occurrence = source.occurrence.as_ref().unwrap();
-                        source.evidence_digest = digest(&(
-                            SOURCE_EXTRACTOR,
-                            &occurrence.snapshot,
-                            &occurrence.blob,
-                            occurrence.start_byte,
-                            occurrence.end_byte,
-                        ))
-                        .unwrap();
-                    }
-                    "line" => {
-                        source.start_line += 1;
-                        source.end_line += 1;
-                    }
-                    "text" => {
-                        source.text.push('x');
-                    }
-                    "digest" => {
-                        source.text_digest = crate::canonical::hash_bytes(b"other bytes");
-                    }
-                    "file" => {
-                        source.file = "other.md".into();
-                    }
-                    "service" => {
-                        source.service = "other".into();
-                    }
-                    "revision" => {
-                        source.revision = "e".repeat(40);
-                    }
-                    "coverage" | "inventory-digest" => {
-                        let scope = forged
-                            .checked
-                            .dependencies
-                            .get_mut("orders:source-scope")
-                            .unwrap();
-                        if defect == "coverage" {
-                            scope.normalized["inventory"][&file]["coverage"] = json!("UNSUPPORTED");
-                        } else {
-                            scope.normalized["inventory"][&file]["digest"] =
-                                json!(crate::canonical::hash_bytes(b"different whole file"));
-                        }
-                        scope.digest = digest(&scope.normalized).unwrap();
-                        forged
-                            .influence
-                            .insert(scope.id.clone(), scope.digest.clone());
-                        forged
-                            .checked
-                            .services
-                            .get_mut("orders")
-                            .unwrap()
-                            .observations
-                            .insert(scope.id.clone(), scope.clone());
-                    }
-                    "influence" => {
-                        forged.influence.remove("orders:source-scope");
-                    }
-                    "scope" => {
-                        forged
-                            .checked
-                            .services
-                            .get_mut("orders")
-                            .unwrap()
-                            .observations
-                            .clear();
-                    }
-                    _ => unreachable!(),
+                    .observations
+                    .clear(),
+                other => {
+                    let field = if other == "coverage" {
+                        "coverage"
+                    } else {
+                        "digest"
+                    };
+                    selected_scope.normalized["inventory"][&source.file][field] = json!("CHANGED");
+                    selected_scope.digest = digest(&selected_scope.normalized).unwrap();
+                    checked
+                        .services
+                        .get_mut("orders")
+                        .unwrap()
+                        .observations
+                        .insert(selected_scope.id.clone(), selected_scope.clone());
                 }
-                let result = super::super::proposals::materialize(&forged, &input, &state);
-                if defect == "influence" && references.len() > 1 {
-                    assert!(result.unwrap_err().message.contains("exact Work influence"));
-                    continue;
-                }
-                let (_, _, diagnostics) = result.unwrap();
-                assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d["code"] == "STRUCTURE_OR_COVERAGE_INVALID"),
-                    "{defect}: {diagnostics:?}"
-                );
             }
+            assert!(
+                !super::super::retained_validation::retained_file_scope_binds_source(
+                    &selected_scope,
+                    &candidate,
+                    &checked
+                ),
+                "{coverage}: {defect}"
+            );
         }
         assert_eq!(bytes(&work.checked).unwrap(), captured);
-        assert!(
-            work.checked.dependencies["orders:source-scope"]
-                .source_ids
-                .is_empty()
-        );
     }
 
     #[test]

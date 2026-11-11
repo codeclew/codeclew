@@ -171,13 +171,8 @@ Do not turn an available type definition into unknown coverage to avoid mapping.
 
 Before export, run the bounded preflight from the installed skill directory:
 
-```sh
-python3 -I -S SKILL_DIR/scripts/reader_plan_preflight.py --plan MODEL_PLAN.json \
-  --service service:sample --payload-owner service:sample/apply \
-  --expected-field record/value --nested-field request/record=record \
-  --reader-scope reader-scope.json --reader-scope-digest EARLIER_SCOPE_SHA256 \
-  --coverage reader-coverage.json --document narrative=narrative.json
-```
+Use the [same-author scope and rendered-page checks](compose-original.md#requested-scope-completion)
+for model, object, field and configuration descriptions.
 
 Before author dispatch, save the original question and bounded relevant candidate
 inventory independently of the final plan. Retain its exact file SHA-256 in the

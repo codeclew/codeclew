@@ -352,12 +352,11 @@ pub(super) fn view(current: &ServiceEvidence) -> Result<Option<ServiceEvidence>,
     }
     Ok(Some(result))
 }
+#[cfg(test)]
 pub(super) fn source(current: &ServiceEvidence) -> Result<Option<ServiceEvidence>, ClewError> {
     Ok(retained(current)?.map(|m| m.source_evidence))
 }
-pub(super) fn compiler(current: &ServiceEvidence) -> Result<Option<ServiceEvidence>, ClewError> {
-    Ok(retained(current)?.map(|m| m.compiler_evidence))
-}
+
 pub(super) fn canonical(current: &ServiceEvidence, id: &str) -> Result<String, ClewError> {
     Ok(retained(current)?
         .and_then(|m| {
@@ -371,6 +370,7 @@ pub(super) fn present(evidence: &ServiceEvidence) -> bool {
     evidence.observations.values().any(|o| o.kind == KIND)
 }
 
+#[cfg(test)]
 pub(super) fn native_id(
     current: &ServiceEvidence,
     source_id: &str,

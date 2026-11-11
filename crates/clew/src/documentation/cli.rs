@@ -63,16 +63,7 @@ pub enum Command {
         #[command(subcommand)]
         command: super::endpoint_publication::Command,
     },
-    /// Project selected retained native declarations into linked static documentation.
-    Pages {
-        #[command(subcommand)]
-        command: super::static_pages::Command,
-    },
-    /// Render a declared flow DSL from retained evidence as static MDX and HTML.
-    Dsl {
-        #[command(subcommand)]
-        command: super::flow_dsl::Command,
-    },
+
     /// Name and retain saved documentation evidence without copying or recapturing it.
     Snapshot {
         #[command(subcommand)]
@@ -172,57 +163,11 @@ pub enum Command {
         #[command(subcommand)]
         command: super::work::Command,
     },
-    /// Submit constrained content for deterministic checks and separate review.
-    Proposal {
-        #[command(subcommand)]
-        command: super::proposals::Command,
-    },
-    /// Publish current freshness while retaining previously accepted explanations.
-    Refresh {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long, required = true)]
-        status_only: bool,
-    },
+
     /// Read saved source-backed authoring input. Explicit --refresh rebuilds evidence.
     Context(ContextArgs),
     /// Review affected claims with bounded before/after evidence.
     Changes(ChangeArgs),
-    /// Render saved evidence offline; --publish explicitly releases a snapshot.
-    Render {
-        #[arg(long)]
-        root: PathBuf,
-        /// Target prose and reader language; existing analysis remains reusable.
-        #[arg(long, value_parser = ["en", "ru"])]
-        language: Option<String>,
-        #[arg(long)]
-        input: Vec<PathBuf>,
-        #[arg(long)]
-        require_complete: bool,
-        /// Acquire current evidence with docs check before publishing; may run analyzers.
-        #[arg(long, conflicts_with = "snapshot")]
-        refresh: bool,
-        /// Select saved evidence; defaults to latest saved check, never runs analyzers.
-        #[arg(long)]
-        snapshot: Option<String>,
-        /// Replay an exact frozen publication in the historical reader without changing history.
-        #[arg(long, requires_all = ["snapshot", "output"], conflicts_with_all = ["input", "refresh", "publish", "require_complete"])]
-        publication: Option<String>,
-        /// Explicit field/contract descriptions bound to the selected frozen publication.
-        #[arg(long, requires = "publication")]
-        data_model: Option<PathBuf>,
-        /// Retain a bound reading guide as reference without replacing historical navigation.
-        #[arg(long, requires = "publication")]
-        reading_plan: Option<PathBuf>,
-        /// Add this render to released documentation history.
-        #[arg(long)]
-        publish: bool,
-        #[command(flatten)]
-        source_export: super::source_export::Args,
-        /// Optional new export directory. Required for remote mode; the root remains a local evidence workspace.
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
 }
 #[derive(Debug, Args)]
 pub struct CheckArgs {
@@ -377,8 +322,6 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     let phase = match &command {
         Command::Work { .. } => "docs.work",
         Command::Check(_) => "docs.check",
-        Command::Render { .. } => "docs.render",
-        Command::Proposal { .. } => "docs.proposal",
         Command::Context(_) => "docs.context",
         Command::Evidence { .. } => "docs.evidence",
         Command::Update { .. } => "docs.update",
@@ -394,8 +337,6 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
         Command::External { command } => super::external_services::run(command),
         Command::Storage { command } => super::storage::run(command),
         Command::Endpoint { command } => super::endpoint_publication::run(command),
-        Command::Pages { command } => super::static_pages::run(command),
-        Command::Dsl { command } => super::flow_dsl::run(command),
         Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::Contract { command } => super::route_contracts::run(command),
         Command::View { command } => super::dataflow::run(command),
@@ -408,11 +349,6 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
         Command::Entity { command } => super::entities::run(command),
         Command::Modules { command } => super::modules::run(command),
         Command::Work { command } => super::work::run(command),
-        Command::Proposal { command } => super::proposals::run(command),
-        Command::Refresh {
-            root,
-            status_only: _,
-        } => super::status::refresh(&Repository::open(&root)?),
         Command::Init { root, title } => Repository::init(&root, &title),
         Command::Bind {
             root,
@@ -561,123 +497,6 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
         }
         Command::Context(args) => context(args),
         Command::Changes(args) => changes(args),
-        Command::Render {
-            root,
-            language,
-            input,
-            require_complete,
-            refresh,
-            snapshot,
-            publication,
-            data_model,
-            reading_plan,
-            publish,
-            source_export,
-            output,
-        } => {
-            let policy = source_export.policy()?;
-            if policy.remote() && output.is_none() {
-                return Err(invalid(
-                    "remote docs render requires --output NEW_DIRECTORY; local retained evidence and working publications remain in --root",
-                ));
-            }
-            if let Some(output) = &output {
-                super::static_pages::validate_export_output(output)?;
-            }
-            if let Some(publication) = publication {
-                if !input.is_empty() || refresh || publish || require_complete {
-                    return Err(invalid(
-                        "frozen historical export cannot change the source publication",
-                    ));
-                }
-                let repo = Repository::open(&root)?;
-                let snapshot = snapshot
-                    .as_deref()
-                    .ok_or_else(|| invalid("frozen historical export requires --snapshot"))?;
-                let checked = super::check::Check::load_snapshot(&repo, snapshot)?;
-                return super::static_pages::export_historical_publication(
-                    &repo,
-                    &checked,
-                    snapshot,
-                    &publication,
-                    super::static_pages::HistoricalInputs {
-                        language: language.as_deref(),
-                        data_model: data_model.as_deref(),
-                        reading_plan: reading_plan.as_deref(),
-                    },
-                    &policy,
-                    output
-                        .as_deref()
-                        .ok_or_else(|| invalid("frozen historical export requires --output"))?,
-                );
-            }
-            if data_model.is_some() || reading_plan.is_some() {
-                return Err(invalid("historical reading inputs require --publication"));
-            }
-            if policy.remote() {
-                if !input.is_empty() || refresh || publish || require_complete {
-                    return Err(invalid(
-                        "remote docs render exports an existing saved publication; --input, --refresh, --publish and --require-complete belong to the preceding local render",
-                    ));
-                }
-                let repo = Repository::open(&root)?;
-                let publication = super::bindings::working_publication(&repo)?.ok_or_else(||invalid(
-                    "remote docs render requires an existing local publication; run docs render locally first or select --publication with docs pages render"))?;
-                let (checked, snapshot) =
-                    super::check::Check::retained(&repo, snapshot.as_deref(), &Default::default())?;
-                return super::static_pages::export_publication(
-                    &repo,
-                    &checked,
-                    &snapshot,
-                    &publication,
-                    language.as_deref(),
-                    &policy,
-                    output.as_deref().unwrap(),
-                );
-            }
-            let mut narratives = Vec::new();
-            let mut failures = BTreeMap::new();
-            for (index, path) in input.iter().enumerate() {
-                match store::read_narrative(path) {
-                    Ok(narrative) => narratives.push(narrative),
-                    Err(error) => {
-                        failures.insert(format!("input-{index}"), error.update_failure());
-                    }
-                }
-            }
-            let repo = Repository::open(&root)?;
-            let mut result = super::render::publish_language_with_mode(
-                &repo,
-                narratives,
-                require_complete,
-                failures,
-                snapshot.as_deref(),
-                refresh,
-                language.as_deref(),
-                publish,
-            )?;
-            if let Some(output) = output {
-                let snapshot = result["snapshot"]
-                    .as_str()
-                    .ok_or_else(|| invalid("rendered snapshot is unavailable"))?;
-                let checked = super::check::Check::load_snapshot(&repo, snapshot)?;
-                let exported = super::static_pages::export_publication(
-                    &repo,
-                    &checked,
-                    snapshot,
-                    result["bundle"]
-                        .as_str()
-                        .ok_or_else(|| invalid("rendered publication is unavailable"))?,
-                    language.as_deref(),
-                    &policy,
-                    &output,
-                )?;
-                result["export"] = exported;
-                result["index"] = json!(output.join("index.html"));
-            }
-            result["sourceExport"] = policy.manifest()?;
-            Ok(result)
-        }
     }
 }
 
@@ -2131,8 +1950,8 @@ mod tests {
         }
         for args in [
             "docs work run --help",
-            "docs proposal submit --help",
-            "docs render --help",
+            "docs evidence read-declarations --help",
+            "docs reader query --help",
         ] {
             assert_eq!(
                 Docs::try_parse_from(args.split_whitespace())
@@ -2186,128 +2005,40 @@ mod tests {
     }
 
     #[test]
-    fn source_export_options_are_available_on_public_render_commands() {
+    fn removed_document_writers_are_rejected_by_the_public_cli() {
         use clap::Parser;
         #[derive(clap::Parser)]
         struct Docs {
             #[command(subcommand)]
             command: Command,
         }
-        let historical = [
-            "clew-docs",
+        for command in [
             "render",
-            "--root",
-            "docs",
-            "--publication",
-            "pub",
-            "--snapshot",
-            "saved",
-            "--source-mode",
-            "remote",
-            "--export-subject",
-            "service:orders",
-            "--source-map",
-            "repos.json",
-            "--output",
-            "new-export",
-        ];
-        Docs::try_parse_from(historical).unwrap();
-        for extra in [
-            "--publish",
-            "--refresh",
-            "--require-complete",
-            "--input=selection.json",
+            "pages render",
+            "dsl render",
+            "proposal submit",
+            "proposal publish",
+            "refresh --status-only",
+            "reader export",
+            "work explain",
+            "work publish-answer",
+            "work publication-baseline",
         ] {
-            assert!(Docs::try_parse_from(historical.into_iter().chain([extra])).is_err());
-        }
-        let missing_snapshot = [
-            "clew-docs",
-            "render",
-            "--root",
-            "docs",
-            "--publication",
-            "pub",
-            "--output",
-            "new-export",
-        ];
-        assert!(Docs::try_parse_from(missing_snapshot).is_err());
-        for args in [
-            vec![
-                "clew-docs",
-                "render",
-                "--root",
-                "docs",
-                "--source-mode",
-                "remote",
-                "--output",
-                "site",
-            ],
-            vec![
-                "clew-docs",
-                "pages",
-                "render",
-                "--root",
-                "docs",
-                "--snapshot",
-                "saved",
-                "--publication",
-                "pub",
-                "--source-mode",
-                "remote",
-                "--source-map",
-                "repos.json",
-                "--output",
-                "site",
-            ],
-            vec![
-                "clew-docs",
-                "dsl",
-                "render",
-                "--root",
-                "docs",
-                "--snapshot",
-                "saved",
-                "--service",
-                "orders",
-                "--profile",
-                "profile.json",
-                "--source-mode",
-                "remote",
-                "--output",
-                "site",
-            ],
-        ] {
-            Docs::try_parse_from(args).unwrap();
-        }
-        for args in [
-            vec!["clew-docs", "render", "--help"],
-            vec!["clew-docs", "pages", "render", "--help"],
-            vec!["clew-docs", "dsl", "render", "--help"],
-        ] {
-            let help = Docs::try_parse_from(args).err().unwrap().to_string();
+            let args = format!("clew-docs {command} --root docs");
             assert!(
-                help.contains("--source-mode")
-                    && help.contains("--source-map")
-                    && help.contains("embedded")
-                    && help.contains("remote")
+                Docs::try_parse_from(args.split_whitespace()).is_err(),
+                "{command}"
             );
         }
-        let parsed = Docs::try_parse_from(["clew-docs", "render", "--root", "docs"]).unwrap();
-        let Command::Render { source_export, .. } = parsed.command else {
-            panic!("render expected")
-        };
-        assert_eq!(
-            source_export.source_mode,
-            super::super::source_export::SourceMode::Embedded
-        );
         assert!(
             Docs::try_parse_from([
                 "clew-docs",
-                "render",
+                "work",
+                "run",
                 "--root",
                 "docs",
-                "--source-mode",
-                "unknown"
+                "--work",
+                "saved"
             ])
             .is_err()
         );

@@ -81,7 +81,7 @@ fn changes_cursor_cannot_cross_snapshots_with_equal_context_digest() {
     let repo = Repository::open(&f.docs).unwrap();
     let mut check = f.checked();
     let narrative = f.author("orders", &check);
-    f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    f.retain_legacy(&check, &narrative);
     let path = source.join("Orders.java");
     std::fs::write(
         &path,

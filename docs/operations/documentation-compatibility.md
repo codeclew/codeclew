@@ -1,46 +1,40 @@
 # Documentation operations compatibility
 
-Saved publications and exact Check/Work handles from 0.13.47 remain the inputs.
-Exporting a reading site does not capture source, replace an accepted proposal,
-rewrite a historical publication, or substitute a current revision for a citation.
+Existing docs-root records, source snapshots, saved Work, answer JSON, user
+originals and historical exports remain retained inputs. Their presence does not
+select a second document generator. New pages and updates use only the
+[authored-originals pipeline](../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages).
 
-Remote service/process selection uses `--export-subject service:ID` and
-`--export-subject scenario:ID`. Without these options, the whole saved publication
-is selected. Declaration selectors remain a separate view and do not replace
-existing authored service/process documentation. DSL renders do not accept this
-publication selection option.
+Native render/page/DSL/proposal/coordinator publication commands are retired.
+Their old HTML/Markdown/MDX files remain historical artifacts; they are never
+rewritten by evidence reads or bounded Q&A. Existing structured bindings and
+publication history retain their read codecs and integrity checks. Missing or
+corrupt historical objects remain explicit errors.
 
-Partitioned bindings are read through their declared selected closure. Legacy
-bindings have no selection index and require reading their bounded original
-record before filtering. Remote reading bindings are not an authoring or evidence
-reimport format. Preserve the local publication and original source contexts.
+Use the same exact snapshot and source selectors when migrating an authored
+page. Prepare fresh declaration component tickets when the implementation digest
+changes. Compare canonical payloads and rendered contract HTML before rebinding.
+An old previous-index guard must reject changed component identities; explicitly
+finalize a new baseline before guarded updates. Never replace digests inside an
+old ticket or edit private retained objects to make a migration pass.
 
-Shared overview/status/answer context remains global in a selected export. The
-export manifest lists omitted service/process subjects; their navigation is
-inert. Diagram prefixes that cannot distinguish selected from omitted subjects
-are rejected explicitly. The full export remains available for those publications.
+Existing originals without declaration components can use their normal guarded
+update when their source bindings are unchanged. Preserve the old original,
+source manifest, checked index and output directory alongside the new output.
+An accepted original may still contain page-level `remove` or `replace` intents
+from its previous guarded update. Those are one-shot instructions. When the
+current accepted index confirms they were applied, use a new copy without only
+those consumed intents; keep all prose, claims and evidence identical. Retain
+the old raw original and record the metadata-only difference. A stale intent
+must not weaken or bypass the previous-index guard.
+
+A successful export does not establish current-source freshness or prove
+arbitrary prose, runtime behavior or provider availability.
 
 Source authority remains distinct: compiler capture, committed syntax-only
 capture, declared contracts, authored prose and runtime observations retain their
-existing meanings. Successful export does not establish new compiler verification,
-runtime behavior or provider availability.
-
-Remote semantic validation preserves compact shared references while checking
-expanded fragments one at a time, including protected source-snapshot pins.
-A repeated source is not kept as simultaneous copies for every fragment. The
-manifest reports compact logical bytes, maximum expanded fragment bytes and
-charged expansion work separately. Individual expanded fragments remain bounded
-at 128 MiB, cumulative expansion work at 512 MiB and original authoring contexts
-at eight. These reading bounds do not change baseline/Work evidence expansion.
-
-## Source browser policy in 0.13.48
-
-Optional service `sourceWeb` separates provider/webBase from the clone origin.
-Absent configuration serializes exactly as before. Frozen SOURCE and explicit
-sourceLinkTemplate expansion stay unchanged; remote source maps can override
-old records without recapture. Java compiler protocol escapes Unicode to retain
-exact file names under the closed C locale; source membership validation remains
-mandatory.
+meanings. Optional service `sourceWeb` separates browser links from clone identity.
+Frozen source bytes and explicit source link templates stay unchanged.
 
 ## Storage lifecycle
 

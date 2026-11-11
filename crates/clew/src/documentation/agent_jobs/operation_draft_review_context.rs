@@ -1811,13 +1811,7 @@ puts JSON.generate(reply)
             selected.provenance["reviewRetry"],
             json!(child.draft_review_retry)
         );
-        super::super::export_approved_answer(
-            &repo,
-            &work.id,
-            &child.run,
-            &temp.path().join("retry-export"),
-        )
-        .unwrap();
+
         let charged = json!(account(&repo, &cfg.budget).unwrap());
         assert_eq!(run(&repo, &work, &source, &path, None).unwrap(), approved);
         assert_eq!(json!(account(&repo, &cfg.budget).unwrap()), charged);
@@ -2150,8 +2144,7 @@ puts JSON.generate(reply)
             wrapper.result_digest
         );
         assert_eq!(selected.packet, terminal.request["payload"]["packet"]);
-        let output = temp.path().join("approved");
-        super::super::export_approved_answer(&repo, &work.id, &report.run, &output).unwrap();
+
         assert_eq!(author_files(&repo, &work, &author, &source), before);
         let ledger = json!(account(&repo, &cfg.budget).unwrap());
         assert_eq!(run(&repo, &work, &source, &path, None).unwrap(), result);

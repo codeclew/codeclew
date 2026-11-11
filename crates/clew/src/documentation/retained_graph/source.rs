@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 pub(in crate::documentation) mod call_sites;
 pub(in crate::documentation) mod compiler;
 pub(in crate::documentation) mod control_flow;
+#[cfg(test)]
 pub(in crate::documentation) mod handoff;
 pub(in crate::documentation) mod java;
 pub(in crate::documentation) mod kotlin;
 mod kotlin_handoff;
 pub(in crate::documentation) mod outline;
 mod syntax;
-pub(in crate::documentation) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
+pub(in crate::documentation) use java::{Parsed, compiler};
 
 pub(in crate::documentation) fn gap(
     code: &str,

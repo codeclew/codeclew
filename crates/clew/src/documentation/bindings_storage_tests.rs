@@ -99,23 +99,34 @@ fn repository() -> (tempfile::TempDir, Repository) {
     (temp, repo)
 }
 
+// Fixed historical records for storage-read tests; no document generation.
 fn publish(repo: &Repository, mut value: Value, generation: usize) -> String {
-    let previous = super::super::bindings::baseline(repo).unwrap();
-    let previous_bytes = fs::read(repo.path("docs/index.html").unwrap()).ok();
-    let input = repo.input_digest().unwrap();
-    value["inputDigest"] = json!(input);
+    value["inputDigest"] = json!(repo.input_digest().unwrap());
     let id = format!("{generation:064x}");
-    super::super::render::commit_bundle(
-        repo,
-        &id,
-        serde_json::from_value(value).unwrap(),
-        BTreeMap::new(),
-        &format!("<!-- codeclew-bundle {id} -->\n<html><body>Portable publication</body></html>"),
-        &input,
-        previous.as_ref(),
-        previous_bytes.as_deref(),
+    let overview = format!(
+        "<!-- codeclew-bundle {id} -->\n<html><body>Owned historical fixture</body></html>"
+    );
+    value["outputHashes"]["root-overview.html"] = json!(canonical::hash_bytes(overview.as_bytes()));
+    let encoded = encode_publication(repo, &id, value, None).unwrap();
+    encoded.persist(repo).unwrap();
+    let files = BTreeMap::from([
+        ("bindings.json".to_string(), encoded.manifest),
+        ("root-overview.html".into(), overview.as_bytes().to_vec()),
+    ]);
+    let publication = json!({"schema":"codeclew-documentation-publication/1.0", "id":id,
+        "released":false,"parent":null,"ordinal":0,"inputDigest":repo.input_digest().unwrap(),
+        "targetRevisions":{},"sections":{},"explanationVersions":{},"observedTags":{},"evidencePackages":[],
+        "files":files.iter().map(|(name,raw)| (name.clone(), canonical::hash_bytes(raw))).collect::<BTreeMap<_,_>>()});
+    for (name, raw) in files {
+        repo.immutable(&format!("docs/generated/{id}/{name}"), &raw)
+            .unwrap();
+    }
+    repo.immutable(
+        &format!("docs/generated/{id}/publication.json"),
+        &bytes(&publication).unwrap(),
     )
     .unwrap();
+    repo.atomic("docs/index.html", overview.as_bytes()).unwrap();
     id
 }
 
@@ -125,19 +136,7 @@ fn cold_publication_closure_supports_baseline_history_and_export_without_a_datab
     let id = publish(&repo, logical("SOURCE_SYNTAX"), 1);
     let manifest_path = format!("docs/generated/{id}/bindings.json");
     let raw = fs::read(repo.path(&manifest_path).unwrap()).unwrap();
-    fn site_validator(repo: &Repository, id: &str, full: bool) -> std::process::Output {
-        let script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test_site.py");
-        std::process::Command::new("python3").args(["-I", "-S", "-B", "-c",
-            "import importlib.util,sys,unittest;from pathlib import Path;s=importlib.util.spec_from_file_location('site_validator',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);root=Path(sys.argv[2]);m.assert_generated_documentation(unittest.TestCase(),root,root/'docs') if sys.argv[4]=='full' else m.archived_root_context(unittest.TestCase(),root/'docs',root/'docs/generated'/sys.argv[3]/'root-overview.html')"])
-            .arg(script).arg(&repo.root).arg(id).arg(if full {"full"} else {"role"}).output().unwrap_or_else(|e|panic!("site validator {id}: {e}"))
-    }
-    let validation = site_validator(&repo, &id, true);
-    assert!(
-        validation.status.success(),
-        "{}",
-        String::from_utf8_lossy(&validation.stderr)
-    );
+
     let unchanged = publish(&repo, logical("SOURCE_SYNTAX"), 1);
     assert_eq!(unchanged, id);
     assert_eq!(fs::read(repo.path(&manifest_path).unwrap()).unwrap(), raw);
@@ -200,9 +199,6 @@ fn cold_publication_closure_supports_baseline_history_and_export_without_a_datab
     })
     .unwrap();
     assert_eq!(report["status"], "DAMAGED_OR_EXPIRED");
-    let validation = site_validator(&cold, &id, false);
-    assert!(!validation.status.success());
-    assert!(String::from_utf8_lossy(&validation.stderr).contains("portable object missing"));
     assert!(!copy.path().join(".codeclew").exists());
 }
 

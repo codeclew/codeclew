@@ -138,47 +138,8 @@ Use `unresolved` only when available evidence does not establish that response;
 the missing arrow then needs precise visible unknown-outcome prose checked by
 the reviewer. `none` forbids a synchronous return. Retain coverage gaps on PASS.
 
-For local checking, export the full saved publication with its exact selected
-snapshot into a new local directory:
-
-```sh
-clew docs render --root DOCS_ROOT --snapshot EXACT_SAVED_SNAPSHOT \
-  --publication EXACT_SAVED_PUBLICATION --source-mode embedded \
-  --output NEW_FROZEN_EXPORT
-```
-
-This supported frozen route does not capture source or change publication history.
-Keep the export local. It does not require remote repository mappings or
-`--export-subject`; that flag belongs to remote subject selection. A failed remote
-subject export is not a blocker for this local full embedded route. Use the
-exported `services/SERVICE_ID.json` and applicable `scenarios/VIEW_ID.json`, which
-carry `selectedSnapshot`. Bare working `docs/generated` JSON can lack that binding
-and is not an interchangeable helper input. Never add `selectedSnapshot` manually
-or weaken the helper's snapshot check. The expectation snapshot and every selected
-export must match exactly.
-
-```sh
-python3 -I -S SKILL/scripts/boundary_coverage.py \
-  --expectations reviewed-expectations.json \
-  --page NEW_FROZEN_EXPORT/services/orders.json \
-  --view NEW_FROZEN_EXPORT/scenarios/reservation-lineage.json --output closure-01
-```
-
-Before claiming a complete service/thread result, save the reviewed expectation
-JSON and run this helper against the exact selected native export (and required
-typed views). Retain its command, inputs and result. A Markdown inventory, native
-READY or an unexecuted command is not this check. If it fails, preserve that first
-failure and repair the artifact; do not weaken `response: explicit`, remove an
-expected boundary or substitute a note to obtain PASS. If the gate cannot run,
-report completion as blocked. Independent review must still check normal/error
-branch placement, status/body guards and remote/local outcome attribution: helper
-PASS only establishes the mechanical checks it reports.
-
-Normal invocation: "Complete this service's boundary/domain documentation."
-`debug=true` uses identical decisions, adds `--debug` to the mechanical helper and
-saves source coverage, exact candidate/native identities, first model attempts,
-all failures and semantic/reader verdicts in a fresh caller-owned directory.
-Debug grants no extra model budget or external permissions. Exercise the
-[owned adversarial case](../examples/boundary-completeness/README.md) in normal and
-debug modes with fresh Luna Max before claiming behavioral success. Mechanical
-tests and native READY alone cannot establish completion.
+For local checking, compose and finalize the authored originals using the
+[human-page route](compose-original.md#original-pages-and-completion). Keep the
+selected snapshot, original description and exact source manifests. Inspect the
+rendered steps and links, including failure outcomes. Export integrity does not
+establish semantic completeness or runtime behavior.

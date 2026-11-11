@@ -198,14 +198,6 @@ pub(super) fn selector_for_declaration(
         })
 }
 
-/// Resolve exact callable identities once for a retained service.
-pub(super) fn selectors_for_declarations(evidence: &ServiceEvidence) -> BTreeMap<String, Selector> {
-    declarations(evidence)
-        .into_iter()
-        .filter_map(|(id, selector)| selector.ok().map(|selector| (id, selector)))
-        .collect()
-}
-
 pub(super) fn selector_for_entrypoint(
     evidence: &ServiceEvidence,
     entrypoint: &Entrypoint,
@@ -214,6 +206,7 @@ pub(super) fn selector_for_entrypoint(
 }
 
 /// Resolve a whole retained catalogue once; conflicting duplicate IDs have no identity.
+#[cfg(test)]
 pub(super) fn selectors_for_entrypoints(evidence: &ServiceEvidence) -> BTreeMap<String, Selector> {
     let declarations = declarations(evidence);
     let mut selectors = BTreeMap::new();

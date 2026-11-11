@@ -58,18 +58,6 @@ fn process_profile_defers_provider_authority_until_recorded_expansion() {
         .as_str()
         .unwrap();
     assert!(!rows.iter().any(|row| row["reference"] == deferred));
-    let proposal=f.input("proposal.json",&json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:quantity","title":"Quantity method","summary":{"text":"The selected method returns a quantity.","evidence":[deferred]},"steps":[]}],"gaps":{},"uncertainties":["Call targets and runtime activation are not established by syntax evidence."]}));
-    let rejected = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work,
-        "--input",
-        proposal.to_str().unwrap(),
-    ]);
-    assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
-    assert!(rejected.to_string().contains("not supplied"), "{rejected}");
     let selection = f.input("expand.json", &json!({"references":[deferred]}));
     let expanded = f.ok(&[
         "docs",
@@ -88,137 +76,13 @@ fn process_profile_defers_provider_authority_until_recorded_expansion() {
         .unwrap();
     assert_eq!(full["record"]["kind"], "SYMBOL");
     assert!(full["record"]["normalized"].get("documentation").is_some());
-    let accepted = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work,
-        "--input",
-        proposal.to_str().unwrap(),
-    ]);
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let state = clew::documentation::work::read_state(&repo, &work).unwrap();
     assert!(
-        accepted["status"].as_str().unwrap().starts_with("READY_"),
-        "{accepted}"
-    );
-    // The overview host contract accepts the supported summary above but not
-    // sequence, contract, note-assessment or typed-view content in that slot.
-    let good: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&proposal).unwrap()).unwrap();
-    for (field, value) in [
-        (
-            "steps",
-            json!([{"kind":"note","meaning":{"text":"A step","evidence":[deferred]}}]),
-        ),
-        (
-            "contracts",
-            json!([{"title":"Payload","kind":"payload","rows":[{"label":"Quantity","description":{"text":"A quantity","evidence":[deferred]}}]}]),
-        ),
-        (
-            "assessment",
-            json!({"outcome":"UNKNOWN","period":"Current"}),
-        ),
-        ("dataflow", json!({"nodes":[],"edges":[]})),
-    ] {
-        let mut invalid = good.clone();
-        invalid["operations"][0][field] = value;
-        let path = f.input(&format!("invalid-overview-{field}.json"), &invalid);
-        let rejected = f.ok(&[
-            "docs",
-            "proposal",
-            "submit",
-            "--work",
-            &work,
-            "--input",
-            path.to_str().unwrap(),
-        ]);
-        assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
-        assert!(
-            rejected["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row["kind"] == "DIAGNOSTIC"
-                    && row["record"]["code"] == "INVALID_PROPOSAL"),
-            "{rejected}"
-        );
-    }
-    for key in ["activation", "provider-behavior", "runtime"] {
-        let mut invalid = good.clone();
-        invalid["gaps"] = json!({(key):"This limitation is not an operation root."});
-        let path = f.input(&format!("invalid-gap-{key}.json"), &invalid);
-        let rejected = f.ok(&[
-            "docs",
-            "proposal",
-            "submit",
-            "--work",
-            &work,
-            "--input",
-            path.to_str().unwrap(),
-        ]);
-        assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
-        assert!(
-            rejected
-                .to_string()
-                .contains("gap requires an entrypoint reference or its scenario subject"),
-            "{rejected}"
-        );
-    }
-    let mut duplicate = good.clone();
-    duplicate["gaps"] = json!({"scenario:quantity":"Runtime activation is not established."});
-    let path = f.input("duplicate-overview-gap.json", &duplicate);
-    let rejected = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work,
-        "--input",
-        path.to_str().unwrap(),
-    ]);
-    assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
-    assert!(
-        rejected["items"].as_array().unwrap().iter().any(|row| {
-            row["kind"] == "DIAGNOSTIC"
-                && row["record"]["code"] == "INVALID_PROPOSAL"
-                && row["record"]["nextAction"].as_str().is_some_and(|detail| {
-                    detail.contains("scenario:quantity")
-                        && detail.contains("conflicts")
-                        && detail.contains("process-overview")
-                })
-        }),
-        "{rejected}"
-    );
-    let mut supported = good;
-    supported["operations"][0]["summary"]["uncertainty"] =
-        json!("Runtime activation and provider behavior remain unverified.");
-    let path = f.input("supported-overview-uncertainties.json", &supported);
-    let limited = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work,
-        "--input",
-        path.to_str().unwrap(),
-    ]);
-    assert_eq!(limited["status"], "READY_WITH_LIMITATIONS", "{limited}");
-    let path = f.input("unsupported-whole-overview.json", &json!({
-        "schema":"codeclew-documentation-proposal/1.0", "operations":[],
-        "gaps":{"scenario:quantity":"No supported overview is offered; further retained evidence is needed."},
-    }));
-    let unavailable = f.ok(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work,
-        "--input",
-        path.to_str().unwrap(),
-    ]);
-    assert_eq!(
-        unavailable["status"], "READY_WITH_LIMITATIONS",
-        "{unavailable}"
+        state
+            .receipts
+            .values()
+            .any(|r| r.supplied.iter().any(|v| v == deferred))
     );
 }
 

@@ -114,14 +114,11 @@ pager and read receipts. Library scopes are marked `LIBRARY_SOURCE` and
 when detailed artifact/repository provenance is needed. Source snippets carry a
 compact binding pointer; JVM/Gradle metadata is not repeated beside every body.
 
-The same retained continuation is available to `docs process graph` and normal
-`docs render --snapshot COMPOSED_SNAPSHOT`. Service egress includes a compact
-candidate section with collapsed method bodies and evidence details. Citations
-keep B's original file, range and revision; remote source export uses B's
-repository mapping. Branches, local returns and recognized outgoing calls are
-retained static evidence, not proof of runtime dispatch, delivery or persistence.
-Use the normal proposal/review path for an accepted process explanation; no paid
-full-service author run is necessary to demonstrate this connection.
+The same retained continuation is available to `docs process graph`. Use its
+source and contract references in authored originals, then compose/bind/finalize
+checked human HTML. Citations retain the library's original file, range and
+revision. Branches, local returns and recognized outgoing calls are static
+evidence, not proof of runtime dispatch, delivery or persistence.
 
 ### Checked Sources footer for human pages
 

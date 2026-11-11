@@ -1,5 +1,8 @@
 //! Authored static references over exact selected source, never resolved values.
-use super::{Check, escape, invalid, store};
+#[cfg(test)]
+use super::{Check, invalid, store};
+#[cfg(not(test))]
+use super::{Check, invalid, store};
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -112,104 +115,6 @@ pub(super) fn project(checked: &Check, rows: &[ConfigurationReference]) -> Vec<V
             "authority":"AUTHORED_STATIC_REFERENCE","runtime":"UNVERIFIED"})
     }).collect()
 }
-pub(super) fn binding_label(binding: &str) -> &str {
-    match binding {
-        "static-reference" => "Static reference",
-        "explicitly-unconfigured" => "Declared unconfigured",
-        "unresolved-reference" => "Unresolved reference",
-        _ => "Configuration evidence unavailable",
-    }
-}
-pub(super) fn source_label(state: &str) -> &'static str {
-    match state {
-        "SOURCE_BOUND" => "Source evidence matches the selected snapshot",
-        "SOURCE_CHANGED" => "Source evidence changed",
-        "SOURCE_PARTIAL" => "Mixed or incomplete source evidence",
-        _ => "Source evidence unavailable",
-    }
-}
-pub(super) fn reference_label(kind: &str) -> &'static str {
-    match kind {
-        "environment-placeholder" => "Environment variable name",
-        "property-placeholder" => "Property reference",
-        "code-symbol" => "Code symbol",
-        _ => "Unknown reference kind",
-    }
-}
-pub(super) fn html(rows: &[Value], language: &str) -> String {
-    let l = |s| crate::documentation::language::label(language, s);
-    let mut body = format!(
-        "<section class=\"profile-configuration\"><h2>{}</h2>",
-        l("Configuration references")
-    );
-    if rows.is_empty() {
-        body += &format!(
-            "<p>{}</p>",
-            l(
-                "Configuration evidence is not recorded; this does not establish that the destination is unconfigured."
-            )
-        );
-    }
-    for row in rows {
-        body += &format!(
-            "<article><h3><code>{}</code> <span class=\"configuration-evidence-status\">{}</span></h3><p>{} · {}</p>",
-            escape(row["key"].as_str().unwrap_or("")),
-            l(source_label(
-                row["sourceAvailability"]["status"]
-                    .as_str()
-                    .unwrap_or("SOURCE_UNAVAILABLE")
-            )),
-            l(binding_label(row["binding"].as_str().unwrap_or(""))),
-            escape(row["scope"].as_str().unwrap_or(""))
-        );
-        if let Some(name) = row["reference"]["name"].as_str() {
-            body += &format!(
-                "<p><code>{}</code> · {}</p>",
-                escape(name),
-                l(reference_label(
-                    row["reference"]["kind"].as_str().unwrap_or("")
-                ))
-            );
-        }
-        body += &format!(
-            "<details><summary>{}</summary><p>{}</p><ul>",
-            l("Source and configuration evidence"),
-            escape(row["declaration"]["rationale"].as_str().unwrap_or(""))
-        );
-        for source in row["sources"].as_array().into_iter().flatten() {
-            let location = if let Some(file) = source["file"].as_str() {
-                format!(
-                    "<code>{}</code>:{}–{} · <code>{}</code>",
-                    escape(file),
-                    source["startLine"],
-                    source["endLine"],
-                    escape(source["revision"].as_str().unwrap_or(""))
-                )
-            } else {
-                format!(
-                    "<code>{}</code>",
-                    escape(source["sourceId"].as_str().unwrap_or(""))
-                )
-            };
-            body += &format!(
-                "<li>{}: {} · {}</li>",
-                escape(source["service"].as_str().unwrap_or("")),
-                location,
-                l(source_label(
-                    source["state"].as_str().unwrap_or("SOURCE_UNAVAILABLE")
-                ))
-            );
-        }
-        body += "</ul></details></article>";
-    }
-    body += &format!(
-        "<p>{}</p></section>",
-        l(
-            "Static references and profile scopes do not establish active configuration, precedence, resolved values or runtime routing."
-        )
-    );
-    body
-}
 
 #[cfg(test)]
 mod tests {
@@ -251,15 +156,7 @@ mod tests {
             missing[0]["sourceAvailability"]["status"],
             "SOURCE_UNAVAILABLE"
         );
-        let missing_html = html(&missing, "en");
-        assert!(
-            missing_html
-                .split("<details>")
-                .next()
-                .unwrap()
-                .contains("Source evidence unavailable")
-        );
-        assert!(!missing_html.contains("null–null"));
+
         assert_ne!(missing[0]["reference"], missing[1]["reference"]);
         let source = json!({"id":"configuration-source","service":"owner","revision":"selected-revision","file":"src/main/resources/application.yml","startLine":1,"endLine":3,"text":"endpoint: ${PRICING_ENDPOINT}","textDigest":row.sources[0].text_digest,"evidenceDigest":"evidence","authority":"EXACT_SNAPSHOT_TEXT","url":null});
         checked.services.insert("owner".into(),serde_json::from_value(json!({"schema":"fixture","service":"owner","revision":"selected-revision","serviceDigest":"service","extractor":"fixture","runtimeMode":"SOURCE","coverage":"SYNTAX","boundaries":[],"entrypoints":[],"observations":{},"sources":{"configuration-source":source},"contracts":{}})).unwrap());
@@ -267,7 +164,7 @@ mod tests {
         assert_eq!(bound[0]["sources"][0]["state"], "SOURCE_BOUND");
         assert_eq!(bound[0]["sourceAvailability"]["status"], "SOURCE_BOUND");
         assert_eq!(bound[0]["runtime"], "UNVERIFIED");
-        assert!(html(&bound, "en").contains("application.yml</code>:1–3"));
+
         let mut mixed_row = row.clone();
         mixed_row.sources.push(SourceReference {
             service: "owner".into(),
@@ -279,20 +176,7 @@ mod tests {
             mixed[0]["sourceAvailability"],
             json!({"status":"SOURCE_PARTIAL","bound":1,"missing":1,"changed":0})
         );
-        let mixed_html = html(&mixed, "en");
-        let primary = mixed_html.split("<details>").next().unwrap();
-        assert!(primary.contains("Mixed or incomplete source evidence"));
-        assert!(primary.contains("Environment variable name"));
-        assert!(!primary.contains(&row.declaration.rationale));
-        assert!(!mixed_html.contains("environment-placeholder"));
-        let russian = html(&mixed, "ru");
-        assert!(
-            !russian
-                .split("<details>")
-                .next()
-                .unwrap()
-                .contains("Mixed or incomplete source evidence")
-        );
+
         checked
             .services
             .get_mut("owner")
@@ -303,13 +187,7 @@ mod tests {
             .text_digest = format!("sha256:{}", "b".repeat(64));
         let changed = project(&checked, &[row]);
         assert_eq!(changed[0]["sources"][0]["state"], "SOURCE_CHANGED");
-        assert!(
-            html(&changed, "en")
-                .split("<details>")
-                .next()
-                .unwrap()
-                .contains("Source evidence changed")
-        );
+
         assert!(
             !serde_json::to_string(&changed)
                 .unwrap()

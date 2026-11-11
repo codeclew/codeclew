@@ -1765,7 +1765,8 @@ mod tests {
         }
         let handle = checked.save_snapshot(&repo).unwrap();
         assert!(Check::retained(&repo, Some(&handle), &BTreeSet::from(["healthy".into()])).is_ok());
-        let mut previous = super::super::render::make_bindings(&checked, BTreeMap::new()).unwrap();
+        let mut previous =
+            super::super::retained_validation::make_bindings(&checked, BTreeMap::new()).unwrap();
         previous.fragments.insert(
             "former-syntax".into(),
             super::super::bindings::FragmentBinding {
@@ -1880,7 +1881,8 @@ mod tests {
         assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
         assert_eq!(calls, 0);
 
-        let mut binding = super::super::render::make_bindings(&fresh, BTreeMap::new()).unwrap();
+        let mut binding =
+            super::super::retained_validation::make_bindings(&fresh, BTreeMap::new()).unwrap();
         binding.output_hashes.insert(
             "root-overview.html".into(),
             crate::canonical::hash_bytes(index_text.as_bytes()),
@@ -2497,7 +2499,8 @@ mod tests {
                 .iter()
                 .any(|b| b.starts_with("DECLARED_TRANSITION_NOT_REACHED"))
         );
-        let baseline = super::super::render::make_bindings(&checked, BTreeMap::new()).unwrap();
+        let baseline =
+            super::super::retained_validation::make_bindings(&checked, BTreeMap::new()).unwrap();
         let mut changed_contract = checked.clone();
         let dependency = changed_contract
             .dependencies

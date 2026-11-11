@@ -23,14 +23,7 @@ fn source_rows_projection_retains_exact_source_and_coverage_without_repeating_na
     let source_repo = f.service("orders");
     let checked = f.checked();
     let narrative = f.author("orders", &checked);
-    let publication = f.ok(&[
-        "docs",
-        "render",
-        "--input",
-        narrative.to_str().unwrap(),
-        "--publish",
-    ]);
-    assert_eq!(publication["updateFailures"], json!({}));
+    f.retain_legacy(&checked, &narrative);
     let (id, reference) = prepare_work(&f, 49_152);
     fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
     let read_selection = |value: Value| {
@@ -113,7 +106,7 @@ fn source_rows_projection_retains_exact_source_and_coverage_without_repeating_na
         "--subject",
         "service:orders",
         "--snapshot",
-        publication["snapshot"].as_str().unwrap(),
+        hydrated_work(&f, &id)["snapshot"].as_str().unwrap(),
         "--input",
         request.to_str().unwrap(),
     ]);
@@ -244,14 +237,14 @@ fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_tr
         .unwrap_or_else(|| f.temp.path().join("public-probes"));
     let large = std::env::var_os("CODECLEW_SOURCE_BATCH_PROBE_LARGE").is_some();
     let mut cases = vec![
-        ("representative", 1, 12, true, 0, 20),
-        ("retained-context", 1, 19, false, 16, 20),
-        ("retained-context-paged", 1, 19, false, 16, 2),
+        ("representative", 1, 12, true, 20),
+        ("source-context", 1, 19, false, 20),
+        ("source-context-paged", 1, 19, false, 2),
     ];
     if large {
-        cases.push(("larger-retained-context", 64, 38, false, 16, 20));
+        cases.push(("larger-source-context", 64, 38, false, 20));
     }
-    for (name, files, methods, baseline, retained, page_items) in cases {
+    for (name, files, methods, baseline, page_items) in cases {
         let output = artifacts.join(name);
         let mut command = std::process::Command::new("python3");
         command
@@ -267,8 +260,6 @@ fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_tr
             .arg(files.to_string())
             .arg("--methods")
             .arg(methods.to_string())
-            .arg("--retained-operations")
-            .arg(retained.to_string())
             .arg("--page-items")
             .arg(page_items.to_string());
         if baseline {
@@ -650,19 +641,6 @@ fn request_value(reference: &str, cursor: Option<&str>) -> SourcePartRequest {
     }
 }
 
-fn submit_proposal(f: &Fixture, work_id: &str, proposal: &Value, name: &str) -> (i32, Value) {
-    let input = f.input(name, proposal);
-    f.run(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        work_id,
-        "--input",
-        input.to_str().unwrap(),
-    ])
-}
-
 fn read_default_page_chain(f: &Fixture, work_id: &str) -> Vec<Value> {
     let mut pages = Vec::new();
     let mut cursor: Option<String> = None;
@@ -689,60 +667,6 @@ fn read_default_page_chain(f: &Fixture, work_id: &str) -> Vec<Value> {
     }
 }
 
-fn has_diagnostic(result: &Value, code: &str) -> bool {
-    result["items"].as_array().is_some_and(|items| {
-        items
-            .iter()
-            .any(|item| item["kind"] == "DIAGNOSTIC" && item["record"]["code"] == code)
-    })
-}
-
-fn diagnostic_codes(result: &Value) -> Vec<String> {
-    result["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|item| item["kind"] == "DIAGNOSTIC")
-        .filter_map(|item| item["record"]["code"].as_str().map(str::to_owned))
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn execution_config(driver: &std::path::Path, account: &str) -> Value {
-    let role = json!({
-        "adapter":"macos-seatbelt-stdio/1.0",
-        "model":"source-part-fixture",
-        "usageAuthority":"MAXIMUM_ONLY",
-        "command":[driver.to_str().unwrap()],
-        "runtimeReads":[],
-        "environment":[],
-        "network":false,
-        "cap":{
-            "maximum":{"inputTokens":1000000,"outputTokens":100000,"costUnits":100},
-            "overheadInputTokens":1,
-            "timeoutMs":5000,
-            "outputBytes":65536
-        }
-    });
-    json!({
-        "schema":"codeclew-documentation-execution/1.0",
-        "author":role,
-        "reviewer":role,
-        "authorCalls":2,
-        "reviewerCalls":2,
-        "fallback":null,
-        "fallbackCalls":0,
-        "repairAttempts":1,
-        "expansions":0,
-        "budget":{
-            "account":account,
-            "costUnit":"fixture-unit",
-            "ceiling":{"inputTokens":10000000,"outputTokens":1000000,"costUnits":1000},
-            "stopLoss":{"inputTokens":9999999,"outputTokens":999999,"costUnits":999}
-        }
-    })
-}
-
 fn part_input(f: &Fixture, reference: &str, cursor: Option<&str>) -> std::path::PathBuf {
     let mut request = json!({
         "schema":"codeclew-documentation-source-part-request/1.0",
@@ -767,35 +691,6 @@ fn write_optional_json_artifact(name: &str, value: &Value) {
     let mut bytes = clew::canonical::bytes(value).unwrap();
     bytes.push(b'\n');
     write_optional_artifact(name, &bytes);
-}
-
-fn job_report_count(path: &std::path::Path) -> usize {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-fn author_attempt_count(path: &std::path::Path) -> usize {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-                .map(|entry| {
-                    fs::read(entry.path())
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                        .and_then(|report| report["attempts"].as_array().map(Vec::len))
-                        .unwrap_or(0)
-                })
-                .sum()
-        })
-        .unwrap_or(0)
 }
 
 #[test]
@@ -1859,7 +1754,7 @@ fn source_part_raw_cli_matrix_stays_within_budgets_and_reconstructs_records() {
 }
 
 #[test]
-fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_sticky() {
+fn complete_source_parts_preserve_initial_omissions_and_sticky_untracked_reads() {
     let f = Fixture::new();
     f.service("orders");
     let checked = f.checked();
@@ -1886,46 +1781,6 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
         .find(|(_, handle)| handle["kind"] == "ENTRYPOINT" && handle["id"] == entrypoint_id)
         .map(|(reference, _)| reference.clone())
         .expect("selected operation entrypoint handle");
-    let selected_entrypoint = checked.services["orders"]
-        .entrypoints
-        .iter()
-        .find(|entrypoint| entrypoint.id == entrypoint_id)
-        .unwrap();
-    let flow_references: Vec<_> = checked.services["orders"]
-        .observations
-        .values()
-        .filter(|observation| {
-            observation.kind == "FLOW" && observation.symbol == selected_entrypoint.symbol
-        })
-        .map(|observation| {
-            frozen["handles"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .find(|(_, handle)| {
-                    handle["kind"] == "DEPENDENCY" && handle["id"] == observation.id
-                })
-                .map(|(reference, _)| reference.clone())
-                .expect("flow observation dependency handle")
-        })
-        .collect();
-    assert!(
-        !flow_references.is_empty(),
-        "fixture has entrypoint FLOW evidence"
-    );
-    let steps: Vec<_> = flow_references
-        .iter()
-        .map(|reference| {
-            json!({
-                "kind":"note",
-                "meaning":{
-                    "text":"The selected operation reaches this captured flow event.",
-                    "evidence":[reference]
-                }
-            })
-        })
-        .collect();
-
     let pages = read_default_page_chain(&f, &work_id);
     assert!(!pages.is_empty());
     let all_omissions: Vec<_> = pages
@@ -1970,62 +1825,13 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
         })
         .collect();
 
-    let proposal = json!({
-        "schema":"codeclew-documentation-proposal/1.0",
-        "operations":[{
-            "entrypoint":entrypoint_reference,
-            "title":"Quantity entities",
-            "summary":{"text":"The retained source defines quantity handling.","evidence":[source_reference]},
-            "steps":steps
-        }]
-    });
-    let (_, before_parts) =
-        submit_proposal(&f, &work_id, &proposal, "source-part-proposal-before.json");
-    assert_eq!(before_parts["status"], "NEEDS_REPAIR", "{before_parts}");
-    assert!(
-        has_diagnostic(&before_parts, "REQUIRED_CONTEXT_NOT_READ"),
-        "{before_parts}"
-    );
-
     let source_text_len = checked.services["orders"].sources[&source_id].text.len();
     let first_part =
         work::read_part(&repo, &work_id, request_value(&source_reference, None)).unwrap();
     assert_eq!(first_part["startByte"], 0);
     assert!(first_part["nextCursor"].is_string());
-    let (_, after_first_part) = submit_proposal(
-        &f,
-        &work_id,
-        &proposal,
-        "source-part-proposal-after-first-part.json",
-    );
-    assert_eq!(
-        after_first_part["status"], "NEEDS_REPAIR",
-        "{after_first_part}"
-    );
-    assert!(has_diagnostic(
-        &after_first_part,
-        "REQUIRED_CONTEXT_NOT_READ"
-    ));
-
-    // A proposal submitted before a new part receipt carries the earlier
-    // optimistic read digest and cannot be published after the receipt lands.
-    let (stale_code, stale_publish) = f.run(&[
-        "docs",
-        "proposal",
-        "publish",
-        "--proposal",
-        before_parts["proposal"].as_str().unwrap(),
-        "--unassessed",
-    ]);
-    assert_ne!(stale_code, 0, "{stale_publish}");
-    assert!(
-        stale_publish.to_string().contains("work reads changed"),
-        "{stale_publish}"
-    );
-
     let mut cursor = first_part["nextCursor"].as_str().map(str::to_owned);
     let mut next_offset = 0usize;
-    let mut part_count = 1usize;
     let mut rebuilt = String::with_capacity(source_text_len);
     let first_fragment = first_part["text"].as_str().unwrap();
     assert_eq!(
@@ -2044,7 +1850,6 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
             request_value(&source_reference, Some(current_cursor)),
         )
         .unwrap();
-        part_count += 1;
         assert_eq!(part["startByte"].as_u64().unwrap() as usize, next_offset);
         let fragment = part["text"].as_str().unwrap();
         next_offset = part["endByte"].as_u64().unwrap() as usize;
@@ -2056,79 +1861,7 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
     }
     assert_eq!(rebuilt, checked.services["orders"].sources[&source_id].text);
     let complete_state = work::read_state(&repo, &work_id).unwrap();
-    let mut ordered_parts: Vec<_> = complete_state
-        .source_part_receipts
-        .values()
-        .cloned()
-        .collect();
-    ordered_parts.sort_by_key(|receipt| receipt.start_byte);
-    assert!(ordered_parts.len() >= 3);
-    let reads_path = f.docs.join(format!(".codeclew/work/{work_id}/reads.json"));
-    let complete_ledger_bytes = fs::read(&reads_path).unwrap();
-
-    let mut last_only = complete_state.clone();
-    last_only.source_part_receipts.clear();
-    let last = ordered_parts.last().unwrap().clone();
-    last_only
-        .source_part_receipts
-        .insert(last.receipt_digest.clone(), last);
-    fs::write(&reads_path, clew::canonical::bytes(&last_only).unwrap()).unwrap();
-    let (_, last_only_result) = submit_proposal(
-        &f,
-        &work_id,
-        &proposal,
-        "source-part-proposal-last-only.json",
-    );
-    assert_eq!(
-        last_only_result["status"], "NEEDS_REPAIR",
-        "{last_only_result}"
-    );
-    assert!(has_diagnostic(
-        &last_only_result,
-        "REQUIRED_CONTEXT_NOT_READ"
-    ));
-
-    let middle_index = ordered_parts.len() / 2;
-    let mut missing_middle = complete_state.clone();
-    missing_middle.source_part_receipts.clear();
-    for (index, receipt) in ordered_parts.iter().enumerate() {
-        if index != middle_index {
-            missing_middle
-                .source_part_receipts
-                .insert(receipt.receipt_digest.clone(), receipt.clone());
-        }
-    }
-    assert!(
-        missing_middle
-            .source_part_receipts
-            .contains_key(&ordered_parts.first().unwrap().receipt_digest)
-    );
-    assert!(
-        missing_middle
-            .source_part_receipts
-            .contains_key(&ordered_parts.last().unwrap().receipt_digest)
-    );
-    fs::write(
-        &reads_path,
-        clew::canonical::bytes(&missing_middle).unwrap(),
-    )
-    .unwrap();
-    let (_, missing_middle_result) = submit_proposal(
-        &f,
-        &work_id,
-        &proposal,
-        "source-part-proposal-missing-middle.json",
-    );
-    assert_eq!(
-        missing_middle_result["status"], "NEEDS_REPAIR",
-        "{missing_middle_result}"
-    );
-    assert!(has_diagnostic(
-        &missing_middle_result,
-        "REQUIRED_CONTEXT_NOT_READ"
-    ));
-    fs::write(&reads_path, &complete_ledger_bytes).unwrap();
-
+    assert!(complete_state.source_part_receipts.len() >= 3);
     let after_parts = work::read_state(&repo, &work_id).unwrap();
     let retained_omitted: BTreeMap<_, _> = after_parts
         .receipts
@@ -2141,44 +1874,6 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
         })
         .collect();
     assert_eq!(retained_omitted, original_omitted);
-
-    let (code, after_parts_result) =
-        submit_proposal(&f, &work_id, &proposal, "source-part-proposal-after.json");
-    assert_eq!(code, 0, "{after_parts_result}");
-    assert!(
-        matches!(
-            after_parts_result["status"].as_str(),
-            Some("READY_FOR_REVIEW" | "READY_WITH_LIMITATIONS")
-        ),
-        "{after_parts_result}"
-    );
-    assert!(!has_diagnostic(
-        &after_parts_result,
-        "REQUIRED_CONTEXT_NOT_READ"
-    ));
-    assert!(!has_diagnostic(&after_parts_result, "INVALID_PROPOSAL"));
-    write_optional_json_artifact(
-        "proposal-flow.json",
-        &json!({
-            "schema":"codeclew-source-part-proposal-evidence/1.0",
-            "initialProposalStatus":before_parts["status"],
-            "initialDiagnosticCodes":diagnostic_codes(&before_parts),
-            "afterFirstPartProposalStatus":after_first_part["status"],
-            "afterFirstPartDiagnosticCodes":diagnostic_codes(&after_first_part),
-            "firstPartEndByte":first_part["endByte"],
-            "stalePrePartProposalRejectedAfterFirstReceipt":true,
-            "stalePublishError":stale_publish.to_string(),
-            "completeProposalStatus":after_parts_result["status"],
-            "completeProposalDiagnosticCodes":diagnostic_codes(&after_parts_result),
-            "manualPartCount":part_count,
-            "sourceTextBytes":source_text_len,
-            "sourceRecordDigest":first_part["recordDigest"],
-            "sourcePartReceiptCount":after_parts.source_part_receipts.len(),
-            "ordinaryDefaultPagesOmittedSource":true,
-            "ordinaryDefaultPagesSuppliedSource":false,
-            "historicalOmittedArraysByteIdentical":retained_omitted == original_omitted
-        }),
-    );
 
     // Any untracked read remains sticky even after every SOURCE byte is recorded.
     let untracked_input = f.input(
@@ -2195,351 +1890,34 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
         untracked_input.to_str().unwrap(),
     ]);
     assert_eq!(code, 0, "{untracked_page}");
-    let (_, untracked_proposal) = submit_proposal(
-        &f,
-        &work_id,
-        &proposal,
-        "source-part-proposal-untracked.json",
-    );
-    assert_eq!(untracked_proposal["status"], "NEEDS_REPAIR");
-    assert!(has_diagnostic(&untracked_proposal, "INCOMPLETE_INFLUENCE"));
-
-    let declaration_path = f.docs.join("catalog/services/orders.json");
-    let mut declaration = read(&declaration_path);
-    declaration["title"] = json!("Changed after retained Work");
-    fs::write(&declaration_path, serde_json::to_vec(&declaration).unwrap()).unwrap();
-    let input = f.input("source-part-proposal-stale.json", &proposal);
-    let output = f.run_raw(&[
-        "docs",
-        "proposal",
-        "submit",
-        "--work",
-        &work_id,
-        "--input",
-        input.to_str().unwrap(),
-    ]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("stale")
-            || String::from_utf8_lossy(&output.stdout).contains("STALE"),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    assert!(work::read_state(&repo, &work_id).unwrap().untracked_reads);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn manual_source_parts_do_not_dispatch_or_publish_an_oversized_author_request() {
-    let f = Fixture::new();
-    let source_repo = f.service("orders");
-    let checked = f.checked();
-    let entrypoint_id = checked.services["orders"]
-        .entrypoints
-        .iter()
-        .find(|entrypoint| entrypoint.symbol.contains("reserve"))
-        .unwrap()
-        .id
-        .clone();
-    let (_checked, snapshot, _source, source_id) = add_synthetic_source(&f, checked, 180 * 1024);
-    let (work_id, source_reference) = prepare_work_for_source(
-        &f,
-        40_960,
-        Some(&entrypoint_id),
-        Some(&snapshot),
-        Some(&source_id),
-    );
-    let pages = read_default_page_chain(&f, &work_id);
-    assert!(
-        pages
-            .iter()
-            .flat_map(|page| page["omitted"].as_array().unwrap())
-            .any(|row| { row["kind"] == "SOURCE" && row["reference"] == source_reference })
-    );
-
-    let repo = Repository::open(&f.docs).unwrap();
-    let mut cursor = None;
-    let mut parts = 0usize;
-    loop {
-        let response = work::read_part(
-            &repo,
-            &work_id,
-            request_value(&source_reference, cursor.as_deref()),
-        )
-        .unwrap();
-        parts += 1;
-        cursor = response["nextCursor"].as_str().map(str::to_owned);
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert!(parts >= 3);
-
-    let _rendered = f.ok(&["docs", "render", "--snapshot", &snapshot]);
-    let index_path = f.docs.join("docs/index.html");
-    let index_before = fs::read(&index_path).unwrap();
-    let driver = f.temp.path().join("never-dispatch-author.sh");
-    let driver_marker = f.temp.path().join("unexpected-author-driver-invocation");
-    fs::write(
-        &driver,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' invoked >> '{}'\nexit 91\n",
-            driver_marker.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut config_value = execution_config(&driver, "source-parts-fixture");
-    config_value["author"]["cap"]["maximum"]["inputTokens"] = json!(100_000);
-    assert_eq!(
-        config_value["reviewer"]["cap"]["maximum"]["inputTokens"],
-        json!(1_000_000)
-    );
-    let config = f.input("source-part-execution.json", &config_value);
-
-    fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
-    let latest_path = f.docs.join(".codeclew/cache/latest-check.json");
-    let poisoned_latest = b"source-part author guard must stay pinned\n";
-    fs::write(&latest_path, poisoned_latest).unwrap();
-    let trap_dir = f.temp.path().join("author-acquisition-traps");
-    fs::create_dir(&trap_dir).unwrap();
-    let marker = f.temp.path().join("unexpected-author-acquisition");
-    for executable in ["git", "java", "javac", "gradle", "mvn", "kotlinc"] {
-        let path = trap_dir.join(executable);
-        fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' '{}' >> '{}'\nexit 91\n",
-                executable,
-                marker.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    let output = f.run_raw_with_path(
-        &[
-            "docs",
-            "work",
-            "run",
-            "--work",
-            &work_id,
-            "--config",
-            config.to_str().unwrap(),
-        ],
-        &trap_dir,
-    );
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "GENERATION_GAP", "{result}");
-    assert!(
-        result["gap"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("INPUT_CAP_EXCEEDED: SOURCE_PART packet alone exceeds the author input cap")
-    );
-    assert!(result["publication"].is_null(), "{result}");
-    assert_eq!(fs::read(&index_path).unwrap(), index_before);
-    assert_eq!(fs::read(latest_path).unwrap(), poisoned_latest);
-    assert!(!marker.exists(), "an acquisition executable was invoked");
-    assert!(
-        !driver_marker.exists(),
-        "the configured author driver was invoked"
-    );
-
-    let report = read(f.docs.join(format!(
-        ".codeclew/jobs/{}.json",
-        result["run"].as_str().unwrap()
-    )));
-    assert_eq!(
-        report["contextBudget"]["stage"], "SOURCE_PART_PACKET_LOWER_BOUND",
-        "{report}"
-    );
-    assert_eq!(
-        report["contextBudget"]["status"], "LOWER_BOUND_EXCEEDS_CAP",
-        "{report}"
-    );
-    assert_eq!(report["contextBudget"]["authorInputCapBytes"], 100_000);
-    assert_eq!(report["contextBudget"]["reviewerInputCapBytes"], 1_000_000);
-    assert!(
-        report["contextBudget"]["sourcePartsArrayBytes"]
-            .as_u64()
-            .unwrap()
-            > report["contextBudget"]["authorInputCapBytes"]
-                .as_u64()
-                .unwrap()
-    );
-    assert!(
-        report["attempts"].as_array().unwrap().is_empty(),
-        "{report}"
-    );
-    assert!(
-        report["accounting"].as_array().unwrap().is_empty(),
-        "{report}"
-    );
-    assert!(report["publication"].is_null(), "{report}");
-    let account = read(f.docs.join("execution/accounts/source-parts-fixture.json"));
-    assert!(account["reservations"].as_object().unwrap().is_empty());
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let progress: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    let mut acquisition_started = BTreeMap::from([
-        ("ACQUIRE_SERVICE_EVIDENCE".to_owned(), 0usize),
-        ("ACQUIRE_SYNTAX_EVIDENCE".to_owned(), 0usize),
-        ("ACQUIRE_COMPILER_EVIDENCE".to_owned(), 0usize),
-        ("ENSURE_COMPILER_GENERATION".to_owned(), 0usize),
-    ]);
-    for event in &progress {
-        if event["event"] == "STARTED"
-            && let Some(count) = event["phase"]
-                .as_str()
-                .and_then(|phase| acquisition_started.get_mut(phase))
-        {
-            *count += 1;
-        }
-    }
-    let read_state = work::read_state(&Repository::open(&f.docs).unwrap(), &work_id).unwrap();
-    let author_attempt_count = report["attempts"].as_array().unwrap().len();
-    let accounting_record_count = report["accounting"].as_array().unwrap().len();
-    let reservation_count = account["reservations"].as_object().unwrap().len();
-    assert!(progress.iter().any(|event| {
-        event["phase"] == "LOAD_RETAINED_SNAPSHOT" && event["event"] == "STARTED"
-    }));
-    for phase in [
-        "ACQUIRE_SERVICE_EVIDENCE",
-        "ACQUIRE_SYNTAX_EVIDENCE",
-        "ACQUIRE_COMPILER_EVIDENCE",
-        "ENSURE_COMPILER_GENERATION",
-    ] {
-        assert!(
-            !progress
-                .iter()
-                .any(|event| event["phase"] == phase && event["event"] == "STARTED")
-        );
-    }
-    write_optional_json_artifact(
-        "source-author-guard.json",
-        &json!({
-            "schema":"codeclew-source-part-author-guard-evidence/1.0",
-            "status":result["status"],
-            "diagnosticCode":"INPUT_CAP_EXCEEDED",
-            "diagnostic":result["gap"]["reason"],
-            "manualPartCount":parts,
-            "sourcePartReceiptCount":read_state.source_part_receipts.len(),
-            "authorAttemptCount":author_attempt_count,
-            "accountingRecordCount":accounting_record_count,
-            "reservationCount":reservation_count,
-            "resultPublication":result["publication"],
-            "jobReportPublication":report["publication"],
-            "docsIndexUnchanged":fs::read(&index_path).unwrap() == index_before,
-            "latestPointerFollowed":false,
-            "sourceRepoOffline":source_repo.with_extension("offline").exists(),
-            "acquisitionStarted":acquisition_started,
-            "acquisitionStartedTotal":acquisition_started.values().sum::<usize>(),
-            "retainedSnapshotLoadStarted":true,
-            "acquisitionExecutableTrapAttempts":0,
-            "configuredAuthorDriverMarkerAttempts":0,
-            "configuredDriverWasInvoked":driver_marker.exists()
-        }),
-    );
+fn job_report_count(path: &std::path::Path) -> usize {
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn non_source_oversized_author_context_keeps_legacy_failure_publication() {
-    let f = Fixture::new();
-    f.service("orders");
-    fs::create_dir(f.docs.join("notes")).unwrap();
-    fs::write(
-        f.docs.join("notes/long.md"),
-        "long retained documentation note ".repeat(6_000),
-    )
-    .unwrap();
-    let checked = f.checked();
-    let repo = Repository::open(&f.docs).unwrap();
-    let snapshot = checked.save_snapshot(&repo).unwrap();
-    let (work_id, _) = prepare_work_for(&f, 40_960, None, Some(&snapshot));
-    let pages = read_default_page_chain(&f, &work_id);
-    let omitted: Vec<_> = pages
-        .iter()
-        .flat_map(|page| page["omitted"].as_array().unwrap())
-        .collect();
-    assert!(
-        omitted
-            .iter()
-            .any(|row| { row["kind"] == "EXTERNAL_INPUT" && row["id"] == "notes/long.md" }),
-        "{omitted:?}"
-    );
-    assert!(
-        omitted.iter().all(|row| row["kind"] != "SOURCE"),
-        "fixture should exercise only the legacy non-SOURCE path: {omitted:?}"
-    );
-
-    let _rendered = f.ok(&["docs", "render", "--snapshot", &snapshot]);
-    let driver = f.temp.path().join("legacy-non-source-driver.sh");
-    fs::write(&driver, "#!/bin/sh\nexit 91\n").unwrap();
-    fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
-    let config = f.input(
-        "legacy-non-source-execution.json",
-        &execution_config(&driver, "legacy-non-source-fixture"),
-    );
-    let output = f.run_raw(&[
-        "docs",
-        "work",
-        "run",
-        "--work",
-        &work_id,
-        "--config",
-        config.to_str().unwrap(),
-    ]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "NEEDS_EVIDENCE", "{result}");
-    assert_eq!(
-        result["gap"]["reason"],
-        "NEEDS_EVIDENCE: a non-SOURCE initial or expanded record exceeds the admitted Work byte budget",
-        "{result}"
-    );
-    assert!(result["publication"].is_object(), "{result}");
-    let report = read(f.docs.join(format!(
-        ".codeclew/jobs/{}.json",
-        result["run"].as_str().unwrap()
-    )));
-    assert!(
-        report["attempts"].as_array().unwrap().is_empty(),
-        "{report}"
-    );
-    assert!(
-        report["accounting"].as_array().unwrap().is_empty(),
-        "{report}"
-    );
-    assert!(report["publication"].is_object(), "{report}");
-    let account = read(
-        f.docs
-            .join("execution/accounts/legacy-non-source-fixture.json"),
-    );
-    assert!(account["reservations"].as_object().unwrap().is_empty());
-    write_optional_json_artifact(
-        "non-source-failure-publication.json",
-        &json!({
-            "schema":"codeclew-source-part-legacy-failure-evidence/1.0",
-            "omittedKind":"EXTERNAL_INPUT",
-            "diagnostic":result["gap"]["reason"],
-            "resultPublicationPresent":result["publication"].is_object(),
-            "jobReportPublicationPresent":report["publication"].is_object(),
-            "authorAttemptCount":report["attempts"].as_array().unwrap().len(),
-            "accountingRecordCount":report["accounting"].as_array().unwrap().len(),
-            "reservationCount":account["reservations"].as_object().unwrap().len()
-        }),
-    );
+fn author_attempt_count(path: &std::path::Path) -> usize {
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                .map(|entry| {
+                    fs::read(entry.path())
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                        .and_then(|report| report["attempts"].as_array().map(Vec::len))
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }

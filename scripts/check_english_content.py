@@ -18,21 +18,11 @@ CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 # Russian product messages and their executable examples are intentional.
 # This closed list does not exempt README, runbooks, plans or release notes.
 RUSSIAN_LOCALIZATION_FILES = {
-    "crates/clew/assets/documentation/analysis.js",
-    "crates/clew/assets/documentation/app.js",
-    "crates/clew/assets/documentation/question-reader.js",
-    "crates/clew/assets/documentation/limits.js",
-    "crates/clew/assets/documentation/reader.js",
     "crates/clew/assets/documentation/ru.json",
     "crates/clew/src/documentation/history.rs",
     "crates/clew/src/documentation/language.rs",
     "crates/clew/src/documentation/proposals.rs",
-    "crates/clew/src/documentation/reader.rs",
-    "crates/clew/src/documentation/render.rs",
-    "crates/clew/tests/documentation_language.rs",
     "crates/clew/tests/documentation_system.rs",
-    "scripts/test_documentation_visual_reader.cjs",
-    "scripts/test_data_model_reader.cjs",
     "skills/codeclew/examples/markdown-renderer/assets/ru.json",
     ".agents/skills/codeclew/examples/markdown-renderer/assets/ru.json",
     ".claude/skills/codeclew/examples/markdown-renderer/assets/ru.json",
@@ -43,18 +33,6 @@ RUSSIAN_LOCALIZATION_FILES = {
 RUSSIAN_LOCALIZATION_STRING_FILES = {
     "crates/clew/src/documentation/declaration_components.rs",
     "crates/clew/src/documentation/operation_answer.rs",
-    "crates/clew/src/documentation/flow_dsl/language.rs",
-    "crates/clew/src/documentation/flow_dsl/extract.rs",
-    "crates/clew/src/documentation/flow_dsl/publish.rs",
-    "crates/clew/src/documentation/flow_dsl/tests.rs",
-    "crates/clew/src/documentation/static_pages/full.rs",
-    "crates/clew/src/documentation/static_pages/catalogue.rs",
-    "crates/clew/src/documentation/static_pages/publication_tests.rs",
-    "crates/clew/src/documentation/static_pages/question_reading.rs",
-    "crates/clew/src/documentation/static_pages/prose_language.rs",
-    "crates/clew/src/documentation/static_pages/data_model.rs",
-    "crates/clew/src/documentation/static_pages/docusaurus.rs",
-    "crates/clew/src/documentation/static_pages/docusaurus/contracts.rs",
 }
 
 
@@ -297,7 +275,6 @@ GENERATED_SERVICE = re.compile(r"generated/[0-9a-f]{64}/services/[^/]+\.(html|js
 GENERATED_BINDINGS = re.compile(r"generated/[0-9a-f]{64}/bindings\.json\Z")
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
 SCRIPT = re.compile(r"(<script\b[^>]*>)(.*?)(</script\s*>)", re.DOTALL | re.IGNORECASE)
-LOCALIZATION_ASSETS = ("app.js", "analysis.js", "reader.js", "limits.js")
 
 # Exact executable script bodies from immutable public readers.
 # The v0.13.7 bodies were verified against source revision fd82a763.
@@ -433,8 +410,7 @@ def _mask_generated_publication(relative_path: str, content: str) -> str:
         return _mask_generated_json(content, kind)
     if not path.endswith(".html"):
         return content
-    assets = [(ROOT / "crates/clew/assets/documentation" / name).read_text(encoding="utf-8")
-              for name in LOCALIZATION_ASSETS]
+
 
     def script(match: re.Match) -> str:
         parser = _ScriptAttributes()
@@ -447,9 +423,6 @@ def _mask_generated_publication(relative_path: str, content: str) -> str:
         elif attrs is not None and attrs.get("type", "") in ("", "text/javascript"):
             if hashlib.sha256(body.encode("utf-8")).hexdigest() in FROZEN_LOCALIZATION_SCRIPT_DIGESTS:
                 return match[1] + _blank(body) + match[3]
-            for asset in assets:
-                # Exact known executable asset bytes only; added prose remains.
-                body = body.replace(asset, _blank(asset))
         return match[1] + body + match[3]
 
     return SCRIPT.sub(script, content)

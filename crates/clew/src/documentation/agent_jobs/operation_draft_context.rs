@@ -551,7 +551,7 @@ fn validate_chain(
                 let audit =
                     crate::documentation::operation_packet::audit_saved_packet(work, &packet)?;
                 if report.status == "DRAFT" {
-                    operation_answer::validate_and_render_draft(&packet, &audit, answer)?;
+                    operation_answer::validate_draft(&packet, &audit, answer)?;
                 }
             }
         }
@@ -1016,8 +1016,7 @@ fn finish_answer(
     raw_digest: &str,
 ) -> Result<Value, ClewError> {
     let audit = crate::documentation::operation_packet::audit_saved_packet(work, &state.packet)?;
-    let rendered = match operation_answer::validate_and_render_draft(&state.packet, &audit, answer)
-    {
+    let rendered = match operation_answer::validate_draft(&state.packet, &audit, answer) {
         Ok(rendered) => rendered,
         Err(error) => {
             report.status = "DRAFT_INVALID_ANSWER".into();
@@ -1033,15 +1032,12 @@ fn finish_answer(
         }
     };
     let output_dir = repo.path(&format!(".codeclew/drafts/{}/{}", work.id, report.run))?;
-    let output_result = work::write_explanation_outputs(
+    let output_result = work::save_answer_records(
         &output_dir,
         &work.id,
         &state.packet,
         &audit,
         &rendered.answer,
-        &rendered.markdown,
-        &rendered.html,
-        rendered.process_diagram.as_ref(),
     );
     let output = match output_result {
         Ok(output) => output,
@@ -1061,7 +1057,7 @@ fn finish_answer(
     report.publication = Some(json!({"status":"NOT_PUBLISHED"}));
     report.gap = None;
     report.draft = Some(
-        json!({"state":"DRAFT","status":"DRAFT","reviewStatus":"UNREVIEWED","publication":"NOT_PUBLISHED","packetDigest":state.packet["packetDigest"],"rawAnswerDigest":raw_digest,"outputDirectory":output["outputDirectory"],"processDiagram":output["processDiagram"]}),
+        json!({"state":"DRAFT","status":"DRAFT","reviewStatus":"UNREVIEWED","publication":"NOT_PUBLISHED","packetDigest":state.packet["packetDigest"],"rawAnswerDigest":raw_digest,"outputDirectory":output["outputDirectory"],"files":output["files"]}),
     );
     finish_state(repo, coordinated, report, checkpoint)?;
     Ok(run_summary(report))
@@ -1160,7 +1156,7 @@ pub(super) fn review_source(
             "DRAFT_REVIEW_SOURCE_INELIGIBLE: terminal result is not an answer action",
         ));
     };
-    operation_answer::validate_and_render_draft(packet, audit, answer.clone())?;
+    operation_answer::validate_draft(packet, audit, answer.clone())?;
     Ok((
         super::super::operation_draft_review::Origin {
             schema: super::super::operation_draft_review::ORIGIN_SCHEMA.into(),

@@ -5,7 +5,7 @@ use super::*;
 use crate::semantic_validation::KotlinPropertyStorageProof as StorageProof;
 use crate::{
     canonical::hash_bytes,
-    documentation::static_pages::model::SourceCallNode,
+    documentation::retained_graph::model::SourceCallNode,
     documentation::{digest, invalid, model::ServiceEvidence},
 };
 use serde::Deserialize;
@@ -139,7 +139,7 @@ pub(in crate::documentation) fn prepare_sites<'a>(
     declaration: &str,
     scope: &str,
     sites: &[(
-        &crate::documentation::static_pages::model::NeutralExactCallSite,
+        &crate::documentation::retained_graph::model::NeutralExactCallSite,
         Option<String>,
         String,
     )],

@@ -17,8 +17,7 @@ new planner, ledger or evidence store. Load technical references only when neede
 | 7. Read as user | Open pages/links at desktop and narrow widths; explain inputs, changes, returns and effects without code. Only then report scope completed or the retained blocker. | [Reader checklist](task-oriented-readers.md) |
 
 No second author/critic is required by this default path. Self-check is not native
-review approval, source authority or semantic proof from a helper. Explicit native
-and Q&A workflows keep [their own routes](../SKILL.md#choose-the-requested-result).
+review approval, source authority or semantic proof from a helper. Bounded Q&A retains answer/evidence JSON; durable pages use this same route.
 
 For independently rendered services, use the optional
 [docset/process navigation](../examples/markdown-renderer/README.md#independent-docsets-and-process-filters)
@@ -29,7 +28,7 @@ when requested; it adds links/filters, never evidence or a mandatory shared root
 | Situation | Exact next action / reference |
 | --- | --- |
 | Native catalogue/render substituted for human pages | Return to originals, then `page_citations.py compose` and `reader_export_check.py finalize`; use the complete [invocations](#original-pages-and-completion). `compose-original` is not a CLI command. |
-| Wrong Git mapping input | Human bind/finalize uses service-keyed `--repositories`; native export uses repositoryId-keyed `--source-map`. [Formats](library-sources.md#checked-sources-footer-for-human-pages). |
+| Wrong Git mapping input | Human bind/finalize uses service-keyed `--repositories`. [Formats](library-sources.md#checked-sources-footer-for-human-pages). |
 | Missing root/closure or partial export | Preserve originals; restore the complete supported root/closure. HTML alone is not evidence. [Recovery](service-documentation.md#start-or-recover). Use a new output directory, not an overwrite. |
 | CAS `WW_CONFLICT` / stale Work after catalogue edit | Reconcile current declaration and `currentInputDigest`, retry with `--expected-input-digest`; then recompose ORIGINAL_CAPTURE and use its returned snapshot for new Work. [Recipe](service-documentation.md#preserve-collected-external-information). |
 | Library SOURCE failure | Keep status/ref/scope; ROW matching differs from RECORD revision checks. [Boundary and safe next steps](library-sources.md#library-reads-and-citation-helper-boundaries); no relabelling/recapture bypass. |
@@ -482,9 +481,8 @@ manual source list or renderer patch is needed. Caller-selected renderers withou
 the `--sources` input keep their explicit workflow and omit `--source-footers`.
 
 This example renders plain Markdown, including authored tables; it does not execute
-native MDX components. A caller-selected trusted renderer remains supported.
-Explicit Docusaurus/MDX output follows its existing selected export workflow and
-constraints. The neutral theme remains available for a retained comparison.
+additional document formats. A caller-selected trusted renderer remains supported.
+
 
 For service-oriented reading (one or more services), that renderer accepts
 optional explicit navigation JSON. Declare service ownership, local trigger kinds

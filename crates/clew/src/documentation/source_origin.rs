@@ -198,6 +198,7 @@ pub(super) fn verify(source: &Source) -> Result<(), ClewError> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn exact_audit(value: &serde_json::Value) -> bool {
     if value["authority"] != AUDIT
         || value["occurrence"]["generatedOrigin"].is_string()
@@ -323,40 +324,10 @@ mod tests {
         source.text_origin = bind(&source, &occurrence, &text, &proof["A.java"]).unwrap();
         verify(&source).unwrap();
         assert!(exact_audit(&json!(source)));
-        let checked=serde_json::from_value(json!({"schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context","services":{},"dependencies":{},"unresolved":{},"interactions":{},"scenarios":{}})).unwrap();
-        let remote = super::super::source_export::Policy {
-            mode: super::super::source_export::SourceMode::Remote,
-            ..Default::default()
-        };
-        let projection = super::super::source_export::Projection::new(&remote, &checked).unwrap();
-        let original = json!(source);
-        let mut exported = original.clone();
-        projection.value(&mut exported).unwrap();
-        assert_eq!(exported["authority"], AUDIT);
-        assert_eq!(exported["text"], "");
-        assert_eq!(exported["textOrigin"], original["textOrigin"]);
-        assert_eq!(exported["url"], original["url"]);
-        let first = exported.clone();
-        projection.value(&mut exported).unwrap();
-        assert_eq!(exported, first);
-        let embedded = super::super::source_export::Policy::default();
-        let mut kept = original.clone();
-        super::super::source_export::Projection::new(&embedded, &checked)
-            .unwrap()
-            .value(&mut kept)
-            .unwrap();
-        assert_eq!(kept, original);
         let mut legacy = source.clone();
         legacy.text_origin = None;
         verify(&legacy).unwrap();
         assert!(!exact_audit(&json!(legacy)));
-        assert!(
-            projection
-                .value(&mut json!(legacy))
-                .unwrap_err()
-                .message
-                .contains("committed-byte provenance")
-        );
     }
 
     #[test]

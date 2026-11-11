@@ -92,7 +92,7 @@ class AgentSkillTest(unittest.TestCase):
             self.assertEqual(before, installer.digest(installer.package_files(root)))
 
     def test_portable_authoring_contracts_match_native_schemas_and_resolve_locally(self) -> None:
-        for name in ["proposal.schema.json", "section-author.schema.json", "entity.schema.json", "dataflow.schema.json", "data-model-plan.schema.json", "source-part-request.schema.json", "source-part.schema.json", "work-batch-request.schema.json", "work-batch.schema.json"]:
+        for name in ["entity.schema.json", "dataflow.schema.json", "data-model-plan.schema.json", "source-part-request.schema.json", "source-part.schema.json", "work-batch-request.schema.json", "work-batch.schema.json"]:
             source = ROOT / "schemas/documentation" / name
             bundled = CANONICAL_SKILL / "schemas" / name
             self.assertEqual(bundled.read_bytes(), source.read_bytes())
@@ -186,7 +186,7 @@ class AgentSkillTest(unittest.TestCase):
                 (installed / "SKILL.md").read_bytes(),
                 (CANONICAL_SKILL / "SKILL.md").read_bytes(),
             )
-            for relative in ["README.md", "scripts/prepared_source.py", "scripts/check_json.py", "scripts/collect_proposal.py", "scripts/collect_work_initial.py", "scripts/repair_evidence.py", "references/evidence-repair.md", "examples/thread-order/README.md", "examples/thread-order/build.gradle.kts", "examples/thread-order/settings.gradle.kts", "examples/thread-order/src/main/kotlin/ThreadExample.kt", "schemas/proposal.schema.json", "schemas/section-author.schema.json", "references/managed-code.md"]:
+            for relative in ["README.md", "scripts/prepared_source.py", "scripts/check_json.py", "scripts/work_transport.py", "scripts/collect_work_initial.py", "references/evidence-repair.md", "examples/thread-order/README.md", "examples/thread-order/build.gradle.kts", "examples/thread-order/settings.gradle.kts", "examples/thread-order/src/main/kotlin/ThreadExample.kt", "references/managed-code.md"]:
                 self.assertEqual(
                     (installed / relative).read_bytes(),
                     (CANONICAL_SKILL / relative).read_bytes(),

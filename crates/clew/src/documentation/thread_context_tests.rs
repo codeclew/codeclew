@@ -499,7 +499,6 @@ fn owned_fixture_real_compiler_and_source_capture() {
         Repository::init(docs.path(), "Real capture Work").unwrap();
         let docs = Repository::open(docs.path()).unwrap();
         let w = persisted_work(&docs, e.clone());
-        assert_full_source_exports(&docs, &w);
 
         let root = method(e, "OrderController", "save").id.clone();
         let limited = context(
@@ -1008,47 +1007,6 @@ fn small_thread_work_budget_exposes_same_snapshot_recovery_without_claiming_deli
 }
 
 // Exercise the complete frozen publication path, not just the source URL helper.
-fn assert_full_source_exports(repo: &Repository, w: &work::Work) {
-    use super::{source_export, static_pages};
-    let snapshot = w.snapshot.as_deref().unwrap();
-    let publication =
-        super::render::publish_from_snapshot(repo, vec![], false, BTreeMap::new(), snapshot)
-            .unwrap();
-    let output = tempfile::tempdir().unwrap();
-    let mapping = output.path().join("repositories.json");
-    fs::write(&mapping, super::bytes(&json!({"schema":"codeclew-source-repositories/1.0","repositories":{
-        "thread-completeness-fixture":{"provider":"github","webBase":"https://github.com/example/thread-completeness-fixture"}
-    }})).unwrap()).unwrap();
-    for (name, format) in [
-        ("standalone", static_pages::PageFormat::Standalone),
-        ("docusaurus", static_pages::PageFormat::Docusaurus),
-    ] {
-        for mode in [
-            source_export::SourceMode::Embedded,
-            source_export::SourceMode::Remote,
-        ] {
-            let result = static_pages::run(static_pages::Command::Render {
-                source_export: source_export::Args {
-                    source_mode: mode,
-                    source_map: Some(mapping.clone()),
-                    export_subjects: Vec::new(),
-                },
-                language: None,
-                root: repo.root.clone(),
-                snapshot: snapshot.into(),
-                input: None,
-                publication: Some(publication["bundle"].as_str().unwrap().into()),
-                reading_plan: None,
-                contract_comparison: None,
-                data_model: None,
-                format,
-                output: output.path().join(format!("{name}-{mode:?}")),
-            })
-            .unwrap();
-            assert_eq!(result["status"], "RENDERED");
-        }
-    }
-}
 
 #[test]
 #[ignore = "real Maven/JDK Spring inheritance registration controls"]

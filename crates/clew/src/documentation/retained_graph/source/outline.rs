@@ -1,13 +1,21 @@
 //! Shared cited, non-causal source outlines from admitted compiler producers.
+#[cfg(test)]
 use super::super::model::{
-    CallableProjection, Citation, SourceOutline, SourceOutlineEvent, SourceOutlineOwnerKey,
+    CallableProjection, SourceOutline, SourceOutlineEvent, SourceOutlineOwnerKey,
+};
+#[cfg(not(test))]
+use super::super::model::{
+    CallableProjection, SourceOutline, SourceOutlineEvent, SourceOutlineOwnerKey,
 };
 use super::{Context, gap};
+#[cfg(not(test))]
+use crate::documentation::digest;
+#[cfg(test)]
+use crate::documentation::digest;
 use crate::documentation::model::{Observation, ServiceEvidence, Source};
 use crate::documentation::source_statement::{
     SourceStatement, StructureContract, StructureProducer,
 };
-use crate::documentation::{digest, invalid};
 use crate::error::ClewError;
 use serde_json::Value;
 
@@ -649,127 +657,4 @@ fn derive_tree(
         )),
         None,
     )
-}
-
-/// Rebuild with the same shared engine from the retained producer facts.
-/// Validation compares the complete tree, event set, local gaps and citations;
-/// no current checkout or reparsing participates in this preflight.
-pub(in crate::documentation) fn validate_source_outline(
-    service: &str,
-    revision: &str,
-    observations: &std::collections::BTreeMap<String, Observation>,
-    sources: &std::collections::BTreeMap<String, Source>,
-    citations: &std::collections::BTreeMap<String, Citation>,
-    callable: &CallableProjection,
-) -> Result<(), ClewError> {
-    let Some(outline) = &callable.source_outline else {
-        return Ok(());
-    };
-    if outline.authority == "SYNTAX_SOURCE_STRUCTURE" {
-        return super::syntax::validate(
-            service,
-            revision,
-            observations,
-            sources,
-            citations,
-            callable,
-        );
-    }
-    let owner = observations
-        .get(&callable.declaration_id)
-        .ok_or_else(|| invalid("Source-outline owner is not retained"))?;
-    if owner.id != callable.declaration_id
-        || owner.kind != "SYMBOL"
-        || owner.service != service
-        || owner.symbol != callable.symbol
-        || owner.digest != digest(&owner.normalized)?
-        || producer(owner).is_none()
-        || owner.normalized["scope"] != outline.owner_key.scope
-    {
-        return Err(invalid(
-            "Source-outline owner or retained identities differ from compiler evidence",
-        ));
-    }
-    let owned: std::collections::BTreeMap<_, _> = observations
-        .iter()
-        .filter(|(_, row)| {
-            row.id == owner.id
-                || (row.kind == "FLOW"
-                    && row.service == service
-                    && row.symbol == owner.symbol
-                    && row.normalized["scope"] == outline.owner_key.scope)
-        })
-        .map(|(id, row)| (id.clone(), row.clone()))
-        .collect();
-    if owned.iter().any(|(id, row)| *id != row.id) {
-        return Err(invalid(
-            "Source-outline observation key differs from its retained identity",
-        ));
-    }
-    let referenced: std::collections::BTreeSet<_> = owned
-        .values()
-        .flat_map(|row| row.source_ids.iter())
-        .collect();
-    let owned_sources = referenced
-        .into_iter()
-        .filter_map(|id| sources.get(id).map(|source| (id.clone(), source.clone())))
-        .collect();
-    let evidence = ServiceEvidence {
-        schema: "codeclew-documentation-service-evidence/1.0".into(),
-        service: service.into(),
-        revision: revision.into(),
-        service_digest: String::new(),
-        extractor: String::new(),
-        runtime_mode: String::new(),
-        coverage: String::new(),
-        boundaries: vec![],
-        entrypoints: vec![],
-        observations: owned,
-        sources: owned_sources,
-        contracts: Default::default(),
-    };
-    let mut context = Context::new(&evidence);
-    let mut expected = callable.clone();
-    expected.source_outline = None;
-    attach(&mut context, owner, &outline.owner_key.scope, &mut expected)?;
-    if expected.source_outline.as_ref() != Some(outline)
-        || context
-            .citations
-            .iter()
-            .any(|(id, expected)| citations.get(id) != Some(expected))
-    {
-        return Err(invalid(
-            "Source-outline tree, events, gaps or citations differ from retained producer evidence",
-        ));
-    }
-    if outline.events.is_empty()
-        && callable
-            .citation_id
-            .as_ref()
-            .is_none_or(|id| !citations.contains_key(id))
-    {
-        return Err(invalid(
-            "Unavailable source outline requires its retained declaration citation",
-        ));
-    }
-    Ok(())
-}
-
-pub(in crate::documentation) fn validate_page(
-    page: &super::super::model::PageContent,
-) -> Result<(), ClewError> {
-    for callable in std::iter::once(&page.endpoint)
-        .chain(std::iter::once(&page.worker))
-        .chain(page.wiring.iter())
-    {
-        validate_source_outline(
-            &page.selection.service,
-            &page.service_revision,
-            &page.observations,
-            &page.sources,
-            &page.citations,
-            callable,
-        )?;
-    }
-    Ok(())
 }

@@ -1,5 +1,7 @@
 //! Public CLI fixture using the repository's authenticated runtime-descriptor contract.
 #![allow(dead_code)]
+#[path = "legacy_bindings.rs"]
+mod legacy_bindings;
 use clew::{canonical, runtime::RUNTIME_SCHEMA};
 use serde_json::{Value, json};
 use std::os::{
@@ -172,6 +174,15 @@ pub struct Fixture {
     tools: PathBuf,
 }
 impl Fixture {
+    pub fn retain_legacy(
+        &self,
+        checked: &clew::documentation::check::Check,
+        input: &Path,
+    ) -> String {
+        let narrative = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
+        legacy_bindings::retain(&self.docs, checked, vec![narrative])
+    }
+
     pub fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let state = temp.path().join("state/v2");

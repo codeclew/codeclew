@@ -1,6 +1,6 @@
 //! Coordinator-selected revisions are independent of producer arrival order.
 use super::{
-    bindings, bytes, digest, invalid, io_error,
+    bytes, invalid, io_error,
     model::*,
     store::{self, Repository},
 };
@@ -70,16 +70,7 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
     },
-    Run {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long)]
-        input: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long,default_value_t=8,value_parser=clap::value_parser!(u32).range(1..=64))]
-        max_work: u32,
-    },
+
     Status {
         #[arg(long)]
         root: PathBuf,
@@ -165,13 +156,7 @@ fn read_events(input: &std::path::Path) -> Result<Vec<Event>, ClewError> {
         Ok(vec![serde_json::from_value(value).map_err(io_error)?])
     }
 }
-fn publish_status(repo: &Repository) -> Result<Value, ClewError> {
-    if bindings::baseline(repo)?.is_some() {
-        super::status::refresh(repo)
-    } else {
-        super::render::publish(repo, vec![], false)
-    }
-}
+
 fn enqueue(repo: &Repository, events: Vec<Event>) -> Result<Value, ClewError> {
     let outcomes;
     {
@@ -237,15 +222,8 @@ fn enqueue(repo: &Repository, events: Vec<Event>) -> Result<Value, ClewError> {
         repo.atomic(STATE, &bytes(&current)?)?;
         outcomes = rows;
     }
-    // Target acceptance survives a failed status write; run/reconcile can repair it.
-    let publication = match publish_status(repo) {
-        Ok(v) => v,
-        Err(e) => {
-            json!({"status":"STATUS_PUBLICATION_PENDING","reason":e.code,"nextAction":"Retry docs update run after resolving the publication failure."})
-        }
-    };
     Ok(
-        json!({"schema":"codeclew-docs-update-enqueue/1.0","status":"TARGETS_RECONCILED","events":outcomes,"targets":state(repo)?.targets,"publication":publication}),
+        json!({"schema":"codeclew-docs-update-enqueue/1.0","status":"TARGETS_RECONCILED","events":outcomes,"targets":state(repo)?.targets}),
     )
 }
 
@@ -281,95 +259,7 @@ pub(super) fn admit_package(
     }
     Ok(())
 }
-fn run_queue(
-    repo: &Repository,
-    config: Option<&std::path::Path>,
-    max_work: usize,
-) -> Result<Value, ClewError> {
-    let publication = publish_status(repo)?;
-    let target_digest = digest(&state(repo)?)?;
-    let (checked, snapshot) = super::check::Check::retained(repo, None, &BTreeSet::new())?;
-    let baseline = bindings::baseline(repo)?
-        .ok_or_else(|| invalid("update status publication is unavailable"))?;
-    let mut pending = Vec::new();
-    for (id, n) in &baseline.1.narratives {
-        let expected = if let Some(service) = id.strip_prefix("service:") {
-            super::notes::expected(&checked, service)
-        } else {
-            super::processes::expected(&checked, &id[9..])
-        };
-        for root in expected {
-            let key = format!("{id}/{root}");
-            if n.gaps.contains_key(&root)
-                || !n.operations.iter().any(|o| o.id == root)
-                || baseline.1.section_states.get(&key).is_none_or(|s| {
-                    s.freshness != Freshness::Current
-                        || !matches!(
-                            s.verification.as_str(),
-                            "VERIFIED" | "VERIFIED_WITH_LIMITATIONS"
-                        )
-                })
-            {
-                pending.push((id.clone(), root));
-            }
-        }
-    }
-    let mut results = Vec::new();
-    if let Some(config) = config {
-        for (subject, root) in pending.iter().take(max_work) {
-            if digest(&state(repo)?)? != target_digest {
-                results.push(json!({"subject":subject,"root":root,"status":"SUPERSEDED","nextAction":"Run the queue for the newly accepted target vector."}));
-                break;
-            }
-            let entrypoint = if subject.starts_with("service:")
-                || root == super::processes::OVERVIEW
-                || root == super::dataflow::ROOT
-            {
-                Some(root.clone())
-            } else {
-                None
-            };
-            let request = super::work::Request {
-                schema: "codeclew-documentation-work-request/1.0".into(),
-                audience: "Maintainers reviewing behavior at the coordinator-selected revision"
-                    .into(),
-                documentation_language: baseline
-                    .1
-                    .narratives
-                    .get(subject)
-                    .and_then(|n| n.operations.iter().find(|operation| &operation.id == root))
-                    .and_then(|operation| operation.documentation_language.clone()),
-                entrypoint,
-                context_profile: None,
-                root_declaration: None,
-                question: None,
-                authoring_contract: None,
-                maintained_paragraph: None,
-                maintained_from_bundle: None,
-                source_data_context: false,
-                source_data_max_depth: None,
-                max_items: 20,
-                max_bytes: 40 * 1024,
-                external_inputs: vec![],
-            };
-            let result =
-                super::work::prepare_with_snapshot(repo, subject.clone(), request, Some(&snapshot))
-                    .and_then(|w| {
-                        super::agent_jobs::run(
-                            repo,
-                            w["work"]
-                                .as_str()
-                                .ok_or_else(|| invalid("prepared work has no identity"))?,
-                            Some(config),
-                        )
-                    });
-            results.push(match result{Ok(v)=>json!({"subject":subject,"root":root,"result":v}),Err(e)=>json!({"subject":subject,"root":root,"status":"LOCAL_UPDATE_GAP","reason":e.code})});
-        }
-    }
-    Ok(
-        json!({"schema":"codeclew-docs-update-run/1.0","status":if config.is_none()&&!pending.is_empty(){"AGENT_CONFIGURATION_REQUIRED"}else{"PROCESSED"},"targetDigest":target_digest,"publication":publication,"pendingCount":pending.len(),"attempted":results.len(),"remainingAtStart":pending.len().saturating_sub(results.len()),"results":results}),
-    )
-}
+
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::Configure {
@@ -400,18 +290,6 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         }
         Command::Enqueue { root, input } | Command::Reconcile { root, input } => {
             enqueue(&Repository::open(&root)?, read_events(&input)?)
-        }
-        Command::Run {
-            root,
-            input,
-            config,
-            max_work,
-        } => {
-            let repo = Repository::open(&root)?;
-            if let Some(input) = input {
-                enqueue(&repo, read_events(&input)?)?;
-            }
-            run_queue(&repo, config.as_deref(), max_work as usize)
         }
         Command::Status { root } => {
             let repo = Repository::open(&root)?;

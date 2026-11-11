@@ -407,31 +407,6 @@ fn load_terminal_review(
     })
 }
 
-pub(super) fn export_approved_answer(
-    repo: &Repository,
-    id: &str,
-    review_run: &str,
-    output: &Path,
-) -> Result<Value, ClewError> {
-    let work = super::super::work::load(repo, id)?;
-    let selected = load_approved_answer(repo, &work, review_run)?;
-    let rendered = super::super::operation_answer::validate_and_render_reviewed(
-        &selected.packet,
-        &selected.audit,
-        selected.answer,
-        &selected.provenance,
-    )?;
-    super::super::work::write_reviewed_explanation_outputs(
-        output,
-        &work.id,
-        &selected.packet,
-        &selected.audit,
-        rendered,
-        &selected.review,
-        &selected.provenance,
-    )
-}
-
 fn run_loaded(
     repo: &Repository,
     work: &Work,
@@ -1928,7 +1903,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
-    fn question_authoring_1_5_saved_answer_review_repair_and_export_keep_exact_contract() {
+    fn question_authoring_1_5_saved_answer_review_and_repair_keep_exact_contract() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -2042,22 +2017,9 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
             review_input.request["payload"]["source"]["sourceAuthoringContract"],
             super::super::super::operation_answer::QUESTION_AUTHORING_CONTRACT
         );
-        let exports = tempfile::tempdir().unwrap();
-        let result = export_approved_answer(
-            &repo,
-            &work.id,
-            review_run,
-            &exports.path().join("question-export"),
-        )
-        .unwrap();
-        assert_eq!(result["reviewStatus"], "MODEL_APPROVED");
-        assert_eq!(result["publication"], "NOT_PUBLISHED");
-        let exported: Value = store::read(
-            &exports.path().join("question-export/reader-packet.json"),
-            store::MAX_RECORD,
-        )
-        .unwrap();
-        assert_eq!(exported, source_input.request["payload"]["packet"]);
+        let selected = load_approved_answer(&repo, &work, review_run).unwrap();
+        assert_eq!(selected.packet, source_input.request["payload"]["packet"]);
+        assert_eq!(selected.provenance["publication"], "NOT_PUBLISHED");
         assert_originals_unchanged(&originals);
     }
 
@@ -2593,7 +2555,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
-    fn explicit_uncertain_review_retry_preserves_failed_authority_and_exports_one_new_review() {
+    fn explicit_uncertain_review_retry_preserves_failed_authority_and_retains_one_new_review() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -2651,13 +2613,12 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
             reviewed
         );
         assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 1);
-        let exports = tempfile::tempdir().unwrap();
-        let output = exports.path().join("retry-export");
-        export_approved_answer(&repo, &work.id, &report.run, &output).unwrap();
-        let provenance: Value =
-            store::read(&output.join("review-provenance.json"), store::MAX_RECORD).unwrap();
-        assert_eq!(provenance["reviewRetry"], reviewed["draftReviewRetry"]);
-        assert_eq!(provenance["publication"], "NOT_PUBLISHED");
+        let selected = load_approved_answer(&repo, &work, &report.run).unwrap();
+        assert_eq!(
+            selected.provenance["reviewRetry"],
+            reviewed["draftReviewRetry"]
+        );
+        assert_eq!(selected.provenance["publication"], "NOT_PUBLISHED");
         assert_originals_unchanged(&originals);
     }
 
@@ -2786,7 +2747,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
-    fn approved_export_uses_explicit_immutable_selection_without_configs_or_writes() {
+    fn approved_answer_load_uses_explicit_immutable_selection_without_configs_or_writes() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -2822,69 +2783,18 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
         assert_ne!(repo.input_digest().unwrap(), work.checked.input_digest);
         let mut before = BTreeMap::new();
         files(&repo.root, &mut before);
-        let exports = tempfile::tempdir().unwrap();
-        let output = exports.path().join("approved-export");
-        let exported =
-            super::super::super::work::run(super::super::super::work::Command::Explain {
-                root: repo.root.clone(),
-                work: work.id.clone(),
-                input: None,
-                review_run: Some(review_run.into()),
-                output_dir: output.clone(),
-            })
-            .unwrap();
-        assert_eq!(exported["reviewStatus"], "MODEL_APPROVED");
-        assert_eq!(exported["publication"], "NOT_PUBLISHED");
-        assert_eq!(exported["snapshot"], work.snapshot.clone().unwrap());
-        let answer: Value = store::read(&output.join("answer.json"), store::MAX_RECORD).unwrap();
-        let review: Value =
-            store::read(&output.join("meaning-review.json"), store::MAX_RECORD).unwrap();
-        let provenance: Value =
-            store::read(&output.join("review-provenance.json"), store::MAX_RECORD).unwrap();
-        assert_eq!(answer, selected.answer);
-        assert_eq!(review, selected.review);
-        assert_eq!(provenance, selected.provenance);
-        let html = fs::read_to_string(output.join("index.html")).unwrap();
-        let md = fs::read_to_string(output.join("operation.md")).unwrap();
-        assert!(html.contains("MODEL REVIEW: APPROVED"));
-        assert!(html.contains("<details><summary>Saved model review"));
-        assert!(
-            html.contains("not compiler proof, current-source verification, or execution evidence")
-        );
-        assert!(html.contains("Synthetic local review; no deployment claim."));
-        assert!(md.contains("MODEL REVIEW: APPROVED"));
-        assert!(md.contains(r"Synthetic local review; no deployment claim\."));
-        assert!(html.contains(work.snapshot.as_deref().unwrap()));
+        let again = load_approved_answer(&repo, &work, review_run).unwrap();
+        assert_eq!(again.answer, selected.answer);
+        assert_eq!(again.packet, selected.packet);
+        assert_eq!(again.review, selected.review);
+        assert_eq!(again.provenance, selected.provenance);
         let mut after = BTreeMap::new();
         files(&repo.root, &mut after);
         assert_eq!(before, after);
-        assert!(
-            export_approved_answer(&repo, &work.id, review_run, &output)
-                .unwrap_err()
-                .message
-                .contains("OUTPUT_NOT_EMPTY")
-        );
-        let again = exports.path().join("approved-export-again");
-        export_approved_answer(&repo, &work.id, review_run, &again).unwrap();
-        for name in [
-            "answer.json",
-            "reader-packet.json",
-            "reader-packet-audit.json",
-            "meaning-review.json",
-            "review-provenance.json",
-            "index.html",
-            "operation.md",
-        ] {
-            assert_eq!(
-                fs::read(output.join(name)).unwrap(),
-                fs::read(again.join(name)).unwrap(),
-                "{name}"
-            );
-        }
     }
 
     #[test]
-    fn saved_answer_context_command_preserves_approved_publication_and_refuses_foreign_review() {
+    fn saved_answer_context_command_preserves_records_and_refuses_foreign_review() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -2893,14 +2803,6 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
         config(&config_path, &author_config, "approve");
         let reviewed = run_loaded(&repo, &work, &source_run, &config_path).unwrap();
         let run = reviewed["run"].as_str().unwrap();
-        let published = super::super::super::reviewed_answers::publish(
-            &repo,
-            &work.id,
-            run,
-            super::super::super::reviewed_answers::ExpectedBaseline::None {},
-        )
-        .unwrap();
-        assert_eq!(published["status"], "PUBLISHED");
         let mut before = BTreeMap::new();
         files(&repo.root, &mut before);
         let result =
@@ -2937,7 +2839,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
-    fn reviewed_export_rejects_unapproved_and_forged_terminal_metadata() {
+    fn reviewed_answer_load_rejects_unapproved_and_forged_terminal_metadata() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -2949,7 +2851,6 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
             let run = result["run"].as_str().unwrap();
             assert!(load_approved_answer(&repo, &work, run).is_err(), "{mode}");
             let output = temp.path().join("must-not-exist");
-            assert!(export_approved_answer(&repo, &work.id, run, &output).is_err());
             assert!(!output.exists());
             let mut report = super::super::load_report_by_id(&repo, &work.id, run).unwrap();
             report.status = "DRAFT_REVIEW_APPROVED".into();
@@ -2962,7 +2863,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
-    fn reviewed_export_rejects_missing_corrupt_mismatched_invocations_and_review() {
+    fn reviewed_answer_load_rejects_missing_corrupt_mismatched_invocations_and_review() {
         if !cfg!(target_os = "macos") {
             return;
         }
@@ -3001,338 +2902,11 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
                 .contains("RECOVERY_RESULT_MISMATCH")
         );
         super::super::save_report(&repo, &original_report).unwrap();
-        // Corrupt only this owned synthetic fixture's selected snapshot object.
-        // Keep Work tables and all current declarations available: there must
-        // be no fallback to them when the exact saved snapshot is absent.
-        let layout: Value = store::read(
-            &repo.path(".codeclew/cache/object-layout.json").unwrap(),
-            4096,
-        )
-        .unwrap();
-        let database = repo.path(layout["database"].as_str().unwrap()).unwrap();
-        let connection = rusqlite::Connection::open(database).unwrap();
-        let snapshot_digest = work
-            .snapshot
-            .as_deref()
-            .unwrap()
-            .rsplit_once('/')
-            .unwrap()
-            .0;
-        assert_eq!(
-            connection
-                .execute("DELETE FROM objects WHERE digest = ?1", [snapshot_digest])
-                .unwrap(),
-            1
-        );
-        drop(connection);
-        let output = temp.path().join("missing-snapshot-export");
-        let error = export_approved_answer(&repo, &work.id, run, &output).unwrap_err();
-        assert!(
-            error.message.contains("snapshot") || error.message.contains("object"),
-            "{}",
-            error.message
-        );
-        assert!(!output.exists());
+        // Inspection authenticates the saved invocation/packet/answer chain;
+        // it neither renders an export nor reacquires the original snapshot.
+        let selected_again = load_approved_answer(&repo, &work, run).unwrap();
+        assert_eq!(selected_again.answer, selected.answer);
+        assert_eq!(selected_again.packet, selected.packet);
         assert!(!repo.path("docs/generated").unwrap().exists());
-    }
-
-    fn publication_records(repo: &Repository) -> BTreeMap<PathBuf, Vec<u8>> {
-        let mut result = BTreeMap::new();
-        for path in [
-            ".codeclew/jobs",
-            ".codeclew/job-inputs",
-            ".codeclew/job-results",
-            ".codeclew/drafts",
-            ".codeclew/work",
-            "execution",
-        ] {
-            files(&repo.path(path).unwrap(), &mut result);
-        }
-        result
-    }
-
-    #[test]
-    fn approved_answer_publication_initial_catalogue_history_and_ordinary_render_preserve_frozen_context()
-     {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
-        let (temp, repo, work, author_config, source_run) = authored();
-        let config_path = temp.path().join("publish-review.json");
-        config(&config_path, &author_config, "approve");
-        let reviewed = run_loaded(&repo, &work, &source_run, &config_path).unwrap();
-        let review_run = reviewed["run"].as_str().unwrap();
-        let expected = publication_records(&repo);
-        let baseline_path = temp.path().join("publication-baseline.json");
-        let initial = super::super::super::work::run(
-            super::super::super::work::Command::PublicationBaseline {
-                root: repo.root.clone(),
-            },
-        )
-        .unwrap();
-        assert_eq!(initial, json!({"kind":"NONE"}));
-        fs::write(&baseline_path, serde_json::to_vec(&initial).unwrap()).unwrap();
-        let result =
-            super::super::super::work::run(super::super::super::work::Command::PublishAnswer {
-                root: repo.root.clone(),
-                work: work.id.clone(),
-                review_run: review_run.into(),
-                baseline: baseline_path,
-            })
-            .unwrap();
-        assert_eq!(result["status"], "PUBLISHED");
-        assert_eq!(result["agentInvocations"], 0);
-        let bundle = result["bundle"].as_str().unwrap();
-        let (_, binding) = super::super::super::bindings::baseline(&repo)
-            .unwrap()
-            .unwrap();
-        assert_eq!(binding.schema, "codeclew-documentation-bindings/1.5");
-        assert_eq!(binding.reviewed_answers.len(), 1);
-        assert!(binding.narratives.is_empty());
-        let entry = binding.reviewed_answers.values().next().unwrap();
-        let html = fs::read_to_string(
-            repo.path(&format!("docs/generated/{bundle}/{}", entry.route()))
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(html.contains("PUBLISHED / MODEL REVIEW: APPROVED"));
-        assert!(html.contains("Synthetic local review; no deployment claim."));
-        assert!(html.contains(work.snapshot.as_deref().unwrap()));
-        assert_eq!(html.matches("class=\"reader-nav\"").count(), 1);
-        assert_eq!(html.matches("class=\"snapshot-history\"").count(), 1);
-        // The sidecar retains the genuine durable approved packet exactly.
-        // This fake author cites only COVERAGE, which has no sourceIds; its
-        // reader must expose that gap rather than invent a source route.
-        let selected = load_approved_answer(&repo, &work, review_run).unwrap();
-        assert_eq!(
-            fs::read(
-                repo.path(&format!(
-                    "docs/generated/{bundle}/answers/{}.packet.json",
-                    entry.id
-                ))
-                .unwrap()
-            )
-            .unwrap(),
-            super::super::super::bytes(&selected.packet).unwrap()
-        );
-        let coverage = &selected.packet["coverage"]["evidence"];
-        let blocks =
-            super::super::super::operation_answer::review_blocks(&selected.answer).unwrap();
-        assert_eq!(&selected.answer["summary"]["evidence"], coverage);
-        assert!(
-            blocks
-                .iter()
-                .all(|block| block["evidence"].as_array().unwrap().is_empty()
-                    || &block["evidence"] == coverage)
-        );
-        let coverage_row = selected.audit["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["label"] == coverage[0])
-            .unwrap();
-        let diagnostic = json!({
-            "profile":selected.packet["profile"], "usedEvidence":coverage,
-            "auditKind":coverage_row["kind"],
-            "hasSourceIds":coverage_row["row"]["record"].get("sourceIds").is_some(),
-            "hasSourceRoute":html.contains("href=\"#source-"),
-            "hasSourceGap":html.contains("No retained source location is available for this evidence in the packet.")
-        });
-        eprintln!("synthetic publication source navigation: {diagnostic}");
-        assert_eq!(selected.packet["profile"], "endpoint-context-v3");
-        assert_eq!(coverage_row["kind"], "COVERAGE");
-        assert!(coverage_row["row"]["record"].get("sourceIds").is_none());
-        assert!(
-            html.contains(
-                "No retained source location is available for this evidence in the packet."
-            ),
-            "{diagnostic}"
-        );
-        assert!(!html.contains("href=\"#source-"), "{diagnostic}");
-        let catalog = fs::read_to_string(repo.path("docs/catalog.html").unwrap()).unwrap();
-        assert!(catalog.contains("Reviewed answer"));
-        assert!(catalog.contains(&format!("generated/{bundle}/{}", entry.route())));
-        let manifest: Value = store::read(
-            &repo
-                .path(&format!("docs/generated/{bundle}/publication.json"))
-                .unwrap(),
-            store::MAX_RECORD,
-        )
-        .unwrap();
-        assert_eq!(manifest["released"], true);
-        assert_eq!(manifest["reviewedAnswers"].as_object().unwrap().len(), 1);
-        let history =
-            super::super::super::history::run(super::super::super::history::Command::Show {
-                root: repo.root.clone(),
-                id: bundle.into(),
-                kind: "reviewed-answers".into(),
-                cursor: None,
-                limit: 20,
-            })
-            .unwrap();
-        assert!(history.to_string().contains(entry.id.as_str()));
-        let mut old_files = BTreeMap::new();
-        files(
-            &repo.path(&format!("docs/generated/{bundle}")).unwrap(),
-            &mut old_files,
-        );
-        let exact: super::super::super::reviewed_answers::ExpectedBaseline =
-            serde_json::from_value(result["baseline"].clone()).unwrap();
-        let replay =
-            super::super::super::reviewed_answers::publish(&repo, &work.id, review_run, exact)
-                .unwrap();
-        assert_eq!(replay["status"], "UNCHANGED");
-        assert!(
-            super::super::super::reviewed_answers::publish(
-                &repo,
-                &work.id,
-                review_run,
-                super::super::super::reviewed_answers::ExpectedBaseline::None {}
-            )
-            .is_err()
-        );
-        // A later ordinary snapshot render adds its own narrative pages while
-        // retaining separately owned reviewed-answer bytes and source versions.
-        let rendered = super::super::super::render::publish_from_snapshot(
-            &repo,
-            vec![],
-            false,
-            BTreeMap::new(),
-            work.snapshot.as_deref().unwrap(),
-        )
-        .unwrap();
-        let current = rendered["bundle"].as_str().unwrap();
-        let (_, current_binding) = super::super::super::bindings::baseline(&repo)
-            .unwrap()
-            .unwrap();
-        assert_eq!(current_binding.reviewed_answers, binding.reviewed_answers);
-        let route = entry.route();
-        for path in entry.artifact_hashes.keys().chain(std::iter::once(&route)) {
-            assert_eq!(
-                fs::read(
-                    repo.path(&format!("docs/generated/{bundle}/{path}"))
-                        .unwrap()
-                )
-                .unwrap(),
-                fs::read(
-                    repo.path(&format!("docs/generated/{current}/{path}"))
-                        .unwrap()
-                )
-                .unwrap()
-            );
-        }
-        let mut retained = BTreeMap::new();
-        files(
-            &repo.path(&format!("docs/generated/{bundle}")).unwrap(),
-            &mut retained,
-        );
-        assert_eq!(old_files, retained);
-        assert_eq!(expected, publication_records(&repo));
-    }
-
-    #[test]
-    fn answer_publication_retains_existing_narratives_and_rejects_corruption_and_concurrent_baseline()
-     {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
-        let (temp, repo, work, author_config, source_run) = authored();
-        let config_path = temp.path().join("publish-review-negative.json");
-        config(&config_path, &author_config, "approve");
-        let reviewed = run_loaded(&repo, &work, &source_run, &config_path).unwrap();
-        let run = reviewed["run"].as_str().unwrap();
-        super::super::super::render::publish_from_snapshot(
-            &repo,
-            vec![],
-            false,
-            BTreeMap::new(),
-            work.snapshot.as_deref().unwrap(),
-        )
-        .unwrap();
-        let (old, old_binding) = super::super::super::bindings::baseline(&repo)
-            .unwrap()
-            .unwrap();
-        assert!(!old_binding.narratives.is_empty());
-        let baseline = super::super::super::reviewed_answers::baseline(&repo).unwrap();
-        let selected = load_approved_answer(&repo, &work, run).unwrap();
-        let result_path = repo
-            .path(&format!(
-                ".codeclew/job-results/{}.json",
-                selected.provenance["reviewer"]["invocation"]
-                    .as_str()
-                    .unwrap()
-            ))
-            .unwrap();
-        let original = fs::read(&result_path).unwrap();
-        fs::write(&result_path, b"corrupt review").unwrap();
-        let index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
-        assert!(
-            super::super::super::reviewed_answers::publish(
-                &repo,
-                &work.id,
-                run,
-                serde_json::from_value(baseline.clone()).unwrap()
-            )
-            .is_err()
-        );
-        assert_eq!(
-            index,
-            fs::read(repo.path("docs/index.html").unwrap()).unwrap()
-        );
-        fs::write(&result_path, original).unwrap();
-        let root = repo.root.clone();
-        let failed = progress::with_test_sink(
-            move |event| {
-                if event["phase"] == "COMMIT_REVIEWED_ANSWER_PUBLICATION"
-                    && event["event"] == "STARTED"
-                {
-                    let path = root.join("docs/index.html");
-                    let mut bytes = fs::read(&path).unwrap();
-                    bytes.push(b'\n');
-                    fs::write(path, bytes).unwrap();
-                }
-            },
-            || {
-                super::super::super::reviewed_answers::publish(
-                    &repo,
-                    &work.id,
-                    run,
-                    serde_json::from_value(baseline.clone()).unwrap(),
-                )
-            },
-        );
-        assert!(failed.is_err());
-        assert_eq!(
-            fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
-            [index.clone(), vec![b'\n']].concat()
-        );
-        fs::write(repo.path("docs/index.html").unwrap(), index).unwrap();
-        let published = super::super::super::reviewed_answers::publish(
-            &repo,
-            &work.id,
-            run,
-            serde_json::from_value(baseline).unwrap(),
-        )
-        .unwrap();
-        let (_, binding) = super::super::super::bindings::baseline(&repo)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(binding.narratives).unwrap(),
-            serde_json::to_value(old_binding.narratives).unwrap()
-        );
-        assert!(
-            repo.path(&format!("docs/generated/{old}/publication.json"))
-                .unwrap()
-                .exists()
-        );
-        let current = published["bundle"].as_str().unwrap();
-        let html = fs::read_to_string(
-            repo.path(&format!("docs/generated/{current}/services/orders.html"))
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(html.matches("class=\"reader-nav\"").count(), 1);
-        assert!(html.matches("class=\"snapshot-history\"").count() <= 1);
     }
 }

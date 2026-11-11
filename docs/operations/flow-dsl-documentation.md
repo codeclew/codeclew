@@ -1,104 +1,12 @@
-# Static flow DSL documentation
+# Flow descriptions from saved source
 
-`docs dsl render` interprets a bounded Java flow DSL from an original retained
-`docs check` snapshot. It emits a typed projection, MDX 3, standalone HTML, a
-local stylesheet, a manifest, and a retained source appendix. Rendering runs no
-compiler, build, provider, model, or network request. Snapshot loader integrity
-and admission errors are preserved.
+The former Java flow-DSL page generator is retired. Read the retained callback and queue declarations as evidence; declared callback order does not prove execution or delivery. Explain scheduling, execution, side effects and failures separately.
 
-```sh
-./clew docs dsl render --root /path/to/documentation \
-  --snapshot ORIGINAL_SNAPSHOT --service example \
-  --profile fixtures/flow-dsl/queue-profile.json --output /path/to/new-output
-```
+Use the single [authored-originals publication route](../../skills/codeclew/references/compose-original.md#frozen-source-to-reviewed-pages):
+read saved evidence, author the explanation, compose and bind it, then finalize
+checked HTML. Keep originals, source manifests and historical exports. No new
+source capture is required when the saved evidence is sufficient.
 
-The documentation repository must already contain the selected service and
-snapshot. Capture synthetic examples with `docs init`, `docs service add`,
-`docs bind`, and `docs check` using the `source-syntax` Java profile. The public
-CLI integration test `flow_dsl_static_render_uses_original_supported_snapshot`
-exercises that path for both examples in `fixtures/flow-dsl`. The Java fixture
-illustrates source syntax; it is not an executable framework simulator.
-
-The output directory may contain unrelated files. A collision with any generated
-filename rejects rendering before writing files. Use a fresh directory for each
-render. The renderer does not overwrite user material or release a publication.
-
-## Declared profile
-
-Profiles use the closed `codeclew-flow-dsl-profile/1.0` JSON schema. The family
-is `builder-chain` or `operation-queue`. The framework and optional engine
-version are supplied declarations; an absent engine version stays unresolved.
-The profile chooses exact source file, qualified owner, and method bindings for
-construction, optional factory and registry, plus a context owner/file.
-Same-name overloaded source methods are rejected as ambiguous. An optional
-`compilerSymbol` and `scope` prefer an exact retained compiler declaration;
-otherwise the adapter requires retained syntax declarations and labels that
-fallback. Compiler declaration binding does not upgrade DSL interpretation to
-runtime or compiler-proven behavior.
-
-Builder profiles bind an exact builder receiver/method. Set `rootVariable` for
-a direct method-reference group assigned to that root, followed by `.then(...)`
-groups rooted at the same variable. Omit `rootVariable` for a single standalone
-`builder(...).then(...).build()` expression directly in the construction method
-body. An empty builder `receiver` selects an unqualified call, such as
-`newStageList(this::getData)` in the public VoltDB examples. Inline extraction
-requires exactly one matching builder, only method-reference callback groups,
-and a final zero-argument `build()` call. Conditional, nested, assigned, returned,
-ambiguous, or unsupported inline expressions produce gaps without promoting any
-of their callback stages. A group of callbacks does not prove parallel execution.
-Queue profiles bind a constructor
-type, initial argument offset, and registry receiver; `.put(Operation.KEY,
-Context::method)` establishes an unordered lookup binding. Constructor arguments
-establish declared initial queue order, not dequeue/delivery policy. A selected
-factory's constant task-type return establishes a declared type binding, not
-runtime registration or trigger activation.
-
-`decisionMethods` selects context methods whose returns or `selectionCalls` may
-contain operation constants, `.name()` constants, `List.of`, `Arrays.asList`,
-`Collections.singletonList`, or `Collections.emptyList`. Local `if` and `else`
-paths stay attached to selected next operations. Condition helper semantics stay
-unresolved. Assignments and explicitly classified calls are effects; they are
-never promoted to conditions. Other helper calls retain their own unresolved
-records. A `this::method` belongs to the construction owner. Selecting a
-different context owner leaves wrapper delegation unresolved; name equality does
-not bind that delegation.
-
-Effects bind source receiver and method and declare one of `mapping`,
-`state-change`, `persistence-call`, or `opaque-external-call`. Optional
-`compilerTarget` narrows matching when an exact retained compiler call relation
-exists for the same source occurrence and scope. Effect classification and
-reader labels are authored profile content. A persistence call does not establish
-a database engine or committed row. An outbound ODM or other decision request is
-an opaque external boundary; the adapter does not infer local rules, Rete,
-Drools, destination configuration, delivery, or successful response semantics.
-
-## Reading and limits
-
-One typed projection drives both formats. The static overview uses at most seven
-editorial groups; long callback chains are grouped and details remain reachable
-through native disclosures and canonical anchors. Short flows keep their actual
-size. Category order is a reading aid, not an execution sequence. Source references
-retain the original service revision, source authority, text digest, and line
-range. Text is escaped as inert content in HTML and MDX. HTML requires no
-JavaScript, external font, API, or network dependency.
-
-Loops, switches, lambdas, anonymous/local classes, short-circuit expressions,
-conditional construction, unsupported callbacks, and unsupported operation
-expressions produce local gaps. The adapter conservatively marks a trailing
-block after a conditional exit as control-dependent rather than reporting it as
-unconditional behavior. It does not infer engine activation, exception/retry
-policy, queue merging, ordering across categories, repeat rules, runtime
-completion, or incident causality. Mixed service/revision sources and missing or
-ambiguous method bindings reject the projection. No scenario evaluator or
-universal rule-engine support is included.
-
-For focused verification:
-
-```sh
-cargo test --locked -p clew --lib documentation::flow_dsl::tests -- --test-threads=1
-cargo test --locked -p clew --test managed_cli flow_dsl_static_render_uses_original_supported_snapshot -- --test-threads=1
-```
-
-Set `CODECLEW_FLOW_DSL_TEST_OUTPUT` to an existing parent directory to keep the
-integration test's synthetic `builder` and `queue` bundles for layout and MDX
-compilation review. This test-only artifact hook is not a snapshot cache API.
+Existing native HTML/Markdown/MDX exports remain historical files. Removed
+native publishing commands cannot regenerate them. For source acquisition and
+bounded reads, see [source documentation](source-documentation.md).

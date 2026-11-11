@@ -254,6 +254,7 @@ fn visit(
     }
 }
 
+#[cfg(test)]
 pub(in crate::documentation) fn table(declaration: &Value, language: &str) -> String {
     table_at(declaration, language, true)
 }

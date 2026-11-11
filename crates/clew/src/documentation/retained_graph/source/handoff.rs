@@ -1,10 +1,11 @@
 //! One source-declared allocation/binding proof over producer-qualified storage.
 //! Producers qualify syntax, compiler targets/formal slots and storage bindings;
 //! this core never parses a language, equates types, or identifies runtime objects.
-use super::super::model::{CallableProjection, Gap, HandoffProjection};
-use super::{Context, gap};
+use super::super::model::Gap;
+use super::gap;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 pub(in crate::documentation) struct Input {
     pub endpoint_owner: String,
     pub worker_owner: String,
@@ -14,10 +15,12 @@ pub(in crate::documentation) struct Input {
     pub rows: Vec<Row>,
 }
 #[derive(Default)]
+#[cfg(test)]
 pub(in crate::documentation) struct Row {
     pub bindings: Vec<Binding>,
     pub locals: Vec<LocalChange>,
 }
+#[cfg(test)]
 pub(in crate::documentation) struct Binding {
     pub owner: String,
     pub argument: String,
@@ -25,16 +28,19 @@ pub(in crate::documentation) struct Binding {
     pub citation: String,
     pub storage_citation: String,
 }
+#[cfg(test)]
 pub(in crate::documentation) struct LocalChange {
     pub identity: String,
     pub value: LocalValue,
 }
+#[cfg(test)]
 pub(in crate::documentation) enum LocalValue {
     Allocation { id: String, citation: String },
     Reference(String),
     Unknown,
 }
 
+#[cfg(test)]
 fn prove(
     input: Input,
     wiring_citation: Option<String>,
@@ -108,60 +114,6 @@ fn prove(
             wiring_citation,
         )),
     }
-}
-
-pub(in crate::documentation) fn project(
-    context: &mut Context<'_>,
-    endpoint: &CallableProjection,
-    worker: &CallableProjection,
-    wiring: Option<&CallableProjection>,
-) -> HandoffProjection {
-    let mut result = HandoffProjection { status: "LOCAL_GAP".into(), queue_allocation: None, endpoint_field: None, worker_field: None, citation_ids: vec![], gaps: vec![], limitation: "Source-declared shared object wiring does not prove enqueue success, scheduling, deployed activation, delivery, or completion.".into() };
-    let proof = (|| {
-        let wiring = wiring.ok_or_else(|| gap("WIRING_NOT_SELECTED", "No explicit callable wiring declaration was selected; equal queue names and types do not establish object identity.", None))?;
-        for callable in [endpoint, worker, wiring] {
-            if callable.authority != "COMPILER_DECLARATION" {
-                return Err(gap(
-                    "WIRING_COMPILER_UNAVAILABLE",
-                    "All three selected callable declarations require applicable compiler evidence.",
-                    callable.citation_id.clone(),
-                ));
-            }
-        }
-        let scope = &context.evidence.observations[&endpoint.declaration_id].normalized["scope"];
-        if [worker, wiring]
-            .into_iter()
-            .any(|c| context.evidence.observations[&c.declaration_id].normalized["scope"] != *scope)
-        {
-            return Err(gap(
-                "WIRING_SCOPE_MISMATCH",
-                "Selected endpoint, worker and wiring belong to different compiler scopes.",
-                wiring.citation_id.clone(),
-            ));
-        }
-        let kotlin = [endpoint, worker, wiring].into_iter().all(|callable| {
-            super::compiler::kotlin_admitted(
-                &context.evidence.observations[&callable.declaration_id],
-            )
-        });
-        let input = if kotlin {
-            super::kotlin_handoff::input(context, endpoint, worker, wiring)?
-        } else {
-            context.java_handoff_input(endpoint, worker, wiring)?
-        };
-        prove(input, wiring.citation_id.clone())
-    })();
-    match proof {
-        Ok((allocation, endpoint_storage, worker_storage, citations)) => {
-            result.status = "SOURCE_DECLARED_SHARED_QUEUE".into();
-            result.queue_allocation = Some(allocation);
-            result.endpoint_field = Some(endpoint_storage);
-            result.worker_field = Some(worker_storage);
-            result.citation_ids = citations;
-        }
-        Err(reason) => result.gaps.push(reason),
-    }
-    result
 }
 
 #[cfg(test)]

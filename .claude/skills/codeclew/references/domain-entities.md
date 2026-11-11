@@ -34,15 +34,9 @@ keep copied objects, historical versions and derived values separate, with their
 specific mapping or unresolved relationship. Bind models deliberately; do not
 promote every discovered type or group fields by spelling.
 
-Use the current frozen publication and snapshot in a data-model plan, then render
-through the supported command:
-
-```sh
-clew docs recompose --root ROOT --snapshot SOURCE_SNAPSHOT
-# Use the returned snapshot and matching publication identity below.
-clew docs render --root ROOT --snapshot SNAPSHOT --publication PUBLICATION \
-  --data-model MODEL_PLAN.json --output NEW_EXPORT
-```
+Use saved source evidence and explicit entity/model bindings to author the
+requested object and field pages. Export through the
+[human-page pipeline](compose-original.md#original-pages-and-completion).
 
 Open the service's domain landing and an object. Verify that business meaning,
 fields and their source representations are reachable. An empty landing while

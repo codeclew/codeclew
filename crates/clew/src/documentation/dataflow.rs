@@ -120,7 +120,7 @@ pub struct ProposedGraph {
 }
 pub fn module() -> Result<Value, ClewError> {
     Ok(
-        json!({"schema":"codeclew-documentation-view-module/1.0","id":MODULE,"inputObjects":["DOMAIN_ENTITY","SOURCE","CONTRACT_OPERATION","PROCESS_COMPONENT"],"representationKinds":["domain","dto","message","table","field","function"],"edgeKinds":["read","transform","write","transfer","candidate"],"authority":["SOURCE_INTERPRETATION","DECLARED_TRANSFER","UNKNOWN"],"dependencyDerivation":"Explicit node/edge claims, definition and domain IDs, source/module/contract scopes, linked accepted component versions and all captured work influence.","validation":"entity-dataflow-validation/1.0","renderer":"entity-dataflow-svg/1.0","executable":false,"implementationDigest":digest(&(include_str!("dataflow.rs"),include_str!("proposals.rs"),include_str!("../../assets/documentation/app.js")))?,"limitations":["Static interpretation; not a runtime trace or universal taint analysis.","Name equality is only an unknown candidate; declared transfers do not prove wire compatibility.","Representation-to-domain mapping is an agent interpretation, not authoritative ownership."]}),
+        json!({"schema":"codeclew-documentation-view-module/1.0","id":MODULE,"inputObjects":["DOMAIN_ENTITY","SOURCE","CONTRACT_OPERATION","PROCESS_COMPONENT"],"representationKinds":["domain","dto","message","table","field","function"],"edgeKinds":["read","transform","write","transfer","candidate"],"authority":["SOURCE_INTERPRETATION","DECLARED_TRANSFER","UNKNOWN"],"dependencyDerivation":"Explicit node/edge claims, definition and domain IDs, source/module/contract scopes, linked accepted component versions and all captured work influence.","validation":"entity-dataflow-validation/1.0","executable":false,"implementationDigest":digest(&(include_str!("dataflow.rs"),include_str!("proposals.rs")))?,"limitations":["Static interpretation; not a runtime trace or universal taint analysis.","Name equality is only an unknown candidate; declared transfers do not prove wire compatibility.","Representation-to-domain mapping is an agent interpretation, not authoritative ownership."]}),
     )
 }
 pub fn validate_definition(
@@ -742,7 +742,7 @@ pub fn markdown(view: &Value, n: &Narrative) -> String {
     let mut out="\n## Saved entity data-flow view\n\nStatic source interpretation, not a runtime trace or universal taint analysis. Name-only matches remain unknown candidates.\n\n".to_owned();
     out.push_str(&format!(
         "Requested scope: {}\n\n",
-        super::render::escape(view["definition"]["view"]["scope"].as_str().unwrap_or(""))
+        super::text::escape(view["definition"]["view"]["scope"].as_str().unwrap_or(""))
     ));
     if view["targetChanged"] == true {
         out.push_str("The captured definition or its related components have changed; retained graph content needs review.\n\n");
@@ -752,14 +752,14 @@ pub fn markdown(view: &Value, n: &Narrative) -> String {
         for node in &g.nodes {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                super::render::escape(&node.id),
-                super::render::escape(
+                super::text::escape(&node.id),
+                super::text::escape(
                     node.entity
                         .as_deref()
                         .unwrap_or("No domain association established")
                 ),
-                super::render::escape(&node.kind),
-                super::render::escape(&node.representation).replace('|', "&#124;")
+                super::text::escape(&node.kind),
+                super::text::escape(&node.representation).replace('|', "&#124;")
             ));
         }
         out.push_str(
@@ -768,12 +768,12 @@ pub fn markdown(view: &Value, n: &Narrative) -> String {
         for e in &g.edges {
             out.push_str(&format!(
                 "| {} → {} | {} / {} | {} {} |\n",
-                super::render::escape(&e.from),
-                super::render::escape(&e.to),
-                super::render::escape(&e.kind),
-                super::render::escape(&e.authority),
-                super::render::escape(&e.meaning.text).replace('|', "&#124;"),
-                super::render::escape(&e.uncertainty).replace('|', "&#124;")
+                super::text::escape(&e.from),
+                super::text::escape(&e.to),
+                super::text::escape(&e.kind),
+                super::text::escape(&e.authority),
+                super::text::escape(&e.meaning.text).replace('|', "&#124;"),
+                super::text::escape(&e.uncertainty).replace('|', "&#124;")
             ));
         }
     }

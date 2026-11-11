@@ -13,7 +13,6 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
-pub(super) mod protected_pages;
 pub(super) mod source_bindings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,8 +544,8 @@ pub fn markdown(rows: &Value) -> String {
     let mut out = String::new();
     for row in rows.as_array().into_iter().flatten() {
         let a = &row["association"];
-        out.push_str(&format!("\n## Human note: {}\n\nClassification: {}. Period: {}.\n\nOriginal captured text (human/imported, unverified):\n\n<pre>{}</pre>\n\n",super::render::escape(a["title"].as_str().unwrap_or("")),super::render::escape(a["classification"].as_str().unwrap_or("")),super::render::escape(a["period"].as_str().unwrap_or("")),super::render::escape(row["original"]["text"].as_str().unwrap_or("Original unavailable"))));
-        out.push_str(&format!("<details><summary>Original metadata and associations</summary><pre>{}</pre></details>\n\n",super::render::escape(&serde_json::to_string_pretty(a).unwrap_or_default())));
+        out.push_str(&format!("\n## Human note: {}\n\nClassification: {}. Period: {}.\n\nOriginal captured text (human/imported, unverified):\n\n<pre>{}</pre>\n\n",super::text::escape(a["title"].as_str().unwrap_or("")),super::text::escape(a["classification"].as_str().unwrap_or("")),super::text::escape(a["period"].as_str().unwrap_or("")),super::text::escape(row["original"]["text"].as_str().unwrap_or("Original unavailable"))));
+        out.push_str(&format!("<details><summary>Original metadata and associations</summary><pre>{}</pre></details>\n\n",super::text::escape(&serde_json::to_string_pretty(a).unwrap_or_default())));
         if row["targetChanged"] == true {
             out.push_str("Retained snapshot inputs changed: assessment STALE.\n\n");
         }
@@ -554,18 +553,18 @@ pub fn markdown(rows: &Value) -> String {
         if !assessment.is_null() {
             out.push_str(&format!(
                 "Separate agent assessment: {}. Period assessed: {}.\n\n{}\n\n",
-                super::render::escape(
+                super::text::escape(
                     assessment["assessment"]["outcome"]
                         .as_str()
                         .unwrap_or("UNKNOWN")
                 ),
-                super::render::escape(assessment["assessment"]["period"].as_str().unwrap_or("")),
-                super::render::escape(assessment["summary"]["text"].as_str().unwrap_or(""))
+                super::text::escape(assessment["assessment"]["period"].as_str().unwrap_or("")),
+                super::text::escape(assessment["summary"]["text"].as_str().unwrap_or(""))
             ));
             if let Some(text) = assessment["assessment"]["proposedCorrection"]["text"].as_str() {
                 out.push_str(&format!(
                     "Proposed correction (original unchanged): {}\n\n",
-                    super::render::escape(text)
+                    super::text::escape(text)
                 ));
             }
             out.push_str(

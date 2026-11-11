@@ -1,93 +1,32 @@
-For domain, egress, field lineage and compact process UX, apply the existing workflow with the [task-oriented reader checklist](task-oriented-readers.md).
-
 # Durable service documentation
 
-For a broad generate/update documentation request, use the
-[human-page route](compose-original.md#frozen-source-to-reviewed-pages). This reference
-provides source registration/capture and explicitly requested native deliverables.
-After acquiring a new repository, return to human-page authoring; a missing root
-is not a reason to default to native catalogue/Work output. Existing frozen inputs
-are reused without another capture. Historical `docs render` remains supported.
-
-Use this workflow for a separate documentation repository with per-service pages,
-a root overview and named interaction slices. Scenario traversal admits up to
-eight selected services and declared HTTP/Kafka interactions. Compiler profiles
-support admitted Kotlin/JVM baseline projects and Java 17+; source-bound domain
-explanations retain their exact evidence and compiler/analyzer boundaries.
-For compiler-profile services, select exact Maven/Gradle scopes with a
-`compilations` array, even for one scope. A top-level singular `compilation` is
-not accepted. A `source-syntax` service instead uses `source.roots` and
-`source.dialect` and does not require that compiler array. Its optional
-`modules.semantic.compilation` selects a separate semantic enrichment module. Up to 128 explicit scopes are admitted;
-this does not promise arbitrary file volume or memory capacity. Keep test scopes
-explicit rather than silently dropping them to pass a budget. The overview can
-list more services than one scenario.
-For compiler-backed Kotlin services, choose `kotlin-jvm-maven-analysis` or
-`kotlin-jvm-gradle-analysis`.
-Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
-analyzed with language/API 2.0 by the current engine; this is conditional analysis,
-not execution by the project's original compiler. Older installed releases need
-the corresponding product update before using these extensions.
-
-For a separately captured in-process Kotlin library, use the [explicit library source association](library-sources.md). Preserve its declared source/binary binding and the distinct authority of SOURCE callers and compiler-backed library bodies.
-
-## Prepared SOURCE answers and maintenance
-
-Start directly at the [short prepared SOURCE entry](../README.md). It contains
-all three maintenance cases and the local bounded-packet helper. Do not load this
-full reference for a bounded SOURCE question with a ready snapshot or saved answer. Use the sections below only
-when registration, source capture or durable documentation work is requested.
+Use [authored originals and checked human HTML](compose-original.md#frozen-source-to-reviewed-pages).
+Reuse an available saved snapshot. This reference covers acquisition, evidence
+reads, bounded answer JSON and recovery. There is one document publication route:
+authored original/Markdown → compose/update/bind → finalize → packaged renderer.
 
 ## Authoring start route
 
-The following Work/proposal/coordinator steps serve explicitly requested native
-deliverables. For ordinary reader documentation, return to the human-page route
-above and its requested-scope completion check.
-
-For source-scope inventory, continuation candidates and resumable per-entry
-explanation accounting, use the [thread preparation route](thread-preparation.md).
-
-For a complete service, paginate its retained catalogue and distinguish public
-handlers/triggers from internal helpers. Keep each requested public entrypoint
-open until it has a source-bound operation explanation or an actionable
-missing-evidence gap. The five overview sections are a separate summary layer;
-an authored ingress paragraph or a large gap count is not operation coverage.
-Carry this scope across small Work items. For one selected operation, stay within
-that operation; full-service inventory is not a prerequisite.
-Report described requested public entrypoints separately from unresolved gaps.
-An actionable gap accounts for a target; it does not complete its explanation.
-Do not claim full-service documentation is complete while requested targets have gaps.
-
-Prepare one bounded Work, read its required pages and selected evidence through
-`nextCursor: null`, then use the [proposal input example](authoring-example.md):
+Prepare bounded Work on the selected saved snapshot, read context and complete
+source continuations, then author the requested pages. Describe each relevant
+entry, interaction, contract, effect and failure. Source inventory and summary
+sections do not establish that the requested operations are documented.
 
 ```sh
-clew docs work prepare --root ROOT --subject service:SERVICE_ID --input request.json --snapshot SAVED_SNAPSHOT
-clew docs work read --root ROOT --work WORK_ID --input selection.json
-clew docs proposal submit --root ROOT --work WORK_ID --input proposal.json
-clew docs proposal show --root ROOT --proposal PROPOSAL_ID
+clew docs work prepare --root ROOT --subject service:SERVICE --snapshot SNAPSHOT --input REQUEST_JSON
+clew docs work read --root ROOT --work WORK --input SELECTION_JSON
 ```
 
-Use the returned references from this Work, not IDs from another example or
-Work. Read evidence before writing business claims: a delegation and its 200/404
-outcomes do not establish the downstream algorithm. Preserve that boundary.
-Proposal input is `codeclew-documentation-proposal/1.0`; Narrative 1.3 (1.4 for
-explicit external boundary arrows) is the materialized output, with different fields and participant identities.
+Use returned references from the same Work. Follow candidate bodies before calling
+evidence unavailable. Continue through the [human-page commands](compose-original.md#original-pages-and-completion).
+The [source-to-description example](authoring-example.md) explains this transition.
 
-Inspect the native result and all diagnostic pages, including behind a wrapper.
-`NEEDS_REPAIR` or `STRUCTURE_OR_COVERAGE_INVALID` is failure even when the outer
-process exits zero or returns a proposal ID. Fix the reported cause with current
-schema/evidence; repeated guessed actor aliases are not a recovery method.
-After `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS`, local publication can use
-`clew docs proposal publish --root ROOT --proposal PROPOSAL_ID --unassessed`.
-It preserves `UNASSESSED` meaning review and returns the publication to inspect.
+## Prepared SOURCE answers and maintenance
 
-Instruction-level example: "Prepare a native proposal for this operation" uses this route;
-adding "debug=true" keeps the same route and decisions, adding
-only sanitized scope, Work identity, native status, diagnostics and completed
-checks to a local record outside the installed skill. A `NEEDS_REPAIR` result
-still blocks publication in both modes. This is assistant reporting, not a CLI
-debug flag or extra publication permission; do not record hidden reasoning.
+For a bounded question with an available snapshot or saved answer, start with
+[the short prepared SOURCE route](../README.md). Model-backed Work Q&A retains
+validated answer, packet and audit JSON; it does not generate document previews.
+Use the human-page route when the user requests documentation.
 
 ## Build-independent source profile
 
@@ -169,35 +108,6 @@ check and returns old claims, invalidation reasons, before/after sources, and
 supporting context references. `--fragment ID` narrows this review package.
 It never publishes or silently marks a claim reviewed.
 
-## Render exact retained declarations
-
-Native pages do not require prose authoring, proposal submission or a new source
-capture. Use `docs context --root <docs> --snapshot <check> --service <id>` to
-read the saved declarations and select their exact returned IDs. For one
-function, both required slots can refer to that same declaration:
-
-```json
-[
-  {
-    "id": "selected-operation",
-    "service": "orders",
-    "endpointDeclaration": "RETURNED_DECLARATION_ID",
-    "workerDeclaration": "RETURNED_DECLARATION_ID"
-  }
-]
-```
-
-Save this closed JSON array in `selection.json`: `--input` takes a file path,
-not inline JSON or a `scenario:ID`. Required fields are shown above; unknown
-fields are rejected. Run `clew docs pages render --root <docs> --snapshot <check>
---input <selection.json> --output <new-directory>`. Slot names alone do not prove
-an endpoint or worker role. SOURCE pages retain syntax authority; compiler-backed
-pages retain their corresponding compiler facts and explicit limits. Use the
-same snapshot and selection when checking publication exclusions. Do not create
-extra pages or gaps for unselected internal helpers. These are native declaration
-pages. Saved authored service/process subjects use `--publication PUB` and, for
-remote selection, `--export-subject service:ID` or `scenario:ID`; that route
-cannot be combined with `--input`. See [source links for shared documentation](#source-links-for-shared-documentation).
 
 ## Start or recover
 
@@ -240,11 +150,7 @@ alongside the selected generated bundle and pointer. Inspect all pages of
 copying only the manifest is incomplete. Inline 1.4/1.5 reads remain supported;
 older public readers cannot read 1.6. A portable publication does not replace
 original protected-paragraph snapshots or Work state in `.codeclew/`.
-Embedded standalone/Docusaurus exports include their complete closure; remote
-exports repack a reading-only closure after source projection and cannot be
-reimported as evidence. Keep the whole export directory. The 128 MiB bindings
-and 64 MiB Full Pages aggregate bounds remain; partitioning does not establish
-lazy loading or bounded memory. Do not start another
+Preserve complete historical exports and their declared closure. Do not repeat
 capture just because a source checkout is unavailable or the agent restarted.
 When new source acquisition is actually required, bind the selected checkout and
 run `docs check --service ID`. A full `docs check` acquires every configured service.
@@ -260,7 +166,7 @@ selected service). Basenames are explicit files from this root's `.codeclew/cach
 do not guess by modification time. Recovery reads saved evidence without source
 access and returns a snapshot; it does not update latest-check or claim current
 freshness. Keep its `RETAINED_SOURCE_NOT_REVERIFIED` authority and pass the returned
-snapshot to context/Work/render.
+snapshot to context and Work.
 
 For a stopped export with an immutable snapshot but no matching current cache
 manifest, select the exact captures embedded in that snapshot explicitly:
@@ -280,9 +186,9 @@ immutable source object remains a blocking error.
 Unsupported policy authority or mismatched catalogue input must fail, not trigger
 an automatic recapture. Old formats remain unsupported.
 
-After a successful capture, keep its `snapshot` handle. `context`, `work prepare`,
-and `render` consume saved evidence by default; pass `--snapshot` for an exact
-saved selection. Do not run another check before narrative/render merely to
+After a successful capture, keep its `snapshot` handle. `context` and `work prepare`
+consume saved evidence by default; pass `--snapshot` for an exact
+saved selection. Do not run another check before authoring merely to
 establish a fresh baseline. A selected check retains compatible sibling results
 with an explicit retained-source status; it does not reverify their current
 checkout bytes. A selected failure or changed service declaration does not fall
@@ -290,7 +196,7 @@ back to incompatible old evidence.
 
 Catalogue-only process/interaction changes can be applied with `docs recompose
 --root ROOT --snapshot SOURCE_SNAPSHOT` without a build; use the returned snapshot
-for Work or render. Recomposition does not update the latest-check pointer. A
+for Work or context. Recomposition does not update the latest-check pointer. A
 service profile/root/module change needs an explicit selected capture and cannot
 be silently recomposed. Ordinary consumers also require current catalogue
 compatibility when an old snapshot handle is specified. Frozen published pages
@@ -302,7 +208,7 @@ Repeat `--service` for up to eight captured services. The current bounded reader
 consumes retained declaration bytes only; no checkout, analyzer, package restore
 or network request runs. Missing or partial files fail. Limits are 128 registered
 files and 8 MiB per selected service. Use the returned immutable snapshot for
-context, Work and render. Source records, revisions, historical pages and latest
+context and Work. Source records, revisions, historical pages and latest
 remain unchanged; source and runtime are not reverified. Use the original capture
 as parent for every refresh, including after later catalogue edits. Ordinary
 recomposition retains the original capture's contract projection.
@@ -337,246 +243,6 @@ clew docs context --root /work/architecture --service orders --symbol example.Or
 Repeat `--symbol` for up to eight known declarations. This selects retained
 declaration source; it does not infer runtime serialization or wire compatibility.
 
-## Declare and explain
-
-Interactions record engineer assertions. `origin` is `human`, `imported`, or
-`agent-proposal`; proposals do not establish a traversable cross-service edge.
-Use `interaction candidates --input ...` to inspect exact selectors before
-saving an ambiguous declaration. Preserve origin, rationale, applicability,
-stable IDs, and incomplete selectors rather than inventing missing identities.
-`--expected-input-digest` on add/put prevents lost updates when editing existing
-records; `interaction remove` requires it and refuses referenced declarations.
-Scenario YAML remains manually editable and selects explicit interaction IDs.
-
-A matching route is not runtime proof. Keep declaration origin, resolved caller
-and receiver, call site, HTTP method/path, destination configuration key,
-contract status, environment and runtime as separate certainty axes. The first
-HTTP adapter recognizes resolved Spring RestTemplate literal method/path calls
-and `@Value` destination keys. Unknown clients, dynamic routes, external calls,
-unsupported control flow and runtime configuration remain explicit boundaries.
-
-For a Kafka link use `transport: {"kind":"kafka","topic":"stock-import"}` and
-an explicit compiler-returned publisher `callSite.target` when the topic is
-indirect. Caller/receiver topic checks stay separate from the declaration. Literal
-Spring Kafka topics can be checked; properties and custom publishers can remain
-unresolved. A Kafka reply is a separate event interaction, never an HTTP-style
-return. Outbox enqueue and a later scheduled publisher are separate entrypoints:
-do not invent a call between them. The eight-service limit counts distinct
-services, not individual clients or database actors; a diagram allows up to 24
-participants so eight services can still show external actors.
-
-Write the explanation from returned source, then submit a closed JSON Narrative
-using [the authoring example](authoring-example.md). Every discovered public entrypoint
-needs an operation with its contract or an explicit actionable gap. Source helper
-declarations are optional internal candidates; discovering them does not require
-an operation or gap for each helper. Explicit selections can include the helpers
-needed to explain the requested operation without turning the whole inventory
-into a publication checklist. For full-service
-requests, do not silently stop after one representative endpoint. Include the
-supported guards, alternate outcomes, loops, failures and state changes. Branch
-markers must balance; every selected source condition and return needs a bound
-corresponding event. A count check cannot establish semantic fidelity: read the
-predicate and outcome, and keep their actual nesting/order in the narrative.
-Do not convert unsupported branches into a linear happy path.
-
-Use narrative schema `codeclew-documentation-narrative/1.3`. Write for a developer
-or analyst who needs to use the service: what starts the operation, what data it
-accepts, what changes, what comes back, and which failures need handling. Keep
-`summary` to one or two sentences. The default `explanation` should usually fit
-in three to six short paragraphs, organized by business decisions rather than
-one paragraph per method. A small operation may need only one paragraph. Do not
-inflate prose to match compiler traversal depth or repeat identical explanations
-for each callback. Keep material rejection conditions, partial success, retries,
-asynchrony and idempotency visible in this short overview.
-
-Keep the complete bound branch structure in `events` as evidence. Author a
-separate `overviewDiagram` for the reader: usually 4–9 nodes, never more than 12
-nodes or 20 connections. Show the trigger, meaningful actions, material decisions
-and outcomes. Do not draw every call, callback, loop iteration or return, and do
-not use a collapsed giant diagram as a substitute for a readable diagram. If the
-scenario needs more nodes, split it into named subscenarios before rendering.
-
-Each node has `id`, brief `text` (up to 84 characters), `participant` (an existing
-participant ID), `column` (0..3), `row` (0..2), and 1..8 retained non-end `eventIds`.
-Use unique grid positions. Each edge has `id`, `from`, `to`, brief `text`, and
-1..8 retained `eventIds`. Label the conditions on alternate paths. Cross-service
-edges must retain the existing declared transition with matching participants.
-Node and edge evidence participates in freshness checks. The diagram describes
-source-interpreted business flow, not a runtime trace. Do not infer chronological
-ordering across an asynchronous boundary without evidence.
-
-Mark implementation-only explanation paragraphs with `detail: true`. Detailed
-prose and exact source remain available on demand; the full event traversal is
-retained as structured evidence rather than rendered as an unbounded diagram.
-HTML, Markdown and Mermaid exports all use the same bounded overview. Review the
-actual rendered diagram at a normal desktop size; inspect labels, crossings and
-conditional paths, not only the node count. Preserve rejection, retries, partial
-success and asynchronous boundaries while shortening the visual explanation.
-
-Each paragraph has `id`, `text`, `eventIds`, `dependencyIds` and `sourceIds`.
-Every non-`end` diagram event must be covered by an overview or detail paragraph,
-and paragraphs retain the evidence of every referenced event. One paragraph can
-cover many steps. The validator checks references and coverage, not the truth or
-usefulness of the prose. Narrative 1.0/1.1/1.2 are unsupported by the current release.
-
-## Answer reader questions before choosing diagrams
-
-Write useful service analysis from the delivered evidence, not a list of classes,
-DTO fields or generated artifacts. Ordinary author jobs carry `readerGuidance`
-scoped to their selected section; full-service Work gets all five questions.
-A focused operation/process job does not acquire unrelated service-wide inventory
-obligations. The guidance does not add output fields or new discovery capability.
-Answer with a supported statement or a precise unknown; request a bounded
-registered expansion when it can resolve a material question.
-
-| Section | Reader question and evidence needed |
-|---|---|
-| Overview | What outcome does this service provide, for whom, and where does its responsibility end? Lead with supported domain behavior, main objects and scenarios. Separate owner intent and inferred purpose from source facts. |
-| Responsibilities | Which entry-rooted scenarios and variant conditions lead to which effects or outgoing boundaries? A local fragment without a supported parent connection remains local detail, not a complete thread. |
-| Domain entities | What does this service create, change or consume? Separate business meaning from DTO/storage representation; inspect identifiers and concrete lifecycle, persistence or remote-call sites. Object allocation or a request identifier does not establish business creation, ownership or a committed record. |
-| Ingress contracts | What can start work, with which contract and activation conditions? Distinguish discovered, searched-with-none-in-declared-scope, not analyzed and unresolved dynamic registration. Missing returned handlers or an unavailable analyzer do not prove absence. |
-| Egress contracts | What exact call, send or write can a selected scenario reach, under which guard and with what failure behavior? Retain concrete sites even when destination identity is unresolved. Separate systems, clients, internal helpers and configuration dependencies; an injected client does not prove it is called. |
-
-A computational thread is a statically supported causal scenario rooted in an
-entrypoint, including branches, effects, outgoing boundaries and termination or
-unresolved continuation. It is not an OS thread or an arbitrary dependency graph.
-A reusable internal fragment can be documented before its parent is known, with
-that gap explicit. Trace only supported entry-to-egress relations; do not connect
-every entrypoint to every destination.
-
-Separate construction, selection, queue insertion, invocation and completion.
-Collection iteration does not establish FIFO or completion of an external effect.
-An asynchronous path stops at submission unless its continuation and correlation
-are supported. Explain acknowledgement and business completion as separate facts.
-Keep the prose and diagram consistent about order, guards and unresolved branches.
-
-Choose one primary visual for the reader's question. Keep simple binary guards
-inline by default; a linked table is useful for decisions with more than two
-outcomes. Explain input origins, missing/default values and rule policy in ordinary
-language. Put failures while executing a selected action after selection. The
-narrow `section-summary/1.0` contract remains entities-only and summary-only: its
-guidance distinguishes domain lifecycle from representation without authorizing
-visuals or new response fields. Structural checks do not prove that the model
-answered these questions correctly; source and meaning review remain necessary.
-
-## Native internal-flow diagrams and decision tables (0.11.0)
-
-Use saved Work evidence to add `visuals` to a proposed operation, including a
-service section. For service-level internal behavior, prepare the responsibilities
-section with this request:
-
-```json
-{"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","entrypoint":"section-responsibilities","maxItems":100,"maxBytes":49152}
-```
-
-```sh
-clew docs work prepare --root /work/architecture --subject service:orders --snapshot SAVED_SNAPSHOT --input /work/visual-request.json
-clew docs work read --root /work/architecture --work WORK_ID --input /work/selection.json
-clew docs proposal submit --root /work/architecture --work WORK_ID --input /work/proposal.json
-clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
-```
-
-Select the returned section reference as the operation's `entrypoint`, retain its
-evidence-bound `summary`, and use `steps: []` for a section. Its optional `visuals`
-array contains typed records with `id`, `kind`, `title`, evidence-bound `purpose`
-and `scope`, and nonempty `limitations`. Every claim has `text` and `evidence`
-references delivered by recorded Work reads. Expand exact callable/source handles,
-follow pagination and read the relevant helpers. Do not cite unread records or
-interpret a navigation summary as a complete method body. No capture is required
-solely to author another visual from the same saved evidence.
-
-Supported visual kinds:
-
-- `execution-flow`: `nodes` contain `id` and evidence-bound `meaning`; `edges`
-  contain `id`, `from`, `to` and evidence-bound `meaning`. Describe ordering and
-  branch conditions explicitly; preserve early exits and asynchronous boundaries.
-- `dependency-map`: the same graph fields describe structural relationships.
-  Structural dependencies do not establish execution order or runtime activation.
-- `decision-table`: `rules` contain evidence-bound `condition` and `outcome`.
-  `parent: {"artifact":"FLOW_ID","node":"NODE_ID"}` must point to an
-  execution-flow node in the same operation. If only a local handler is supported,
-  omit the parent, name its local scope and retain the missing connection as an
-  explicit limitation. Do not fabricate a relationship to the main process.
-
-Decision tables require `hitPolicy` and evidence-bound `policyExplanation`.
-`FIRST` selects the first matching row; it does not order separate tables or limit
-an output to a single action. `UNIQUE` asserts mutually exclusive matches;
-`UNKNOWN` records that the evidence cannot establish the policy. Explain the
-source basis or uncertainty. These are documentation tables, not executable DMN,
-and the validator cannot prove the policy's semantic correctness. Optional
-`afterSelection` is a claim for later execution outcomes, such as send failure;
-do not insert such failures into pre-action selection rules.
-
-Explain why each block was selected, its trigger and its omitted scope. An accepted
-HTTP explanation does not prove full internal-flow coverage. Inputs are closed
-typed data, not Mermaid/HTML/script imports; the native reader renders local
-assets without requiring a CDN. Visuals share their containing operation's
-version, retained evidence, freshness and meaning review. Updating the operation
-replaces them atomically; independent artifact review/lifecycle is not provided.
-`--unassessed` retains unreviewed meaning, including in diagrams.
-When updating an operation that already has visuals, supply the complete reviewed
-`visuals` array. Omission is rejected so a summary edit cannot silently erase them.
-An explicit `visuals: []` removes them from the new version; historical versions
-remain available. Existing diagrams are never silently reaccepted with new prose.
-
-The narrow `section-author-v1` job only authors a section summary. It cannot emit
-visuals. Use general Work/proposal authoring or a configured process-overview job;
-read the actual supplied job schema before delegating. This workflow does not
-automatically detect every business flow or verify runtime behavior.
-
-Publishing another service may create an empty placeholder page for this one;
-that alone does not invalidate previously prepared Work. Real authored changes,
-including custom gap descriptions, still require new Work. Identical saved
-influence maps are shared in proposals/publication rather than copied into each
-accepted operation; no new source analysis is implied by that representation.
-
-## Reader comprehension and source checks
-
-Open the returned publication at the requested page and anchor. Verify visible
-field rows, table headings, diagram paths and navigation in the rendered reader.
-Counting `<table>` strings in HTML/JavaScript templates, or inserting Markdown
-pipe text into a prose field, does not establish a visible table. Use supported
-structured inputs; a renderer or duplicate-navigation defect needs a product fix,
-not a generated-HTML patch or a claim that the skill guarantees the output.
-
-Each overview must answer concrete decisions without requiring a source-code
-inspection: what identifies a duplicate, what wins an equal-time conflict,
-which state changes on each outcome, when an acknowledgement is absent, and
-what asynchronous completion actually means. Use a compact result or state table
-in the relevant interface contract when those outcomes are easier to compare.
-Keep contracts complete, including nested payloads, but disclose payload details
-only when the reader selects them. Do not repeat prose for multiple callbacks;
-merge its evidence IDs while respecting each record's bounds.
-
-Trace calculated outputs through the actual constructor, mapper and query used
-by the selected path. A formula's existence does not prove that its inputs were
-loaded. Distinguish constructor defaults from persisted values, current-row
-comparison from historical deduplication, an accepted update from a changed
-numeric value, and initiating a send from awaiting its successful completion.
-Put a limitation that changes an output's meaning next to that output.
-
-For an independently reviewed documentation request, give a fresh reader only
-the generated pages and reader guide. Ask it to explain selected services and
-answer concrete normal, duplicate, stale, rejection, retry and partial-success
-cases. Require page references, missing information and excess-detail findings.
-Correct unsupported claims against retained source, then repeat with a fresh
-reader after material edits until no blocking comprehension finding remains.
-Report the reviewed service/question scope; a pass does not prove runtime
-behavior or coverage of functions explicitly outside that scope.
-
-The reader's primary source action opens all snippets bound to the paragraph;
-it does not require following a long list of opaque step numbers. `eventIds`
-remain necessary for machine-checked coverage and source inspection.
-
-### Troubleshoot generated JavaScript
-
-Raw `${esc(...)}` expressions inside a generated `<script>` can be JavaScript
-template literals; their presence in HTML text alone is not a rendering defect.
-Open the page, inspect the actual visible DOM and browser console, and exercise
-the affected control. Static hosting can execute JavaScript. If the expression
-is visible to the reader or a console error prevents rendering, retain the exact
-page, browser error and a small neutral reproducer for investigation. Do not
-replace template text or sanitize generated HTML blindly.
 
 ## Interface contracts
 
@@ -620,82 +286,11 @@ Local calls are compiler observations; cross-service transitions remain declared
 narratives are agent-inferred. Versioned OpenAPI 3.0 files supply contract facts,
 including local references and constraints, separately from code behavior.
 
-```sh
-clew docs render --root /work/architecture --input /work/orders-narrative.json --input /work/inventory-narrative.json --input /work/checkout-narrative.json --require-complete
-```
+Author the requested contract and process descriptions in originals, then use
+[compose/bind/finalize](compose-original.md#original-pages-and-completion).
+Keep each arrow's evidence and distinguish local compiler observations from
+declared cross-service relationships and unobserved remote outcomes.
 
-Render validates saved evidence and atomically publishes `docs/index.html` and an
-immutable bundle with overview, service/scenario HTML, JSON, Markdown, diagrams
-and bindings. It starts no capture unless `--refresh` is explicit. Without
-`--require-complete`, explicit gaps are allowed and visible.
-Manual content belongs outside `docs/generated/`; modifications to generated
-outputs cause a conflict. Review readable summaries, branches, contracts and
-clickable source inspectors. HTML is self-contained and requires no model API,
-CDN or external diagram renderer. Source links need repository access; exact
-retained snippets remain viewable offline.
-
-## Refresh only affected explanations
-
-`docs check --service ID` acquires only the selected service and compares semantic dependencies
-with the portable baseline. Exit 0 means CURRENT; 4 means PARTIALLY_STALE/STALE;
-3 means UNRESOLVED, including a missing baseline or source binding. Other invalid
-inputs and conflicts use the normal CLI error codes. Large reports have
-`items` and `nextCursor`; retain the top-level freshness status on every page.
-
-Read `affected`, `unaffected`, `linkChanges` and coverage/catalogue changes.
-Line movement alone refreshes source links without requiring prose changes.
-Changed methods, routes, contracts, callees or declarations identify dependent
-fragments. Re-author affected operations against the new context digest, keeping
-unaffected text and engineer declarations. Rendering refuses stale retained
-narratives until reviewed replacements are supplied. A digest detects changes;
-it does not prove an agent's explanation. Missing history/source stays
-UNRESOLVED. No hosted LLM or embedded API key is part of this workflow.
-
-### Maintain a few paragraphs without reauthoring the operation
-
-Use the exact saved publication and its snapshot as the baseline. For a large
-retained operation, prepare ordinary Work for that exact entrypoint and collect
-all its `RETAINED_OPERATION` parts using the [bounded part route](operation-selection.md#exact-requests-for-omitted-retained-and-dependency-records).
-Keep the unchanged canonical events, claims, IDs, evidence, diagrams and authored
-metadata in the local assembler. Give the author only the selected paragraphs,
-their source context and necessary anchors; do not replay the whole operation
-through a model or require a Narrative-to-Proposal converter.
-
-For source-bound machine paragraphs without protected authorship, copy the
-canonical Narrative, replace only the reviewed text slots, and retain its exact
-subject/contextDigest and all other fields. Publish this local working revision
-against its saved evidence first, then export that resulting publication:
-
-```sh
-clew docs render --root DOCS_ROOT --snapshot SAVED_SNAPSHOT \
-  --input corrected-narrative.json
-clew docs render --root DOCS_ROOT --snapshot SAVED_SNAPSHOT \
-  --publication NEW_BUNDLE --data-model rebound-model-plan.json \
-  --output NEW_EXPORT_DIRECTORY
-```
-
-Take `NEW_BUNDLE` from the first result and check `updateFailures` before export.
-Copy the complete previous model-plan and change only its `publication` binding
-when its snapshot, models, fields, payload owners and cited fragments remain
-valid. If a changed paragraph is itself cited as RETAINED evidence, its exact
-textDigest binding must be reviewed and updated too; do not bypass a stale
-binding or drop the model/payload views. Snapshot or entity declaration changes
-need their own admitted binding. Compare the complete old/new operations after
-assembly: only the intended text slots may differ. These commands neither run
-source capture nor claim verified meaning; omit `--publish` for a local working
-revision without adding a released-history entry.
-
-For explicitly attributed user-documentation text instead, the existing local
-Proposal accepts `operations: []` and `retainedEdits` items with
-`kind: "RETAINED_OPERATION"`, exact operation `id`/`recordDigest`,
-`target: "explanationText"`, exact `fragmentId`/`expectedOldValue`, `replacement`
-and declared `author`. Read every exact retained part, submit with
-`docs proposal submit`, then publish with `docs proposal publish --unassessed`.
-This path preserves the other canonical fields but attributes the replacement
-as `USER_DOCUMENTATION / UNASSESSED`; retained source links are unverified
-context, not fresh code proof. Do not use it to overwrite protected authorship
-through direct Narrative input or represent a manual replacement as verified
-source semantics.
 
 ## Discover internal processes before authoring
 
@@ -707,16 +302,7 @@ flow discovery has a gap. Candidates are not accepted business processes.
 Preserve exact scope selectors where one symbol exists in several compilations;
 never infer production behavior from a same-named test-scope method.
 
-For source-syntax evidence, call-site counts and lexical branches do not prove
-callee resolution or runtime ordering. Preserve that distinction in explanations.
-Discovery and publication have separate scopes. The service reader hides internal discovery
-candidates by default (`showInternalProcesses: false` in `catalog/reader.json`).
-Saved processes remain visible at that default. Setting it to `true` adds
-internal discovery candidates with pending or missing-evidence states before a
-narrative exists; it does not make every discovered helper mandatory publication
-coverage. For native
-pages, use `docs pages render --input <selection.json>` to select exact retained
-declarations; use the same selection and snapshot when checking exclusions. Define the process, recompose
+Select the intended retained declarations explicitly. Define the process, recompose
 its source snapshot after the catalogue mutation, then prepare Work from the
 returned snapshot. For a process overview, set `entrypoint: "process-overview"`
 and `contextProfile: "process-v1"` in the Work request. This shares source text
@@ -725,6 +311,7 @@ or source alias is not a fully supplied evidence handle: expand it before citing
 its provider fields, or cite the complete source body already supplied.
 Explain the trigger, state transitions, external effects,
 alternatives and gaps; a list of HTTP operations is not a substitute.
+
 
 ## Prepare immutable author work
 
@@ -760,6 +347,7 @@ read never replaces its source evidence with a newer check. Follow owner/helper,
 flow, type and configuration references where required; preserve unresolved
 boundary obligations. No agent may promote syntax or imported claims to runtime
 proof. Human input is retained verbatim with its separate authority.
+
 
 ## Find an approved answer before preparing new Work
 
@@ -827,6 +415,7 @@ existing stricter comparison policy. When lookup cannot reuse an answer, acquire
 a new Check separately if needed, then explicitly prepare, author and review
 new Work; lookup never starts that work automatically.
 
+
 ## Draft one Java endpoint explanation
 
 For a captured Java HTTP endpoint, select `endpoint-context-v3` in the request
@@ -871,6 +460,7 @@ bytes are preserved; no refund or provider cancellation is implied. Complete
 interrupted accounting by replaying its original configuration first. A
 completed result or failed retry child is not replaceable by this selector.
 The older defaults and saved results retain their existing policies.
+
 
 ### Opt into typed model IDs with a compatible driver
 
@@ -988,16 +578,15 @@ The author receives only the compact operation packet, common language and
 source-as-untrusted-data instructions, and
 `schemas/documentation/operation-answer-1.2.schema.json`. New draft answers use
 `codeclew-operation-answer/1.2`; saved 1.0 and 1.1 answers remain available for
-offline rendering. Version 1.2 adds required `glossaryRefs` on claims and steps.
+immutable inspection. Version 1.2 adds required `glossaryRefs` on claims and steps.
 Version 1.1 added shared `preparations` that describe evidence-supported input
 transformations, checks, and failures; they remain in 1.2. Steps link to shared
 explanations with `preparationRefs`; links do not assert execution or order. The
-rendered data-movement view uses only explicit step `from` and `to` values and
-leaves missing endpoints unknown.
+answer keeps explicit step `from` and `to` values, leaving missing endpoints unknown.
 Codeclew validates the returned packet digest and citation labels, then saves
-`answer.json`, `operation.md`, `index.html`, the packet and its separate
-operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
-`UNREVIEWED`; the command does not publish or create a proposal. One author call
+`answer.json`, `reader-packet.json` and `reader-packet-audit.json` under
+`.codeclew/drafts/WORK_ID/RUN_ID`. Status is `DRAFT` / `UNREVIEWED`.
+The command retains JSON and does not publish a document. One author call
 is admitted. A saved answer is reused to restore missing draft files. An invalid
 answer is retained without an author repair. A terminal `ANSWER_INVALID` result
 may be revalidated only from its digest-bound saved author result after the
@@ -1026,6 +615,7 @@ additional 1.3 author-call path; ordinary initial generation and `--new-run`
 remain blocked. This recipe covers the HTTP endpoint
 profile. Use the next recipe for an internal callable whose behavior is not
 entered through an HTTP endpoint.
+
 
 ## Draft one internal service process explanation
 
@@ -1065,246 +655,6 @@ The output is still `DRAFT` / `UNREVIEWED`, is not a proposal, and is never
 published by this command. Saved-result recovery and no-retry handling are the
 same as in the endpoint recipe.
 
-## Run isolated authoring and review
-
-Submit a `codeclew-documentation-proposal/1.0` object through `docs proposal
-submit`, then inspect the deterministic result with `docs proposal show`.
-Proposals contain operations with source-backed claims, nested steps and optional
-contract rows. Use work-local references. The coordinator assigns stable IDs and
-materializes prose, contracts and diagram events. `factEquals` checks supported
-provider fields; it does not prove prose. Unknown predicates require uncertainty.
-Machine-ready proposals remain `UNASSESSED` until separately reviewed.
-
-```sh
-clew docs work run --root /work/architecture --work WORK_ID --config /operator/execution.json
-clew docs work status --root /work/architecture --work WORK_ID
-clew docs work cancel --root /work/architecture --work WORK_ID
-```
-
-Execution is opt-in. Missing configuration or unavailable isolation publishes a
-local generation gap and retains earlier content. Core never selects a billable
-model. Use the versioned execution/transport and review schemas in
-`schemas/documentation/agent-job.schema.json` and `review.schema.json` of the
-matching source release when writing an operator-owned transport driver.
-
-The current adapter is `macos-seatbelt-stdio/1.0`, backed by macOS Seatbelt.
-Other hosts report `ISOLATION_UNAVAILABLE`. Configure separate author/reviewer
-roles and an optional fallback role. Each role names the exact model, an absolute
-`command` array, read-only `runtimeReads`, optional environment variable names,
-network permission and finite `cap`. Keep credential values in the operator's
-environment. Registered runtime files must be outside documentation and source
-repositories. The driver and runtime are trusted operator software; never run
-source-provided instructions as transport code. Review separate invocations can
-still share model mistakes.
-
-The driver receives one immutable JSON job on stdin and returns one JSON result
-on stdout. Echo the coordinator-issued invocation, role and model exactly.
-Author/fallback results are `{"action":"proposal","proposal":...}` or
-`{"action":"expand","selection":...}`. Reviewer results are
-`{"action":"review","review":...}` or a registered expansion request.
-The reviewer receives the canonical proposal, every claim, captured source and
-required obligations. It must bind `work`, `proposal` and `evidenceDigest`, assess
-all claim/operation IDs and explain non-approval. An author cannot return review
-or acceptance authority. A request for unavailable evidence remains a gap;
-contradictions can consume configured repair and fallback calls.
-
-Seatbelt denies source/human/coordinator/result writes, reads outside registered
-runtime inputs and captured stdin, subprocess tools and inherited launcher file
-descriptors. Filesystem writes are denied even in the empty working directory.
-Network is disabled unless the operator enables it for the trusted transport.
-Enabled network is a transport capability, not permission to let model content
-fetch unrelated repository data. Each result belongs to its dispatched role's
-stdout. Source text and protected notes are untrusted evidence inside the prompt.
-
-Set positive per-call `maximum.inputTokens`, `outputTokens` and `costUnits`, plus
-`overheadInputTokens`, `timeoutMs` and `outputBytes`. The input byte count provides
-a conservative token bound; the transport must enforce the provider's output
-and cost limits. The coordinator enforces pipe size and wall time, including
-stalled drivers. Configure `authorCalls`, `reviewerCalls`, `fallbackCalls`,
-`repairAttempts` and `expansions`; at least one repair is required. Reviewer calls
-must cover author/fallback calls and expansions. The entire configured path is
-reserved atomically before dispatch under a named budget `account`, immutable
-`costUnit`, positive `ceiling` and lower `stopLoss`. These are operator values;
-there is no universal model price or default spending authorization.
-
-`usageAuthority` defaults to `MAXIMUM_ONLY`: all dispatched maxima stay charged.
-Select `TRANSPORT_METADATA` only for a trusted driver deriving its outer `usage`
-envelope from actual provider metadata, never model-authored JSON. Absent usage
-fields, failed calls and cancellation retain the corresponding maximum; unknown
-usage is never zero. Undispatched slots can be released. A reported cap violation
-freezes further calls on that account. Reports distinguish actual usage from
-conservative charges. Status pages use cursors for bounded attempts/accounting.
-A crashed coordinator retains reservations in durable `execution/accounts`; keep
-these ledgers with coordinator state when discarding private work caches. Old
-`.codeclew/accounts` ledgers are rejected without modification. Initialize fresh
-state for this release; do not treat an unreadable current ledger as an empty budget.
-
-Only the coordinator publishes accepted versions after machine checks, exact
-revision/input checks and separately bound meaning approval. Publications retain
-review, driver, evidence, read and operation digests with limitations. Every view
-shows verification separately from freshness. Changing a captured note or source
-scope invalidates dependent content. Direct `docs render` input cannot
-inherit review acceptance for replaced operations. Protected notes remain outside
-generated outputs. An accepted review is model assessment, not runtime proof.
-
-An accepted `work run` or `proposal publish` already produces a frozen publication.
-Open its returned bundle. Rendering a snapshot prepared before authoring replays
-that snapshot's captured authored baseline and can show the earlier gaps. To
-project newly accepted prose again, recompose the original source-capture snapshot
-after publication and render the new result; neither operation reacquires source.
-
-## Complete local authoring without an external runner
-
-Prepare and read bounded work with the current assistant, submit a constrained
-proposal, inspect its diagnostics, then publish machine-ready content locally:
-
-```sh
-clew docs proposal publish --root <docs> --proposal <proposal-id> --unassessed
-```
-
-This command needs no API key, CI runner or model gateway. It retains the captured
-source, notes, negative-query scope and external-input membership. It rechecks
-source revisions, reads, definitions, human inputs and prior authored content
-before publication. Source freshness and meaning review remain separate:
-locally published content is `UNASSESSED`, with no invented reviewer or approval
-receipt. The normal configured author/reviewer pipeline can later establish
-`VERIFIED` or `VERIFIED_WITH_LIMITATIONS`. A machine failure or stale work cannot
-be published by this route. Supply `--unassessed` explicitly; it is an output
-classification, not an interactive approval prompt.
-
-Narrative schema 1.3 is supported, and 1.4 adds explicit external boundaries.
-Prefer Work/proposals so the tool
-materializes canonical dependency IDs and preserves the captured influence
-boundary. Direct current-format Narrative imports remain unassessed until reviewed.
-
-## Documentation language
-
-Select `en` or `ru` using `docs work prepare --language` or the Work request's
-`documentationLanguage`. Omitted language inherits the active publication, with
-English as the initial default; conflicting explicit values fail. Authors and
-reviewers must preserve code/API/evidence identifiers and write human prose in
-the requested language. For Russian, avoid unnecessary English loanwords.
-
-Use `docs render --language ru --snapshot SAVED_SNAPSHOT --root ROOT` to select
-Russian presentation from retained evidence. Rendering does not translate prose.
-Other-language or unknown-language accepted sections show translation gaps and
-links to available original publications. Prepare a new language-specific Work
-to author their translation; never recapture source merely to change language.
-Old versions remain immutable. Language metadata does not establish semantic or
-linguistic correctness, and unassessed publication remains unassessed.
-
-
-## Source links for shared documentation
-
-Use `--source-mode remote` on `clew docs pages render` or `clew docs dsl render`
-to replace automatic source attachments with exact GitHub/GitLab links. Embedded
-source is the default. Both standalone and Docusaurus publication exports apply
-the policy to auxiliary downloads and shared objects too. Authored quotations,
-contract examples, semantic identities and provenance remain; review them before
-sharing. Export into a new directory and share that directory, not the local root.
-
-For an exact historical replay, keep the original publication and immutable
-snapshot handles. Both supported routes select that same retained publication:
-
-```sh
-clew docs pages render --root "$DOCS_ROOT" --publication "$PUBLICATION" --snapshot "$SNAPSHOT" --source-mode remote --export-subject service:orders --source-map repos.json --output new-export
-clew docs render --root "$DOCS_ROOT" --publication "$PUBLICATION" --snapshot "$SNAPSHOT" --source-mode remote --export-subject service:orders --source-map repos.json --output another-new-export
-```
-
-Replace `service:orders` with the saved `scenario:checkout` for a process, or
-repeat `--export-subject` for several subjects; omit it for the full publication.
-`--publication` requires `--snapshot` and excludes `--input`, `--refresh`,
-`--publish` and `--require-complete`. It neither captures source nor replaces
-proposals. Without `--publication`, remote `docs render` exports the current
-saved publication and still requires output; perform local publication first.
-The two readers need not be byte-identical.
-
-An embedded frozen-input limit can be handled by the remote route above,
-subject to its separate limits below. Do not try to narrow a publication using
-`--input`, change its snapshot, or fall back to refresh. The manifest reports
-requested/effective subjects, omitted pages and input accounting. Shared overview,
-status and answer context remains global; omitted service/process links are inert.
-Ambiguous diagram-owner prefixes require selecting both subjects or exporting
-the full publication.
-
-Output must be a new or empty regular directory. This protects existing files;
-there is no automatic merge into a mixed human/generated site. Keep custom human
-pages in their own namespace and stage a complete export in a separate subtree,
-for example `site/generated/run-2/`. If relocating it, preserve the entire export,
-including manifests, assets and any declared evidence/object closure, then verify
-page, source and download links at the final location. The export subtree is a
-portable reader artifact, not a replacement for the local authoring evidence root.
-
-A full remote export verifies frozen files as streams, then projects each
-service/process HTML/Markdown group before retaining it. A selected export loads
-only its indexed bindings owners and shared dependencies. Unreferenced cache
-objects are not inputs. Limits remain explicit: 64 MiB per frozen file, 128 MiB
-per compact bindings hydration, expanded fragment or retained reading buffer,
-512 MiB of verification and reserved rendering reads, and a separate 512 MiB
-semantic expansion-work limit. Shared evidence is expanded and checked one
-fragment at a time, then restored to compact references; at most eight original
-authoring contexts are admitted. A legacy bindings record has no partition index;
-its bounded original record is read before filtering. If a selected record or
-closure fails validation, preserve the error and original publication. Narrow
-subjects when appropriate; deleting caches is not an export workaround.
-
-For a self-managed host, `--source-map repos.json` takes a file with this
-complete wrapper, not a bare mapping or the output manifest's `sourceExport`
-policy object:
-
-```json
-{
-  "schema": "codeclew-source-repositories/1.0",
-  "repositories": {
-    "IMMUTABLE_REPOSITORY_ID": {
-      "provider": "gitlab",
-      "webBase": "https://gitlab.example.invalid/group/subgroup/repository",
-      "origin": "ssh://git@gitlab.example.invalid/group/subgroup/repository.git"
-    }
-  }
-}
-```
-
-Copy the immutable `repositoryId` from the selected retained inputs/provenance;
-it is not the service ID. The current service catalog cannot establish an older
-repository identity after inputs have changed. `origin` is optional; include it
-only when known, matching the exact historical clone origin to bind repositories
-absent from the selected snapshot. Never guess it from a current/main checkout.
-
-`provider` is `github` or `gitlab`. `webBase` is the HTTPS browser project root
-without credentials, query, fragment, blob suffix, commit or line anchor. For
-GitLab the renderer appends `/-/blob/<retained-commit>/<encoded-file>#Lx-y`,
-encoding file path segments individually; copy commits from retained sources.
-Do not strip `.git` blindly: a project can literally be named `repository.git`.
-Never infer a provider from an unknown host or substitute current/main for old
-source revisions. Missing exact bindings, dirty/generated evidence and ambiguous
-mappings fail. No authentication or provider availability request occurs;
-committed does not mean pushed or accessible. The manifest records mode, mapping
-policy and export identity. Source digests still identify original local evidence;
-remote exports are reading artifacts and cannot replace local evidence for
-authoring or reimport. Remote mode does not scrub authored quotations or semantic
-data, and does not purge local retained evidence.
-
-
-### Clone origins and browser links
-
-Keep `repository` as the exact clone/binding origin. For public GitHub and
-GitLab, capture derives a clean browser base from HTTPS `.git`, SSH URI or
-scp-style origins. For a self-managed host, configure the service explicitly:
-
-```json
-{"sourceWeb":{"provider":"gitlab","webBase":"https://git.example.invalid/team/weather"}}
-```
-
-`sourceWeb` changes browser links, not repository identity or compilation
-coverage. Its base must be HTTPS without credentials, query or fragment. Unknown
-hosts have no guessed browser links; the Check summary gives the configuration
-next action. Explicit `sourceLinkTemplate` keeps its legacy expansion behavior
-and takes precedence during capture. Existing frozen sources are never rewritten.
-Remote export uses an explicit `--source-map` first, then captured `sourceWeb`,
-then recognized public providers. Historical citations retain their own origin
-and revision. No provider requests or commit-availability checks are performed.
-
 
 ### Account for and prune documentation storage
 
@@ -1337,6 +687,7 @@ Frozen publications, proposals, snapshots and Work retain their old declarations
 logical removal neither rewrites history nor implicitly cascades or frees storage.
 
 
+
 ### Describe an external service without capturing its code
 
 Register authored information with `clew docs external put --root "$DOCS_ROOT"
@@ -1357,16 +708,16 @@ Captured and external service identities cannot collide. Saved process
 method/source/page bindings must remain captured-service declarations. External
 actors stay declared and are excluded from compiler/SOURCE capture selection.
 
-The next Check freezes this registry with the same captured inputs. Normal
-publication and remote standalone/Docusaurus exports include its information
-page, provenance and safe repository/wiki links. Related service/process pages
-link to that stable identity. The page is declared information, not compiler,
-SOURCE or runtime proof; adding it does not expand capture coverage. Changes to
+The next Check freezes this registry with the same captured inputs. Use the
+retained registry as declared information in authored originals, with its
+provenance and safe repository/wiki links. It is not compiler, SOURCE or runtime
+proof, and adding it does not expand capture coverage. Changes to
 the registry do not rewrite old publications or automatically refresh snapshots.
 Use `docs recompose` to apply declaration changes to a saved capture without
 acquiring source again. Review `docs external remove --id forecast-provider`
 and apply with the expected input digest only after current references are
 removed explicitly; no cascade or historical rewrite is performed.
+
 
 ### Preserve collected external information
 
@@ -1388,7 +739,7 @@ docs root. This example is an author convention, not a clew schema or collector:
 
 Use supplied facts; unknown revision/hash stays null. Hash the actual permitted
 artifact bytes, not a different serialization. Claimed collection time is not
-clew observation/registration/render time; a hash establishes identity, not truth.
+clew observation/registration time; a hash establishes identity, not truth.
 Use current inputDigest for each put. On WW_CONFLICT reconcile intent/current
 record and retry with `--expected-input-digest` from currentInputDigest.
 
@@ -1424,6 +775,7 @@ the exact candidate. Do not fake sourceId, elevate authority or strip factual
 annotations for a pass. Retain the attributed report and required binding blocker;
 registration does not rewrite authored pages. No new provenance engine/collector.
 
+
 ## Retained route and OpenAPI comparison
 
 Use `clew docs contract check --root DOCS --snapshot SNAPSHOT --service ID`
@@ -1434,10 +786,6 @@ authority, legacy sourceMapping, conditions, scope and UNKNOWN boundaries.
 missing production endpoint. This command does not recapture or require Work
 preparation. Read the report summary, then the exact finding/source references.
 
-## Human HTML with addressable private metadata
-
-Use the [exact reader export and query route](reader-metadata.md) for an explicit
-human-only HTML profile. Existing evidence-bearing exports remain available.
 
 ## Exact complete retained Kotlin files
 
@@ -1463,3 +811,21 @@ limits; a near-limit capture may explicitly refuse and require narrower roots.
 Exact retained bytes establish no compiler resolution or runtime correctness.
 
 For a selected Kotlin computation with retained parent/body/origin links, see the optional [connected computation view](connected-computation.md).
+
+## Documentation language
+
+Author prose in the requested language and select the matching packaged renderer
+language. Keep source identifiers and original bytes unchanged.
+
+## Source links for shared documentation
+
+Use the checked human export's [local Sources and service-keyed repository mapping](library-sources.md#checked-sources-footer-for-human-pages).
+Preserve manifests, original text and the complete export. Historical native
+exports remain readable, but their generators and replay writers are removed.
+To update them, explicitly author originals from retained evidence and use the
+human pipeline. Do not recapture or rewrite saved objects as a migration shortcut.
+
+## Human HTML with addressable private metadata
+
+Use [source views and guarded page changes](reader-metadata.md). The same
+compose/bind/finalize path supports initial pages and updates.

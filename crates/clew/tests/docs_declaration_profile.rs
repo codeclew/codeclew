@@ -48,14 +48,6 @@ fn items(pages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-fn proposal(target: &str, evidence: &str) -> proposals::Proposal {
-    serde_json::from_value(json!({"schema":"codeclew-documentation-proposal/1.0",
-        "operations":[{"entrypoint":target,"title":"Order declarations",
-        "summary":{"text":"The selected source contains quantity processing declarations.",
-        "evidence":[evidence]},"steps":[]}]}))
-    .unwrap()
-}
-
 #[test]
 fn profile_preserves_mandatory_inputs_full_influence_and_unknown_facts_offline() {
     let f = Fixture::new();
@@ -144,11 +136,11 @@ fn profile_preserves_mandatory_inputs_full_influence_and_unknown_facts_offline()
         serde_json::to_value(&a.handles).unwrap(),
         serde_json::to_value(&b.handles).unwrap()
     );
-    assert!(
-        serde_json::to_value(&a.request)
-            .unwrap()
-            .get("contextProfile")
-            .is_none()
+    // Fresh section-entities Work selects its current orientation profile;
+    // declarations-v1 still preserves the same mandatory evidence and scope.
+    assert_eq!(
+        a.request.context_profile.as_deref(),
+        Some("section-entities-orientation-v1")
     );
     for kind in ["EXTERNAL_INPUT", "REVIEW_REASON", "OBLIGATION"] {
         let expected: Vec<_> = full_rows.iter().filter(|row| row["kind"] == kind).collect();
@@ -190,23 +182,24 @@ fn profile_preserves_mandatory_inputs_full_influence_and_unknown_facts_offline()
         canonical::hash(&selected).unwrap()
     );
     assert!(rows.iter().any(|row| row["id"] == "entity:global-order"));
-    let inventory = &full_rows
-        .iter()
-        .find(|row| row["kind"] == "BOUNDARY_INVENTORY")
-        .unwrap()["record"];
+    // The default orientation adds preview counters to its inventory row.
+    // declarations-v1 pins the canonical retained inventory, not that preview.
+    let inventory = clew::documentation::sections::inventory("orders", &checked);
     for field in ["gaps", "sourceBoundaries"] {
         assert_eq!(summaries[0]["record"][field], inventory[field]);
     }
     assert_eq!(
         summaries[0]["record"]["inventoryDigest"],
-        canonical::hash(inventory).unwrap()
+        canonical::hash(&inventory).unwrap()
     );
-    for field in ["publicBoundaries", "internalCallables"] {
-        assert_eq!(
-            summaries[0]["record"]["inventory"][field],
-            inventory[field].as_array().unwrap().len()
-        );
-    }
+    assert_eq!(
+        summaries[0]["record"]["inventory"]["publicBoundaries"],
+        inventory["publicBoundaries"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        summaries[0]["record"]["inventory"]["internalCallables"],
+        inventory["internalCallableCount"]
+    );
     let source_rows: Vec<_> = rows.iter().filter(|row| row["kind"] == "SOURCE").collect();
     assert!(!source_rows.is_empty());
     let source_ids: BTreeSet<_> = source_rows
@@ -291,7 +284,7 @@ fn deferred_facts_need_actual_expansion_and_full_work_receipts_do_not_transfer()
     .unwrap();
     let id = first["work"].as_str().unwrap().to_owned();
     let frozen = work::load(&repo, &id).unwrap();
-    let target = frozen
+    let _target = frozen
         .handles
         .iter()
         .find(|(_, h)| h.kind == "SECTION" && h.id == "section-entities")
@@ -306,8 +299,6 @@ fn deferred_facts_need_actual_expansion_and_full_work_receipts_do_not_transfer()
     assert!(!work::initial_context_complete(
         &work::read_state(&repo, &id).unwrap()
     ));
-    let incomplete = proposals::submit(&repo, &id, proposal(target, deferred)).unwrap();
-    assert_eq!(incomplete["status"], "NEEDS_REPAIR");
     all_pages(&repo, first);
     let state = work::read_state(&repo, &id).unwrap();
     assert!(
@@ -316,8 +307,6 @@ fn deferred_facts_need_actual_expansion_and_full_work_receipts_do_not_transfer()
             .values()
             .all(|receipt| !receipt.supplied.contains(deferred))
     );
-    let unread = proposals::submit(&repo, &id, proposal(target, deferred)).unwrap();
-    assert_eq!(unread["status"], "NEEDS_REPAIR");
     let expanded = work::read(
         &repo,
         &id,
@@ -342,10 +331,12 @@ fn deferred_facts_need_actual_expansion_and_full_work_receipts_do_not_transfer()
         .unwrap();
         cursor = page["nextCursor"].as_str().map(str::to_owned);
     }
-    let ready = proposals::submit(&repo, &id, proposal(target, deferred)).unwrap();
+    let state = work::read_state(&repo, &id).unwrap();
     assert!(
-        ready["status"].as_str().unwrap().starts_with("READY_"),
-        "{ready}"
+        state
+            .receipts
+            .values()
+            .any(|receipt| receipt.supplied.contains(deferred))
     );
 }
 

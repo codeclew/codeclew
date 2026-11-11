@@ -59,7 +59,6 @@ pub(crate) struct Projection {
     pub(crate) entry: String,
     pub(crate) steps: Vec<ProjectionStep>,
     pub(crate) evidence_gaps: Vec<String>,
-    pub(crate) origin: &'static str,
     /// True only after the root producer and its control envelope qualify.
     pub(crate) source_eligible: bool,
     /// Expression-only FLOW gaps permit exact SOURCE text, but not an ordered
@@ -71,10 +70,10 @@ pub(crate) struct Projection {
 
 pub(crate) struct ValidatedProjection {
     pub(crate) projection: Projection,
-    pub(crate) evidence_gaps: Vec<String>,
 }
 
 impl ValidatedProjection {
+    #[cfg(test)]
     pub(crate) fn source_eligible(&self) -> bool {
         self.projection.source_eligible
     }
@@ -83,7 +82,6 @@ impl ValidatedProjection {
 pub(crate) struct RenderedProjection {
     pub(crate) puml: String,
     pub(crate) tree: String,
-    pub(crate) origin: &'static str,
 }
 
 impl Projection {
@@ -93,7 +91,6 @@ impl Projection {
             entry,
             steps,
             evidence_gaps: Vec::new(),
-            origin: "source",
             source_eligible: false,
             flow_fallback_gap: None,
             noncausal: None,
@@ -163,7 +160,6 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
         entry: method_label(symbol),
         steps: Vec::new(),
         evidence_gaps: Vec::new(),
-        origin: "flow",
         source_eligible: false,
         flow_fallback_gap: None,
         noncausal: None,
@@ -342,10 +338,7 @@ pub(crate) fn validate_projection(mut projection: Projection) -> ValidatedProjec
         };
         projection.steps.push(ProjectionStep::Gap(reason));
         projection.source_eligible = false;
-        return ValidatedProjection {
-            projection,
-            evidence_gaps,
-        };
+        return ValidatedProjection { projection };
     }
     // Validate the original branch envelope before converting expression
     // FLOW gaps to evidence-only output. SOURCE may deepen an opaque short-
@@ -385,10 +378,7 @@ pub(crate) fn validate_projection(mut projection: Projection) -> ValidatedProjec
             .steps
             .push(ProjectionStep::Gap(format!("MALFORMED_CONTROL:{reason}")));
         projection.source_eligible = false;
-        return ValidatedProjection {
-            projection,
-            evidence_gaps,
-        };
+        return ValidatedProjection { projection };
     }
 
     if let Some(reason) = projection.flow_fallback_gap.take() {
@@ -399,10 +389,7 @@ pub(crate) fn validate_projection(mut projection: Projection) -> ValidatedProjec
             format!("{reason}; EVIDENCE_BOUNDARIES:{}", evidence_gaps.join(","))
         };
         projection.steps.push(ProjectionStep::Gap(reason));
-        return ValidatedProjection {
-            projection,
-            evidence_gaps,
-        };
+        return ValidatedProjection { projection };
     }
     if !projection.evidence_gaps.is_empty() {
         let mut gaps = projection
@@ -413,10 +400,7 @@ pub(crate) fn validate_projection(mut projection: Projection) -> ValidatedProjec
         gaps.append(&mut projection.steps);
         projection.steps = gaps;
     }
-    ValidatedProjection {
-        projection,
-        evidence_gaps,
-    }
+    ValidatedProjection { projection }
 }
 
 /// Render tree and PlantUML from the same validated projection.
@@ -471,11 +455,7 @@ pub(crate) fn render_validated(
         ));
     }
     puml.push_str("@enduml\n");
-    Some(RenderedProjection {
-        puml,
-        tree,
-        origin: projection.origin,
-    })
+    Some(RenderedProjection { puml, tree })
 }
 
 /// Render the common indented outline tree without producing an activity
@@ -1030,7 +1010,6 @@ mod tests {
             "{}",
             rendered.puml
         );
-        assert_eq!(rendered.origin, "flow");
     }
 
     #[test]

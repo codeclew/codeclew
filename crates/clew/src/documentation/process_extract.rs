@@ -251,41 +251,6 @@ fn packet(
     Ok(value)
 }
 
-pub(super) fn project(
-    checked: &Check,
-    subject: &str,
-    snapshot: &str,
-) -> Result<Option<Value>, ClewError> {
-    let Some(id) = subject.strip_prefix("scenario:") else {
-        return Ok(None);
-    };
-    let Some(definition) = checked.dependencies.get(&format!("process:{id}")) else {
-        return Ok(None);
-    };
-    let scenario: super::model::Scenario =
-        serde_json::from_value(definition.normalized["definition"].clone())
-            .map_err(|_| invalid("invalid captured process"))?;
-    let Some(query) = scenario.process.and_then(|p| p.extraction) else {
-        return Ok(None);
-    };
-    if scenario.root.service != query.service {
-        return Err(invalid(
-            "extraction service differs from saved process root",
-        ));
-    }
-    let service = checked
-        .services
-        .get(&query.service)
-        .ok_or_else(|| invalid("process root service is unavailable"))?;
-    let matches = super::analysis::resolve(scenario.root.selector.as_ref(), service);
-    if matches.len() != 1 || matches[0].id != query.root_declaration {
-        return Err(invalid(
-            "extraction declaration differs from exact saved process root",
-        ));
-    }
-    extract(checked, snapshot, &query).map(Some)
-}
-
 #[cfg(test)]
 mod criterion_membership_tests {
     use super::*;

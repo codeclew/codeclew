@@ -334,28 +334,6 @@ pub(super) fn selected_internal_operation(work: &Work) -> Option<&Observation> {
     internal_declaration(&work.checked, service, &selected)
 }
 
-pub(super) fn internal_operation_entry(root: &Observation) -> super::model::Entrypoint {
-    super::model::Entrypoint {
-        id: internal_operation_id(root),
-        service: root.service.clone(),
-        symbol: root.symbol.clone(),
-        kind: "SOURCE_PROCESS_ROOT".into(),
-        trigger: json!({
-            "authority":"RETAINED_DECLARATION",
-            "name":root.normalized["name"],
-            "owner":root.normalized["ownerIdentity"],
-            "scope":root.normalized["scope"],
-            "declaration":root.id,
-        }),
-        source_ids: root.source_ids.clone(),
-        dependency_ids: vec![root.id.clone()],
-        boundaries: vec![
-            "INTERNAL_METHOD_NOT_A_PUBLIC_ROUTE".into(),
-            "RUNTIME_BEHAVIOR_UNOBSERVED".into(),
-        ],
-    }
-}
-
 /// Rebuild the full audit graph from Work's already hydrated retained snapshot.
 /// This path performs no repository reads or source capture.
 pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {

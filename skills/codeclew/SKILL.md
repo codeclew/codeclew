@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.15.0"
+  version: "0.16.0"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -22,13 +22,9 @@ handler-started sequence.
 | --- | --- |
 | Generate/update durable service or process documentation | [Guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages) |
 | Bounded SOURCE Q&A or saved-answer maintenance | [Prepared SOURCE](README.md) |
-| Explicit native Work/proposal/coordinator deliverable | [Native authoring](references/authoring-example.md#choose-the-existing-authoring-route) |
-| Native declaration pages | [Exact retained declarations](references/service-documentation.md#render-exact-retained-declarations) |
-| Historical native replay or remote source export | [Frozen export](references/service-documentation.md#source-links-for-shared-documentation) |
 
 Broad documentation requests use authored originals/Markdown and the packaged
-renderer for checked local HTML. Interaction is optional; explicit MDX/Docusaurus
-keeps its selected export route. Reuse frozen evidence. A new repository first
+renderer for checked local HTML. Reuse frozen evidence. A new repository first
 needs [registration/capture](references/service-documentation.md#start-or-recover),
 then the same human route. Native output is not the fallback for new repositories.
 `EXPORT_CHECKED` is technical success; completion also requires requested pages/
@@ -53,7 +49,9 @@ Load only the reference needed at the current step:
 [Library sources](references/library-sources.md) ·
 [Failed Check/support](references/documentation-evidence.md)
 
-Explicit native authoring keeps its review/coordinator contract.
+Bounded model Q&A retains validated answer/evidence JSON; it does not publish documents.
+For a description of saved Work, read its context and sources, then use the same
+authored-originals route. No separate Work document renderer is required.
 
 ## Runtime and authority
 

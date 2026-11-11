@@ -46,9 +46,10 @@ The agent uses its configured model/provider. Codeclew does not require a paid
 API or hosted model service; optional model-assisted authoring is separate.
 For execution details, use the [agent workflow](skills/codeclew/SKILL.md) and
 [native source documentation guide](docs/guides/native-retained-source.md).
-For a full saved publication, the [Docusaurus export](docs/operations/docusaurus-export.md)
-provides linked Markdown/MDX pages, source evidence and optional field readers.
-Use [remote source rendering](docs/operations/source-link-export.md) to export exact
-GitHub/GitLab links instead of automatically attached source text.
+For documentation, author originals from saved evidence and use the
+[checked human-page pipeline](skills/codeclew/references/compose-original.md).
+It produces linked HTML with diagrams and Sources through the packaged Markdown
+renderer. Preserve originals and citation bindings for guarded updates; historical
+exports stay readable after removal of the native generators.
 The [Weather reader](https://codeclew.github.io/clew-weather-demo/index.html) has
 its own retained evidence and limits; it is separate from the fictional example.

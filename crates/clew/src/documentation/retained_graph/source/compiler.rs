@@ -101,47 +101,6 @@ pub(in crate::documentation) fn typescript_admitted(owner: &Observation) -> bool
             .is_some_and(|s| s.starts_with("tsconfig:"))
 }
 
-/// Retained input/return display only; a signature does not bind argument values.
-pub(in crate::documentation) fn declared_signature<'a>(
-    owner: &'a Observation,
-    sources: &std::collections::BTreeMap<String, crate::documentation::model::Source>,
-) -> Option<&'a str> {
-    if !(typescript_admitted(owner) || rust_admitted(owner)) {
-        return None;
-    }
-    let signature = owner.normalized["signature"]
-        .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= 4096)?;
-    if rust_admitted(owner) {
-        let site = &owner.normalized["outlineOwnerSource"];
-        let source = sources.get(site["sourceId"].as_str()?)?;
-        let owner_start = usize::try_from(site["byteStart"].as_u64()?).ok()?;
-        let owner_end = usize::try_from(site["byteEnd"].as_u64()?).ok()?;
-        if site["sourceStatus"] != "SOURCE_RETAINED"
-            || site["sourceId"] != source.id
-            || owner.source_ids.as_slice() != [source.id.clone()]
-            || source.service != owner.service
-            || site["file"] != source.file
-            || site["sourceDigest"] != source.text_digest
-            || site["evidenceDigest"] != source.evidence_digest
-            || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
-            || owner_end.checked_sub(owner_start) != Some(source.text.len())
-        {
-            return None;
-        }
-        let start = usize::try_from(owner.normalized["signatureStart"].as_u64()?)
-            .ok()?
-            .checked_sub(owner_start)?;
-        let end = usize::try_from(owner.normalized["signatureEnd"].as_u64()?)
-            .ok()?
-            .checked_sub(owner_start)?;
-        if source.text.get(start..end) != Some(signature) {
-            return None;
-        }
-    }
-    Some(signature)
-}
-
 pub(in crate::documentation) fn csharp_candidate(owner: &Observation) -> bool {
     owner.normalized["schema"]
         .as_str()

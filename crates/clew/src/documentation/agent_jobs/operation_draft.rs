@@ -229,7 +229,12 @@ pub(super) fn run_loaded_selection(
         .as_ref()
         .is_some_and(|report| report.execution_mode.as_deref() != Some(MODE))
     {
-        let message = if new_run {
+        let message = if selected_prior
+            .as_ref()
+            .is_some_and(|report| report.execution_mode.is_none())
+        {
+            "RECOVERY_MODE_MISMATCH: this Work has a retired document-generation run. Inspect or cancel that saved run; read the saved Work and author originals through the compose/bind/finalize human-page route. No recapture or model call is needed for inspection."
+        } else if new_run {
             "RECOVERY_MODE_MISMATCH: this Work already has a generic author/reviewer run; --new-run applies only to an operation draft"
         } else {
             "RECOVERY_MODE_MISMATCH: this Work already has a generic author/reviewer run; prepare new Work for an operation draft"
@@ -500,7 +505,7 @@ pub(super) fn run_loaded_selection(
 
     let validation_phase = Phase::start("VALIDATE_AND_RENDER_OPERATION_DRAFT");
     let validation_result =
-        super::super::operation_answer::validate_and_render_draft(&packet, &audit, answer.clone());
+        super::super::operation_answer::validate_draft(&packet, &audit, answer.clone());
     let rendered = match validation_result {
         Ok(rendered) => {
             validation_phase.complete();
@@ -547,25 +552,14 @@ pub(super) fn run_loaded_selection(
         }
     };
 
-    let output_dir = if report
-        .draft_repair
-        .as_ref()
-        .is_some_and(|origin| origin.rejection.is_some())
-    {
-        repo.path(&format!(".codeclew/drafts/{}/{}", work.id, report.run))?
-    } else {
-        repo.path(&format!(".codeclew/drafts/{}", work.id))?
-    };
-    let output = progress::run("WRITE_OPERATION_DRAFT_OUTPUTS", || {
-        super::super::work::write_explanation_outputs(
+    let output_dir = repo.path(&format!(".codeclew/drafts/{}/{}", work.id, report.run))?;
+    let output = progress::run("SAVE_OPERATION_ANSWER_RECORDS", || {
+        super::super::work::save_answer_records(
             &output_dir,
             &work.id,
             &packet,
             &audit,
             &rendered.answer,
-            &rendered.markdown,
-            &rendered.html,
-            rendered.process_diagram.as_ref(),
         )
     })?;
     report.status = "DRAFT".into();
@@ -579,7 +573,7 @@ pub(super) fn run_loaded_selection(
         "packetDigest":packet_digest,
         "rawAnswerDigest":report.attempts.last().and_then(|attempt|attempt.result_digest.clone()),
         "outputDirectory":output["outputDirectory"],
-        "processDiagram":output["processDiagram"]
+        "files":output["files"]
     }));
     finish_state(repo, &config, &mut report, &mut checkpoint)?;
     Ok(run_summary(&report))
@@ -605,7 +599,7 @@ fn load_semantic_repair_source(
             "RECOVERY_INPUT_BINDING_MISMATCH: rejection author packet differs",
         ));
     }
-    super::super::operation_answer::validate_and_render_draft(
+    super::super::operation_answer::validate_draft(
         &selected.packet,
         &selected.audit,
         selected.answer.clone(),
@@ -823,7 +817,7 @@ pub(super) fn review_source(
             "RECOVERY_INPUT_BINDING_MISMATCH: original author input contains an unbound repair instruction",
         ));
     }
-    super::super::operation_answer::validate_and_render_draft(packet, audit, saved.result.clone())?;
+    super::super::operation_answer::validate_draft(packet, audit, saved.result.clone())?;
     let mut author_contract = json!({"instruction":input.request["payload"]["instruction"],"packetGuide":input.request["payload"]["packetGuide"],"outputSchema":input.request["payload"]["outputSchema"]});
     if report.draft_repair.is_some() {
         author_contract["repair"] = input.request["payload"]["repair"].clone();
@@ -1010,11 +1004,7 @@ fn load_repair_source(
         rejection: None,
     };
     let feedback = if require_invalid {
-        match super::super::operation_answer::validate_and_render_draft(
-            packet,
-            audit,
-            saved.result.clone(),
-        ) {
+        match super::super::operation_answer::validate_draft(packet, audit, saved.result.clone()) {
             Ok(_) => {
                 return Err(invalid(
                     "DRAFT_REPAIR_NOT_NEEDED: the retained source answer now passes native validation; replay it with --draft",
@@ -2316,7 +2306,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 "SEND_AGENT_REQUEST",
                 "WAIT_AGENT_DRIVER_RESPONSE",
                 "VALIDATE_AND_RENDER_OPERATION_DRAFT",
-                "WRITE_OPERATION_DRAFT_OUTPUTS",
+                "SAVE_OPERATION_ANSWER_RECORDS",
             ],
         );
         for phase in [
@@ -2327,7 +2317,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             "SEND_AGENT_REQUEST",
             "WAIT_AGENT_DRIVER_RESPONSE",
             "VALIDATE_AND_RENDER_OPERATION_DRAFT",
-            "WRITE_OPERATION_DRAFT_OUTPUTS",
+            "SAVE_OPERATION_ANSWER_RECORDS",
         ] {
             assert_terminal_phase(&progress_events, phase, "COMPLETED");
         }
@@ -2458,12 +2448,13 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
 
         let output_dir = PathBuf::from(first["draft"]["outputDirectory"].as_str().unwrap());
         assert!(output_dir.join("answer.json").is_file());
-        assert!(output_dir.join("operation.md").is_file());
-        assert!(output_dir.join("index.html").is_file());
-        fs::remove_file(output_dir.join("operation.md")).unwrap();
+        assert!(!output_dir.join("operation.md").exists());
+        assert!(!output_dir.join("index.html").exists());
+        assert!(output_dir.join("reader-packet.json").is_file());
+        fs::remove_file(output_dir.join("answer.json")).unwrap();
         let replay = run_loaded(&repo, &work, Some(&config_path), false).unwrap();
         assert_eq!(replay["status"], "DRAFT");
-        assert!(output_dir.join("operation.md").is_file());
+        assert!(output_dir.join("answer.json").is_file());
         report = latest_report(&repo, &work.id).unwrap().unwrap();
         assert_eq!(report.attempts.len(), 1, "saved answer must be reused");
 
@@ -2804,8 +2795,11 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         assert_eq!(first["draft"]["reviewStatus"], "UNREVIEWED");
         assert_eq!(first["draft"]["publication"], "NOT_PUBLISHED");
         let output_dir = PathBuf::from(first["draft"]["outputDirectory"].as_str().unwrap());
-        let markdown = fs::read_to_string(output_dir.join("operation.md")).unwrap();
-        assert!(markdown.contains("## Internal process explanation"));
+        let answer: Value =
+            store::read(&output_dir.join("answer.json"), store::MAX_RECORD).unwrap();
+        assert!(answer["summary"].is_object());
+        assert!(!output_dir.join("operation.md").exists());
+        assert!(!output_dir.join("index.html").exists());
 
         let report = latest_report(&repo, &work.id).unwrap().unwrap();
         assert_eq!(report.attempts.len(), 1);
@@ -2857,10 +2851,10 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         );
         assert!(payload.get("audit").is_none());
 
-        fs::remove_file(output_dir.join("operation.md")).unwrap();
+        fs::remove_file(output_dir.join("answer.json")).unwrap();
         let replay = run_loaded(&repo, &work, Some(&config_path), false).unwrap();
         assert_eq!(replay["status"], "DRAFT");
-        assert!(output_dir.join("operation.md").is_file());
+        assert!(output_dir.join("answer.json").is_file());
         assert_eq!(
             latest_report(&repo, &work.id)
                 .unwrap()
@@ -3429,7 +3423,9 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         checkpoint.phase = "AUTHOR".into();
         save_run_checkpoint(&repo, &mut report, &checkpoint).unwrap();
 
-        let output_dir = repo.path(&format!(".codeclew/drafts/{}", work.id)).unwrap();
+        let output_dir = repo
+            .path(&format!(".codeclew/drafts/{}/{}", work.id, report.run))
+            .unwrap();
         let blocked_answer_path = output_dir.join("answer.json");
         fs::create_dir_all(&blocked_answer_path).unwrap();
         let interrupted = run_loaded(&repo, &work, Some(&config_path), false).unwrap_err();
@@ -3770,8 +3766,11 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         )
         .unwrap();
         let draft_dir = repo.path(&format!(".codeclew/drafts/{}", work.id)).unwrap();
-        let blocked_answer = draft_dir.join("answer.json");
-        fs::create_dir_all(&blocked_answer).unwrap();
+        // The repair gets a fresh run directory. Block its parent before
+        // retention, after the authoritative model result has been saved.
+        fs::create_dir_all(draft_dir.parent().unwrap()).unwrap();
+        let blocked_answer = draft_dir;
+        fs::write(&blocked_answer, b"owned interrupted-retention fixture").unwrap();
         let interrupted = run_loaded_action(
             &repo,
             &work,
@@ -3785,7 +3784,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         assert_eq!(interrupted_report.status, "PREPARED");
         assert_eq!(interrupted_report.attempts.len(), 1);
         assert!(interrupted_report.attempts[0].result_digest.is_some());
-        fs::remove_dir_all(&blocked_answer).unwrap();
+        fs::remove_file(&blocked_answer).unwrap();
         let first = run_loaded_action(
             &repo,
             &work,
@@ -3835,15 +3834,14 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         let audit = super::super::super::operation_packet::build(&work)
             .unwrap()
             .1;
-        let validation_error =
-            match super::super::super::operation_answer::validate_and_render_draft(
-                &packet,
-                &audit,
-                source_result.result.clone(),
-            ) {
-                Err(error) => error,
-                Ok(_) => panic!("source result must remain invalid"),
-            };
+        let validation_error = match super::super::super::operation_answer::validate_draft(
+            &packet,
+            &audit,
+            source_result.result.clone(),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("source result must remain invalid"),
+        };
         assert_eq!(
             payload["repair"]["feedback"]["code"],
             serde_json::to_value(validation_error.code).unwrap()
@@ -4091,9 +4089,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         )
         .unwrap();
         let validation_error =
-            match super::super::super::operation_answer::validate_and_render_draft(
-                &packet, &audit, answer,
-            ) {
+            match super::super::super::operation_answer::validate_draft(&packet, &audit, answer) {
                 Err(error) => error,
                 Ok(_) => panic!("synthetic source answer must be invalid"),
             };

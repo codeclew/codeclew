@@ -363,7 +363,7 @@ fn delivered_records(work: &Work, delivery: &Delivery) -> Result<Vec<Value>, Cle
                 .get(reference)
                 .ok_or_else(|| invalid("expanded row has foreign reference"))?;
             if row["kind"].as_str() == Some(handle.kind.as_str())
-                && super::proposals::evidence_reference_allowed(handle)
+                && super::work::evidence_reference_allowed(handle)
             {
                 insert_record(&mut records, reference, row.clone())?;
             }
@@ -592,12 +592,15 @@ mod tests {
         packet["packetDigest"] = json!(digest(packet).unwrap());
     }
 
-    fn render_expanded_source(packet: &Value, audit: &Value) -> operation_answer::RenderedAnswer {
+    fn validate_expanded_source(
+        packet: &Value,
+        audit: &Value,
+    ) -> operation_answer::ValidatedAnswer {
         let answer = json!({"schema":"codeclew-operation-answer/1.1", "packetDigest":packet["packetDigest"],
             "title":"Expanded source evidence", "summary":{"text":"The captured helper source provides the local boundary.","evidence":["frontier-source-ref"]},
             "steps":[{"kind":"action","meaning":{"text":"Keep the retained expression and mutation order.","evidence":["frontier-source-ref"]}}],
             "preparations":[],"uncertainties":[]});
-        operation_answer::validate_and_render(packet, audit, answer).unwrap()
+        operation_answer::validate(packet, audit, answer).unwrap()
     }
 
     #[test]
@@ -655,11 +658,8 @@ mod tests {
         let review = context(&repo, &work, &[page], &[]).unwrap();
         assert_eq!(review, expanded["contextDelivery"]);
         assert!(base.get("contextDelivery").is_none());
-        let rendered = render_expanded_source(&expanded, &audit);
-        assert!(rendered.html.contains("Frontier.java"));
-        assert!(rendered.html.contains("href=\"#source-"));
-        assert!(rendered.html.contains("task == null || !task.eligible"));
-        assert!(rendered.markdown.contains(text));
+        let validated = validate_expanded_source(&expanded, &audit);
+        assert_eq!(validated.answer["packetDigest"], expanded["packetDigest"]);
     }
 
     #[test]
@@ -770,9 +770,8 @@ mod tests {
         assert!(extend(&repo, &work, &base, &[], &parts[..1]).is_err());
         let (expanded, audit) = extend(&repo, &work, &base, &[], &parts).unwrap();
         assert!(expanded["citations"].get("frontier-source-ref").is_some());
-        let rendered = render_expanded_source(&expanded, &audit);
-        assert!(rendered.html.contains("Frontier.java"));
-        assert!(rendered.markdown.contains(&text));
+        let validated = validate_expanded_source(&expanded, &audit);
+        assert_eq!(validated.answer["packetDigest"], expanded["packetDigest"]);
         let mut forged = expanded.clone();
         forged["contextDelivery"]["sourceParts"][0]["text"] = json!("invented");
         reseal(&mut forged);

@@ -1,9 +1,8 @@
 //! Frozen publication manifests and offline history inspection.
 use super::{
     bindings::{self, Bindings},
-    bytes, digest, invalid, io_error,
+    digest, invalid, io_error,
     model::SectionState,
-    render,
     store::{self, Repository},
 };
 use crate::{canonical, error::ClewError};
@@ -289,17 +288,6 @@ pub(super) fn validate_frozen_bindings(
     Ok((publication, binding))
 }
 
-pub(super) fn validate_frozen_reading_bindings(
-    repo: &Repository,
-    publication: &Publication,
-    raw: &[u8],
-    contexts: &mut BTreeMap<String, super::check::Check>,
-) -> Result<(Bindings, Value), ClewError> {
-    let (binding, stats) = bindings::validate_retained_reading_bindings(repo, raw, contexts)?;
-    validate_publication_binding(publication, &binding)?;
-    Ok((binding, stats))
-}
-
 fn validate_publication_binding(
     publication: &Publication,
     binding: &Bindings,
@@ -380,197 +368,6 @@ fn records(repo: &Repository) -> Result<Vec<Publication>, ClewError> {
     }
     rows.sort_by(|a, b| b.ordinal.cmp(&a.ordinal).then(a.id.cmp(&b.id)));
     Ok(rows)
-}
-fn nav(id: &str, parent: Option<&str>, nested: bool, language: &str) -> String {
-    let label = |en, ru| super::reader::text(language, en, ru);
-    let previous_label = label("Previous snapshot", "Предыдущий снимок");
-    let snapshot = label("Snapshot", "Снимок");
-    let retained = label(
-        "retained source version",
-        "сохранённая версия исходных данных",
-    );
-    let history_label = label("Snapshot history", "История снимков");
-    let history = if nested {
-        "../../../history.html"
-    } else {
-        "../../history.html"
-    };
-    let previous = parent
-        .map(|p| {
-            format!(
-                "<a href=\"{}{p}/overview.html\">{previous_label}</a>",
-                if nested { "../../" } else { "../" }
-            )
-        })
-        .unwrap_or_default();
-    format!(
-        "<details class=\"snapshot-history\"><summary>{snapshot} {} · {retained}</summary><nav class=\"snapshot-links\" aria-label=\"{history_label}\"><a href=\"{history}\">{history_label}</a>{previous}</nav></details>",
-        &id[..12]
-    )
-}
-pub(super) fn prepare(
-    repo: &Repository,
-    id: &str,
-    binding: &Bindings,
-    files: &mut BTreeMap<String, Vec<u8>>,
-    input_digest: &str,
-    released: bool,
-) -> Result<Publication, ClewError> {
-    let existing = repo.path(&path(id)?)?;
-    let retained = if existing.exists() {
-        Some(load(repo, id)?)
-    } else {
-        None
-    };
-    if retained.as_ref().is_some_and(|p| p.released != released) {
-        return Err(invalid(
-            "publication identity conflicts with its existing release mode",
-        ));
-    }
-    let (parent, ordinal) = if !released {
-        (None, 0)
-    } else if let Some(p) = &retained {
-        (p.parent.clone(), p.ordinal)
-    } else {
-        let parent = records(repo)?.into_iter().next();
-        match parent {
-            Some(publication) => (Some(publication.id), publication.ordinal.saturating_add(1)),
-            None => (None, 1),
-        }
-    };
-    for (name, contents) in files
-        .iter_mut()
-        .filter(|(n, _)| n.ends_with(".html") && n.as_str() != "root-overview.html")
-    {
-        let nested = name.contains('/');
-        let mut html = String::from_utf8(contents.clone()).map_err(io_error)?;
-        if nested {
-            html = html.replace("href=\"../../../index.html\"", "href=\"../overview.html\"");
-        }
-        if released {
-            html = html.replacen(
-                "</nav>",
-                &format!(
-                    "</nav>{}",
-                    nav(
-                        id,
-                        parent.as_deref(),
-                        nested,
-                        binding.documentation_language.as_deref().unwrap_or("en")
-                    )
-                ),
-                1,
-            );
-        }
-        *contents = html.into_bytes();
-    }
-    let declarations = json!({"schema":"codeclew-documentation-publication-inputs/1.0","manifest":repo.manifest,"services":repo.services()?,"interactions":repo.interactions()?,"scenarios":repo.scenarios()?,"entities":super::entities::records(repo)?,"notes":super::notes::snapshot(repo)?,"coordinator":super::updates::state(repo)?});
-    files.insert("inputs.json".into(), bytes(&declarations)?);
-    let mut packages = BTreeSet::new();
-    for o in binding.observations.values().chain(
-        binding
-            .fragments
-            .values()
-            .filter_map(|f| f.evidence.as_ref())
-            .flat_map(|e| e.observations.values()),
-    ) {
-        if o.kind == "EVIDENCE_PACKAGE"
-            && let Some(id) = o.normalized["expectation"]["manifestDigest"].as_str()
-        {
-            packages.insert(id.to_owned());
-        }
-    }
-    let mut tags: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for (id, event) in super::updates::state(repo)?.targets {
-        if let Some(tag) = event.tag {
-            tags.entry(id).or_default().insert(tag, event.revision);
-        }
-    }
-    Ok(Publication {
-        schema: "codeclew-documentation-publication/1.0".into(),
-        id: id.into(),
-        released,
-        parent,
-        ordinal,
-        input_digest: input_digest.into(),
-        documentation_language: binding.documentation_language.clone(),
-        target_revisions: binding.target_revisions.clone(),
-        sections: binding.section_states.clone(),
-        explanation_versions: binding
-            .narratives
-            .iter()
-            .flat_map(|(subject, n)| {
-                n.operations
-                    .iter()
-                    .map(move |o| (format!("{subject}/{}", o.id), o))
-            })
-            .map(|(id, o)| Ok((id, digest(o)?)))
-            .collect::<Result<_, ClewError>>()?,
-        reviewed_answers: binding
-            .reviewed_answers
-            .iter()
-            .map(|(id, e)| Ok((id.clone(), digest(e)?)))
-            .collect::<Result<_, ClewError>>()?,
-        observed_tags: tags,
-        evidence_packages: packages.into_iter().collect(),
-        files: BTreeMap::new(),
-    })
-}
-pub(super) fn index(repo: &Repository, current: &str) -> Result<(), ClewError> {
-    let rows = records(repo)?;
-    let publication = load(repo, current)?;
-    let language = publication
-        .documentation_language
-        .as_deref()
-        .unwrap_or("en");
-    let label = |en, ru| super::reader::text(language, en, ru);
-    let snapshot = label("Snapshot", "Снимок");
-    let latest_release_label = label("Latest release", "Последний выпуск");
-    let targets = label("Observed targets and tags", "Сохранённые версии и метки");
-    let latest_release = rows.first().map(|p| p.id.as_str());
-    let cards = rows.iter().map(|p| {
-        let publication_language = match p.documentation_language.as_deref() {
-            Some("en") => label("English", "Английский"),
-            Some("ru") => label("Russian", "Русский"),
-            _ => label("Original version (language unspecified)", "Исходная версия (язык не указан)"),
-        };
-        format!("<li><a href=\"generated/{}/overview.html\">{snapshot} {} · {}</a> · {}{}<details><summary>{targets}</summary><pre>{}</pre></details></li>", p.id, p.ordinal, &p.id[..12], publication_language, if Some(p.id.as_str()) == latest_release { format!(" · {latest_release_label}") } else { String::new() }, render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))
-    }).collect::<String>();
-    let navigation_publication = if publication.released {
-        Some(&publication)
-    } else {
-        rows.first()
-    };
-    let (prefix, overview, pages) = navigation_publication
-        .map(|p| {
-            (
-                format!("generated/{}/", p.id),
-                "index.html".to_owned(),
-                p.files.keys().cloned().collect::<Vec<_>>(),
-            )
-        })
-        .unwrap_or_else(|| (String::new(), "index.html".to_owned(), Vec::new()));
-    let nav = super::reader::navigation_language(&prefix, &overview, None, &pages, language);
-    let title = label("Released documentation snapshots", "Выпуски документации");
-    let explanation = label(
-        "Only explicit release checkpoints appear here. Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.",
-        "Здесь показаны только явно выпущенные снимки. Снимки сохраняют версии исходных данных и состояние проверки смысла. Перемещение метки не изменяет снимок. Проверка истории позволяет убедиться в целостности сохранённых файлов и доступности подтверждающих данных.",
-    );
-    let history = if rows.is_empty() {
-        let empty = label(
-            "No released snapshots yet. Local proposal snapshots remain retained, but are not listed here. Run <code>clew docs render --root &lt;ROOT&gt; --publish</code> to create a release checkpoint from saved documentation. This does not recapture source or perform meaning review.",
-            "Выпущенных снимков пока нет. Локальные снимки предложений сохранены, но не показаны здесь. Выполните <code>clew docs render --root &lt;ROOT&gt; --publish</code>, чтобы создать выпуск из сохранённой документации. Команда не извлекает исходный код заново и не проверяет смысл описаний.",
-        );
-        format!("<p class=\"history-empty\">{empty}</p>")
-    } else {
-        format!("<ol>{cards}</ol>")
-    };
-    let body = format!("<h1>{title}</h1><p>{explanation}</p>{history}");
-    repo.atomic(
-        "docs/history.html",
-        super::reader::decorate(&super::reader::page_language(title, &body, language), &nav)
-            .as_bytes(),
-    )
 }
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
@@ -685,6 +482,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 #[cfg(test)]
 mod language_tests {
+    use super::super::bytes;
     use super::*;
     #[test]
     fn frozen_manifest_budget_refuses_before_parsing_and_keeps_recovery_exact() {
@@ -724,13 +522,7 @@ mod language_tests {
         .unwrap();
         let original = bytes(&working).unwrap();
         repo.atomic(&path(&id).unwrap(), &original).unwrap();
-        index(&repo, &id).unwrap();
-        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
-        assert!(html.contains("Released documentation snapshots"));
-        assert!(html.contains("class=\"history-empty\""));
-        assert!(html.contains("Local proposal snapshots remain retained"));
-        assert!(html.contains("clew docs render --root &lt;ROOT&gt; --publish"));
-        assert!(!html.contains("<ol>"));
+
         assert!(records(&repo).unwrap().is_empty());
         assert_eq!(
             fs::read(repo.path(&path(&id).unwrap()).unwrap()).unwrap(),
@@ -743,11 +535,7 @@ mod language_tests {
         released.ordinal = 1;
         repo.atomic(&path(&released.id).unwrap(), &bytes(&released).unwrap())
             .unwrap();
-        index(&repo, &released.id).unwrap();
-        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
-        assert!(!html.contains("class=\"history-empty\""));
-        assert!(html.contains(&format!("generated/{}/overview.html", released.id)));
-        assert!(!html.contains(&format!("generated/{id}/overview.html")));
+
         assert_eq!(records(&repo).unwrap().len(), 1);
         assert_eq!(
             fs::read(repo.path(&path(&id).unwrap()).unwrap()).unwrap(),
@@ -820,23 +608,24 @@ mod language_tests {
             &bytes(&publication).unwrap(),
         )
         .unwrap();
-        index(&repo, &publication.id).unwrap();
-        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
-        assert!(html.contains("<html lang=\"ru\">"));
-        assert!(html.contains("Выпуски документации"));
-        assert!(html.contains("Исходная версия (язык не указан)"));
-        assert!(html.contains("Русский"));
+
         assert_eq!(
             serde_json::to_value(load(&repo, &id).unwrap()).unwrap(),
             legacy_serialized
         );
-        assert!(
-            nav(&publication.id, Some(&language_unspecified.id), true, "ru")
-                .contains(&format!("../../{}/overview.html", language_unspecified.id))
-        );
-        assert!(
-            nav(&publication.id, Some(&language_unspecified.id), true, "ru")
-                .contains("Предыдущий снимок")
-        );
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PublicationReceipt {
+    pub schema: String,
+    pub bundle_id: String,
+    pub root_index_hash: String,
+    pub bindings_hash: String,
+    pub publication_hash: String,
+    pub effective_gaps: BTreeMap<String, BTreeMap<String, String>>,
+    pub requested_language: Option<String>,
+    /// UI language used when the request and retained binding omit one.
+    pub effective_language: String,
 }

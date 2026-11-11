@@ -52,8 +52,6 @@ fn scoped_check_preserves_offline_siblings_across_selected_catalog_change() {
         context["sourceAuthorities"]["orders"],
         "RETAINED_SOURCE_NOT_REVERIFIED"
     );
-    let (code, rendered) = f.run(&["docs", "render"]);
-    assert!(matches!(code, 0 | 4), "{rendered}");
     assert_eq!(
         Check::load_snapshot(&repo, &original).unwrap().services["orders"],
         initial.services["orders"]

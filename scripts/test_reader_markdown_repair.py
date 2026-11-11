@@ -4,6 +4,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import runpy
 import shutil
@@ -37,9 +38,12 @@ class ReaderMarkdownRepairTest(unittest.TestCase):
             'baseMapDigest':previous['mapDigest'],'replacements':[{'claim':'target','old':self.old,'new':self.new}]}
         self.patch=self.root/'patch.json';self.patch.write_text(C['encode'](self.spec))
         # Thin invocation of the existing shipped renderer, not another parser.
-        self.renderer=self.root/'render.cjs'
-        self.renderer.write_text('''const fs=require('node:fs'),path=require('node:path');
-const md=require('''+json.dumps(str(ROOT/'crates/clew/assets/documentation/markdown.js'))+''');
+        self.renderer=self.root/'render.mjs'
+        self.renderer.write_text('''import fs from 'node:fs'; import path from 'node:path';
+import {createRequire} from 'node:module';
+const require=createRequire('''+json.dumps(str(Path(os.environ.get('CODECLEW_MARKDOWN_RENDERER', ROOT/'skills/codeclew/examples/markdown-renderer'))/'render.mjs'))+''');
+const {marked}=await import(require.resolve('marked'));
+const md={render:text=>marked.parse(text)};
 const [input,output,mode,base,oldText,newText,control]=process.argv.slice(2);
 let text=fs.readFileSync(path.join(input,'index.md'),'utf8'),html=md.render(text);
 if(path.basename(input)==='candidate'){

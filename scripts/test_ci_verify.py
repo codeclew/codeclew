@@ -4,6 +4,7 @@
 from collections import Counter
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -51,7 +52,7 @@ class CiDispatchTests(unittest.TestCase):
         helper.write_text(STUB)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for name in ("python3", "dotnet", "cargo", "node", "gradlew"):
+        for name in ("python3", "dotnet", "cargo", "node", "npm", "gradlew"):
             path = self.root / "gradlew" if name == "gradlew" else self.bin / name
             path.write_text(
                 "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I -S "
@@ -99,7 +100,11 @@ class CiDispatchTests(unittest.TestCase):
             selected_commands.extend(commands)
 
         def tasks(commands):
-            return Counter(tuple(c) for c in commands if not (c[0] == "python3" and "-c" in c))
+            # The isolated renderer directory is fresh in each dispatch. Compare
+            # executable tasks while preserving all non-temporary arguments.
+            return Counter(tuple(re.sub(r"/\.codeclew-ci\.[^/]+/markdown-renderer", "/CI_TMP/markdown-renderer", arg)
+                                 for arg in c)
+                           for c in commands if not (c[0] == "python3" and "-c" in c))
 
         self.assertEqual(tasks(full_commands), tasks(selected_commands))
 

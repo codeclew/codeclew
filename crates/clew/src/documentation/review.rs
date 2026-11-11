@@ -1,12 +1,10 @@
 //! Coordinator-owned review binding and portable accepted-version provenance.
 use super::{
-    bindings::Bindings,
     check::Check,
     digest, invalid,
     model::Observation,
-    proposals::Artifact,
     store::Repository,
-    work::{self, Request, Work},
+    work::{self, Request},
 };
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
@@ -77,35 +75,7 @@ pub struct InfluenceScope {
     pub declarations: BTreeMap<String, Observation>,
 }
 
-impl Influence {
-    fn new(dependencies: BTreeMap<String, String>, checked: &Check) -> Result<Self, ClewError> {
-        let declarations = dependencies
-            .keys()
-            .filter_map(|id| {
-                let observation = checked.dependencies.get(id)?;
-                matches!(
-                    observation.kind.as_str(),
-                    "NOTE_ASSOCIATION"
-                        | "DECLARED_INTERACTION"
-                        | "SCENARIO_SELECTION"
-                        | "PROCESS_DEFINITION"
-                        | "VIEW_DEFINITION"
-                        | "PROCESS_SCOPE"
-                        | "VIEW_SCOPE"
-                )
-                .then(|| (id.clone(), observation.clone()))
-            })
-            .collect();
-        let data = InfluenceScope {
-            dependencies,
-            declarations,
-        };
-        Ok(Self {
-            scope: digest(&data)?,
-            data: Arc::new(data),
-        })
-    }
-}
+impl Influence {}
 
 pub(super) fn influence_scopes(
     versions: &BTreeMap<String, AcceptedVersion>,
@@ -186,91 +156,7 @@ fn deserialize_previous_digest<'de, D: serde::Deserializer<'de>>(
     }
     Ok(digest)
 }
-pub(super) fn validate_accepted_version(version: &AcceptedVersion) -> Result<(), ClewError> {
-    version.external_request.validate_documentation_language()?;
-    if version.schema != ACCEPTED_VERSION_SCHEMA
-        || !valid_previous_digest(&version.previous_narrative_digest)
-    {
-        return Err(invalid(
-            "DOCS_REINDEX_REQUIRED: invalid accepted-version provenance; initialize a fresh documentation root and run docs check",
-        ));
-    }
-    Ok(())
-}
 
-pub(super) fn validate(
-    work: &Work,
-    proposal: &Artifact,
-    review: &MeaningReview,
-    evidence_digest: &str,
-) -> Result<(), ClewError> {
-    if review.schema != "codeclew-documentation-review/1.0"
-        || review.work != work.id
-        || review.proposal != proposal.id
-        || review.evidence_digest != evidence_digest
-    {
-        return Err(invalid(
-            "REVIEW_BINDING_MISMATCH: review belongs to another work, proposal or evidence dispatch",
-        ));
-    }
-    let actual: BTreeSet<_> = review.assessed_claims.iter().cloned().collect();
-    let expected: BTreeSet<_> = proposal.claims.keys().cloned().collect();
-    let operations: BTreeSet<_> = proposal
-        .narrative
-        .as_ref()
-        .into_iter()
-        .flat_map(|n| n.operations.iter().map(|o| o.id.clone()))
-        .collect();
-    if actual != expected
-        || actual.len() != review.assessed_claims.len()
-        || review
-            .assessed_operations
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            != operations
-        || operations.len() != review.assessed_operations.len()
-    {
-        return Err(invalid(
-            "REVIEW_COVERAGE_INCOMPLETE: assess every proposed claim and operation",
-        ));
-    }
-    if !matches!(
-        review.verdict.as_str(),
-        "APPROVE" | "REJECT" | "NEEDS_EVIDENCE"
-    ) || review.issues.len() > 128
-        || review.limitations.len() > 64
-        || review
-            .limitations
-            .iter()
-            .any(|s| s.trim().is_empty() || s.len() > 2048)
-    {
-        return Err(invalid("invalid or unbounded meaning review"));
-    }
-    for issue in &review.issues {
-        if !matches!(issue.severity.as_str(), "ERROR" | "LIMITATION")
-            || issue.reason.trim().is_empty()
-            || issue.reason.len() > 2048
-            || issue
-                .claim
-                .as_ref()
-                .is_some_and(|id| !expected.contains(id))
-            || issue.evidence.len() > 32
-            || issue.evidence.iter().any(|r| !work.handles.contains_key(r))
-        {
-            return Err(invalid(
-                "review issue has invalid claim, evidence or severity",
-            ));
-        }
-    }
-    if review.verdict == "APPROVE" && review.issues.iter().any(|i| i.severity == "ERROR") {
-        return Err(invalid("review approval contradicts its unresolved errors"));
-    }
-    if review.verdict != "APPROVE" && review.issues.is_empty() {
-        return Err(invalid("non-approval needs an actionable review issue"));
-    }
-    Ok(())
-}
 fn input_scope(
     request: &Request,
     inputs: &BTreeMap<String, Value>,
@@ -289,13 +175,6 @@ fn input_scope(
         normalized,
         source_ids: vec![],
     })
-}
-pub(super) fn scopes(
-    repo: &Repository,
-    checked: &mut Check,
-    versions: impl Iterator<Item = AcceptedVersion>,
-) -> Result<(), ClewError> {
-    attach_scopes(checked, &capture_scopes(repo, versions, &BTreeMap::new())?)
 }
 
 pub(super) fn capture_scopes(
@@ -386,191 +265,6 @@ pub(super) fn attach_scopes(
 ) -> Result<(), ClewError> {
     checked.dependencies.extend(scopes.clone());
     checked.refresh_digest()
-}
-pub(super) fn versions(
-    work: &Work,
-    proposal: &Artifact,
-    review: &MeaningReview,
-    invocation: &str,
-    driver_digest: &str,
-    evidence_digest: &str,
-    read_digest: &str,
-) -> Result<BTreeMap<String, AcceptedVersion>, ClewError> {
-    validate(work, proposal, review, evidence_digest)?;
-    if review.verdict != "APPROVE" || !proposal.status.starts_with("READY_") {
-        return Err(invalid(
-            "only an approved, machine-checked proposal can be accepted",
-        ));
-    }
-    let mut limitations = review.limitations.clone();
-    limitations.extend(
-        review
-            .issues
-            .iter()
-            .filter(|i| i.severity == "LIMITATION")
-            .map(|i| i.reason.clone()),
-    );
-    if proposal.status == "READY_WITH_LIMITATIONS" {
-        limitations.push(
-            "The proposal retains explicit source/provider or authored uncertainty limitations."
-                .into(),
-        );
-    }
-    let verification = if limitations.is_empty() {
-        "VERIFIED"
-    } else {
-        "VERIFIED_WITH_LIMITATIONS"
-    };
-    let mut versions = unassessed_versions(work, proposal, read_digest)?;
-    for version in versions.values_mut() {
-        version.invocation = Some(invocation.into());
-        version.review_digest = Some(digest(review)?);
-        version.reviewer_driver_digest = Some(driver_digest.into());
-        version.evidence_digest = evidence_digest.into();
-        version.verification = verification.into();
-        version.limitations = limitations.clone();
-    }
-    Ok(versions)
-}
-
-/// Preserve the work boundary without inventing a reviewer or approval receipt.
-pub(super) fn unassessed_versions(
-    work: &Work,
-    proposal: &Artifact,
-    read_digest: &str,
-) -> Result<BTreeMap<String, AcceptedVersion>, ClewError> {
-    if !proposal.status.starts_with("READY_") {
-        return Err(invalid(
-            "only a machine-ready proposal can be published locally",
-        ));
-    }
-    let scope = input_scope(&work.request, &work.external_inputs)?;
-    let mut influence = work.influence.clone();
-    influence.remove("documentation:external-inputs");
-    influence.insert(scope.id, scope.digest);
-    let influence = Influence::new(influence, &work.checked)?;
-    proposal
-        .narrative
-        .as_ref()
-        .ok_or_else(|| invalid("proposal has no canonical content"))?
-        .operations
-        .iter()
-        .map(|operation| {
-            Ok((
-                format!("{}/{}", work.subject, operation.id),
-                AcceptedVersion {
-                    schema: "codeclew-documentation-accepted-version/1.2".into(),
-                    work: work.id.clone(),
-                    proposal: proposal.id.clone(),
-                    invocation: None,
-                    review_digest: None,
-                    reviewer_driver_digest: None,
-                    evidence_digest: digest(&(&work.id, &proposal.id, read_digest))?,
-                    read_digest: read_digest.into(),
-                    operation_digest: digest(operation)?,
-                    verification: "UNASSESSED".into(),
-                    limitations: vec!["Published locally without separate meaning review.".into()],
-                    source_revisions: work
-                        .checked
-                        .services
-                        .iter()
-                        .map(|(id, e)| (id.clone(), e.revision.clone()))
-                        .collect(),
-                    influence: influence.clone(),
-                    external_request: work.request.clone(),
-                    external_fingerprint: digest(&work.external_inputs)?,
-                    previous_narrative_digest: digest(&work.retained)?,
-                },
-            ))
-        })
-        .collect()
-}
-/// Bind every fragment to the complete influence boundary without copying its
-/// map or observations into each operation. Scope hashes preserve mixed versions.
-pub(super) fn attach(
-    binding: &mut Bindings,
-    checked: &Check,
-    versions: BTreeMap<String, AcceptedVersion>,
-) -> Result<(), ClewError> {
-    let scopes = influence_scopes(&versions)?;
-    for (scope, data) in scopes {
-        for (dependency, expected) in &data.dependencies {
-            if checked
-                .dependencies
-                .get(dependency)
-                .is_none_or(|o| &o.digest != expected)
-            {
-                return Err(invalid("accepted influence changed during publication"));
-            }
-        }
-        binding.influence_scopes.insert(scope, data);
-    }
-    let retained_authored: BTreeSet<_> = binding
-        .fragments
-        .iter()
-        .filter(|(_, fragment)| fragment.influence_scope.is_some())
-        .map(|(key, _)| {
-            super::explanation_authorship::retained_scope(binding, key)
-                .map(|authored| (key, authored))
-        })
-        .collect::<Result<Vec<_>, ClewError>>()?
-        .into_iter()
-        .filter(|(_, authored)| *authored)
-        .map(|(key, _)| key.clone())
-        .collect();
-    for (key, version) in versions {
-        let (subject, operation) = key
-            .split_once('/')
-            .ok_or_else(|| invalid("invalid accepted section key"))?;
-        let current = binding
-            .narratives
-            .get(subject)
-            .and_then(|n| n.operations.iter().find(|o| o.id == operation))
-            .ok_or_else(|| invalid("accepted operation is not present in publication"))?;
-        if digest(current)? != version.operation_digest {
-            return Err(invalid("accepted operation changed during publication"));
-        }
-        for (id, fragment) in binding
-            .fragments
-            .iter_mut()
-            .filter(|(id, _)| id.starts_with(&format!("{key}/")))
-        {
-            if retained_authored.contains(id) {
-                continue;
-            }
-            fragment.influence_scope = Some(version.influence.scope.clone());
-            if let Some(evidence) = &mut fragment.evidence {
-                evidence.revisions.extend(version.source_revisions.clone());
-            }
-        }
-        binding.accepted_versions.insert(key, version);
-    }
-    Ok(())
-}
-pub(super) fn verification(binding: &mut Bindings) {
-    for (key, version) in &binding.accepted_versions {
-        if let Some(state) = binding.section_states.get_mut(key) {
-            state.verification = version.verification.clone();
-        }
-    }
-    for subject in binding.narratives.keys() {
-        let children: Vec<_> = binding
-            .section_states
-            .iter()
-            .filter(|(key, _)| key.starts_with(&format!("{subject}/")))
-            .map(|(_, s)| s.verification.as_str())
-            .collect();
-        let verification = if !children.is_empty() && children.iter().all(|s| *s == "VERIFIED") {
-            "VERIFIED"
-        } else if !children.is_empty() && children.iter().all(|s| s.starts_with("VERIFIED")) {
-            "VERIFIED_WITH_LIMITATIONS"
-        } else {
-            "UNASSESSED"
-        };
-        if let Some(state) = binding.section_states.get_mut(subject) {
-            state.verification = verification.into();
-        }
-    }
 }
 
 #[cfg(test)]

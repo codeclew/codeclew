@@ -900,90 +900,6 @@ fn semantic_digest(state: &NodeDataState) -> Result<String, ClewError> {
     }
     digest(&semantic)
 }
-pub(in crate::documentation) fn attach(
-    checked: &Check,
-    p: &mut BundleProjection,
-) -> Result<(), ClewError> {
-    if !p.pages.iter().any(|page| page.selection.expand_data_state) {
-        return Ok(());
-    }
-    let graph = p
-        .source_call_graph
-        .as_mut()
-        .ok_or_else(|| invalid("expandDataState requires source-call graph"))?;
-    let selected: BTreeSet<_> = p
-        .pages
-        .iter()
-        .filter(|p| p.selection.expand_data_state)
-        .flat_map(|p| {
-            p.examined_sources
-                .iter()
-                .flat_map(|s| s.memberships.iter().map(|m| m.node.clone()))
-        })
-        .collect();
-    attach_graph(checked, graph, &selected)?;
-    for page in &mut p.pages {
-        if let Some(examined) = &mut page.examined_sources {
-            let versions: Vec<_> = examined
-                .memberships
-                .iter()
-                .map(|member| (member, &graph.nodes[&member.node].examined_source_digest))
-                .collect();
-            examined.examined_source_digest = digest(&(
-                &examined.schema,
-                versions,
-                &examined.handoff_context_digests,
-            ))?;
-        }
-    }
-    for page in p.pages.iter_mut().filter(|p| p.selection.expand_data_state) {
-        let nodes: Vec<_> = page
-            .examined_sources
-            .iter()
-            .flat_map(|e| e.memberships.iter().map(|m| m.node.clone()))
-            .filter(|id| {
-                let node = &graph.nodes[id];
-                !node
-                    .observations
-                    .get(&node.callable.declaration_id)
-                    .is_some_and(super::source::compiler::kotlin_constructor_admitted)
-            })
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let hashes: Vec<_> = nodes
-            .iter()
-            .map(|id| {
-                (
-                    id,
-                    graph.nodes[id]
-                        .data_state
-                        .as_ref()
-                        .map(|s| &s.data_state_digest),
-                )
-            })
-            .collect();
-        for callable in [
-            Some(&mut page.endpoint),
-            Some(&mut page.worker),
-            page.wiring.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            callable
-                .gaps
-                .retain(|gap| gap.code != "KOTLIN_DATA_STATE_UNAVAILABLE");
-        }
-        page.data_state = Some(ExaminedDataState {
-            schema: SCHEMA.into(),
-            authority: AUTHORITY.into(),
-            data_state_digest: digest(&hashes)?,
-            nodes,
-        });
-    }
-    Ok(())
-}
 
 /// Shared graph consumer: same fact, source, row and IR ceilings as native pages.
 pub(in crate::documentation) fn attach_graph(
@@ -2340,22 +2256,6 @@ mod tests {
                 .unwrap()
                 .get("expandDataState")
                 .is_none()
-        );
-        let mut required = b.clone();
-        required.expand_data_state = true;
-        let checked = crate::documentation::check::assemble(
-            "input".into(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-        )
-        .unwrap();
-        assert!(
-            super::super::project::project_unresolved(&checked, &[required])
-                .unwrap_err()
-                .to_string()
-                .contains("requires expandSourceCalls")
         );
         assert!(
             serde_json::to_value(node())
