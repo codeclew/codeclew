@@ -238,7 +238,8 @@ class PageComposeTest(unittest.TestCase):
                 self.assertEqual(details['fragmentPointer'], '/pages/1/fragments/2')
                 self.assertEqual(details['missingFields'], [missing])
                 self.assertIn('Plain headings/navigation: use {text}', details['nextAction'])
-                self.assertIn('provide {id,text,evidence}', details['nextAction'])
+                self.assertIn('{id,text,evidence}', details['nextAction'])
+                self.assertIn('{id,text,declaredEvidence}', details['nextAction'])
                 for private in (private_text, 'private-domain.md', 'private-claim-id', self.handle):
                     self.assertNotIn(private, stream.getvalue())
                 self.assertEqual(path.read_bytes(), before)
