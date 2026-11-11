@@ -25,11 +25,12 @@ class CollectionTest(unittest.TestCase):
         self.config=self.root/'collection.json';self.write(self.config,self.selected)
         self.local=self.root/'roots.json';self.write(self.local,{'schema':'codeclew-evidence-inputs/1.0',
             'inputs':{name:{'root':str(path)} for name,path in self.roots.items()},'manifests':{}})
-        self.contexts={};self.works={};self.fail=None;self.calls=[];self.serial=0
+        self.contexts={};self.works={};self.part_failure=None;self.calls=[];self.serial=0
         for alias,services in [('east',['orders','billing','warehouse']),('west',['orders','notifier'])]:
             external={'id':'provider','title':'Payments' if alias=='east' else 'Unrelated provider',
                       'description':'Declared '+alias+' provider','configurationReferences':[{'service':'unselected','path':'hidden.conf'}]}
-            uses=[{'id':s+'-use','title':s+' operation','from':{'service':s},'to':{'service':'provider'},
+            uses=[{'id':s+'-use','title':s+' operation','externalService':'provider','external':True,
+                   'from':{'service':s},'to':{'service':'provider'},
                    'transport':{'kind':'http','method':'POST','path':'/'+s}} for s in services]
             normalized={'externalService':external,'interactions':uses,'authority':'DECLARED_EXTERNAL_SERVICE'}
             dep={'id':'external-service:provider','kind':'EXTERNAL_SERVICE','service':'','symbol':external['title'],
@@ -96,7 +97,7 @@ class CollectionTest(unittest.TestCase):
                 'recordDigest':'sha256:'+hashlib.sha256(raw).hexdigest(),
                 'fragmentDigest':'sha256:'+hashlib.sha256(chunk).hexdigest(),
                 'nextCursor':str(offset+len(chunk)) if offset+len(chunk)<len(raw) else None}
-            if self.fail==context['service']:value['startByte']=999
+            if self.part_failure==context['service']:value['startByte']=999
             value['receiptDigest']=S['digest'](value)
         return subprocess.CompletedProcess(args,0,S['encode'](value).encode(),b'')
 
@@ -136,7 +137,7 @@ class CollectionTest(unittest.TestCase):
         self.assertTrue(result['complete']);self.assertEqual(result['counters']['recordsImported'],1)
         self.assertEqual(result['counters']['recordsReused'],9)
         self.assertEqual(hashlib.sha256((first/'inventory.json').read_bytes()).hexdigest(),old_hash)
-        self.fail='orders'
+        self.part_failure='orders'
         # Force a changed record so failure occurs while reading its parts.
         self.contexts[('east','orders','s2')]['dependency']['normalized']['interactions'][0]['title']='Changed again'
         dep=self.contexts[('east','orders','s2')]['dependency'];dep['digest']=S['digest'](dep['normalized'])

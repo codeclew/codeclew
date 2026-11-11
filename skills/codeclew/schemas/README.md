@@ -29,5 +29,8 @@ and `data-model-plan.schema.json`. Keep their exact native copies in every skill
 Helper-owned inputs also include [evidence-inputs.schema.json](evidence-inputs.schema.json)
 for caller-selected roots/manifest assignments and
 [semantic-collection.schema.json](semantic-collection.schema.json) for explicit
-frozen catalog selections. See [shared catalog inputs](../references/shared-semantic-catalog.md).
+frozen catalog selections, plus
+[semantic-catalog-decisions.schema.json](semantic-catalog-decisions.schema.json)
+for established decisions and literal authored originals.
+See [shared catalog inputs](../references/shared-semantic-catalog.md).
 These helpers do not turn declared information into native SOURCE evidence.

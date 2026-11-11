@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codeclew:semantic-catalog-decisions:1.0",
+  "title": "Recorded semantic catalog decisions and literal authored originals",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "collection", "revision", "baseDigest", "records", "locations", "remove"],
+  "properties": {
+    "schema": {"const": "codeclew-semantic-catalog-decisions/1.0"},
+    "collection": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/id"},
+    "baseDigest": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "records": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/record"}},
+    "locations": {"type": "array", "maxItems": 4096, "items": {
+      "type": "object", "additionalProperties": false, "required": ["record", "target"],
+      "properties": {"record": {"type": "string", "minLength": 1},
+        "target": {"$ref": "#/$defs/target"}, "process": {"$ref": "#/$defs/target"}}
+    }},
+    "remove": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["id", "previousDigest"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "previousDigest": {"$ref": "#/$defs/digest"}}
+    }}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "target": {"type": "object", "additionalProperties": false, "required": ["docset", "page"],
+      "properties": {"docset": {"$ref": "#/$defs/id"}, "page": {"type": "string", "minLength": 6, "maxLength": 255, "pattern": "\\.html$"},
+        "anchor": {"type": "string", "minLength": 1, "maxLength": 512}, "problem": {"type": "object"}}
+    },
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "title", "target", "aliases", "status", "decision", "original"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "kind": {"enum": ["external", "concept", "local", "representation"]},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160}, "target": {"$ref": "#/$defs/target"},
+        "status": {"enum": ["CONFIRMED", "PROPOSED", "REJECTED"]}, "replaces": {"$ref": "#/$defs/digest"},
+        "decision": {"type": "object", "additionalProperties": false, "required": ["origin", "rationale"],
+          "properties": {"origin": {"enum": ["human", "agent", "model", "import"]},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1024}}},
+        "scope": {"type": "object", "additionalProperties": false, "required": ["docset", "service"],
+          "properties": {"docset": {"$ref": "#/$defs/id"}, "service": {"$ref": "#/$defs/id"}}},
+        "represents": {"$ref": "#/$defs/id"},
+        "aliases": {"type": "array", "minItems": 1, "maxItems": 128, "items": {
+          "type": "object", "additionalProperties": false, "required": ["input", "docset", "localId"],
+          "properties": {"input": {"$ref": "#/$defs/id"}, "docset": {"$ref": "#/$defs/id"},
+            "localId": {"type": "string", "minLength": 1, "maxLength": 512}, "service": {"$ref": "#/$defs/id"}}
+        }},
+        "original": {"type": "object", "required": ["page", "fragments"],
+          "description": "Existing authored-original page shape. Compose validates all fragment, location, component and evidence rules; no prose is generated here."}
+      }
+    }
+  }
+}

@@ -122,6 +122,100 @@ An incremental rebind or removal still needs the existing explicit `replace` or
 refreshing mechanical references are separate decisions. Keep unchanged originals
 and checked outputs; do not reauthor every service to refresh a common catalog.
 
+## Establish meanings and link local details
+
+Write one canonical decision per meaning using
+[the decision schema](../schemas/semantic-catalog-decisions.schema.json).
+For example, a bounded external record can explicitly map two local API profiles:
+
+```json
+{
+  "schema":"codeclew-semantic-catalog-decisions/1.0",
+  "collection":"platform","revision":"r1","baseDigest":null,
+  "records":[{
+    "id":"payments","kind":"external","title":"Payments",
+    "target":{"docset":"catalog","page":"payments.html"},
+    "aliases":[{"input":"east","docset":"east","localId":"provider"},
+               {"input":"west","docset":"west","localId":"payments-alt"}],
+    "status":"CONFIRMED",
+    "decision":{"origin":"agent","rationale":"Explicit established identity from the selected declarations."},
+    "original":{"page":"payments.md","fragments":[
+      {"text":"# Payments\n\n"},
+      {"id":"definition","text":"Authored definition from the selected information.\n",
+       "declaredEvidence":["RETURNED_DECLARED_HANDLE"]}]}
+  }],
+  "locations":[
+    {"record":"east/orders/EXTERNAL_USE:RETURNED_LOCAL_USE_ID",
+     "target":{"docset":"east","page":"orders.html","anchor":"payments"}}
+  ],
+  "remove":[]
+}
+```
+
+Replace example identities, claims, handles and destinations with actual selected
+values. Supply a local detail location for every selected usage of a confirmed
+system, and for each selected entity/representation context linked to a term.
+Use record IDs returned by `inspect`; `process` can optionally name the matching
+whole-process destination. Do not infer a process or equivalent system from its
+name. Several APIs can share one explicit canonical external identity. An
+unassigned external keeps zero service uses, rather than inventing a consumer.
+
+`CONFIRMED` means the mapping is explicitly established in this workflow, not a
+new approval dialog. Record its actual `human`, `agent`, `model` or `import` origin
+and rationale. An authorized agent can establish an unambiguous mapping; it must
+not falsely label it human. Leave ambiguity `PROPOSED` or scoped. Existing human
+decisions remain protected; proposed/rejected records cannot replace them.
+
+Concepts use `kind:"concept"`. A service-local clarification uses `kind:"local"`
+and `scope:{docset,service}`; its aliases explicitly name that service.
+Representations use `kind:"representation"`, the same scope and `represents`
+pointing to a confirmed concept. Representation aliases must match an explicitly
+retained entity representation, not an invented DTO/entity equivalence.
+
+Keep literal authored fragments in `original`, using the existing page format.
+The helper copies them unchanged into per-docset compose inputs. It does not
+generate prose, make a second author call, or publish pages. A shared definition
+is authored once; service addresses, configuration, contracts and operations stay
+in local details. Keep the complete original question and do the same-author
+scope check through the ordinary human-page workflow.
+
+Prepare an explicit docset registry with the selected service namespaces,
+publication bases and versions; the
+[five-service example](../examples/markdown-renderer/docset-semantic.example.json)
+shows the shape. Its catalog docset has no captured services. Then run:
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" links --collection collection.json --roots local-roots.json --clew "$CLEW" --inventory inventory-r1 --catalog decisions.json --routes routes.base.json --output-dir linked-r1
+```
+
+This rechecks owning native inventory headers and writes `routes.json`,
+`catalog.json`, `local-uses.json` and `originals.DOCSET.json`. The local sidecar
+keeps original declared contracts/configuration and provenance; the common
+registry contains links, not a duplicate integration description. Compose the
+selected originals and finalize with the declared/source manifests and the
+packaged renderer configured with `--navigation`, `--docset-routes`, `--docset`
+and `--docset-version`. Preserve existing landing/service originals and checked
+exports; add the selected literal pages through the existing compose/update path.
+The renderer checks actual local destinations and supplies canonical backlinks,
+scoped terms, representation links and explicit external sequence links.
+
+For an update, pass `--previous-catalog linked-r1` and a new output directory.
+An unchanged confirmed record is reused; an unapplied proposal is saved separately.
+A deliberate changed record requires `replaces` equal to its prior
+`definitionDigest`. Deletion requires `remove:[{id,previousDigest}]`. Omitting a
+record, losing a detail location or failing a read does not delete it. Optional
+`baseDigest` pins an exact previous `catalog.json` digest. No new manual approval
+is required for unchanged imports or established agent decisions.
+
+After a local cache update, use the new selected inventory while preserving exact
+old citations for unchanged definitions. They remain citations of their original
+snapshots, not relabelled current proof. Changed declared values are reported for
+review; a proposal never overwrites the established meaning. `complete:false`
+identifies bounded unresolved mappings/targets. Unmapped candidates remain
+visible and do not silently become shared definitions. Successful linking is
+mechanical preparation; the full page/export and desktop/narrow reader checks
+remain part of completion.
+
 ## Cache boundaries
 
 Prefer original retained documentation roots. `snapshot recover --from-export`

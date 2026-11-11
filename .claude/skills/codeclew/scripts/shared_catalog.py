@@ -429,13 +429,22 @@ def main(argv=None):
     command=sub.add_parser('citations',help='Save separately typed declared citations; binding reloads native headers')
     for name in ('inventory','output-dir'):command.add_argument('--'+name,required=True,type=Path)
     command.add_argument('--input',required=True)
+    command=sub.add_parser('links',help='Apply recorded catalog decisions and copy authored originals into navigation inputs')
+    for name in ('collection','roots','clew','inventory','catalog','routes','output-dir'):
+        command.add_argument('--'+name,required=True,type=Path)
+    command.add_argument('--previous-catalog',type=Path)
     args=parser.parse_args(argv)
     try:
         if args.action=='collect':result=collect(args.collection,args.roots,args.clew,args.output_dir,args.previous_inventory)
         elif args.action=='check':result=check(args.collection,args.roots,args.clew,args.inventory,args.output_dir)
         elif args.action=='inspect':result=inspect(args.inventory,args.record)
-        else:result=citations(args.inventory,args.input,args.output_dir)
-        print(encode(result),end='');return 2 if args.action=='check' and not result['complete'] else 0
+        elif args.action=='citations':result=citations(args.inventory,args.input,args.output_dir)
+        else:
+            module=runpy.run_path(str(Path(__file__).with_name('semantic_catalog.py')),
+                init_globals={'S':globals(),'Stop':Stop,'digest':digest})
+            result=module['links'](args.collection,args.roots,args.clew,args.inventory,args.catalog,args.routes,
+                                   args.output_dir,args.previous_catalog)
+        print(encode(result),end='');return 2 if args.action in ('check','links') and not result['complete'] else 0
     except (Stop,OSError,ValueError,KeyError,TypeError) as error:
         print(encode({'status':error.status if isinstance(error,Stop) else 'INVALID_CATALOG_INPUT',
             **({'details':error.details} if isinstance(error,Stop) else {})}),end='');return 2
