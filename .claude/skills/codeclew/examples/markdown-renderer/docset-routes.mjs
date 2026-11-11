@@ -108,9 +108,10 @@ export function validateDocsetRoutes(value,nav,docset,version){
     fail(r.scope?nav.owners.get(to.file)===r.scope.service:!nav.owners.has(to.file),p,'shared catalog page cannot be service-owned');canonical.add(to.file);
    }
    for(const a of list(r.aliases,p+'/aliases',0,128)){
-    shape(a,['input','docset','localId','service'],p+'/alias',['service']);id(a.input,p);id(a.docset,p);text(a.localId,p,512);fail(sets.has(a.docset),p,'unknown alias docset');
+    shape(a,['input','docset','localId','service','work','reviewRun'],p+'/alias',['service','work','reviewRun']);id(a.input,p);id(a.docset,p);text(a.localId,p,512);fail(sets.has(a.docset),p,'unknown alias docset');
     if(a.service!==undefined)owner({docset:a.docset,service:a.service},p+'/alias');
-    const k=JSON.stringify([r.kind==='external'?'external':r.kind==='representation'?'representation':'term',a.input,a.localId,a.service??null]);
+    if(a.work!==undefined||a.reviewRun!==undefined)fail(['concept','local','representation'].includes(r.kind)&&typeof a.service==='string'&&/^[0-9a-f]{64}$/.test(a.work)&&/^[0-9a-f]{32}$/.test(a.reviewRun),p,'saved glossary alias requires exact Work/review/service scope');
+    const k=JSON.stringify([a.work!==undefined?'glossary':r.kind==='external'?'external':r.kind==='representation'?'representation':'term',a.input,a.localId,a.service??null,a.work??null,a.reviewRun??null]);
     fail(!aliases.has(k),p,'local alias maps to several canonical records');aliases.add(k);
    }
    const uses=[],seenUses=new Set();

@@ -44,14 +44,16 @@ export function sourceFooter(bundle,file,markdown,html,ui){
  });
  const declarations=[],seen=new Set();
  for(const d of page.declarations||[]){
-  const r=d.record,k=JSON.stringify([r.evidenceInput,r.kind,r.localId,r.basis.recordDigest]);if(seen.has(k))continue;seen.add(k);
+  const r=d.record,k=JSON.stringify([r.evidenceInput,r.kind,r.localId,r.basis.recordDigest,r.reviewRun??null,r.basis.answerDigest??null]);if(seen.has(k))continue;seen.add(k);
   const id=`${prefix}-declaration-${declarations.length}`;
   const owner=r.scope==='UNASSIGNED_ROOT'?r.evidenceInput:r.evidenceInput+' / '+r.service;
-  const kind=r.kind==='TERM_CANDIDATE'?(words.concept||'Declared concept'):(words.catalog||'Declared catalog');
-  declarations.push(`<li><details class="source-excerpt" id="${id}"><summary>${escape(r.title)}<small>${escape(owner)} · ${escape(kind)}</small></summary><p>${escape(r.id)}</p><small>${escape(words.snapshot||'Snapshot')}: ${escape(r.snapshot)}</small></details></li>`);
+  const kind=r.basisKind==='SAVED_GLOSSARY'?(words.glossary||'Saved glossary'):r.kind==='TERM_CANDIDATE'?(words.concept||'Declared concept'):(words.catalog||'Declared catalog');
+  const qualification=r.basisKind==='SAVED_GLOSSARY'&&r.originalEntry.definition.uncertainty?`<p>${escape(r.originalEntry.definition.uncertainty)}</p>`:'';
+  declarations.push(`<li><details class="source-excerpt" id="${id}"><summary>${escape(r.title)}<small>${escape(owner)} · ${escape(kind)}</small></summary>${qualification}<p>${escape(r.id)}</p><small>${escape(words.snapshot||'Snapshot')}: ${escape(r.snapshot)}</small></details></li>`);
  }
  const code=rows.length?`<ul>${rows.join('')}</ul><details class="source-fragments"><summary>${escape(words.fragments)}</summary>${details.join('')}</details>`:declarations.length?'':`<p>${words.empty}</p>`;
- const declaredTitle=escape(words.declared||'Declared information');
+ const glossaryOnly=(page.declarations||[]).length&&(page.declarations||[]).every(d=>d.record.basisKind==='SAVED_GLOSSARY');
+ const declaredTitle=escape(glossaryOnly?(words.glossary||'Saved glossary'):(words.declared||'Declared information'));
  const declared=declarations.length?`${rows.length?`<h3>${declaredTitle}</h3>`:''}<ul>${declarations.join('')}</ul>`:'';
  return `<section class="page-sources"><h2>${declarations.length&&!rows.length?declaredTitle:words.title}</h2>${code}${declared}</section>`;
 }

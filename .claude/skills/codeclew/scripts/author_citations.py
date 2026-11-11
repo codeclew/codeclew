@@ -211,7 +211,7 @@ def load(path):
     if not isinstance(manifest, dict):
         raise Stop("CITATION_MANIFEST_MISMATCH", exit_code=2)
     alias, engine = evidence_input(manifest)
-    if manifest.get('schema') == 'codeclew-author-declared-citations/1.0':
+    if manifest.get('schema') in ('codeclew-author-declared-citations/1.0','codeclew-author-glossary-citations/1.0'):
         return declared_module()['load'](path, manifest, alias, engine)
     if isinstance(manifest, dict) and manifest.get("schema") == "codeclew-author-native-citations/1.0":
         result = native_module()["load"](path, engine)
@@ -501,7 +501,7 @@ def location(markdown, claim):
 
 
 def mapped_source(entry, mapping):
-    if entry.get('basisKind') == 'DECLARED':
+    if entry.get('basisKind') in ('DECLARED','SAVED_GLOSSARY'):
         raise Stop('DECLARED_EVIDENCE_CANNOT_BIND_SOURCE_CLAIM', exit_code=2)
     if "nativeBinding" in entry:
         result = native_module()["mapped_source"](entry)

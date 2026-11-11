@@ -56,6 +56,15 @@ test('explicit alias collisions, ownership, scoped uses, representation promotio
   const value=structuredClone(fixture);change(value);assert.throws(()=>validateDocsetRoutes(value,inputs('east').nav,'east','r1'));
  }
 });
+test('saved glossary aliases retain exact Work/review scope and cannot silently duplicate a concept as a carrier',()=>{
+ const value=structuredClone(fixture),alias={input:'east',docset:'east',localId:'device',service:'enrollment',work:'a'.repeat(64),reviewRun:'b'.repeat(32)};
+ value.semanticCatalog.records.find(r=>r.id==='device').aliases.push(alias);
+ assert.equal(validateDocsetRoutes(value,inputs('east').nav,'east','r1').semantic.records.length,7);
+ value.semanticCatalog.records.find(r=>r.id==='device-dto').aliases.push(alias);
+ assert.throws(()=>validateDocsetRoutes(value,inputs('east').nav,'east','r1'),/local alias maps/);
+ value.semanticCatalog.records.find(r=>r.id==='device-dto').aliases.pop();alias.reviewRun='wrong';
+ assert.throws(()=>validateDocsetRoutes(value,inputs('east').nav,'east','r1'),/exact Work\/review\/service scope/);
+});
 test('the supported renderer adds canonical backlinks without rewriting local authored Markdown',async()=>{
  const {renderDirectory}=await import(new URL('render.mjs',pathToFileURL(process.env.CODECLEW_MARKDOWN_RENDERER+'/')));
  const root=await mkdtemp(join(tmpdir(),'clew-semantic-'));

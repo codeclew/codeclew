@@ -41,8 +41,10 @@
         "represents": {"$ref": "#/$defs/id"},
         "aliases": {"type": "array", "minItems": 1, "maxItems": 128, "items": {
           "type": "object", "additionalProperties": false, "required": ["input", "docset", "localId"],
+          "dependentRequired": {"work": ["service", "reviewRun"], "reviewRun": ["service", "work"]},
           "properties": {"input": {"$ref": "#/$defs/id"}, "docset": {"$ref": "#/$defs/id"},
-            "localId": {"type": "string", "minLength": 1, "maxLength": 512}, "service": {"$ref": "#/$defs/id"}}
+            "localId": {"type": "string", "minLength": 1, "maxLength": 512}, "service": {"$ref": "#/$defs/id"},
+            "work": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "reviewRun": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}
         }},
         "original": {"type": "object", "required": ["page", "fragments"],
           "description": "Existing authored-original page shape. Compose validates all fragment, location, component and evidence rules; no prose is generated here."}

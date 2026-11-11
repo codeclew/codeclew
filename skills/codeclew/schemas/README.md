@@ -32,5 +32,7 @@ for caller-selected roots/manifest assignments and
 frozen catalog selections, plus
 [semantic-catalog-decisions.schema.json](semantic-catalog-decisions.schema.json)
 for established decisions and literal authored originals.
+[semantic-glossary-inputs.schema.json](semantic-glossary-inputs.schema.json)
+selects exact historical Work/review glossary inputs without searching runs.
 See [shared catalog inputs](../references/shared-semantic-catalog.md).
 These helpers do not turn declared information into native SOURCE evidence.

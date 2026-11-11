@@ -89,22 +89,27 @@ def local_values(directory,inventory):
 
 
 def alias_candidates(record,alias,index):
-    need(isinstance(alias,dict) and set(alias)-{'service'}=={'input','docset','localId'}
+    need(isinstance(alias,dict) and set(alias)-{'service','work','reviewRun'}=={'input','docset','localId'}
          and all(text(alias[k],512) for k in ('input','docset','localId')), 'INVALID_LOCAL_CANONICAL_ALIAS')
     kind=record['kind'];scope=record.get('scope')
     if scope:
         need(isinstance(scope,dict) and set(scope)=={'docset','service'}
              and alias['docset']==scope['docset'] and alias.get('service')==scope['service'], 'SCOPED_ALIAS_OWNER_MISMATCH')
     if kind=='external':need('service' not in alias,'EXTERNAL_IDENTITY_IS_ROOT_LOCAL')
-    key=(alias['input'],alias['docset'],'REPRESENTATION' if kind=='representation' else
+    glossary='work' in alias or 'reviewRun' in alias
+    if glossary:
+        need(kind in {'concept','local','representation'} and 'service' in alias and 'work' in alias and 'reviewRun' in alias,
+             'EXPLICIT_GLOSSARY_SCOPE_REQUIRED')
+    key=(alias['input'],alias['docset'],'SAVED_GLOSSARY' if glossary else 'REPRESENTATION' if kind=='representation' else
          'EXTERNAL_SYSTEM' if kind=='external' else 'TERM_CANDIDATE',alias['localId'])
     matches=list(dict.fromkeys(selector for selector,row in index.get(key,[])
-                              if 'service' not in alias or row['service']==alias['service']))
+                              if ('service' not in alias or row['service']==alias['service']) and (
+                                  not glossary or row['work']==alias['work'] and row['reviewRun']==alias['reviewRun'])))
     need(matches,'LOCAL_ALIAS_NOT_COLLECTED',input=alias['input'],localId=alias['localId'])
     return matches
 
 
-def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_path,output,previous=None):
+def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_path,output,previous=None,glossary_inventory=None):
     selected,old,active,proposals,removed=decisions(decision_path,previous)
     inventory=S['load_inventory'](inventory_dir)
     need(selected['collection']==inventory['collection'],'CANONICAL_COLLECTION_MISMATCH')
@@ -126,6 +131,13 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
     checked=S['check'](collection_path,roots_path,clew,inventory_dir,output/'input-check')
     need(checked['complete'],'CANONICAL_INPUTS_INCOMPLETE')
     locals=local_values(inventory_dir,inventory)
+    glossary_issues=[]
+    if glossary_inventory is not None:
+        module=S['glossary_module']()
+        glossary,counters,glossary_issues=module['checked_records'](collection_path,roots_path,clew,glossary_inventory,output/'glossary-check')
+        for record in glossary:
+            key=S['record_selector'](record);need(key not in locals,'DUPLICATE_GLOSSARY_LOCAL_ID');locals[key]=record
+        for key,count in counters.items():checked['counters'][key]=checked['counters'].get(key,0)+count
     index,external_uses=defaultdict(list),defaultdict(list)
     for selector,row in locals.items():
         index[(row['input'],row['docset'],row['kind'],row['localId'])].append((selector,row))
@@ -141,7 +153,8 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
         row=locals[location['record']]
         need(isinstance(location['target'],dict) and location['target'].get('docset')==row['docset'], 'LOCAL_DETAIL_DOCSET_MISMATCH')
         locations[location['record']]=location
-    entries,issues,aliases,targets,originals=[],[],set(),set(),defaultdict(list)
+    entries,issues,aliases,targets,originals=[],[{'status':i['status'],'severity':'INPUT_GAP','input':i['input'],'service':i['service']}
+                                            for i in glossary_issues],set(),set(),defaultdict(list)
     previous_records={r['definition']['id']:r for r in (old or {}).get('records',[])}
     original_reused=0;bound_records=[];covered=set();local_uses={}
     for identity,row in sorted(active.items()):
@@ -159,8 +172,8 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
             selected_aliases=[]
             for alias in record['aliases']:
                 matches=alias_candidates(record,alias,index)
-                alias_key=(record['kind'] if record['kind'] in {'external','representation'} else 'term',
-                           alias['input'],alias['localId'],alias.get('service'))
+                alias_key=('glossary' if 'work' in alias else record['kind'] if record['kind'] in {'external','representation'} else 'term',
+                           alias['input'],alias['localId'],alias.get('service'),alias.get('work'),alias.get('reviewRun'))
                 need(alias_key not in aliases and alias_key not in selected_aliases,'CANONICAL_ALIAS_ALREADY_CONFIRMED',record=identity)
                 selected_aliases.append(alias_key)
                 for selector in matches:

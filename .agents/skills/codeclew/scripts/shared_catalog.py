@@ -122,6 +122,8 @@ class Reader:
         if operation == ['work','prepare']: self.counters['prepareCalls'] += 1
         if operation == ['work','read']: self.counters['inventoryPages'] += 1
         if operation == ['work','read-dependency-part']: self.counters['dependencyPartCalls'] += 1
+        if operation == ['work','answer-context']:
+            self.counters['glossaryCalls']=self.counters.get('glossaryCalls',0)+1
         receipt = {'argv':args,'exitCode':run.returncode,'elapsedMs':round((time.monotonic()-started)*1000)}
         self.calls.append(receipt)
         for suffix, data in [('stdout',run.stdout),('stderr',run.stderr)]:
@@ -265,6 +267,8 @@ def load_inventory(directory):
 
 def inspect(directory, selectors=()):
     """Bounded author view; immutable native identities stay in inventory.json."""
+    if read_json(Path(directory)/'inventory.json').get('schema')=='codeclew-semantic-glossary-inventory/1.0':
+        return glossary_module()['inspect'](directory,selectors)
     value = load_inventory(directory)
     records = {record_selector(r):r for r in value['records']}
     need(len(selectors)<=64 and len(set(selectors))==len(selectors)
@@ -287,6 +291,8 @@ def inspect(directory, selectors=()):
 
 
 def citations(directory, alias, output):
+    if read_json(Path(directory)/'inventory.json').get('schema')=='codeclew-semantic-glossary-inventory/1.0':
+        return glossary_module()['citations'](directory,alias,output)
     value = load_inventory(directory)
     records = [r for r in value['records'] if r['input']==alias]
     need(value['complete'] and 0<len(records)<=4096,'COMPLETE_SELECTED_DECLARED_INPUT_REQUIRED')
@@ -307,6 +313,11 @@ def citations(directory, alias, output):
     return {'status':'DECLARED_CITATIONS_SAVED','manifestId':manifest['id'],'input':alias,
         'records':[{'id':alias+'/'+r['service']+'/'+r['id'],'cite':tag+':'+r['key'],'title':r['title']} for r in entries],
         'nextAction':'Assign this manifestId to its input in caller-trusted evidence-inputs before binding; these handles cannot satisfy SOURCE claims.'}
+
+
+def glossary_module():
+    return runpy.run_path(str(Path(__file__).with_name('glossary_catalog.py')),
+                         init_globals={'S':globals(),'Stop':Stop,'digest':digest})
 
 
 def check(collection_path, roots_path, clew, directory, output):
@@ -429,21 +440,25 @@ def main(argv=None):
     command=sub.add_parser('citations',help='Save separately typed declared citations; binding reloads native headers')
     for name in ('inventory','output-dir'):command.add_argument('--'+name,required=True,type=Path)
     command.add_argument('--input',required=True)
+    command=sub.add_parser('glossary',help='Read explicit approved Work glossary selections; never searches runs or calls an author')
+    for name in ('collection','roots','clew','selection','output-dir'):command.add_argument('--'+name,required=True,type=Path)
     command=sub.add_parser('links',help='Apply recorded catalog decisions and copy authored originals into navigation inputs')
     for name in ('collection','roots','clew','inventory','catalog','routes','output-dir'):
         command.add_argument('--'+name,required=True,type=Path)
     command.add_argument('--previous-catalog',type=Path)
+    command.add_argument('--glossary-inventory',type=Path)
     args=parser.parse_args(argv)
     try:
         if args.action=='collect':result=collect(args.collection,args.roots,args.clew,args.output_dir,args.previous_inventory)
         elif args.action=='check':result=check(args.collection,args.roots,args.clew,args.inventory,args.output_dir)
         elif args.action=='inspect':result=inspect(args.inventory,args.record)
         elif args.action=='citations':result=citations(args.inventory,args.input,args.output_dir)
+        elif args.action=='glossary':result=glossary_module()['collect'](args.collection,args.roots,args.clew,args.selection,args.output_dir)
         else:
             module=runpy.run_path(str(Path(__file__).with_name('semantic_catalog.py')),
                 init_globals={'S':globals(),'Stop':Stop,'digest':digest})
             result=module['links'](args.collection,args.roots,args.clew,args.inventory,args.catalog,args.routes,
-                                   args.output_dir,args.previous_catalog)
+                                   args.output_dir,args.previous_catalog,args.glossary_inventory)
         print(encode(result),end='');return 2 if args.action in ('check','links') and not result['complete'] else 0
     except (Stop,OSError,ValueError,KeyError,TypeError) as error:
         print(encode({'status':error.status if isinstance(error,Stop) else 'INVALID_CATALOG_INPUT',

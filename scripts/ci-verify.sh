@@ -129,6 +129,7 @@ ci_run checks python3 -I -S scripts/test_source_union.py
 ci_run checks python3 -I -S scripts/test_author_citations.py
 ci_run checks python3 -I -S scripts/test_shared_catalog.py
 ci_run checks python3 -I -S scripts/test_semantic_catalog.py
+ci_run checks python3 -I -S scripts/test_glossary_catalog.py
 ci_run checks python3 -I -S scripts/test_declared_citations.py
 ci_run checks python3 -I -S scripts/test_grouped_source_view.py
 ci_run checks python3 -I -S scripts/test_grouped_source_display.py

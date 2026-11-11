@@ -8,8 +8,8 @@ service or external ID in two roots does not establish shared identity.
 
 Use installed `clew` with `semantic-inventory-v1` support and the matching skill.
 An older runtime refusing this profile needs a supported upgrade, not recapture.
-Keep a running trial on its admitted runtime. The collector never captures,
-reads SOURCE bodies or materializes a source checkout. Its counters report actual
+Keep a running trial on its admitted runtime. The collector never captures or
+issues SOURCE-body read or source-checkout materialization commands. Its counters report actual
 native commands; they do not measure internal object-store reads.
 
 Write `collection.json` using [the input schema](../schemas/semantic-collection.schema.json):
@@ -215,6 +215,67 @@ identifies bounded unresolved mappings/targets. Unmapped candidates remain
 visible and do not silently become shared definitions. Successful linking is
 mechanical preparation; the full page/export and desktop/narrow reader checks
 remain part of completion.
+
+## Import an explicitly selected saved glossary
+
+When a known approved Work already has an operation-answer glossary, read it
+without a new author or reviewer. Use its exact Work/review IDs from the existing
+handoff; do not discover a glossary by scanning every cached run. The underlying
+native read is:
+
+```sh
+"$CLEW" docs work answer-context --root /absolute/docs-east --work EXACT_WORK --review-run EXACT_APPROVED_REVIEW --snapshot EXACT_COMPARED_SNAPSHOT --include-glossary
+```
+
+Optional repeated `--glossary-id EXACT_ID` selects up to 32 original IDs; default
+reads the complete bounded glossary. The response is limited to 2 MiB. The
+ordinary command without this flag retains its existing comparison response.
+Original entry IDs, definitions, uncertainty, `glossaryRefs`, `subjectRefs` and
+`technicalNames` stay unchanged. Packet/audit bindings are metadata references,
+not delivered source content or SOURCE citation handles. The historical approval
+and comparison with the selected captured Check remain separate; neither is
+fresh runtime verification or a new meaning review.
+
+For collection, write [explicit selections](../schemas/semantic-glossary-inputs.schema.json):
+
+```json
+[{"input":"east","service":"orders","work":"EXACT_WORK",
+  "reviewRun":"EXACT_APPROVED_REVIEW","ids":["EXACT_GLOSSARY_ID"]}]
+```
+
+Replace identities with actual returned IDs. The collection supplies the compared
+snapshot for that service. Then run:
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" glossary --collection collection.json --roots local-roots.json --clew "$CLEW" --selection saved-glossaries.json --output-dir glossary-r1
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" inspect --inventory glossary-r1
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/shared_catalog.py" citations --inventory glossary-r1 --input east --output-dir east-glossary-citations
+```
+
+Register the returned manifest ID under the caller's evidence-input map. The
+`g...:r...` handles use the same nonsource `declaredEvidence` page field; their
+bindings and footer explicitly identify a saved glossary. They cannot satisfy
+SOURCE claims. Binding reloads the exact approved Work/review in bounded batches;
+edited saved objects or another root cannot substitute a definition.
+
+Add a glossary alias to an explicit canonical decision using `input`, `docset`,
+`service`, original `localId`, `work` and `reviewRun`. Pass
+`--glossary-inventory glossary-r1` to `links`. This verifies those historical
+bindings alongside current selected inventory headers. Original glossary kinds
+remain queryable: a technical carrier, code identifier or uncertain business
+meaning does not automatically become a domain concept. Choose a shared/local
+meaning or representation explicitly, preserving qualifications and the actual
+decision origin. One scoped glossary candidate cannot silently become both an
+independent concept and its duplicate representation.
+
+A missing/unapproved review, old response without a glossary, or incomplete read
+is a retained input gap (`complete:false`), not an invented approval or a shared
+definition. Continue from retained entity candidates when available; leave missing
+common definitions proposed or author only the needed definitions through the
+existing workflow. Source-only snapshot recovery does not restore old Work/review
+history. No fresh capture, author/reviewer trial or broad run scan is started by
+this import. Native tests/protocol fixtures establish binding behavior; they do
+not establish the quality of a real model's definitions.
 
 ## Cache boundaries
 

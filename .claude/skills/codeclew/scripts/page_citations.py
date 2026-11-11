@@ -232,10 +232,10 @@ def compile_typed_page(raw,spec,cat,mapping,temporary,claims,ranges,previous,man
     entries, source_manifests = {}, []
     for identity in sorted(selected):
         manifest,_,_,found = C['load'](identities[identity]); entries.update(found)
-        if manifest['schema']!='codeclew-author-declared-citations/1.0':source_manifests.append(identities[identity])
+        if manifest['schema'] not in ('codeclew-author-declared-citations/1.0','codeclew-author-glossary-citations/1.0'):source_manifests.append(identities[identity])
     source_claims = [claim for claim in claims if 'evidence' in claim]
     for claim in source_claims:
-        require(all(entries[h].get('basisKind')!='DECLARED' for h in claim['evidence']),
+        require(all(entries[h].get('basisKind') not in ('DECLARED','SAVED_GLOSSARY') for h in claim['evidence']),
                 'DECLARED_EVIDENCE_CANNOT_BIND_SOURCE_CLAIM')
     temporary.mkdir(parents=True)
     markdown = temporary/'authored.md'; markdown.write_bytes(raw)

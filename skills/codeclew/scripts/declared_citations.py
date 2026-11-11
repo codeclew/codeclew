@@ -15,6 +15,10 @@ def need(condition, status):
 
 def load(path, manifest, alias, engine):
     try:
+        if manifest.get('schema')=='codeclew-author-glossary-citations/1.0':
+            module=runpy.run_path(str(Path(__file__).with_name('glossary_catalog.py')),
+                init_globals={'S':S,'Stop':Stop,'digest':digest})
+            return module['load_manifest'](path,manifest,alias,engine,RELOADED)
         return load_selected(path,manifest,alias,engine)
     except S['Stop'] as error:
         raise Stop(error.status,exit_code=2,**error.details) from error
@@ -67,5 +71,5 @@ def load_selected(path, manifest, alias, engine):
 
 
 def binding(entry):
-    need(entry.get('basisKind')=='DECLARED', 'SOURCE_CANNOT_BIND_DECLARED_CLAIM')
+    need(entry.get('basisKind') in {'DECLARED','SAVED_GLOSSARY'}, 'SOURCE_CANNOT_BIND_DECLARED_CLAIM')
     return {k:v for k,v in entry.items() if k!='manifestId'}
