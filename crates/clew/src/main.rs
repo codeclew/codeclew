@@ -4099,40 +4099,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reviewed_answer_publication_requires_explicit_work_review_and_baseline() {
-        assert!(
-            Cli::try_parse_from([
-                "clew",
-                "docs",
-                "work",
-                "publication-baseline",
-                "--root",
-                "/tmp"
-            ])
-            .is_ok()
-        );
-        let base = vec![
-            "clew",
-            "docs",
-            "work",
-            "publish-answer",
-            "--root",
-            "/tmp",
-            "--work",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "--review-run",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ];
-        assert!(Cli::try_parse_from(base.clone()).is_err());
-        let mut valid = base.clone();
-        valid.extend(["--baseline", "baseline.json"]);
-        assert!(Cli::try_parse_from(valid).is_ok());
-        let mut invalid = base;
-        invalid.extend(["--baseline", "baseline.json", "--config", "review.json"]);
-        assert!(Cli::try_parse_from(invalid).is_err());
-    }
-
-    #[test]
     fn uncertain_review_retry_keeps_exact_author_selector_and_parses_closed_run_identity() {
         let base = vec![
             "clew",
@@ -4159,34 +4125,6 @@ mod tests {
         missing_author.drain(8..10);
         missing_author.extend(["--retry-from-review", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
         assert!(Cli::try_parse_from(missing_author).is_err());
-    }
-
-    #[test]
-    fn work_explain_requires_exactly_one_input_or_review_run() {
-        let base = vec![
-            "clew",
-            "docs",
-            "work",
-            "explain",
-            "--root",
-            "/tmp",
-            "--work",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "--output-dir",
-            "/tmp/review-export",
-        ];
-        assert!(Cli::try_parse_from(base.clone()).is_err());
-        let mut legacy = base.clone();
-        legacy.extend(["--input", "answer.json"]);
-        assert!(Cli::try_parse_from(legacy).is_ok());
-        let mut reviewed = base.clone();
-        reviewed.extend(["--review-run", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
-        assert!(Cli::try_parse_from(reviewed.clone()).is_ok());
-        reviewed.extend(["--input", "answer.json"]);
-        assert!(Cli::try_parse_from(reviewed).is_err());
-        let mut malformed = base;
-        malformed.extend(["--review-run", "not-a-run"]);
-        assert!(Cli::try_parse_from(malformed).is_err());
     }
 
     #[test]
@@ -4294,6 +4232,26 @@ mod tests {
     fn removed_entrypoints_are_unparseable() {
         for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());
+        }
+    }
+
+    #[test]
+    fn retired_native_document_generators_are_unparseable() {
+        for removed in ["render", "pages", "dsl", "proposal", "refresh"] {
+            let error = Cli::try_parse_from(["clew", "docs", removed])
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        }
+    }
+
+    #[test]
+    fn retired_work_publication_and_export_are_unparseable() {
+        for removed in ["publication-baseline", "publish-answer", "explain"] {
+            let error = Cli::try_parse_from(["clew", "docs", "work", removed])
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
         }
     }
 
