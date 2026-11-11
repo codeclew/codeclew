@@ -25,7 +25,7 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
  const relevant=r=>r.narrative.docset===model.docset||r.occurrences.some(o=>o.actor.kind==='service'&&o.actor.docset===model.docset);
  const semanticTitle=r=>r.title+(r.scope?' · '+serviceTitle(services.get(serviceKey(r.scope))):'');
  const extra={canonical:model.canonical,routes:model.routes.filter(relevant).map(r=>link(r.to,r.title)),participation:service=>model.routes.filter(r=>localRoles(r,service).length).map(r=>link(r.to,r.title))};
- if(model.catalog&&!(model.catalog.kind==='LOCAL_DOCSET'&&model.catalog.file===file))extra.routes.unshift(link(model.catalog,words.catalog));
+ if(model.catalog&&!(model.semantic&&!model.routes.length)&&!(model.catalog.kind==='LOCAL_DOCSET'&&model.catalog.file===file))extra.routes.unshift(link(model.catalog,words.catalog));
  let hub='';
  if(model.semantic){
   const title=words.sharedCatalog||'Shared catalog',usedBy=words.usedBy||'Used by',localDetails=words.localDetails||'Local details';
@@ -34,7 +34,9 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
    if(!representations.has(r.represents))representations.set(r.represents,[]);representations.get(r.represents).push(r);
   }
   extra.semanticTitle=title;extra.semanticPages=new Set(model.semantic.records.filter(r=>r.to.kind==='LOCAL_DOCSET').map(r=>r.to.file));
+  extra.semanticCatalogHome=model.catalog?.kind==='LOCAL_DOCSET'?model.catalog.file:undefined;
   extra.semanticLinks=model.semantic.records.filter(r=>model.catalog?.docset===model.docset||r.target.docset===model.docset||r.uses.some(u=>u.docset===model.docset)).map(r=>link(r.to,semanticTitle(r)));
+  if(!model.routes.length&&model.catalog?.kind==='REMOTE_DOCSET')extra.semanticLinks.unshift(link(model.catalog,title));
   for(const r of model.semantic.records){
    const own=r.to.kind==='LOCAL_DOCSET'&&r.to.file===file;
    const relevant=r.uses.filter(u=>u.to.kind==='LOCAL_DOCSET'&&u.to.file===file||u.docset===model.docset&&services.get(serviceKey(u)).to.file===file);

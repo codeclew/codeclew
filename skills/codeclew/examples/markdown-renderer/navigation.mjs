@@ -79,7 +79,9 @@ export function navigationView(nav,file,words,extra={}){
   group(words.otherPages,nav.others.filter(p=>!extra.canonical?.has(p.file)).map(p=>a({file:p.file,fragment:'',href:encodeURIComponent(p.file.replace(/\.md$/,'.html'))},escape(p.title))));
  const crumb=[a(nav.home.to,escape(nav.home.title))];
  if(service&&file!==service.overview.file)crumb.push(a(service.overview,escape(service.title)));
- else if(!service&&extra.semanticPages?.has(file))crumb.push(`<span>${escape(extra.semanticTitle)}</span>`);
+ else if(!service&&extra.semanticPages?.has(file)){
+  if(nav.home.to.file!==extra.semanticCatalogHome)crumb.push(`<span>${escape(extra.semanticTitle)}</span>`);
+ }
  else if(!service&&(nav.routes.some(r=>r.to.file===file)||extra.canonical?.has(file)))crumb.push(`<span>${escape(words.routes)}</span>`);
  if(file!==nav.home.to.file)crumb.push(`<span aria-current="page">${escape(nav.byFile.get(file).title)}</span>`);
  const breadcrumb=`<nav class="reader-breadcrumb" aria-label="${escape(words.breadcrumb)}">${crumb.join('<span aria-hidden="true"> / </span>')}<span class="breadcrumb-section" hidden></span></nav>`;

@@ -14,7 +14,7 @@ function inputs(docset,value=fixture){
  for(const r of value.routes)if(r.narrative.docset===docset)names.add(r.narrative.page.replace('.html','.md'));
  const pages=[...names].map(file=>({file,title:file,html:['payments','tracking','devices','orders','done','scope'].map(a=>`<h2 id="${a}">${a}</h2>`).join('')}));
  const services=local.services.map(s=>({id:s.id,title:s.title,overview:s.id+'.md',pages:[s.id+'.md',...value.semanticCatalog.records.filter(r=>r.scope?.docset===docset&&r.scope.service===s.id).map(r=>r.target.page.replace('.html','.md'))],starts:[],data:[]}));
- const raw={schema:'codeclew-markdown-navigation/1',home:{title:'Home',target:'index.md'},services,routes:[]};
+ const raw={schema:'codeclew-markdown-navigation/1',home:{title:docset==='catalog'?'Shared catalog':'Home',target:'index.md'},services,routes:[]};
  return {pages,raw,nav:validateNavigation(raw,pages)};
 }
 test('five independent services share one canonical external and keep scoped homonyms and representations',()=>{
@@ -34,10 +34,14 @@ test('five independent services share one canonical external and keep scoped hom
  assert.match(docsetView(model,'device.md').hub,/Representations/);
  assert.match(docsetView(model,'device.md').hub,/east\/device-dto.html/);
  const words={services:'Services',routes:'Processes',otherPages:'Other',breadcrumb:'Location'};
- assert.match(navigationView(nav,'payments.md',words,page.extra).breadcrumb,/Shared catalog/);
- assert.doesNotMatch(navigationView(nav,'payments.md',words,page.extra).breadcrumb,/>Processes</);
+ const navigation=navigationView(nav,'payments.md',words,page.extra);
+ assert.equal(navigation.breadcrumb.match(/Shared catalog/g).length,1);
+ assert.doesNotMatch(navigation.breadcrumb,/>Processes</);
+ assert.doesNotMatch(navigation.menu,/Services and processes|>Processes</);
  const east=inputs('east'),local=docsetView(validateDocsetRoutes(fixture,east.nav,'east','r1'),'orders.md');
  assert.match(local.hub,/catalog\/payments.html/);assert.doesNotMatch(local.hub,/catalog\/tracking.html/);
+ assert.match(local.extra.semanticLinks[0],/catalog\/index.html[^>]*>Shared catalog</);
+ assert.equal(local.extra.routes.length,0);
  assert.match(local.extra.semanticLinks.join(''),/Order · Orders · East/);
  assert.match(docsetView(validateDocsetRoutes(fixture,east.nav,'east','r1'),'device-dto.md').hub,/Representation of/);
 });

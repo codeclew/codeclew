@@ -216,6 +216,112 @@ visible and do not silently become shared definitions. Successful linking is
 mechanical preparation; the full page/export and desktop/narrow reader checks
 remain part of completion.
 
+## Finish the five-service export
+
+For the collection above, keep three original inputs: East (orders, billing,
+enrollment), West (orders, enrollment), and the shared catalog. Each service
+original contains its local contract/configuration sections; the catalog contains
+only the common descriptions. Use `local-uses.json` to select exact retained
+fields and their declared handles. Missing payloads, retries or errors remain
+explicit gaps; a method/path declaration does not establish those behaviors.
+Keep existing service prose unchanged when adding common links.
+
+A location such as `east/orders.html#orders-pay` needs an actual stable section
+in the East original, for example a plain fragment
+`<h2 id="orders-pay">Charge customer order</h2>\n\n` followed by bound contract
+fragments. Keep the ID when the title changes. Do not use a heading-derived slug
+as the durable location of a mutable title.
+
+Save existing landing/service originals as `local-originals.east.json` and
+`local-originals.west.json`; save a catalog landing original as
+`local-originals.catalog.json`. These use the ordinary `{pages:[...]}` format.
+The shared definitions are already in `linked-r1/originals.DOCSET.json`.
+Combine the page arrays without rewriting their fragments:
+
+```sh
+python3 -I -S - <<'PYTHON'
+import json
+from pathlib import Path
+for docset in ('east', 'west', 'catalog'):
+    local = json.loads(Path(f'local-originals.{docset}.json').read_text())
+    common_path = Path(f'linked-r1/originals.{docset}.json')
+    common = json.loads(common_path.read_text()) if common_path.exists() else {'pages': []}
+    pages = local['pages'] + common['pages']
+    names = [page['page'] for page in pages]
+    if len(names) != len(set(names)):
+        raise SystemExit(f'{docset}: reconcile duplicate original page explicitly')
+    with Path(f'originals.{docset}.json').open('x') as output:
+        json.dump({'pages': pages}, output, ensure_ascii=False)
+PYTHON
+```
+
+Do not replace an existing common page with a second copy. For updates use the
+existing original-edit route and explicit claim replacement/removal intent.
+The links helper emits common originals only for docsets with canonical pages;
+an external-only catalog can legitimately have none in East or West.
+Save an explicit navigation file for each docset. For example, with local
+`orders.md`, `billing.md`, `enrollment.md` and the representation pages:
+
+```json
+{"schema":"codeclew-markdown-navigation/1",
+ "home":{"title":"East","target":"index.md"},
+ "services":[
+  {"id":"orders","title":"Orders","overview":"orders.md",
+   "pages":["orders.md","order-dto.md"],"starts":[],"data":[]},
+  {"id":"billing","title":"Billing","overview":"billing.md",
+   "pages":["billing.md"],"starts":[],"data":[]},
+  {"id":"enrollment","title":"Enrollment","overview":"enrollment.md",
+   "pages":["enrollment.md","device-dto.md"],"starts":[],"data":[]}],
+ "routes":[]}
+```
+
+West declares its two services and owns its scoped term page under the appropriate
+service. Catalog navigation has `home:{"title":"Shared catalog","target":"index.md"}`,
+`services:[]` and `routes:[]`; common systems are not captured services. Match
+these page names to the selected originals and explicit registry destinations.
+Set every docset's publication `baseURL` in the registry to its actual HTTP(S)
+directory. A sample `.invalid` URL is not a working remote destination.
+
+Copy the packaged renderer to a new owned directory and install its locked
+dependency as described in its README. Save three trusted argv arrays as
+`renderer.east.json`, `renderer.west.json`, `renderer.catalog.json`, each using
+absolute paths. The East array has this shape:
+
+```json
+["node","/absolute/renderer/render.mjs","{input}","{output}","Service documentation",
+ "--lang","en","--navigation","/absolute/navigation.east.json",
+ "--docset-routes","/absolute/linked-r1/routes.json",
+ "--docset","east","--docset-version","r1"]
+```
+
+Use the corresponding navigation/docset for West and Catalog. All three arrays
+must use the same exact registry. Compose and finalize each selected original:
+
+```sh
+for docset in east west catalog; do
+  python3 -I -S "$CODECLEW_SKILL_DIR/scripts/page_citations.py" compose --input "originals.$docset.json" --output-dir "compose-$docset" || exit "$?"
+  python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_export_check.py" finalize --compose-root "compose-$docset" --manifest east-declarations/citations.json --manifest west-declarations/citations.json --clew "$CLEW" --evidence-inputs local-roots.json --renderer-command "renderer.$docset.json" --source-footers --output-dir "final-$docset" || exit "$?"
+done
+```
+
+Require all three results to contain `CHECKED_PAGES_FINALIZED` and
+`exportStatus:EXPORT_CHECKED`; the loop alone is not a completion assertion.
+Include additional retained SOURCE/glossary manifests when those originals use
+them. Pass each exact manifest ID only once: unchanged old/new manifests can be
+identical, and duplicate input manifests correctly refuse with
+`AMBIGUOUS_CITATION_MANIFEST`. Preserve old citations for unchanged definitions;
+add current manifests for changed local facts, assigning every ID to its owning
+input in `local-roots.json`.
+
+Deploy only each result's `renderedRoot` at the corresponding configured base.
+Do not serve private roots, command receipts or entire finalization directories.
+Check a common external's local backlinks and return links, a shared concept's
+representation link, the differently scoped same-spelling term, an unassigned
+external, and Sources from both inputs. Check desktop and narrow widths with
+configuration and provenance expanded. The renderer validates local targets;
+remote links still need this actual cross-docset check. Checked bindings and
+navigation do not replace a review of the descriptions' meaning.
+
 ## Import an explicitly selected saved glossary
 
 When a known approved Work already has an operation-answer glossary, read it
