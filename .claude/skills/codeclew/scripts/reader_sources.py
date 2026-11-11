@@ -39,7 +39,8 @@ def materialize(index, manifests, output, views=()):
             for handle, source in zip(claim['evidence'], claim['sources']):
                 need(handle in entries and C['mapped_source'](entries[handle], mapping) == source, 'CITATION_BINDING_UNAVAILABLE')
                 used[handle] = source; handles.add(handle)
-        pages.append({'page':p['page'], 'markdownDigest':p['markdownDigest'], 'map':str(root / p['map']), 'mapFileDigest':sha(raw), 'handles':sorted(handles)})
+        pages.append({'page':p['page'], 'markdownDigest':p['markdownDigest'], 'map':str(root / p['map']),
+                      'mapFileDigest':sha(raw), 'handles':sorted(handles)})
     texts = {}
     for path in views:
         view = json.loads(Path(path).read_bytes())
@@ -72,15 +73,30 @@ def materialize(index, manifests, output, views=()):
         groups = {}
         for h in page.pop('handles'):
             source = used[h]; text = texts[h]
-            key = tuple(source.get(k) for k in ('service','file','revision','snapshot'))
+            key = tuple(source.get(k) for k in ('service','file','revision','snapshot')) + (
+                source.get('evidenceInput'), source.get('bindingRepository') or source.get('repository'))
             group = groups.setdefault(key, {'service':key[0],'file':key[1],'revision':key[2],'snapshot':key[3],'ranges':{}})
+            if key[4] is not None:
+                group['evidenceInput'] = key[4]
+                if key[5] is not None:
+                    group['repository'] = key[5]
             span = (source['startLine'],source['endLine'])
             need(span not in group['ranges'] or group['ranges'][span]['text'] == text, 'SOURCE_EXCERPT_CONFLICT')
             group['ranges'][span] = {'startLine':span[0],'endLine':span[1],'text':text}
         page['groups'] = []
         for key in sorted(groups, key=lambda k:tuple(str(x) for x in k)):
             group = groups[key]; group['ranges'] = [group['ranges'][s] for s in sorted(group['ranges'])]; page['groups'].append(group)
-    bundle = {'schema':'codeclew-reader-sources/1','checkedIndex':str(index),'indexFileDigest':sha(index.read_bytes()),'pages':pages}
+    index_reference = str(index)
+    if any(s.get('evidenceInput') for s in used.values()):
+        bundle_root = output.absolute().parent.resolve()
+        need(index.is_relative_to(bundle_root)
+             and all(Path(page['map']).is_relative_to(bundle_root) for page in pages),
+             'SCOPED_SOURCE_BUNDLE_REQUIRES_LOCAL_BOUND_INDEX')
+        index_reference = index.relative_to(bundle_root).as_posix()
+        for page in pages:
+            page['map'] = Path(page['map']).relative_to(bundle_root).as_posix()
+    bundle = {'schema':'codeclew-reader-sources/1', 'checkedIndex':index_reference,
+              'indexFileDigest':sha(index.read_bytes()),'pages':pages}
     with output.open('x', encoding='utf8') as stream: json.dump(bundle, stream, ensure_ascii=False, sort_keys=True, separators=(',',':'))
     return {'status':'SOURCE_FOOTERS_MATERIALIZED','pages':len(pages),'citations':len(used),'output':str(output),'semanticTruthAssessed':False}
 
@@ -91,10 +107,10 @@ if __name__ == '__main__':
     p.add_argument('--manifest', action='append', required=True, type=Path)
     p.add_argument('--view', action='append', default=[], type=Path)
     p.add_argument('--output', required=True, type=Path)
-    p.add_argument('--clew'); p.add_argument('--root')
+    p.add_argument('--clew'); p.add_argument('--root'); p.add_argument('--evidence-inputs', type=Path)
     a = p.parse_args()
     try:
-        M['configure_engine'](a.clew, a.root)
+        M['configure_engine'](a.clew, a.root, evidence_inputs=a.evidence_inputs)
         print(json.dumps(materialize(a.index, a.manifest, a.output, a.view)))
     except M['Stop'] as error:
         print(json.dumps({'status':error.status})); raise SystemExit(2)

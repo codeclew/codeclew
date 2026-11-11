@@ -1,5 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
+import {dirname,resolve} from 'node:path';
 const sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 const need=(ok,message)=>{if(!ok)throw Error('Invalid source footer: '+message)};
@@ -7,10 +8,11 @@ const need=(ok,message)=>{if(!ok)throw Error('Invalid source footer: '+message)}
 export async function loadSources(path){
  const value=JSON.parse(await readFile(path,'utf8'));
  need(value.schema==='codeclew-reader-sources/1','unsupported bundle');
- need(sha(await readFile(value.checkedIndex))===value.indexFileDigest,'checked index changed');
- const key=s=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine]);
+ need(sha(await readFile(resolve(dirname(path),value.checkedIndex)))===value.indexFileDigest,'checked index changed');
+ const key=s=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine,
+  ...(s.evidenceInput?[s.evidenceInput,s.bindingRepository??s.repository??null]:[])]);
  for(const p of value.pages){
-  const raw=await readFile(p.map);need(sha(raw)===p.mapFileDigest,'checked map changed: '+p.page);
+  const raw=await readFile(resolve(dirname(path),p.map));need(sha(raw)===p.mapFileDigest,'checked map changed: '+p.page);
   const expected=new Map(JSON.parse(raw).claims.flatMap(c=>c.sources.map(s=>[key(s),s.textDigest])));
   const actual=new Map(p.groups.flatMap(g=>g.ranges.map(r=>[key({...g,...r}),sha(Buffer.from(r.text))])));
   need(actual.size===expected.size&&[...actual].every(([k,d])=>expected.get(k)===d),'excerpt bytes or coverage changed: '+p.page);
@@ -26,13 +28,14 @@ export function sourceFooter(bundle,file,markdown,html,ui){
  let prefix='clew-source';while(html.includes('id="'+prefix)||html.includes("id='"+prefix))prefix+='-excerpt';
  const details=[],rows=[];
  page.groups.forEach((g,i)=>{
-  const full=`${g.service}:${g.file} @ ${g.revision}${g.snapshot?' · '+g.snapshot:''}`;
+  const owner=g.evidenceInput?`${g.evidenceInput} / ${g.service}`:g.service;
+  const full=`${owner}:${g.file} @ ${g.revision}${g.snapshot?' · '+g.snapshot:''}`;
   const links=g.ranges.map((r,j)=>{
    const id=`${prefix}-${i}-${j}`,label=r.startLine===r.endLine?String(r.startLine):`${r.startLine}–${r.endLine}`;
    details.push(`<details class="source-excerpt"><summary>${escape(full)} — ${label}</summary><pre id="${id}" tabindex="0" role="region" aria-label="${escape(g.file)} — ${label}"><code>${escape(r.text)}</code></pre></details>`);
    return `<a href="#${id}">${label}</a>`;
   });
-  rows.push(`<li><span title="${escape(full)}">${escape(g.file.split('/').at(-1))}</span> — ${links.join('; ')}<small>${escape(g.service)} · ${escape(g.file)} · ${escape(String(g.revision).slice(0,12))}</small></li>`);
+  rows.push(`<li><span title="${escape(full)}">${escape(g.file.split('/').at(-1))}</span> — ${links.join('; ')}<small>${escape(owner)} · ${escape(g.file)} · ${escape(String(g.revision).slice(0,12))}</small></li>`);
  });
  return `<section class="page-sources"><h2>${words.title}</h2>${rows.length?`<ul>${rows.join('')}</ul><details class="source-fragments"><summary>${escape(words.fragments)}</summary>${details.join('')}</details>`:`<p>${words.empty}</p>`}</section>`;
 }

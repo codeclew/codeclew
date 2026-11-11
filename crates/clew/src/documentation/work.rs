@@ -25,6 +25,9 @@ pub use super::work_retained_parts::{
     RetainedPartReceipt, RetainedPartRequest, read_dependency_part, read_retained_part,
 };
 
+#[path = "work_semantic.rs"]
+mod semantic_inventory;
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Prepare {
@@ -416,6 +419,7 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
                 || !query.file_contains.is_empty()
                 || query.projection != QueryProjection::Raw))
             || (query.ids.is_empty()
+                && query.kind != "SEMANTIC_INVENTORY"
                 && (query.expected_snapshot.is_some() || query.expected_context_digest.is_some()))
         {
             return Err(invalid(
@@ -2694,6 +2698,8 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
         }
         if !query.ids.is_empty() {
             return exact_flow_rows(work, query);
+        } else if query.kind == "SEMANTIC_INVENTORY" {
+            semantic_inventory::rows(work, query)?
         } else if matches!(query.kind.as_str(), "THREAD_INVENTORY" | "THREAD_CONTEXT") {
             super::thread_context::query(work, &query.kind, &query.symbol_contains)?
         } else if query.kind == "SOURCE" {

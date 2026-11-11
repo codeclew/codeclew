@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/evidence-inputs/1.0",
+  "title": "Caller-trusted evidence input roots and exact citation manifests",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "inputs", "manifests"],
+  "properties": {
+    "schema": {"const": "codeclew-evidence-inputs/1.0"},
+    "inputs": {
+      "type": "object", "minProperties": 1, "maxProperties": 64,
+      "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["root"],
+        "properties": {"root": {"type": "string", "minLength": 1, "description": "Caller-selected absolute local root; never copied into public catalog metadata."}}
+      }
+    },
+    "manifests": {
+      "type": "object", "minProperties": 1, "maxProperties": 256,
+      "propertyNames": {"pattern": "^sha256:[0-9a-f]{64}$"},
+      "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
+    }
+  }
+}

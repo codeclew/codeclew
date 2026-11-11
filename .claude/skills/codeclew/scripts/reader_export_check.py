@@ -22,10 +22,12 @@ NATIVE_ENGINE_ARGS = []
 FAVICON = "favicon.svg"
 
 
-def configure_engine(clew=None, root=None, components=None, component_set_digest=None):
+def configure_engine(clew=None, root=None, components=None, component_set_digest=None, evidence_inputs=None):
     global NATIVE_ENGINE_ARGS
-    M["configure_engine"](clew, root, components, component_set_digest)
-    NATIVE_ENGINE_ARGS = [] if clew is None else ["--clew", str(clew), "--root", str(root)]
+    M["configure_engine"](clew, root, components, component_set_digest, evidence_inputs)
+    NATIVE_ENGINE_ARGS = ([] if clew is None else ["--clew", str(clew),
+        "--evidence-inputs" if evidence_inputs is not None else "--root",
+        str(Path(evidence_inputs).absolute()) if evidence_inputs is not None else str(root)])
     if components is not None:
         NATIVE_ENGINE_ARGS.extend(["--components", str(Path(components).absolute()), "--component-set-digest", component_set_digest])
 
@@ -314,6 +316,7 @@ def main(argv=None):
     parser.add_argument("--manifest", type=Path, action="append", required=True)
     parser.add_argument("--clew", type=Path, help="Caller-trusted launcher for SOURCE_NATIVE validation")
     parser.add_argument("--root", type=Path, help="Root owning the prepared native evidenceSet")
+    parser.add_argument("--evidence-inputs", type=Path, help="Caller-trusted manifest identities and owning roots")
     parser.add_argument("--components", type=Path, help="Mandatory pre-author component ticket")
     parser.add_argument("--component-set-digest", help="Exact independently selected ticket ID")
     for name in (("compose-root", "renderer-command", "output-dir") if finalizing else
@@ -327,7 +330,7 @@ def main(argv=None):
     args = parser.parse_args(arguments[1:] if finalizing else arguments)
     existed = args.output_dir.exists() or args.output_dir.is_symlink()
     try:
-        configure_engine(args.clew, args.root, args.components, args.component_set_digest)
+        configure_engine(args.clew, args.root, args.components, args.component_set_digest, args.evidence_inputs)
         if finalizing:
             result = finalize(args.compose_root, args.manifest, args.renderer_command, args.output_dir,
                               previous=args.previous_index, repositories=args.repositories,

@@ -24,15 +24,72 @@ MANIFEST = "codeclew-author-citations/1.0"
 READY = ("DECLARATION_SOURCE_RETURNED", "RETAINED_SOURCE_RETURNED")
 LINK = re.compile(r'\[[^\]\n]*\]\(([^\s)]+)\)')
 NATIVE_ENGINE = None
+EVIDENCE_INPUTS = None
 NATIVE_MODULE = None
 
 
-def configure_engine(clew=None, root=None):
+def configure_engine(clew=None, root=None, evidence_inputs=None):
     """Explicit caller authority; manifests never supply executable paths."""
-    global NATIVE_ENGINE
+    global NATIVE_ENGINE, EVIDENCE_INPUTS
+    NATIVE_ENGINE = None
+    EVIDENCE_INPUTS = None
+    if evidence_inputs is not None:
+        if clew is None or root is not None:
+            raise Stop("EVIDENCE_INPUTS_REQUIRE_CLEW_WITHOUT_DEFAULT_ROOT", exit_code=2)
+        path = Path(evidence_inputs)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+            raise Stop("INVALID_TRUSTED_EVIDENCE_INPUTS", exit_code=2)
+        def unique(pairs):
+            if len(pairs) != len({key for key, _ in pairs}):
+                raise Stop("DUPLICATE_EVIDENCE_INPUT_KEY", exit_code=2)
+            return dict(pairs)
+        raw = path.read_bytes()
+        value = json.loads(raw, object_pairs_hook=unique)
+        if (not isinstance(value, dict) or set(value) != {"schema", "inputs", "manifests"}
+                or value["schema"] != "codeclew-evidence-inputs/1.0"
+                or not isinstance(value["inputs"], dict) or not 1 <= len(value["inputs"]) <= 64
+                or not isinstance(value["manifests"], dict) or not 1 <= len(value["manifests"]) <= 256
+                or not Path(clew).is_absolute() or not Path(clew).is_file()):
+            raise Stop("INVALID_TRUSTED_EVIDENCE_INPUTS", exit_code=2)
+        for alias, item in value["inputs"].items():
+            if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", alias)
+                    or not isinstance(item, dict) or set(item) != {"root"}
+                    or not isinstance(item["root"], str) or not Path(item["root"]).is_absolute()):
+                raise Stop("INVALID_TRUSTED_EVIDENCE_INPUTS", exit_code=2)
+        for identity, alias in value["manifests"].items():
+            if (not re.fullmatch(r"sha256:[0-9a-f]{64}", identity)
+                    or not isinstance(alias, str) or alias not in value["inputs"]):
+                raise Stop("INVALID_TRUSTED_EVIDENCE_INPUTS", exit_code=2)
+        EVIDENCE_INPUTS = {**value, "clew": Path(clew), "path": path.absolute(), "raw": raw}
+        NATIVE_ENGINE = None
+        return
     if (clew is None) != (root is None):
         raise Stop("NATIVE_ENGINE_REQUIRES_CLEW_AND_ROOT", exit_code=2)
     NATIVE_ENGINE = None if clew is None else (clew, root)
+
+
+def evidence_input(manifest):
+    """Dispatch only an exact manifest identity explicitly assigned by the caller."""
+    if EVIDENCE_INPUTS is None:
+        return None, NATIVE_ENGINE
+    path = EVIDENCE_INPUTS["path"]
+    if path.is_symlink() or not path.is_file() or path.read_bytes() != EVIDENCE_INPUTS["raw"]:
+        raise Stop("EVIDENCE_INPUT_CONFIGURATION_CHANGED", exit_code=2)
+    identity = manifest.get("id")
+    if identity != digest({k: v for k, v in manifest.items() if k != "id"}):
+        raise Stop("CITATION_MANIFEST_MISMATCH", exit_code=2)
+    alias = EVIDENCE_INPUTS["manifests"].get(identity)
+    if alias is None:
+        raise Stop("MANIFEST_EVIDENCE_INPUT_NOT_SELECTED", exit_code=2)
+    root = Path(EVIDENCE_INPUTS["inputs"][alias]["root"])
+    if not root.is_dir() or root.is_symlink():
+        raise Stop("EVIDENCE_INPUT_ROOT_UNAVAILABLE", exit_code=2, input=alias)
+    return alias, (EVIDENCE_INPUTS["clew"], root)
+
+
+def input_entries(entries, alias):
+    # The native/Work records and their original IDs remain untouched.
+    return entries if alias is None else {key: {**entry, "evidenceInput": alias} for key, entry in entries.items()}
 
 
 def native_module():
@@ -137,10 +194,13 @@ def load(path):
     if path.is_symlink() or (path.parent / "packet.json").is_symlink():
         raise Stop("UNSAFE_REUSE_ARTIFACT_PATH", exit_code=2)
     path = path.resolve(strict=True); manifest = json.loads(path.read_bytes())
+    if not isinstance(manifest, dict):
+        raise Stop("CITATION_MANIFEST_MISMATCH", exit_code=2)
+    alias, engine = evidence_input(manifest)
     if isinstance(manifest, dict) and manifest.get("schema") == "codeclew-author-native-citations/1.0":
-        result = native_module()["load"](path, NATIVE_ENGINE)
+        result = native_module()["load"](path, engine)
         result[1]["nativeManifest"] = result[0]
-        return result
+        return (*result[:3], input_entries(result[3], alias))
     if (not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST
             or manifest.get("id") != digest({k: v for k, v in manifest.items() if k != "id"})
             or manifest.get("packet") != "packet.json" or manifest.get("discovery") != "discovery.input.json"):
@@ -173,7 +233,7 @@ def load(path):
             "scope": packet["scope"], "work": packet["work"], "source": outcome["source"],
             **({"sourceBinding":outcome["sourceBinding"]} if "sourceBinding" in outcome else {"declaration":outcome["declaration"]}),
             "sourceRecordDigest": outcome["sourceRecordDigest"]}
-    return manifest, packet, discovery, entries
+    return manifest, packet, discovery, input_entries(entries, alias)
 
 
 def source_view(packet, records, file, start_line=None, end_line=None, cite=None):
@@ -433,7 +493,14 @@ def mapped_source(entry, mapping):
             **({"evidenceKind":"RETAINED_SOURCE"} if "sourceBinding" in entry else {"declarationId":entry["declaration"]["id"]}),
             "sourceRecordDigest": entry["sourceRecordDigest"],
             "url": None, "repository": None, "linkMapping": "MISSING"}
-    source = entry["source"]; config = mapping.get(source["service"])
+    source = entry["source"]
+    alias = entry.get("evidenceInput")
+    key = source["service"] if alias is None else alias + "/" + source["service"]
+    if alias is not None:
+        result["evidenceInput"] = alias
+        if source["service"] in mapping:
+            raise Stop("ROOT_QUALIFIED_REPOSITORY_MAPPING_REQUIRED", exit_code=2)
+    config = mapping.get(key)
     if config is not None:
         if not isinstance(config, dict) or set(config) != {"repository", "urlTemplate"}:
             raise Stop("INVALID_EXPLICIT_LINK_MAPPING", exit_code=2)
@@ -601,11 +668,14 @@ def main(argv=None):
     for command in (native, inspect, grouped, display, bind, repair, check):
         command.add_argument("--clew", type=Path, help="Caller-trusted supported launcher; required for SOURCE_NATIVE manifests")
         command.add_argument("--root", type=Path, help="Managed root owning the immutable prepared evidenceSet")
+        command.add_argument("--evidence-inputs", type=Path, help="Caller-trusted manifest identities and owning roots; replaces --root")
     args = parser.parse_args(argv)
     output_existed = getattr(args, "output_dir", None) is not None and args.output_dir.exists()
     try:
-        configure_engine(args.clew, args.root)
+        configure_engine(args.clew, args.root, args.evidence_inputs)
         if args.action == "import-native":
+            if args.evidence_inputs is not None:
+                raise Stop("NATIVE_IMPORT_REQUIRES_SINGLE_ROOT", exit_code=2)
             value = native_module()["register"](args.input, args.output_dir, NATIVE_ENGINE, args.source)
         elif args.action == "inspect":
             value = inspect_sources(args.manifest, files=args.file,

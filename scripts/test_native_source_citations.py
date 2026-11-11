@@ -53,7 +53,7 @@ class NativeCitationsTest(unittest.TestCase):
                        'registeredInputLimits': {'native': []}}
         self.input = self.root / 'prepared.json'; self.write(self.input, self.packet)
         self.calls = []
-        self.mock = patch('subprocess.run', side_effect=self.engine); self.mock.start(); self.addCleanup(self.mock.stop)
+        self.mock = patch('subprocess.run', side_effect=self.engine); self.runner = self.mock.start(); self.addCleanup(self.mock.stop)
 
     def write(self, path, value): path.write_text(self.C['encode'](value))
 
@@ -73,6 +73,110 @@ class NativeCitationsTest(unittest.TestCase):
         out = self.root / name
         value = self.C['native_module']()['register'](self.input, out, (self.clew, self.docs))
         return out / 'citations.json', value
+
+    def two_inputs(self):
+        import hashlib
+        contexts = {}
+        for alias in ('east', 'west'):
+            docs = self.root / alias; docs.mkdir()
+            config = {**self.config, 'repositoryId': alias, 'repository': 'https://example.invalid/' + alias}
+            packet = copy.deepcopy(self.packet)
+            record = packet['items'][0]['record']
+            record['text'] = record['text'].replace('original', alias)
+            record['textDigest'] = 'sha256:' + hashlib.sha256(record['text'].encode()).hexdigest()
+            record['occurrence']['endByte'] = len(record['text'].encode())
+            binding = {**self.binding, 'analysisConfigurationDigest': self.C['digest'](
+                {k:v for k,v in config.items() if k not in ('title','targetRef')})}
+            actual = {**copy.deepcopy(packet), 'comparison': {**self.actual['comparison'],
+                'baselineBinding':binding, 'targetBinding':binding}, 'registeredInputLimits':{'native':[]}}
+            contexts[str(docs)] = {'config':config, 'packet':packet, 'actual':actual}
+        def engine(argv, **kwargs):
+            self.calls.append(argv)
+            self.assertEqual(Path(argv[0]), self.clew)
+            context = contexts[argv[argv.index('--root')+1]]
+            value = context['actual'] if argv[2:4] == ['evidence','compare-source'] else {'record':context['config']}
+            return subprocess.CompletedProcess(argv, 0, self.C['encode'](value).encode(), b'')
+        self.runner.side_effect = engine
+        manifests, handles, assignments, repositories = [], [], {}, {}
+        for root, context in contexts.items():
+            alias = Path(root).name
+            prepared = self.root / (alias + '.json'); self.write(prepared, context['packet'])
+            output = self.root / (alias + '-read')
+            view = self.C['native_module']()['register'](prepared, output, (self.clew, Path(root)))
+            manifest = output / 'citations.json'; manifests.append(manifest); handles.append(view['records'][0]['cite'])
+            assignments[json.loads(manifest.read_bytes())['id']] = alias
+            repository = context['config']['repository']
+            repositories[alias + '/owned'] = {'repository':repository,
+                'urlTemplate':repository + '/blob/{revision}/{path}#L{startLine}-L{endLine}'}
+        config = {'schema':'codeclew-evidence-inputs/1.0',
+            'inputs':{Path(root).name:{'root':root} for root in contexts}, 'manifests':assignments}
+        path = self.root / 'trusted-inputs.json'; self.write(path, config)
+        return manifests, handles, path, config, repositories
+
+    def test_two_roots_keep_same_local_identity_separate_through_bind_replay_and_sources(self):
+        manifests, handles, config, _, repositories = self.two_inputs()
+        self.M['configure_engine'](self.clew, evidence_inputs=config)
+        pages = self.root / 'pages'; pages.mkdir(); body = 'Two separately bound inputs.\n'
+        (pages / 'one.md').write_text(body)
+        request = self.root / 'request.json'; self.write(request, {'schema':self.M['REQUEST'], 'pages':[
+            {'page':'one.md','markdownDigest':self.M['sha'](body.encode()),'claims':[
+                {'id':'both','startByte':0,'endByte':len(body),'evidence':handles}]}]})
+        mapping = self.root / 'repositories.json'; self.write(mapping, repositories)
+        bound = self.root / 'bound'; self.M['bind'](manifests,pages,request,bound,repositories=mapping)
+        self.assertEqual(self.M['check'](manifests,bound/'index.json')['status'],'PAGE_MAPS_CHECKED')
+        sources = json.loads((bound/'maps/one.md.json').read_bytes())['claims'][0]['sources']
+        self.assertEqual([s['service'] for s in sources],['owned','owned'])
+        self.assertEqual([s['file'] for s in sources],['config.xml','config.xml'])
+        self.assertEqual([s['evidenceInput'] for s in sources],['east','west'])
+        self.assertEqual([s['bindingRepository'] for s in sources],
+                         ['https://example.invalid/east','https://example.invalid/west'])
+        for source in sources:
+            self.assertTrue(source['url'].startswith(source['bindingRepository']+'/blob/'))
+            self.assertEqual(source['id'],'native-example')
+        module = runpy.run_path(str(ROOT/'skills/codeclew/scripts/reader_sources.py'))
+        module['M']['configure_engine'](self.clew,evidence_inputs=config)
+        bundle = self.root / 'footers.json'; module['materialize'](bound/'index.json',manifests,bundle)
+        value = json.loads(bundle.read_bytes()); groups = value['pages'][0]['groups']
+        self.assertEqual([g['evidenceInput'] for g in groups],['east','west'])
+        self.assertEqual(len(groups),2)
+        self.assertNotIn(str(self.root),bundle.read_text())
+        # Exercise the actual footer validator, whose old key also merged these locations.
+        self.mock.stop()
+        code = "const m=await import(process.argv[1]); const b=await m.loadSources(process.argv[2]); console.log(m.sourceFooter(b,'one.md',process.argv[3],'<main></main>'));"
+        rendered = subprocess.run(['node','--input-type=module','--eval',code,
+            (ROOT/'skills/codeclew/examples/markdown-renderer/sources.mjs').as_uri(),str(bundle),body],
+            capture_output=True,text=True,check=True).stdout
+        self.assertIn('east / owned',rendered); self.assertIn('west / owned',rendered)
+
+    def test_root_selection_is_caller_owned_and_unknown_or_wrong_assignments_refuse(self):
+        manifests, _, path, config, repositories = self.two_inputs()
+        self.C['configure_engine'](self.clew,evidence_inputs=path)
+        entry = next(iter(self.C['load'](manifests[0])[3].values()))
+        with self.assertRaises(self.C['Stop']) as error:
+            self.C['mapped_source'](entry,{'owned':repositories['east/owned']})
+        self.assertEqual(error.exception.status,'ROOT_QUALIFIED_REPOSITORY_MAPPING_REQUIRED')
+        swapped = copy.deepcopy(config)
+        swapped['manifests'] = {key:('west' if value=='east' else 'east') for key,value in swapped['manifests'].items()}
+        self.write(path,swapped); self.C['configure_engine'](self.clew,evidence_inputs=path)
+        with self.assertRaises(self.C['Stop']): self.C['load'](manifests[0])
+        manifest = json.loads(manifests[0].read_bytes()); manifest['root'] = str(self.docs)
+        manifest['id'] = self.C['digest']({k:v for k,v in manifest.items() if k!='id'})
+        self.write(manifests[0],manifest); before = len(self.calls)
+        with self.assertRaises(self.C['Stop']) as error:self.C['load'](manifests[0])
+        self.assertEqual(error.exception.status,'MANIFEST_EVIDENCE_INPUT_NOT_SELECTED')
+        self.assertEqual(len(self.calls),before)
+
+    def test_trusted_configuration_cannot_change_mid_read_or_hide_duplicate_keys(self):
+        manifests, _, path, config, _ = self.two_inputs()
+        self.C['configure_engine'](self.clew,evidence_inputs=path)
+        changed = copy.deepcopy(config); changed['inputs']['east']['root'] = str(self.docs)
+        self.write(path,changed); before = len(self.calls)
+        with self.assertRaises(self.C['Stop']) as error:self.C['load'](manifests[0])
+        self.assertEqual(error.exception.status,'EVIDENCE_INPUT_CONFIGURATION_CHANGED')
+        self.assertEqual(len(self.calls),before)
+        path.write_text('{"schema":"codeclew-evidence-inputs/1.0","schema":"other","inputs":{},"manifests":{}}')
+        with self.assertRaises(self.C['Stop']) as error:self.C['configure_engine'](self.clew,evidence_inputs=path)
+        self.assertEqual(error.exception.status,'DUPLICATE_EVIDENCE_INPUT_KEY')
 
     def test_engine_reloaded_bytes_remain_native_in_compact_views_and_mixed_page_maps(self):
         manifest, view = self.register(); self.assertEqual(view['texts'], {})

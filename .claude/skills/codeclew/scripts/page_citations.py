@@ -35,8 +35,8 @@ def component_call(name, *args):
         raise Stop(error.status, exit_code=2, **error.details) from error
 
 
-def configure_engine(clew=None, root=None, components=None, component_set_digest=None):
-    C["configure_engine"](clew, root)
+def configure_engine(clew=None, root=None, components=None, component_set_digest=None, evidence_inputs=None):
+    C["configure_engine"](clew, root, evidence_inputs)
     component_call("configure", clew, root, components, component_set_digest)
 
 
@@ -555,16 +555,19 @@ def main(argv=None):
         command.add_argument("--manifest", type=Path, action="append", required=True)
         command.add_argument("--clew", type=Path, help="Caller-trusted launcher for SOURCE_NATIVE validation")
         command.add_argument("--root", type=Path, help="Root owning the prepared native evidenceSet")
+        command.add_argument("--evidence-inputs", type=Path, help="Caller-trusted manifest identities and owning roots")
     for command in (producer, updater, binder, checker):
         if command in (producer, updater):
             command.add_argument("--clew", type=Path)
             command.add_argument("--root", type=Path)
+            command.add_argument("--evidence-inputs", type=Path)
         command.add_argument("--components", type=Path, help="Pre-author native declaration component ticket")
         command.add_argument("--component-set-digest", help="Exact pre-author ticket ID; required with --components")
     args = parser.parse_args(argv)
     try:
         configure_engine(getattr(args, "clew", None), getattr(args, "root", None),
-                         getattr(args, "components", None), getattr(args, "component_set_digest", None))
+                         getattr(args, "components", None), getattr(args, "component_set_digest", None),
+                         getattr(args, "evidence_inputs", None))
         if args.action == "locations":
             result = locations(args.markdown_root, args.page, args.output)
         elif args.action == "compose":
