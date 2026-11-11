@@ -2811,6 +2811,8 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
                 work: work.id.clone(),
                 review_run: run.into(),
                 snapshot: work.snapshot.clone().unwrap(),
+                include_glossary: false,
+                glossary_id: vec![],
             })
             .unwrap();
         assert_eq!(
@@ -2821,12 +2823,38 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
         assert_eq!(result["captures"], 0);
         assert_eq!(result["agentInvocations"], 0);
         assert_eq!(result["writes"], 0);
+        let glossary =
+            super::super::super::work::run(super::super::super::work::Command::AnswerContext {
+                root: repo.root.clone(),
+                work: work.id.clone(),
+                review_run: run.into(),
+                snapshot: work.snapshot.clone().unwrap(),
+                include_glossary: true,
+                glossary_id: vec![],
+            })
+            .unwrap();
+        assert_eq!(glossary["schema"], "codeclew-saved-answer-context/1.1");
+        assert_eq!(
+            glossary["glossary"]["entries"],
+            load_approved_answer(&repo, &work, run)
+                .unwrap()
+                .answer
+                .get("glossary")
+                .cloned()
+                .unwrap_or_else(|| json!([]))
+        );
+        assert_eq!(glossary["glossary"]["packetDigest"], result["packetDigest"]);
+        assert_eq!(glossary["captures"], 0);
+        assert_eq!(glossary["agentInvocations"], 0);
+        assert_eq!(glossary["writes"], 0);
         assert!(
             super::super::super::work::run(super::super::super::work::Command::AnswerContext {
                 root: repo.root.clone(),
                 work: work.id.clone(),
                 review_run: "f".repeat(32),
                 snapshot: work.snapshot.clone().unwrap(),
+                include_glossary: true,
+                glossary_id: vec![],
             })
             .is_err()
         );

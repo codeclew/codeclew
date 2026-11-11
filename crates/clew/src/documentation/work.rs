@@ -89,6 +89,12 @@ pub enum Command {
         review_run: String,
         #[arg(long)]
         snapshot: String,
+        /// Include original approved glossary entries and their historical packet bindings.
+        #[arg(long)]
+        include_glossary: bool,
+        /// Select exact glossary IDs; at most 32. Omit to read the bounded complete glossary.
+        #[arg(long, requires = "include_glossary")]
+        glossary_id: Vec<String>,
     },
     /// Find historical approved answers for an exact request and compare with saved evidence.
     FindAnswer {
@@ -988,7 +994,25 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             work,
             review_run,
             snapshot,
-        } => super::answer_context::run(&Repository::open(&root)?, &work, &review_run, &snapshot),
+            include_glossary,
+            glossary_id,
+        } => {
+            let repo = Repository::open(&root)?;
+            if !include_glossary && !glossary_id.is_empty() {
+                return Err(invalid("--glossary-id requires --include-glossary"));
+            }
+            if include_glossary {
+                super::answer_context::with_glossary(
+                    &repo,
+                    &work,
+                    &review_run,
+                    &snapshot,
+                    &glossary_id,
+                )
+            } else {
+                super::answer_context::run(&repo, &work, &review_run, &snapshot)
+            }
+        }
         Command::FindAnswer {
             root,
             subject,

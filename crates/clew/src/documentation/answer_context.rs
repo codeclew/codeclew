@@ -17,11 +17,31 @@ pub(super) fn run(
     review_run: &str,
     snapshot: &str,
 ) -> Result<Value, ClewError> {
+    read(repo, id, review_run, snapshot, None)
+}
+
+pub(super) fn with_glossary(
+    repo: &Repository,
+    id: &str,
+    review_run: &str,
+    snapshot: &str,
+    ids: &[String],
+) -> Result<Value, ClewError> {
+    read(repo, id, review_run, snapshot, Some(ids))
+}
+
+fn read(
+    repo: &Repository,
+    id: &str,
+    review_run: &str,
+    snapshot: &str,
+    glossary_ids: Option<&[String]>,
+) -> Result<Value, ClewError> {
     let work = work::load(repo, id)?;
     let selected = operation_draft_review::load_approved_answer(repo, &work, review_run)?;
     let current = Check::load_snapshot(repo, snapshot)?;
     let delta = compare(&work, &selected.audit, &current)?;
-    Ok(json!({
+    let mut output = json!({
         "schema":"codeclew-saved-answer-context/1.0", "work":work.id,"reviewRun":review_run,
         "subject":work.subject,"question":work.request.question,"rootDeclaration":work.request.root_declaration,
         "entrypoint":work.request.entrypoint,"profile":work.request.context_profile,
@@ -34,6 +54,115 @@ pub(super) fn run(
             "Comparison is conservative on changed compiler pins; identities and unsupported coordinate drift are never remapped.",
             "This is comparison with the explicit Check, not a new capture or a claim about live runtime."],
         "captures":0,"agentInvocations":0,"writes":0
+    });
+    if let Some(ids) = glossary_ids {
+        output["schema"] = json!("codeclew-saved-answer-context/1.1");
+        output["glossary"] = glossary(&work, review_run, snapshot, &selected, ids)?;
+        if super::bytes(&output)?.len() > 2 * 1024 * 1024 {
+            return Err(invalid(
+                "SAVED_GLOSSARY_BYTE_LIMIT: select at most 32 exact --glossary-id values; no recapture or model call was made",
+            ));
+        }
+    }
+    Ok(output)
+}
+
+fn glossary(
+    work: &Work,
+    review_run: &str,
+    snapshot: &str,
+    selected: &operation_draft_review::ReviewedAnswer,
+    ids: &[String],
+) -> Result<Value, ClewError> {
+    let requested: BTreeSet<_> = ids.iter().map(String::as_str).collect();
+    if ids.len() > 32
+        || requested.len() != ids.len()
+        || ids.iter().any(|id| id.is_empty() || id.len() > 256)
+    {
+        return Err(invalid(
+            "SAVED_GLOSSARY_SELECTION_INVALID: use 1..32 distinct exact glossary IDs, or omit the selection",
+        ));
+    }
+    let all = selected.answer["glossary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut inventory = Vec::new();
+    let mut entries = Vec::new();
+    let mut bindings = Vec::new();
+    let mut evidence = BTreeSet::new();
+    for (index, entry) in all.iter().enumerate() {
+        let id = entry["id"]
+            .as_str()
+            .ok_or_else(|| invalid("saved glossary entry has no original ID"))?;
+        let binding =
+            json!({"id":id,"pointer":format!("/glossary/{index}"),"entryDigest":digest(entry)?});
+        inventory.push(json!({"id":id,"label":entry["label"],"kind":entry["kind"],
+            "pointer":binding["pointer"],"entryDigest":binding["entryDigest"]}));
+        if requested.is_empty() || requested.contains(id) {
+            entries.push(entry.clone());
+            bindings.push(binding);
+            for label in entry["definition"]["evidence"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                evidence.insert(label.to_owned());
+            }
+        }
+    }
+    if requested
+        .iter()
+        .any(|id| !all.iter().any(|entry| entry["id"] == *id))
+    {
+        return Err(invalid(
+            "UNKNOWN_SAVED_GLOSSARY_ID: select an original ID from the saved glossary inventory",
+        ));
+    }
+    let audit = selected.audit["records"]
+        .as_array()
+        .ok_or_else(|| invalid("saved glossary packet audit is unavailable"))?;
+    let evidence_bindings: Vec<_> = audit
+        .iter()
+        .filter(|row| {
+            row["label"]
+                .as_str()
+                .is_some_and(|label| evidence.contains(label))
+        })
+        .map(|row| {
+            let mut header = json!({"projection":"ORIGINAL_AUDIT_BINDING_NOT_SOURCE_CONTENT"});
+            for key in [
+                "label",
+                "kind",
+                "id",
+                "workReference",
+                "recordDigest",
+                "deliveredToAuthor",
+            ] {
+                header[key] = row[key].clone();
+            }
+            header
+        })
+        .collect();
+    if evidence_bindings.len() != evidence.len() {
+        return Err(invalid(
+            "saved glossary references unavailable packet evidence",
+        ));
+    }
+    Ok(json!({
+        "schema":"codeclew-saved-glossary/1.0","work":work.id,"subject":work.subject,
+        "reviewRun":review_run,"savedSnapshot":work.snapshot,"comparedSnapshot":snapshot,
+        "answerSchema":selected.answer["schema"],"answerDigest":digest(&selected.answer)?,
+        "packetDigest":selected.packet["packetDigest"],"reviewDigest":digest(&selected.review)?,
+        "provenance":selected.provenance,"documentationLanguage":work.request.documentation_language(),
+        "status":if all.is_empty(){"NO_SAVED_GLOSSARY"}else{"SAVED_APPROVED_GLOSSARY"},
+        "inventory":inventory,"entries":entries,"entryBindings":bindings,"evidenceBindings":evidence_bindings,
+        "availableEntries":all.len(),"selectedEntries":entries.len(),"omittedEntries":all.len()-entries.len(),
+        "authority":"HISTORICAL_MODEL_APPROVAL_AGAINST_SAVED_PACKET_NOT_SOURCE_OR_RUNTIME_PROOF",
+        "limitations":["Original entries, IDs, uncertainty and glossaryRefs are unchanged; follow unselected glossaryRefs explicitly.",
+            "Evidence bindings address the original packet audit; these headers do not deliver source content or SOURCE citation handles.",
+            "Captured-context comparison is separate from the historical meaning approval; no new review, model call or capture occurs."]
     }))
 }
 
@@ -191,6 +320,73 @@ mod tests {
         api_contract_tests::persist_operation_fixture(&repo, &mut work);
         let (_, audit) = operation_packet::build(&work).unwrap();
         (temp, repo, work, audit)
+    }
+
+    #[test]
+    fn saved_glossary_selection_keeps_original_ids_pointers_uncertainty_and_audit_bindings() {
+        let (_temp, _repo, work, _) = fixture();
+        let first = json!({"id":"device","label":"Device","kind":"term",
+            "definition":{"text":"Owned fixture definition","evidence":["s1"],
+                "uncertainty":"Only the saved packet scope","glossaryRefs":["device-type"]}});
+        let second = json!({"id":"device-type","label":"DeviceDto","kind":"symbol",
+            "definition":{"text":"Owned representation fixture","evidence":["d1"],
+                "uncertainty":"No entity promotion","glossaryRefs":[]}});
+        let selected = operation_draft_review::ReviewedAnswer {
+            packet: json!({"packetDigest":"sha256:owned-packet"}),
+            audit: json!({"records":[
+                {"label":"s1","kind":"SOURCE","id":"original-source","workReference":"s1",
+                 "recordDigest":"sha256:source-row","deliveredToAuthor":true,"row":{"text":"Original source stays outside this metadata response"}},
+                {"label":"d1","kind":"DEPENDENCY","id":"original-dependency","workReference":"d1",
+                 "recordDigest":"sha256:dependency-row","deliveredToAuthor":true}
+            ]}),
+            answer: json!({"schema":"codeclew-operation-answer/1.2","glossary":[first,second]}),
+            review: json!({"verdict":"APPROVE"}),
+            provenance: json!({"sourceContext":"SAVED_SNAPSHOT_NOT_REVERIFIED","runtime":"UNKNOWN"}),
+        };
+        let result = glossary(
+            &work,
+            "owned-review",
+            "compared-snapshot",
+            &selected,
+            &["device-type".into()],
+        )
+        .unwrap();
+        assert_eq!(result["entries"], json!([second]));
+        assert_eq!(result["availableEntries"], 2);
+        assert_eq!(result["omittedEntries"], 1);
+        assert_eq!(result["entryBindings"][0]["pointer"], "/glossary/1");
+        assert_eq!(
+            result["entryBindings"][0]["entryDigest"],
+            digest(&second).unwrap()
+        );
+        assert_eq!(result["answerDigest"], digest(&selected.answer).unwrap());
+        assert_eq!(result["provenance"], selected.provenance);
+        assert_eq!(result["evidenceBindings"][0]["label"], "d1");
+        assert!(result["evidenceBindings"][0].get("row").is_none());
+        assert!(
+            glossary(
+                &work,
+                "owned-review",
+                "compared-snapshot",
+                &selected,
+                &["absent".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            glossary(
+                &work,
+                "owned-review",
+                "compared-snapshot",
+                &selected,
+                &["device".into(), "device".into()]
+            )
+            .is_err()
+        );
+        let complete =
+            glossary(&work, "owned-review", "compared-snapshot", &selected, &[]).unwrap();
+        assert_eq!(complete["entries"], json!([first, second]));
+        assert_eq!(complete["selectedEntries"], 2);
     }
 
     #[test]
