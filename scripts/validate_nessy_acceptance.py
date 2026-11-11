@@ -64,6 +64,7 @@ SUPPORTED_KEYWORDS = {
     "allOf",
     "anyOf",
     "oneOf",
+    "not",
     "uniqueItems",
     "if",
     "then",
@@ -151,6 +152,12 @@ class MiniSchema:
             self.errors.append(f"{path}: value {instance!r} not in enum {node['enum']}")
         if "const" in node and instance != node["const"]:
             self.errors.append(f"{path}: value {instance!r} != const {node['const']!r}")
+        if "not" in node:
+            probe: list[str] = []
+            forbidden = MiniSchema(node["not"], probe)
+            forbidden.validate(instance, node["not"], f"{path}.not", defs)
+            if not probe:
+                self.errors.append(f"{path}: value matches a forbidden schema")
         if "allOf" in node:
             for index, sub in enumerate(node["allOf"]):
                 self.validate(instance, sub, f"{path}.allOf[{index}]", defs)

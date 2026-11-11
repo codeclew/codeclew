@@ -1954,12 +1954,10 @@ pub fn prepare_with_snapshot(
         ));
     }
     let frozen_inventory = request.context_profile.as_deref() == Some("semantic-inventory-v1");
-    if frozen_inventory {
-        if snapshot.is_none() {
-            return Err(invalid(
-                "SEMANTIC_INVENTORY_SNAPSHOT_REQUIRED: select an exact saved snapshot",
-            ));
-        }
+    if frozen_inventory && snapshot.is_none() {
+        return Err(invalid(
+            "SEMANTIC_INVENTORY_SNAPSHOT_REQUIRED: select an exact saved snapshot",
+        ));
     }
     let (kind, id) = subject
         .split_once(':')

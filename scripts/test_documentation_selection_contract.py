@@ -648,6 +648,18 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             "the endpoint service packet shape remains closed and omits process intent",
         )
 
+    def test_not_is_evaluated_inside_alternatives_and_keeps_invalid_schemas_visible(self) -> None:
+        vna = mini_schema
+        schema = {"anyOf": [{"not": {"const": "reserved"}}, {"const": "explicit"}]}
+        for value, accepted in [("ordinary", True), ("explicit", True), ("reserved", False)]:
+            errors: list[str] = []
+            validator = vna.MiniSchema(schema, errors)
+            validator.validate(value, schema, "$", {})
+            self.assertEqual(not errors, accepted)
+        malformed = {"not": {"bogusKeyword": True}}
+        with self.assertRaises(vna.SchemaFailure):
+            vna.MiniSchema(malformed, []).validate("value", malformed, "$", {})
+
     def test_default_modes_and_cursor_continuations_are_admitted(self) -> None:
         valid = [
             {},
@@ -676,6 +688,20 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             {"query": {"kind": "SYMBOL", "projection": "SUMMARY"}},
         ]:
             self.assertNotEqual(selection_errors(selection), [])
+
+    def test_semantic_inventory_requires_exact_basis_and_rejects_source_filters(self) -> None:
+        query = {"kind": "SEMANTIC_INVENTORY", "expectedSnapshot": "sha256:" + "a" * 64 + "/1",
+                 "expectedContextDigest": "sha256:" + "b" * 64}
+        self.assertEqual(selection_errors({"query": query}), [])
+        for invalid in [
+            {key: value for key, value in query.items() if key != "expectedSnapshot"},
+            {key: value for key, value in query.items() if key != "expectedContextDigest"},
+            dict(query, symbolContains="Orders"),
+            dict(query, projection="NAVIGATION"),
+            dict(query, file="Orders.java"),
+        ]:
+            with self.subTest(query=invalid):
+                self.assertTrue(selection_errors({"query": invalid}))
 
     def test_public_work_projection_is_optional_raw_and_navigation_is_kind_scoped(self) -> None:
         for selection in [
