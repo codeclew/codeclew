@@ -309,6 +309,13 @@ fn capture_selected_with(
             capture(service, inputs.evidence_expectations.get(id), targets)
         }) {
             Ok(mut value) => {
+                if value
+                    .boundaries
+                    .iter()
+                    .any(|b| b == super::evidence_package::HISTORICAL_BOUNDARY)
+                {
+                    retained_services.insert(id.clone());
+                }
                 if matches!(service.language.as_str(), "java" | "kotlin" | "typescript")
                     && let Some(prior) = previous
                         .as_ref()
@@ -378,11 +385,14 @@ fn capture_selected_with(
     checked.source_inputs = Some(SourceInputs {
         schema: SOURCE_INPUTS_SCHEMA.into(),
         input_digest,
-        selected_services: if selected.is_empty() {
+        selected_services: (if selected.is_empty() {
             inputs.services.keys().cloned().collect()
         } else {
             selected.clone()
-        },
+        })
+        .difference(&retained_services)
+        .cloned()
+        .collect(),
         retained_services,
         inputs,
     });

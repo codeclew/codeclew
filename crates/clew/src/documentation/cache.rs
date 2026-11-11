@@ -306,7 +306,7 @@ pub fn store_capture(
     // The root is immutable and exact; removed whole-map references are rejected.
     let observations = super::fact_index::store_dependency_map(repo, &evidence.observations)?;
     let contracts = put_json(repo, CONTRACTS_OBJECT_SCHEMA, &evidence.contracts)?;
-    Ok(CaptureManifest {
+    let mut manifest = CaptureManifest {
         schema: CAPTURE_MANIFEST_SCHEMA.into(),
         service: evidence.service.clone(),
         revision: evidence.revision.clone(),
@@ -321,7 +321,18 @@ pub fn store_capture(
         contracts,
         cacheability: REUSABLE.into(),
         reason: None,
-    })
+    };
+    if evidence
+        .boundaries
+        .iter()
+        .any(|b| b == super::evidence_package::HISTORICAL_BOUNDARY)
+    {
+        mark_non_cacheable(
+            &mut manifest,
+            "Explicit historical package export does not establish current source or external build authority",
+        );
+    }
+    Ok(manifest)
 }
 
 /// Hydrate a `ServiceEvidence` from a capture reference envelope, reading the

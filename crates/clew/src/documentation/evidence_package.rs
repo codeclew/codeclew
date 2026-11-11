@@ -15,12 +15,26 @@ use std::{
 };
 
 const SCHEMA: &str = "codeclew-documentation-evidence-package/1.0";
+const RETAINED_SCHEMA: &str = "codeclew-documentation-evidence-package/1.1";
+pub(super) const HISTORICAL_BOUNDARY: &str = "HISTORICAL_PORTABLE_EVIDENCE_NOT_REVERIFIED";
 const PART_SCHEMA: &str = "codeclew-documentation-evidence-part/1.0";
 const POLICY_SCHEMA: &str = "codeclew-documentation-evidence-expectation/1.0";
 const MAX_PART: u64 = 2 * 1024 * 1024;
 const MAX_TOTAL: u64 = 128 * 1024 * 1024;
 const MAX_PARTS: usize = 4096;
-const MAX_RECORDS: usize = 131_072;
+const PART_RECORDS: usize = 512;
+// Preserve the old implied per-part record ceiling independently of the raised
+// aggregate allowance. Existing 1.0 parts remain valid.
+const MAX_PART_RECORDS: usize = 131_072;
+// The native writer emits up to PART_RECORDS rows per part. Compiler facts can
+// expand into source, observation, entrypoint and contract rows; the aggregate
+// budget must cover the admitted part layout, not just one fact category.
+// The independent 128 MiB aggregate and 2 MiB per-part byte limits still apply.
+const MAX_RECORDS: usize = MAX_PARTS * PART_RECORDS;
+
+#[cfg(test)]
+#[path = "evidence_package_scale_tests.rs"]
+mod scale_tests;
 
 // Preserve the exact legacy URL expansion on already frozen audit evidence.
 // This is admission compatibility, not a new capture/provider inference policy.
@@ -145,6 +159,17 @@ pub enum Command {
         #[arg(long)]
         diagnostics_only: bool,
     },
+    /// Export one service from an exact historical snapshot; never run a producer.
+    Export {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Configure a digest obtained through a trusted CI/coordinator channel.
     Expect {
         #[arg(long)]
@@ -212,6 +237,58 @@ struct Manifest {
     compatibility_digest: String,
     outcome: String,
     parts: Vec<PartRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained: Option<RetainedOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RetainedOrigin {
+    schema: String,
+    snapshot: String,
+    input_digest: String,
+    context_digest: String,
+    capture_digest: String,
+    cacheability: String,
+    cacheability_reason: Option<String>,
+    source_authority: String,
+    automatic_reuse: String,
+}
+
+impl RetainedOrigin {
+    fn validate(&self) -> Result<(), ClewError> {
+        let valid_snapshot = self
+            .snapshot
+            .rsplit_once('/')
+            .is_some_and(|(digest, size)| {
+                hash(digest)
+                    && size.parse::<u64>().ok().is_some_and(|n| {
+                        n > 0
+                            && n <= super::check::PORTABLE_CACHE_MAX_BYTES
+                            && size == n.to_string()
+                    })
+            });
+        let cacheability = match self.cacheability.as_str() {
+            super::cache::REUSABLE => self.cacheability_reason.is_none(),
+            super::cache::NON_CACHEABLE => self
+                .cacheability_reason
+                .as_ref()
+                .is_some_and(|r| !r.trim().is_empty()),
+            _ => false,
+        };
+        if self.schema != "codeclew-documentation-retained-export/1.0"
+            || !valid_snapshot
+            || !hash(&self.input_digest)
+            || !hash(&self.context_digest)
+            || !hash(&self.capture_digest)
+            || !cacheability
+            || self.source_authority != "RETAINED_SOURCE_NOT_REVERIFIED"
+            || self.automatic_reuse != "DISALLOWED_HISTORICAL_EXPORT"
+        {
+            return Err(invalid("invalid retained evidence provenance or authority"));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -373,6 +450,74 @@ fn read_bytes(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, ClewEr
     Ok(data)
 }
 
+fn limit_error(bound: &str, declared: u64, limit: u64) -> ClewError {
+    let mut error = invalid(format!(
+        "EVIDENCE_PACKAGE_LIMIT_EXCEEDED: {bound} declared={declared} limit={limit}"
+    ));
+    error.details = Some(Box::new(json!({
+        "stage":"VALIDATE_EVIDENCE_PACKAGE", "bound":bound,
+        "declared":declared, "limit":limit,
+        "nextAction":"Do not repeat source capture to diagnose this limit. Export an exact retained snapshot when available; the same package limits remain enforced."
+    })));
+    error
+}
+
+fn validate_parts(parts: &[PartRef]) -> Result<(), ClewError> {
+    if parts.len() > MAX_PARTS {
+        return Err(limit_error("parts", parts.len() as u64, MAX_PARTS as u64));
+    }
+    let mut paths = BTreeSet::new();
+    let mut total = 0u64;
+    let mut count = 0usize;
+    for (index, part) in parts.iter().enumerate() {
+        // Descriptor errors identify only the index and invariant, never an
+        // untrusted path, kind, digest, encoding or source/configuration value.
+        for (valid, field) in [
+            (kind(&part.kind), "kind"),
+            (hash(&part.digest), "digest"),
+            (part.encoding == "json", "encoding"),
+            (part.bytes > 0 && part.records > 0, "nonempty counts"),
+        ] {
+            if !valid {
+                return Err(invalid(format!(
+                    "invalid evidence part {field} at index {index}"
+                )));
+            }
+        }
+        if part.path != format!("parts/{}.json", &part.digest[7..]) {
+            return Err(invalid(format!(
+                "invalid evidence part path at index {index}"
+            )));
+        }
+        if !paths.insert(&part.path) {
+            return Err(invalid(format!("duplicate evidence part at index {index}")));
+        }
+        if part.bytes > MAX_PART {
+            return Err(limit_error("partBytes", part.bytes, MAX_PART));
+        }
+        if part.records > MAX_PART_RECORDS {
+            return Err(limit_error(
+                "partRecords",
+                part.records as u64,
+                MAX_PART_RECORDS as u64,
+            ));
+        }
+        total = total
+            .checked_add(part.bytes)
+            .ok_or_else(|| invalid("evidence package byte counter overflow"))?;
+        count = count
+            .checked_add(part.records)
+            .ok_or_else(|| invalid("evidence package record counter overflow"))?;
+    }
+    if total > MAX_TOTAL {
+        return Err(limit_error("totalBytes", total, MAX_TOTAL));
+    }
+    if count > MAX_RECORDS {
+        return Err(limit_error("records", count as u64, MAX_RECORDS as u64));
+    }
+    Ok(())
+}
+
 fn load(input: &Path) -> Result<Package, ClewError> {
     if fs::symlink_metadata(input)
         .map_err(io_error)?
@@ -384,7 +529,15 @@ fn load(input: &Path) -> Result<Package, ClewError> {
     let data = read_bytes(input, "manifest.json", store::MAX_RECORD)?;
     let manifest: Manifest = serde_json::from_slice(&data).map_err(io_error)?;
     store::validate_service(&manifest.service)?;
-    if manifest.schema != SCHEMA
+    let valid_origin = match (manifest.schema.as_str(), &manifest.retained) {
+        (SCHEMA, None) => true,
+        (RETAINED_SCHEMA, Some(origin)) if manifest.outcome == "CAPTURED" => {
+            origin.validate()?;
+            true
+        }
+        _ => false,
+    };
+    if !valid_origin
         || manifest.service_digest != digest(&manifest.service)?
         || manifest.revision.as_ref().is_some_and(|r| !sha(r))
         || !hash(&manifest.compatibility_digest)
@@ -394,36 +547,15 @@ fn load(input: &Path) -> Result<Package, ClewError> {
             "CAPTURED" | "PRODUCER_FAILURE" | "DIAGNOSTICS_ONLY"
         )
         || manifest.parts.is_empty()
-        || manifest.parts.len() > MAX_PARTS
     {
         return Err(invalid("unsupported or inconsistent evidence manifest"));
     }
+    // Check the entire declared envelope before any payload read/allocation.
+    // These counts are declarations until each part's bytes and rows validate.
+    validate_parts(&manifest.parts)?;
     let mut records: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let mut raw_parts = BTreeMap::new();
-    let mut total = 0u64;
-    let mut count = 0usize;
     for part in &manifest.parts {
-        total = total
-            .checked_add(part.bytes)
-            .ok_or_else(|| invalid("evidence package byte overflow"))?;
-        count = count
-            .checked_add(part.records)
-            .ok_or_else(|| invalid("evidence package record overflow"))?;
-        if !kind(&part.kind)
-            || !hash(&part.digest)
-            || part.path != format!("parts/{}.json", &part.digest[7..])
-            || part.encoding != "json"
-            || part.bytes == 0
-            || part.bytes > MAX_PART
-            || total > MAX_TOTAL
-            || part.records == 0
-            || count > MAX_RECORDS
-            || raw_parts.contains_key(&part.path)
-        {
-            return Err(invalid(
-                "invalid evidence part kind, path, encoding, digest or aggregate limits",
-            ));
-        }
         let data = read_bytes(input, &part.path, part.bytes)?;
         if data.len() as u64 != part.bytes || canonical::hash_bytes(&data) != part.digest {
             return Err(invalid("evidence part digest mismatch"));
@@ -694,7 +826,7 @@ fn make_parts(
     };
     for value in values {
         let next = bytes(&value)?.len();
-        if size + next > 512 * 1024 || group.len() >= 512 {
+        if size + next > 512 * 1024 || group.len() >= PART_RECORDS {
             flush(&mut group, parts, refs)?;
             size = 0;
         }
@@ -724,6 +856,77 @@ fn capture(
             "documentation input changed during evidence capture",
         ));
     }
+    write_capture_result(service, result, output, diagnostic_only, revision, None)
+}
+
+fn export_snapshot(
+    repo: &Repository,
+    id: &str,
+    snapshot: &str,
+    output: &Path,
+) -> Result<Value, ClewError> {
+    // Load the exact envelope and selected declaration/capture only. An unrelated
+    // service's missing/heavy closure must not block this bounded export.
+    // Neither live catalog state nor checkout availability changes authority.
+    let saved = super::check::Check::load_snapshot_manifest(repo, snapshot)?;
+    let service = super::source_inputs::load_selected_services(
+        &saved.source_inputs,
+        &saved.input_digest,
+        &BTreeSet::from([id.to_owned()]),
+        |reference| {
+            super::cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
+                .ok_or_else(|| invalid("retained source input object is unavailable"))
+        },
+    )?
+    .remove(id)
+    .ok_or_else(|| invalid("selected service is absent from the retained snapshot"))?;
+    let capture = saved
+        .service_manifests
+        .get(id)
+        .ok_or_else(|| invalid("selected service has no retained capture in the snapshot"))?;
+    super::cache::validate_capture(capture)?;
+    let evidence = super::cache::load_capture(repo, capture)?;
+    if capture.service != id
+        || capture.service_digest != digest(&service)?
+        || evidence.service_digest != capture.service_digest
+        || evidence.revision != capture.revision
+    {
+        return Err(invalid(
+            "retained snapshot service or capture identity mismatch",
+        ));
+    }
+    let retained = RetainedOrigin {
+        schema: "codeclew-documentation-retained-export/1.0".into(),
+        snapshot: snapshot.into(),
+        input_digest: saved.input_digest,
+        context_digest: saved.context_digest,
+        capture_digest: digest(capture)?,
+        cacheability: capture.cacheability.clone(),
+        cacheability_reason: capture.reason.clone(),
+        source_authority: "RETAINED_SOURCE_NOT_REVERIFIED".into(),
+        automatic_reuse: "DISALLOWED_HISTORICAL_EXPORT".into(),
+    };
+    retained.validate()?;
+    let revision = Some(evidence.revision.clone());
+    write_capture_result(
+        service,
+        Ok(evidence),
+        output,
+        false,
+        revision,
+        Some(retained),
+    )
+}
+
+fn write_capture_result(
+    service: Service,
+    result: Result<ServiceEvidence, ClewError>,
+    output: &Path,
+    diagnostic_only: bool,
+    revision: Option<String>,
+    retained: Option<RetainedOrigin>,
+) -> Result<Value, ClewError> {
+    let id = service.id.clone();
     let outcome = if result.is_err() {
         "PRODUCER_FAILURE"
     } else if diagnostic_only {
@@ -731,12 +934,17 @@ fn capture(
     } else {
         "CAPTURED"
     };
-    let report = report(
+    let mut report = report(
         &service,
         outcome,
         result.as_ref().ok(),
         result.as_ref().err(),
     )?;
+    if retained.is_some() {
+        report["stage"] = json!("RETAINED_SNAPSHOT_EXPORT");
+        report["limitations"].as_array_mut().ok_or_else(|| invalid("diagnostic report limitations are invalid"))?
+            .push(json!("This package exports historical evidence without running or revalidating its compiler/build. producerVersion identifies the exporter; original producer identity remains in retained source and scope records."));
+    }
     let mut parts = BTreeMap::new();
     let mut refs = Vec::new();
     make_parts("report", vec![report.clone()], &mut parts, &mut refs)?;
@@ -791,7 +999,12 @@ fn capture(
         revision
     };
     let manifest = Manifest {
-        schema: SCHEMA.into(),
+        schema: if retained.is_some() {
+            RETAINED_SCHEMA
+        } else {
+            SCHEMA
+        }
+        .into(),
         service_digest: digest(&service)?,
         service,
         revision,
@@ -799,7 +1012,11 @@ fn capture(
         compatibility_digest: compatibility()?,
         outcome: outcome.into(),
         parts: refs,
+        retained,
     };
+    super::progress::run("VALIDATE_EVIDENCE_PACKAGE_LIMITS", || {
+        validate_parts(&manifest.parts)
+    })?;
     let parent = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -822,11 +1039,15 @@ fn capture(
         fs::write(temporary.path().join(path), data).map_err(io_error)?;
     }
     fs::write(temporary.path().join("manifest.json"), bytes(&manifest)?).map_err(io_error)?;
-    let package = load(temporary.path())?;
+    let package = super::progress::run("VERIFY_EVIDENCE_PACKAGE", || load(temporary.path()))?;
     fs::rename(temporary.path(), &output).map_err(io_error)?;
-    Ok(
-        json!({"schema":"codeclew-docs-evidence-capture/1.0","status":outcome,"manifestDigest":package.digest,"service":id,"revision":manifest.revision,"serviceDigest":manifest.service_digest,"report":report}),
-    )
+    let mut value = json!({"schema":"codeclew-docs-evidence-capture/1.0","status":outcome,"manifestDigest":package.digest,"service":id,"revision":manifest.revision,"serviceDigest":manifest.service_digest,"report":report});
+    if let Some(origin) = &manifest.retained {
+        value["schema"] = json!("codeclew-docs-evidence-export/1.0");
+        value["status"] = json!("EXPORTED_RETAINED_SNAPSHOT");
+        value["retained"] = json!(origin);
+    }
+    Ok(value)
 }
 
 fn check_expected_with(
@@ -885,9 +1106,16 @@ fn import(repo: &Repository, input: &Path) -> Result<Value, ClewError> {
     let same = repo.path(&pointer_path)?.exists()
         && fs::read(repo.path(&pointer_path)?).map_err(io_error)? == bytes(&pointer)?;
     repo.atomic(&pointer_path, &bytes(&pointer)?)?;
-    Ok(
-        json!({"schema":"codeclew-docs-evidence-import/1.0","status":if same {"CURRENT"} else if package.manifest.outcome=="PRODUCER_FAILURE" {"PRODUCER_FAILURE_RECORDED"} else {"IMPORTED"},"service":policy.service,"revision":policy.revision,"manifestDigest":package.digest,"sequence":policy.sequence}),
-    )
+    let mut value = json!({"schema":"codeclew-docs-evidence-import/1.0","status":if same {"CURRENT"} else if package.manifest.outcome=="PRODUCER_FAILURE" {"PRODUCER_FAILURE_RECORDED"} else {"IMPORTED"},"service":policy.service,"revision":policy.revision,"manifestDigest":package.digest,"sequence":policy.sequence});
+    if let Some(origin) = &package.manifest.retained {
+        value["status"] = json!(if same {
+            "RETAINED_ALREADY_IMPORTED"
+        } else {
+            "IMPORTED_RETAINED_SNAPSHOT"
+        });
+        value["retained"] = json!(origin);
+    }
+    Ok(value)
 }
 
 pub(super) fn selected(
@@ -953,7 +1181,11 @@ pub(super) fn selected_with_expectation(
         "EVIDENCE_PACKAGE",
         "coordinator-selected-revision",
     )?;
-    let normalized = json!({"schema":"codeclew-documentation-portable-influence/1.0","expectation":policy,"producerRules":package.manifest.compatibility_digest});
+    let mut normalized = json!({"schema":"codeclew-documentation-portable-influence/1.0","expectation":policy,"producerRules":package.manifest.compatibility_digest});
+    if let Some(origin) = &package.manifest.retained {
+        normalized["retained"] = json!(origin);
+        e.boundaries.push(HISTORICAL_BOUNDARY.into());
+    }
     e.observations.insert(
         id.clone(),
         Observation {
@@ -1022,6 +1254,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &output,
             diagnostics_only,
         ),
+        Command::Export {
+            root,
+            service,
+            snapshot,
+            output,
+        } => export_snapshot(&Repository::open(&root)?, &service, &snapshot, &output),
         Command::Import { root, input } => import(&Repository::open(&root)?, &input),
         Command::Expect {
             root,
@@ -1067,9 +1305,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         }
         Command::Inspect { input } => {
             let p = load(&input)?;
-            Ok(
-                json!({"schema":"codeclew-docs-evidence-inspect/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"service":p.manifest.service.id,"repositoryId":p.manifest.service.repository_id,"serviceDigest":p.manifest.service_digest,"revision":p.manifest.revision,"compatible":p.manifest.compatibility_digest==compatibility()?,"outcome":p.manifest.outcome,"parts":p.manifest.parts.len(),"report":p.records["report"][0]}),
-            )
+            let mut value = json!({"schema":"codeclew-docs-evidence-inspect/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"service":p.manifest.service.id,"repositoryId":p.manifest.service.repository_id,"serviceDigest":p.manifest.service_digest,"revision":p.manifest.revision,"compatible":p.manifest.compatibility_digest==compatibility()?,"outcome":p.manifest.outcome,"parts":p.manifest.parts.len(),"report":p.records["report"][0]});
+            if let Some(origin) = &p.manifest.retained {
+                value["retained"] = json!(origin);
+            }
+            Ok(value)
         }
         Command::Read {
             input,
@@ -1081,13 +1321,17 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 return Err(invalid("unknown portable index record kind"));
             }
             let mut p = load(&input)?;
-            super::cli::page(
+            let mut value = super::cli::page(
                 &digest(&(&p.digest, &k))?,
                 p.records.remove(&k).unwrap_or_default(),
                 cursor.as_deref(),
                 limit as usize,
                 json!({"schema":"codeclew-docs-evidence-read/1.0","status":"INTEGRITY_CHECKED_NOT_ADMITTED","manifestDigest":p.digest,"kind":k}),
-            )
+            )?;
+            if let Some(origin) = &p.manifest.retained {
+                value["retained"] = json!(origin);
+            }
+            Ok(value)
         }
     }
 }
@@ -1245,6 +1489,7 @@ mod tests {
             compatibility_digest: compatibility().unwrap(),
             outcome: "CAPTURED".into(),
             parts: refs,
+            retained: None,
         };
         let manifest_digest = digest(&manifest).unwrap();
         let package_root = format!("evidence/packages/{}", &manifest_digest[7..]);
