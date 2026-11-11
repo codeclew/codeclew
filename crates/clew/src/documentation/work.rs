@@ -1779,6 +1779,19 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
             ))
         }
         None => Ok(()),
+        Some("semantic-inventory-v1")
+            if subject.starts_with("service:")
+                && request.entrypoint.is_none()
+                && !request.source_data_context
+                && request.maintained_paragraph.is_none()
+                && request.maintained_from_bundle.is_none()
+                && request.external_inputs.is_empty() =>
+        {
+            Ok(())
+        }
+        Some("semantic-inventory-v1") => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: semantic-inventory-v1 requires a frozen service request without source-data, maintained or external inputs",
+        )),
         Some(SECTION_ORIENTATION_PROFILE)
             if request.entrypoint.as_deref() == Some("section-entities") =>
         {
@@ -1916,6 +1929,14 @@ pub fn prepare_with_snapshot(
             "PROCESS_GRAPH_SNAPSHOT_REQUIRED: process-graph-v1 requires an explicit saved snapshot; source capture is not performed",
         ));
     }
+    let frozen_inventory = request.context_profile.as_deref() == Some("semantic-inventory-v1");
+    if frozen_inventory {
+        if snapshot.is_none() {
+            return Err(invalid(
+                "SEMANTIC_INVENTORY_SNAPSHOT_REQUIRED: select an exact saved snapshot",
+            ));
+        }
+    }
     let (kind, id) = subject
         .split_once(':')
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
@@ -1925,6 +1946,7 @@ pub fn prepare_with_snapshot(
     normalize_section_profile(&subject, &mut request);
     validate_context_profile(&subject, &request)?;
     let selected = match kind {
+        "service" if frozen_inventory && store::valid_id(id) => BTreeSet::from([id.to_owned()]),
         "service" if repo.services()?.contains_key(id) => BTreeSet::from([id.to_owned()]),
         "scenario" if request.context_profile.as_deref() == Some("process-graph-v1") => {
             BTreeSet::new()
@@ -1946,7 +1968,24 @@ pub fn prepare_with_snapshot(
             )));
         }
     };
-    let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;
+    let (checked, evidence_snapshot) = if frozen_inventory {
+        let selected_snapshot =
+            snapshot.ok_or_else(|| invalid("semantic inventory snapshot is missing"))?;
+        let checked = Check::load_snapshot(repo, selected_snapshot)?;
+        let inputs = super::external_services::declaration_inputs(&checked)
+            .ok_or_else(|| invalid("SEMANTIC_INVENTORY_DECLARATIONS_UNAVAILABLE: selected snapshot has no frozen declaration inputs"))?;
+        if selected
+            .iter()
+            .any(|service| !inputs.services.contains_key(service))
+        {
+            return Err(invalid(
+                "SEMANTIC_INVENTORY_SERVICE_NOT_IN_SNAPSHOT: select a service declared in the exact saved snapshot",
+            ));
+        }
+        (checked, selected_snapshot.to_owned())
+    } else {
+        Check::retained(repo, snapshot, &selected)?
+    };
     if request.context_profile.as_deref() == Some("process-graph-v1")
         && subject.starts_with("scenario:")
         && request.root_declaration.is_none()
@@ -1963,7 +2002,11 @@ pub fn prepare_with_snapshot(
     normalize_operation_authoring_contract(&mut request)?;
     let maintained_context =
         super::maintained_context::load(repo, &subject, &mut request, &checked)?;
-    let baseline = bindings::baseline(repo)?;
+    let baseline = if request.context_profile.as_deref() == Some("semantic-inventory-v1") {
+        None
+    } else {
+        bindings::baseline(repo)?
+    };
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
             .as_ref()
@@ -2157,7 +2200,7 @@ pub fn prepare_with_snapshot(
                 "human or external inputs changed during work preparation",
             ));
         }
-        if repo.input_digest()? != work.checked.input_digest {
+        if !frozen_inventory && repo.input_digest()? != work.checked.input_digest {
             return Err(invalid(
                 "documentation declarations changed during work preparation",
             ));
@@ -2582,6 +2625,37 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
     if selection.projection == SelectionProjection::SourceRows {
         return source_reference_rows(work, selection);
     }
+    if work.request.context_profile.as_deref() == Some("semantic-inventory-v1")
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        let query = Query {
+            kind: "SEMANTIC_INVENTORY".into(),
+            expected_snapshot: work.snapshot.clone(),
+            expected_context_digest: Some(work.checked.context_digest.clone()),
+            ..Default::default()
+        };
+        return annotate_rows(work, semantic_inventory::rows(work, &query)?);
+    }
+    if !selection.references.is_empty() && selection.symbols.is_empty() && selection.query.is_none()
+    {
+        let declared: Option<Vec<_>> = selection
+            .references
+            .iter()
+            .map(|reference| {
+                let handle = work.handles.get(reference)?;
+                let dependency = work.checked.dependencies.get(&handle.id)?;
+                (handle.kind == "DEPENDENCY"
+                    && dependency.kind == "EXTERNAL_SERVICE"
+                    && semantic_inventory::dependency_admitted(work, dependency))
+                .then(|| json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency}))
+            })
+            .collect();
+        if let Some(items) = declared {
+            return annotate_rows(work, items);
+        }
+    }
     if work.request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
         && selection.references.is_empty()
         && selection.symbols.is_empty()
@@ -2846,6 +2920,22 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
         }
         for (index, obligation) in work.obligations.iter().enumerate() {
             items.push(json!({"kind":"OBLIGATION","id":format!("obligation-{}",index+1),"record":obligation}));
+        }
+    }
+    // Frozen semantic navigation points at original declared records. These
+    // global declarations have no service field; admit only records selected
+    // by the same explicit local-use/unassigned rules as their navigation.
+    for reference in &selection.references {
+        if let Some(handle) = work.handles.get(reference)
+            && handle.kind == "DEPENDENCY"
+            && let Some(dependency) = work.checked.dependencies.get(&handle.id)
+            && dependency.kind == "EXTERNAL_SERVICE"
+            && semantic_inventory::dependency_admitted(work, dependency)
+            && !items
+                .iter()
+                .any(|item| item["kind"] == "DEPENDENCY" && item["id"] == dependency.id)
+        {
+            items.push(json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency}));
         }
     }
     let projected = annotate_rows(work, items)?;

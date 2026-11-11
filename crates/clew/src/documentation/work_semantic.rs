@@ -3,6 +3,31 @@ use super::{Query, QueryProjection, Work, bytes, digest, invalid};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 
+pub(super) fn dependency_admitted(work: &Work, dependency: &super::Observation) -> bool {
+    let Some(service) = work.subject.strip_prefix("service:") else {
+        return false;
+    };
+    match dependency.kind.as_str() {
+        "EXTERNAL_SERVICE" => dependency.normalized["interactions"]
+            .as_array()
+            .is_some_and(|uses| {
+                uses.is_empty()
+                    || uses.iter().any(|usage| {
+                        usage["from"]["service"] == service || usage["to"]["service"] == service
+                    })
+            }),
+        "DOMAIN_ENTITY" => dependency.normalized["entity"]["relations"]
+            .as_array()
+            .is_some_and(|relations| {
+                relations.is_empty()
+                    || relations
+                        .iter()
+                        .any(|relation| relation["service"] == service)
+            }),
+        _ => false,
+    }
+}
+
 pub(super) fn rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> {
     let service = work
         .subject
@@ -95,7 +120,8 @@ pub(super) fn rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> 
     result.insert(0, json!({"kind":"SEMANTIC_SCOPE","id":format!("semantic-scope:{service}"),
         "record":{"schema":"codeclew-semantic-inventory-scope/1.0","service":service,
         "snapshot":work.snapshot,"contextDigest":work.checked.context_digest,"items":result.len(),
-        "serviceEvidence":evidence,"sourceAcquisition":"NONE",
+        "serviceEvidence":evidence,"unresolvedReason":work.checked.unresolved.get(service).map(|v|&v["reason"]),
+        "sourceAcquisition":"NONE","currentCatalogueCompared":false,
         "meaning":"Frozen declared candidates and selected local uses; no shared-identity, term-definition or runtime approval"}}));
     Ok(result)
 }
@@ -361,6 +387,144 @@ mod tests {
                     .is_some_and(|q| q.kind == "SEMANTIC_INVENTORY"))
                 .count(),
             expected.len()
+        );
+    }
+
+    #[test]
+    fn semantic_profile_prepares_only_frozen_metadata_after_live_registry_edit() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Frozen collection inputs").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = fixture();
+        let mut declaration =
+            work.checked.dependencies["external-service:bank"].normalized["externalService"]
+                .clone();
+        repo.atomic(
+            "catalog/external-services/bank.json",
+            &bytes(&declaration).unwrap(),
+        )
+        .unwrap();
+        super::super::api_contract_tests::persist_operation_fixture(&repo, &mut work);
+        declaration["title"] = json!("Live edit is not selected");
+        repo.atomic(
+            "catalog/external-services/bank.json",
+            &bytes(&declaration).unwrap(),
+        )
+        .unwrap();
+        let request: super::super::Request = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-work-request/1.0","audience":"Catalog maintainers",
+            "contextProfile":"semantic-inventory-v1","maxItems":100,"maxBytes":49152
+        }))
+        .unwrap();
+        let ordinary = super::super::Request {
+            context_profile: None,
+            ..request.clone()
+        };
+        assert!(
+            super::super::prepare_with_snapshot(
+                &repo,
+                "service:orders".into(),
+                ordinary,
+                work.snapshot.as_deref()
+            )
+            .is_err()
+        );
+        let page = super::super::prepare_with_snapshot(
+            &repo,
+            "service:orders".into(),
+            request,
+            work.snapshot.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(page["contextProfile"], "semantic-inventory-v1");
+        assert_eq!(page["omitted"], json!([]));
+        for item in page["items"].as_array().unwrap() {
+            assert!(matches!(
+                item["kind"].as_str(),
+                Some("SEMANTIC_SCOPE" | "SEMANTIC_INVENTORY")
+            ));
+        }
+        assert_eq!(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "EXTERNAL_SYSTEM:bank")
+                .unwrap()["record"]["title"],
+            "Bank"
+        );
+        let dependency_request = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-dependency-part-request/1.0",
+            "kind":"DEPENDENCY","id":"external-service:bank","cursor":null
+        }))
+        .unwrap();
+        let part = super::super::read_dependency_part(
+            &repo,
+            page["work"].as_str().unwrap(),
+            dependency_request,
+        )
+        .unwrap();
+        assert!(part["nextCursor"].is_null());
+        let original: Value = serde_json::from_str(part["text"].as_str().unwrap()).unwrap();
+        assert_eq!(original["normalized"]["externalService"]["title"], "Bank");
+        assert_eq!(part["recordDigest"], digest(&original).unwrap());
+    }
+
+    #[test]
+    fn declared_record_reference_recovers_complete_utf8_in_bounded_parts() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Bounded declared record").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = fixture();
+        let dependency = work
+            .checked
+            .dependencies
+            .get_mut("external-service:bank")
+            .unwrap();
+        dependency.normalized["externalService"]["description"] = json!("π".repeat(7000));
+        dependency.digest = digest(&dependency.normalized).unwrap();
+        work.influence
+            .insert(dependency.id.clone(), dependency.digest.clone());
+        work.request.max_bytes = 4096;
+        super::super::api_contract_tests::persist_operation_fixture(&repo, &mut work);
+        let header = rows(&work, &query(&work))
+            .unwrap()
+            .into_iter()
+            .find(|row| row["id"] == "EXTERNAL_SYSTEM:bank")
+            .unwrap();
+        let mut cursor = None;
+        let mut collected = String::new();
+        let mut pages = 0;
+        loop {
+            let request = serde_json::from_value(json!({
+                "schema":"codeclew-documentation-dependency-part-request/1.0",
+                "kind":"DEPENDENCY","id":header["record"]["basis"]["dependencyId"],"cursor":cursor
+            }))
+            .unwrap();
+            let part = super::super::read_dependency_part(&repo, &work.id, request).unwrap();
+            assert_eq!(part["startByte"].as_u64(), Some(collected.len() as u64));
+            assert!(bytes(&part).unwrap().len() <= 4096);
+            collected.push_str(part["text"].as_str().unwrap());
+            pages += 1;
+            assert_eq!(part["endByte"].as_u64(), Some(collected.len() as u64));
+            assert_eq!(
+                part["recordDigest"],
+                header["record"]["basis"]["dependencyRecordDigest"]
+            );
+            cursor = part["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages > 1);
+        let original: Value = serde_json::from_str(&collected).unwrap();
+        assert_eq!(
+            original["normalized"]["externalService"]["description"],
+            "π".repeat(7000)
+        );
+        assert_eq!(
+            digest(&original).unwrap(),
+            header["record"]["basis"]["dependencyRecordDigest"]
         );
     }
 }
