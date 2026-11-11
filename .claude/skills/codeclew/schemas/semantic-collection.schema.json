@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codeclew:semantic-collection:1.0",
+  "title": "Explicit frozen semantic inventory inputs",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "revision", "inputs"],
+  "properties": {
+    "schema": {"const": "codeclew-semantic-collection/1.0"},
+    "id": {"$ref": "#/$defs/id"},
+    "revision": {"$ref": "#/$defs/id"},
+    "inputs": {
+      "type": "array", "minItems": 1, "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "docset", "services"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "docset": {"$ref": "#/$defs/id"},
+          "services": {
+            "type": "array", "minItems": 1, "maxItems": 64,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["id", "snapshot"],
+              "dependentRequired": {"work": ["contextDigest"], "contextDigest": ["work"]},
+              "properties": {
+                "id": {"$ref": "#/$defs/id"},
+                "snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
+                "work": {"type": "string", "minLength": 1},
+                "contextDigest": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}}
+}

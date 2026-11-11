@@ -16,7 +16,8 @@
       }
     },
     "manifests": {
-      "type": "object", "minProperties": 1, "maxProperties": 256,
+      "type": "object", "minProperties": 0, "maxProperties": 256,
+      "description": "May be empty during candidate collection. Citation consumption requires explicit manifest assignments.",
       "propertyNames": {"pattern": "^sha256:[0-9a-f]{64}$"},
       "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
     }

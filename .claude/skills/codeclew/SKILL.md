@@ -22,6 +22,7 @@ handler-started sequence.
 | --- | --- |
 | Generate/update durable service or process documentation | [Guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages) |
 | Bounded SOURCE Q&A or saved-answer maintenance | [Prepared SOURCE](README.md) |
+| Inspect shared semantic candidates across retained service caches | [Shared catalog inputs](references/shared-semantic-catalog.md) |
 
 Broad documentation requests use authored originals/Markdown and the packaged
 renderer for checked local HTML. Reuse frozen evidence. A new repository first

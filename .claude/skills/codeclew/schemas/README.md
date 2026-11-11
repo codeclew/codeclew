@@ -1,6 +1,6 @@
 # Authoring contracts
 
-These self-contained JSON schemas are byte-for-byte copies of the corresponding
+The native authoring schemas listed below are byte-for-byte copies of their
 Codeclew source contracts. They are portable documentation, not a runtime upgrade
 or a new validation engine; use the contract of the admitted runtime.
 
@@ -25,3 +25,9 @@ materialized Narrative.
 
 The optional task-oriented reader extensions also ship `external-service.schema.json`
 and `data-model-plan.schema.json`. Keep their exact native copies in every skill mirror.
+
+Helper-owned inputs also include [evidence-inputs.schema.json](evidence-inputs.schema.json)
+for caller-selected roots/manifest assignments and
+[semantic-collection.schema.json](semantic-collection.schema.json) for explicit
+frozen catalog selections. See [shared catalog inputs](../references/shared-semantic-catalog.md).
+These helpers do not turn declared information into native SOURCE evidence.
