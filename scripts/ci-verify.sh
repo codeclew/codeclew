@@ -127,6 +127,8 @@ ci_run checks python3 -I -S scripts/test_native_source_citations.py
 ci_run checks python3 -I -S scripts/test_reusable_evidence.py
 ci_run checks python3 -I -S scripts/test_source_union.py
 ci_run checks python3 -I -S scripts/test_author_citations.py
+ci_run checks python3 -I -S scripts/test_shared_catalog.py
+ci_run checks python3 -I -S scripts/test_declared_citations.py
 ci_run checks python3 -I -S scripts/test_grouped_source_view.py
 ci_run checks python3 -I -S scripts/test_grouped_source_display.py
 ci_run checks python3 -I -S scripts/test_computation_view.py
@@ -136,7 +138,7 @@ CODECLEW_MARKDOWN_RENDERER="$TEST_TMP_ROOT/markdown-renderer"
 export CODECLEW_MARKDOWN_RENDERER
 ci_run checks python3 -I -S -c 'import shutil,sys; shutil.copytree(sys.argv[1],sys.argv[2])' skills/codeclew/examples/markdown-renderer "$CODECLEW_MARKDOWN_RENDERER"
 ci_run checks npm ci --ignore-scripts --no-audit --no-fund --prefix "$CODECLEW_MARKDOWN_RENDERER"
-ci_run checks node --test scripts/test_markdown_renderer.mjs scripts/test_markdown_sequence.mjs scripts/test_docset_renderer.mjs scripts/test_docset_routes.mjs
+ci_run checks node --test scripts/test_markdown_renderer.mjs scripts/test_markdown_sequence.mjs scripts/test_docset_renderer.mjs scripts/test_docset_routes.mjs scripts/test_semantic_catalog.mjs
 ci_run checks python3 -I -S scripts/test_reader_markdown_repair.py
 ci_run checks python3 -I -S scripts/test_page_citations.py
 ci_run checks python3 -I -S scripts/test_page_compose.py

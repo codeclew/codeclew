@@ -12,18 +12,41 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
   const remote=to.kind==='REMOTE_DOCSET';return `<a href="${esc(to.href)}"${remote?` data-docset="${esc(to.docset)}" aria-label="${esc(title)} (${esc(words.other)}: ${esc(sets.get(to.docset).title)})"`:` data-page="${esc(to.file)}" data-fragment="${esc(to.fragment)}"${to.file===file&&!to.fragment?' aria-current="page"':''}`}>${esc(title)}</a>`;
  }
  const actorTitle=a=>a.kind==='service'?serviceTitle(services.get(serviceKey(a))):a.kind==='external'?registry.externalActors.find(x=>x.id===a.id).title:a.kind==='none'?words.noneRecipient:words.unknown;
+ const actorTarget=a=>a.kind==='external'?model.semantic?.records.find(r=>r.id===registry.externalActors.find(x=>x.id===a.id)?.canonical)?.to:null;
+ const actorDisplay=a=>actorTarget(a)?link(actorTarget(a),actorTitle(a)):esc(actorTitle(a));
  const origin=r=>{if(r.origin.status!=='known')return esc(words.unknown);const o=r.occurrences.find(o=>o.id===r.origin.occurrence);return esc(words.triggerLabels?.[r.origin.kind]||r.origin.kind)+' · '+link(o.to,actorTitle(o.actor)+' · '+r.origin.title)};
- const roles=r=>r.occurrences.map(o=>`<li>${link(o.to,actorTitle(o.actor))} — ${esc(o.role)}${o.actor.kind==='service'?` · ${link(services.get(serviceKey(o.actor)).to,words.services)}`:` · ${esc(words.external)}`}</li>`).join('');
- const ends=r=>r.outcomes.map(o=>{const owner=o.end.status==='known'?actorTitle(r.occurrences.find(x=>x.id===o.end.ownerOccurrence).actor):words.unknownEnd;return `<li>${esc(o.title)} (${esc(words[o.kind])}): ${esc(owner)}${o.end.status==='known'?` · ${esc(words.recipient)}: ${esc(actorTitle(o.end.recipient))}`:''}</li>`}).join('');
+ const roles=r=>r.occurrences.map(o=>`<li>${link(o.to,actorTitle(o.actor))} — ${esc(o.role)}${o.actor.kind==='service'?` · ${link(services.get(serviceKey(o.actor)).to,words.services)}`:` · ${actorTarget(o.actor)?link(actorTarget(o.actor),words.external):esc(words.external)}`}</li>`).join('');
+ const ends=r=>r.outcomes.map(o=>{const owner=o.end.status==='known'?actorDisplay(r.occurrences.find(x=>x.id===o.end.ownerOccurrence).actor):esc(words.unknownEnd);return `<li>${esc(o.title)} (${esc(words[o.kind])}): ${owner}${o.end.status==='known'?` · ${esc(words.recipient)}: ${actorDisplay(o.end.recipient)}`:''}</li>`}).join('');
  const endSummary=r=>{
   const values=[...new Set(r.outcomes.map(o=>words[o.kind]+': '+(o.end.status==='known'?actorTitle(r.occurrences.find(x=>x.id===o.end.ownerOccurrence).actor):words.unknownEnd)))];
   return values.slice(0,4).map(esc).join('; ')+(values.length>4?' · +'+(values.length-4)+' '+esc(words.more):'')||esc(words.unknownEnd);
  };
  const localRoles=(r,service)=>r.occurrences.filter(o=>o.actor.kind==='service'&&o.actor.docset===model.docset&&o.actor.service===service);
  const relevant=r=>r.narrative.docset===model.docset||r.occurrences.some(o=>o.actor.kind==='service'&&o.actor.docset===model.docset);
+ const semanticTitle=r=>r.title+(r.scope?' · '+serviceTitle(services.get(serviceKey(r.scope))):'');
  const extra={canonical:model.canonical,routes:model.routes.filter(relevant).map(r=>link(r.to,r.title)),participation:service=>model.routes.filter(r=>localRoles(r,service).length).map(r=>link(r.to,r.title))};
  if(model.catalog&&!(model.catalog.kind==='LOCAL_DOCSET'&&model.catalog.file===file))extra.routes.unshift(link(model.catalog,words.catalog));
  let hub='';
+ if(model.semantic){
+  const title=words.sharedCatalog||'Shared catalog',usedBy=words.usedBy||'Used by',localDetails=words.localDetails||'Local details';
+  const byId=new Map(model.semantic.records.map(r=>[r.id,r])),representations=new Map();
+  for(const r of model.semantic.records)if(r.kind==='representation'){
+   if(!representations.has(r.represents))representations.set(r.represents,[]);representations.get(r.represents).push(r);
+  }
+  extra.semanticTitle=title;extra.semanticPages=new Set(model.semantic.records.filter(r=>r.to.kind==='LOCAL_DOCSET').map(r=>r.to.file));
+  extra.semanticLinks=model.semantic.records.filter(r=>model.catalog?.docset===model.docset||r.target.docset===model.docset||r.uses.some(u=>u.docset===model.docset)).map(r=>link(r.to,semanticTitle(r)));
+  for(const r of model.semantic.records){
+   const own=r.to.kind==='LOCAL_DOCSET'&&r.to.file===file;
+   const relevant=r.uses.filter(u=>u.to.kind==='LOCAL_DOCSET'&&u.to.file===file||u.docset===model.docset&&services.get(serviceKey(u)).to.file===file);
+   if(own){
+    const details=r.uses.map(u=>`<li>${link(u.to,serviceTitle(services.get(serviceKey(u)))+' · '+u.title)}${u.processTo?` · ${link(u.processTo,words.whole)}`:''}</li>`).join('');
+    const related=r.kind==='representation'?`<p>${esc(words.representationOf||'Representation of')}: ${link(byId.get(r.represents).to,semanticTitle(byId.get(r.represents)))}</p>`:representations.has(r.id)?`<p>${esc(words.representations||'Representations')}: ${representations.get(r.id).map(x=>link(x.to,semanticTitle(x))).join('; ')}</p>`:'';
+    hub+=`<section class="route-context semantic-context">${related}<h2>${esc(usedBy)}</h2>${details?`<ul>${details}</ul>`:`<p>${esc(words.noDeclaredUses||'No declared service uses in this collection.')}</p>`}</section>`;
+   }else if(relevant.length){
+    hub+=`<section class="route-context semantic-context"><h2>${link(r.to,semanticTitle(r))}</h2><ul>${relevant.map(u=>`<li>${link(u.to,localDetails+' · '+u.title)}</li>`).join('')}</ul></section>`;
+   }
+  }
+ }
  for(const r of model.routes){
   const own=r.to.kind==='LOCAL_DOCSET'&&r.to.file===file;
   const participation=r.occurrences.filter(o=>o.to.kind==='LOCAL_DOCSET'&&o.to.file===file||o.actor.kind==='service'&&o.actor.docset===model.docset&&services.get(serviceKey(o.actor)).to.file===file);
@@ -37,6 +60,13 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
   catalog=`<section class="route-catalog" id="${prefix}-catalog"><h2>${esc(words.services)}</h2><ul class="route-service-list">${model.services.map(s=>`<li>${link(s.to,serviceTitle(s))}</li>`).join('')}</ul><h2>${esc(words.processes)}</h2>${model.routes.some(gap)?`<p>${esc(words.classificationGaps)}: ${model.routes.filter(gap).length}</p>`:''}<p id="${prefix}-help">${esc(words.help)}</p><details class="route-filter-panel" open><summary>${esc(words.filters)}</summary><form class="route-filters" aria-label="${esc(words.filters)}" aria-describedby="${prefix}-help">${select('start',words.start,choices)}${select('end',words.end,choices)}${select('intermediate',words.intermediate,choices)}${select('outcomeKinds',words.kinds,['normal','error','handoff','unknown'].map(k=>[k,words[k]]))}<div class="route-actions"><label class="route-include"><input type="checkbox" name="includeUnknown" checked>${esc(words.include)}</label><button type="reset">${esc(words.clear)}</button></div></form></details><p class="route-count" role="status" aria-live="polite"></p><p class="route-empty" hidden></p><noscript>${esc(words.nojs)}</noscript><div class="route-cards">${model.routes.map(r=>`<article class="route-card" data-route-id="${esc(r.id)}"><h3>${link(r.to,r.title)}</h3><p>${esc(words.origin)}: ${origin(r)}</p><p>${esc(words.end)}: ${endSummary(r)}</p>${gap(r)?`<p class="route-gap">${esc(words.partial)}</p>`:''}<p class="route-state"></p><p class="route-matches" hidden></p><details><summary>${esc(words.outcomes)}</summary><ul>${ends(r)}</ul><ul>${roles(r)}</ul><p>${esc(words.scope)}: ${esc(r.coverage.scope)}</p></details></article>`).join('')}</div><p class="route-validation">${esc(words.declared)}</p></section>`;
   const data=JSON.stringify({registry,words}).replaceAll('<','\\u003c').replaceAll('\u2028','\\u2028').replaceAll('\u2029','\\u2029');
   script=`<script type="application/json" id="${prefix}-data">${data}</script><script>(()=>{const evaluate=(${filterRoutes.toString()});(${catalogClient.toString()})(evaluate,${JSON.stringify(prefix)})})()</script>`;
+  if(model.semantic){
+   const group=(title,rows)=>rows.length?`<h2>${esc(title)}</h2><ul class="route-service-list">${rows.map(r=>`<li>${link(r.to,semanticTitle(r))}</li>`).join('')}</ul>`:'';
+   const semantic=group(words.externalSystems||'External systems',model.semantic.records.filter(r=>r.kind==='external'))+group(words.terms||'Terms',model.semantic.records.filter(r=>r.kind!=='external'));
+   if(!model.routes.length){
+    catalog=`<section class="route-catalog" id="${prefix}-catalog"><h2>${esc(words.services)}</h2><ul class="route-service-list">${model.services.map(s=>`<li>${link(s.to,serviceTitle(s))}</li>`).join('')}</ul>${semantic}</section>`;script='';
+   }else catalog+=`<section class="route-catalog semantic-catalog">${semantic}</section>`;
+  }
  }
  return {extra,hub:hub+catalog,script};
 }

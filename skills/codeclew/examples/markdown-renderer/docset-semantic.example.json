@@ -1,0 +1,322 @@
+{
+  "schema": "codeclew-cross-docset-routes/1.2",
+  "revision": "owned-r1",
+  "catalog": {
+    "docset": "catalog",
+    "page": "index.html"
+  },
+  "docsets": [
+    {
+      "id": "east",
+      "title": "East",
+      "version": "r1",
+      "baseURL": "https://docs.example.invalid/semantic/east/",
+      "services": [
+        {
+          "id": "orders",
+          "title": "Orders",
+          "overview": {
+            "docset": "east",
+            "page": "orders.html"
+          }
+        },
+        {
+          "id": "billing",
+          "title": "Billing",
+          "overview": {
+            "docset": "east",
+            "page": "billing.html"
+          }
+        },
+        {
+          "id": "enrollment",
+          "title": "Enrollment",
+          "overview": {
+            "docset": "east",
+            "page": "enrollment.html"
+          }
+        }
+      ]
+    },
+    {
+      "id": "west",
+      "title": "West",
+      "version": "r1",
+      "baseURL": "https://docs.example.invalid/semantic/west/",
+      "services": [
+        {
+          "id": "orders",
+          "title": "Orders",
+          "overview": {
+            "docset": "west",
+            "page": "orders.html"
+          }
+        },
+        {
+          "id": "enrollment",
+          "title": "Enrollment",
+          "overview": {
+            "docset": "west",
+            "page": "enrollment.html"
+          }
+        }
+      ]
+    },
+    {
+      "id": "catalog",
+      "title": "Catalog",
+      "version": "r1",
+      "baseURL": "https://docs.example.invalid/semantic/catalog/",
+      "services": []
+    }
+  ],
+  "externalActors": [],
+  "routes": [],
+  "semanticCatalog": {
+    "id": "owned",
+    "revision": "r1",
+    "records": [
+      {
+        "id": "payments",
+        "kind": "external",
+        "title": "Payments",
+        "target": {
+          "docset": "catalog",
+          "page": "payments.html"
+        },
+        "aliases": [
+          {
+            "input": "east",
+            "docset": "east",
+            "localId": "provider"
+          },
+          {
+            "input": "west",
+            "docset": "west",
+            "localId": "payments-alt"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "east",
+            "service": "orders",
+            "title": "Charge order",
+            "target": {
+              "docset": "east",
+              "page": "orders.html",
+              "anchor": "payments"
+            }
+          },
+          {
+            "docset": "east",
+            "service": "billing",
+            "title": "Settle invoice",
+            "target": {
+              "docset": "east",
+              "page": "billing.html",
+              "anchor": "payments"
+            }
+          },
+          {
+            "docset": "west",
+            "service": "enrollment",
+            "title": "Register profile",
+            "target": {
+              "docset": "west",
+              "page": "enrollment.html",
+              "anchor": "payments"
+            }
+          }
+        ]
+      },
+      {
+        "id": "tracking",
+        "kind": "external",
+        "title": "Tracking",
+        "target": {
+          "docset": "catalog",
+          "page": "tracking.html"
+        },
+        "aliases": [
+          {
+            "input": "west",
+            "docset": "west",
+            "localId": "provider"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "west",
+            "service": "orders",
+            "title": "Track shipment",
+            "target": {
+              "docset": "west",
+              "page": "orders.html",
+              "anchor": "tracking"
+            }
+          }
+        ]
+      },
+      {
+        "id": "archive",
+        "kind": "external",
+        "title": "Archive",
+        "target": {
+          "docset": "catalog",
+          "page": "archive.html"
+        },
+        "aliases": [
+          {
+            "input": "east",
+            "docset": "east",
+            "localId": "archive"
+          }
+        ],
+        "uses": []
+      },
+      {
+        "id": "device",
+        "kind": "concept",
+        "title": "Device",
+        "target": {
+          "docset": "catalog",
+          "page": "device.html"
+        },
+        "aliases": [
+          {
+            "input": "east",
+            "docset": "east",
+            "localId": "device"
+          },
+          {
+            "input": "west",
+            "docset": "west",
+            "localId": "device"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "east",
+            "service": "enrollment",
+            "title": "Registered devices",
+            "target": {
+              "docset": "east",
+              "page": "enrollment.html",
+              "anchor": "devices"
+            }
+          },
+          {
+            "docset": "west",
+            "service": "enrollment",
+            "title": "Device profiles",
+            "target": {
+              "docset": "west",
+              "page": "enrollment.html",
+              "anchor": "devices"
+            }
+          }
+        ]
+      },
+      {
+        "id": "purchase-order",
+        "kind": "local",
+        "title": "Order",
+        "scope": {
+          "docset": "east",
+          "service": "orders"
+        },
+        "target": {
+          "docset": "east",
+          "page": "order-term.html"
+        },
+        "aliases": [
+          {
+            "input": "east",
+            "docset": "east",
+            "localId": "order",
+            "service": "orders"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "east",
+            "service": "orders",
+            "title": "Purchase aggregate",
+            "target": {
+              "docset": "east",
+              "page": "orders.html",
+              "anchor": "orders"
+            }
+          }
+        ]
+      },
+      {
+        "id": "supplier-order",
+        "kind": "local",
+        "title": "Order",
+        "scope": {
+          "docset": "west",
+          "service": "orders"
+        },
+        "target": {
+          "docset": "west",
+          "page": "order-term.html"
+        },
+        "aliases": [
+          {
+            "input": "west",
+            "docset": "west",
+            "localId": "order",
+            "service": "orders"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "west",
+            "service": "orders",
+            "title": "Fulfillment request",
+            "target": {
+              "docset": "west",
+              "page": "orders.html",
+              "anchor": "orders"
+            }
+          }
+        ]
+      },
+      {
+        "id": "device-dto",
+        "kind": "representation",
+        "title": "Device DTO",
+        "scope": {
+          "docset": "east",
+          "service": "enrollment"
+        },
+        "represents": "device",
+        "target": {
+          "docset": "east",
+          "page": "device-dto.html"
+        },
+        "aliases": [
+          {
+            "input": "east",
+            "docset": "east",
+            "localId": "example.enrollment.Device",
+            "service": "enrollment"
+          }
+        ],
+        "uses": [
+          {
+            "docset": "east",
+            "service": "enrollment",
+            "title": "Serialized device",
+            "target": {
+              "docset": "east",
+              "page": "enrollment.html",
+              "anchor": "devices"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

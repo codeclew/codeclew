@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {validateDocsetRoutes,REGISTRY_BYTES} from './docset-routes.mjs';
 import {docsetView,routeStyle,routeWords} from './route-view.mjs';
 import {validateNavigation,navigationView,insertHub} from './navigation.mjs';
-import {renderSequence,checkSequenceTargets} from './sequence.mjs';
+import {renderSequence,checkSequenceTargets,resolveCatalogSequenceLinks} from './sequence.mjs';
 import {loadSources,sourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
 const require=createRequire(import.meta.url);
 const {marked}=await import(pathToFileURL(require.resolve('marked')));
@@ -77,6 +77,7 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
   registryModel=validateDocsetRoutes(JSON.parse(raw),explicit,docset,docsetVersion);
   registryInfo={docset,version:docsetVersion,registryDigest:'sha256:'+createHash('sha256').update(raw).digest('hex'),remoteTargets:'DECLARED_NOT_FETCHED',localTargets:'CHECKED'};
  }
+ resolveCatalogSequenceLinks(sequences,pages,registryModel);
  await mkdir(output,{recursive:true});
  let assets;
  if(theme==='codeclew'){

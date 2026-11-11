@@ -9,6 +9,43 @@ new rendering engine or a replacement for explicitly selected native
 document workflows. It renders authored Markdown;
 installation and trusted argv selection remain explicit.
 
+## Shared semantic catalog navigation
+
+The optional `codeclew-cross-docset-routes/1.2` registry adds `semanticCatalog`
+to the existing docset/process navigation. Version 1.1 keeps its original shape.
+See [the owned five-service example](docset-semantic.example.json): two independent
+service docsets plus a catalog docset with no captured services. This example
+declares navigation only; it does not supply source evidence or authored meanings.
+
+`semanticCatalog` contains `id`, `revision` and explicitly chosen `records`.
+Each record has `id`, `kind`, `title`, a canonical `target`, scoped local `aliases`
+and local `uses`. Kinds are `external`, `concept`, `local` and `representation`.
+Each alias declares `input`, `docset`, `localId` and optionally `service`; identical
+names in different inputs never establish equivalence. A local/representation
+record requires service `scope`; a representation's `represents` names an existing
+concept. Local usage targets remain service-owned. An optional usage `process`
+links to the corresponding whole-process page; do not infer one from a name.
+
+An existing `externalActors` entry can explicitly set `canonical` to the external
+record ID. Its process participant/recipient links then lead to the same canonical
+system. In authored `clew-sequence`, a participant or arrow can use
+`"catalogRef":"EXACT_EXTERNAL_RECORD_ID"` instead of `target`. The full renderer
+resolves it against this explicit registry after checking destinations. Keep an
+arrow's ordinary local `target` when it should open the service contract, and put
+`catalogRef` on its external participant. An unknown ID, a concept used as an
+external, missing registry or simultaneous `target`/`catalogRef` refuses; labels
+and matching host names never select a destination.
+
+One shared external or concept has one canonical page. The renderer links service
+details to that page and adds consumer backlinks there. It separately links a
+representation to its concept. Same-spelling scoped terms show the owning service
+and docset. Catalog-only collections do not show empty process filters. Common
+pages remain authored Markdown, composed/bound/finalized through the same pipeline;
+the registry does not generate their descriptions or prove declared interactions.
+Local pages/anchors and ownership are checked; remote destinations remain explicit
+declarations and are not fetched. Keep operations, addresses, configuration and
+message contracts in their service pages. See [retained catalog inputs](../../references/shared-semantic-catalog.md).
+
 Copy this directory to your own tooling directory before installing dependencies:
 
 ```sh

@@ -42,6 +42,14 @@
     "snapshot": "Снимок"
   },
   "docsets": {
+    "sharedCatalog": "Общий каталог",
+    "usedBy": "Используется в сервисах",
+    "localDetails": "Детали в сервисе",
+    "noDeclaredUses": "В этой коллекции использования сервисами не заявлены.",
+    "externalSystems": "Внешние системы",
+    "terms": "Термины",
+    "representationOf": "Представление понятия",
+    "representations": "Представления",
     "catalog": "Сервисы и процессы",
     "services": "Сервисы",
     "processes": "Процессы",

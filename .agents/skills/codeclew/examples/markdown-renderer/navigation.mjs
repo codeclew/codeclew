@@ -75,9 +75,11 @@ export function navigationView(nav,file,words,extra={}){
    return `<details class="service-navigation"${s===service?' open':''}><summary>${escape(s.title)}</summary>${a(s.overview,escape(words.overview))}${group(words.starts,s.starts.map(v=>a(v.to,badge(v.kind)+escape(v.title))))}${group(words.data,s.data.map(v=>a(v.to,escape(v.title))))}${group(words.participation,[...participation(s).map(({route:r,p})=>a(p.section,escape(r.title)+'<span class="navigation-role">'+escape(p.title)+'</span>')),...(extra.participation?.(s.id)||[])])}${group(words.otherPages,s.pages.filter(f=>!linked.has(f)).map(f=>a({file:f,fragment:'',href:encodeURIComponent(f.replace(/\.md$/,'.html'))},escape(nav.byFile.get(f).title))))}</details>`;
   }).join('')+
   group(words.routes,[...nav.routes.map(r=>a(r.to,escape(r.title))),...(extra.routes||[])])+
+  (extra.semanticLinks?.length?group(extra.semanticTitle,extra.semanticLinks):'')+
   group(words.otherPages,nav.others.filter(p=>!extra.canonical?.has(p.file)).map(p=>a({file:p.file,fragment:'',href:encodeURIComponent(p.file.replace(/\.md$/,'.html'))},escape(p.title))));
  const crumb=[a(nav.home.to,escape(nav.home.title))];
  if(service&&file!==service.overview.file)crumb.push(a(service.overview,escape(service.title)));
+ else if(!service&&extra.semanticPages?.has(file))crumb.push(`<span>${escape(extra.semanticTitle)}</span>`);
  else if(!service&&(nav.routes.some(r=>r.to.file===file)||extra.canonical?.has(file)))crumb.push(`<span>${escape(words.routes)}</span>`);
  if(file!==nav.home.to.file)crumb.push(`<span aria-current="page">${escape(nav.byFile.get(file).title)}</span>`);
  const breadcrumb=`<nav class="reader-breadcrumb" aria-label="${escape(words.breadcrumb)}">${crumb.join('<span aria-hidden="true"> / </span>')}<span class="breadcrumb-section" hidden></span></nav>`;

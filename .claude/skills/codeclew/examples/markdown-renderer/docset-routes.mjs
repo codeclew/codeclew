@@ -18,7 +18,8 @@ function baseURL(raw,path){
 }
 export const serviceKey=a=>`${a.docset}/${a.service}`;
 export function validateDocsetRoutes(value,nav,docset,version){
- shape(value,['schema','revision','catalog','docsets','externalActors','routes'],'/',['catalog']);fail(value.schema==='codeclew-cross-docset-routes/1.1','/schema','unsupported schema');id(value.revision,'/revision');fail(Buffer.byteLength(JSON.stringify(value),'utf8')<=REGISTRY_BYTES,'/','input exceeds 1 MiB');
+ const semanticVersion=value?.schema==='codeclew-cross-docset-routes/1.2';
+ shape(value,['schema','revision','catalog','docsets','externalActors','routes',...(semanticVersion?['semanticCatalog']:[])],'/',['catalog','semanticCatalog']);fail(semanticVersion||value.schema==='codeclew-cross-docset-routes/1.1','/schema','unsupported schema');id(value.revision,'/revision');fail(Buffer.byteLength(JSON.stringify(value),'utf8')<=REGISTRY_BYTES,'/','input exceeds 1 MiB');
  const sets=unique(list(value.docsets,'/docsets',1,64),'/docsets');
  const services=new Map(),bases=[];
  for(const [i,d] of value.docsets.entries()){
@@ -31,7 +32,7 @@ export function validateDocsetRoutes(value,nav,docset,version){
  fail(sets.has(docset),'/docset','current docset not declared');fail(sets.get(docset).version===version,'/version','current docset version differs');
  const local=sets.get(docset);fail(local.services.length===nav.services.length&&local.services.every(s=>nav.services.some(n=>n.id===s.id)),'/services','local service inventory differs');
  const actors=unique(list(value.externalActors,'/externalActors',0,64),'/externalActors');
- for(const a of actors.values()){shape(a,['id','title'],'/externalActors');text(a.title,'/externalActors',160)}
+ for(const a of actors.values()){shape(a,['id','title',...(semanticVersion?['canonical']:[])],'/externalActors',['canonical']);text(a.title,'/externalActors',160)}
  function actor(a,p,recipient=false){
   fail(a&&typeof a==='object',p,'expected actor');
   if(a.kind==='service'){shape(a,['kind','docset','service'],p);id(a.docset,p+'/docset');id(a.service,p+'/service');fail(services.has(serviceKey(a)),p,'unknown service namespace')}
@@ -87,7 +88,47 @@ export function validateDocsetRoutes(value,nav,docset,version){
   resolved.push({...r,to,occurrences:occurrenceRows});
  }
  let catalog=null;if(value.catalog!==undefined){catalog=destination(value.catalog,'/catalog');if(catalog.kind==='LOCAL_DOCSET')fail(!nav.owners.has(catalog.file),'/catalog','catalog cannot be service-owned')}
- return {value,docset,version,services:resolvedServices,routes:resolved,canonical,catalog};
+ let semantic=null;
+ if(value.semanticCatalog!==undefined){
+  const raw=value.semanticCatalog;shape(raw,['id','revision','records'],'/semanticCatalog');id(raw.id,'/semanticCatalog/id');id(raw.revision,'/semanticCatalog/revision');
+  const records=unique(list(raw.records,'/semanticCatalog/records',0,128),'/semanticCatalog/records');
+  const aliases=new Set(),resolvedRecords=[];
+  const owner=(v,p)=>{shape(v,['docset','service'],p);fail(services.has(serviceKey(v)),p,'unknown service namespace')};
+  for(const r of records.values()){
+   const p='/semanticCatalog/'+r.id;shape(r,['id','kind','title','target','aliases','uses','scope','represents'],p,['scope','represents']);
+   fail(['external','concept','local','representation'].includes(r.kind),p,'unsupported semantic kind');text(r.title,p,160);
+   fail((r.kind==='local'||r.kind==='representation')===Object.hasOwn(r,'scope'),p,'local and representation records require explicit service scope');
+   if(r.scope)owner(r.scope,p+'/scope');
+   if(r.kind==='representation')fail(records.has(r.represents)&&records.get(r.represents).kind==='concept',p,'representation must reference a concept');
+   else fail(!Object.hasOwn(r,'represents'),p,'only a representation has represents');
+   const to=destination(r.target,p+'/target',r.scope),key=r.target.docset+'/'+r.target.page;
+   fail(!canonicalKeys.has(key),p,'duplicate canonical page');canonicalKeys.add(key);
+   if(to.kind==='LOCAL_DOCSET'){
+    fail(!nav.routes.some(route=>route.to.file===to.file),p,'semantic page cannot be a process narrative');
+    fail(r.scope?nav.owners.get(to.file)===r.scope.service:!nav.owners.has(to.file),p,'shared catalog page cannot be service-owned');canonical.add(to.file);
+   }
+   for(const a of list(r.aliases,p+'/aliases',0,128)){
+    shape(a,['input','docset','localId','service'],p+'/alias',['service']);id(a.input,p);id(a.docset,p);text(a.localId,p,512);fail(sets.has(a.docset),p,'unknown alias docset');
+    if(a.service!==undefined)owner({docset:a.docset,service:a.service},p+'/alias');
+    const k=JSON.stringify([r.kind==='external'?'external':r.kind==='representation'?'representation':'term',a.input,a.localId,a.service??null]);
+    fail(!aliases.has(k),p,'local alias maps to several canonical records');aliases.add(k);
+   }
+   const uses=[],seenUses=new Set();
+   for(const u of list(r.uses,p+'/uses',0,256)){
+    shape(u,['docset','service','title','target','process'],p+'/use',['process']);owner({docset:u.docset,service:u.service},p+'/use');text(u.title,p,160);
+    const target=destination(u.target,p+'/use/target',u),usageKey=JSON.stringify([u.docset,u.service,target.href]);fail(!seenUses.has(usageKey),p,'duplicate local use destination');seenUses.add(usageKey);
+    const process=u.process===undefined?null:destination(u.process,p+'/use/process');
+    uses.push({...u,to:target,processTo:process});
+   }
+   if(r.scope)fail(uses.every(u=>u.docset===r.scope.docset&&u.service===r.scope.service),p,'scoped term has foreign uses');
+   resolvedRecords.push({...r,to,uses});
+  }
+  semantic={...raw,records:resolvedRecords};
+ }
+ for(const a of actors.values())if(a.canonical!==undefined){
+  fail(semantic?.records.some(r=>r.id===a.canonical&&r.kind==='external'),'/externalActors','canonical actor must name an explicit external system');
+ }
+ return {value,docset,version,services:resolvedServices,routes:resolved,canonical,catalog,...(semantic?{semantic}: {})};
 }
 
 // Self-contained so exactly the same pure evaluator runs in Node and the reader.
