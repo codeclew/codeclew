@@ -951,13 +951,20 @@ class BootstrapAuthorityTest(unittest.TestCase):
         repository = MODULE_PATH.parent.parent
         inputs, _development = bootstrap.source_manifest(repository)
         selected = {row["path"] for row in inputs}
-        for relative in ["crates/clew/src/documentation/agent_jobs.rs", "crates/clew/src/documentation/input_diagnostics.rs", "crates/clew/src/documentation/section_author.rs", "crates/clew/src/operations.rs"]:
+        modules = [
+            "crates/clew/src/documentation/store.rs",
+            "crates/clew/src/documentation/input_diagnostics.rs",
+            "crates/clew/src/documentation/agent_jobs/operation_draft_review.rs",
+            "crates/clew/src/operations.rs",
+        ]
+        for relative in modules:
             source = repository / relative
             resources = re.findall(r'include_(?:str|bytes)!\(\s*"([^\"]+)"\s*\)', source.read_text())
-            self.assertTrue(resources)
+            self.assertTrue(resources, f"shipping resource module has no embedded resources: {relative}")
             for resource in resources:
                 target = (source.parent / resource).resolve().relative_to(repository)
-                self.assertIn(str(target), selected, f"embedded resource missing from staged runtime: {target}")
+                self.assertTrue((repository / target).is_file(), f"embedded resource is missing: {target}")
+                self.assertIn(target.as_posix(), selected, f"embedded resource missing from staged runtime: {target}")
 
     def test_component_registry_accepts_a_new_gradle_language_without_core_changes(self) -> None:
         repository = MODULE_PATH.parent.parent
