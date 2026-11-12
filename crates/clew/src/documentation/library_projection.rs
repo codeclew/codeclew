@@ -424,7 +424,7 @@ pub(super) fn source_service(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::library_bindings::{Input, LibrarySelection};
     use super::*;
     fn add(
@@ -491,7 +491,7 @@ mod tests {
             );
         }
     }
-    fn fixture() -> (
+    pub(crate) fn fixture() -> (
         tempfile::TempDir,
         Repository,
         Binding,

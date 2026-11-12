@@ -62,6 +62,23 @@ missing parent, nested composition or substituted binding is refused. To export
 original data, explicitly select its original capture snapshot; export never
 silently switches snapshots.
 
+Retained compiler text produced by a transformation (for example, Lombok
+expansion) is portable as `TRANSFORMED_SOURCE`. Its exact retained text, digests
+and coordinates are preserved; its original-commit URL stays null and it cannot
+carry a committed `textOrigin`. Do not relabel it as original repository text,
+edit cached authority/digests, or add an original-source URL to satisfy import.
+A source-web mapping cannot repair or rewrite a frozen transformed record.
+
+Admission requires the existing compiler context: either the service's compiler
+capture or a validated binding to a separately captured compiler library. Such a
+library retains its own authority inside a SOURCE consumer; the consumer does
+not gain compiler resolution. Ordinary SOURCE evidence without that binding
+cannot claim transformed compiler provenance. Binding validation, text and
+reference integrity, trusted manifest expectations and historical authority
+remain required; package hashes alone do not authenticate semantic claims.
+Export the same saved snapshot after upgrading to a release containing this fix;
+no fresh capture, compilation or source transformation is required.
+
 Historical packages use schema `codeclew-documentation-evidence-package/1.1`.
 Their digest binds `retained`: the selected snapshot and its input/context digests, original capture identity,
 original cacheability and reason, `RETAINED_SOURCE_NOT_REVERIFIED` authority and

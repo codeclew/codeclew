@@ -74,11 +74,15 @@ fn verify_portable_source(
 ) -> Result<(), ClewError> {
     super::source_origin::verify(source)?;
     let audit = source.authority == super::source_origin::AUDIT;
+    let transformed = source.authority == crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY;
     if !(matches!(
         source.authority.as_str(),
         "EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI" | "EXACT_DEPENDENCY_SOURCE_ARCHIVE"
-    ) || (audit && compiler_capture))
+    ) || ((audit || transformed) && compiler_capture))
         || !hash(&source.evidence_digest)
+        // Transformed coordinates describe retained transformed bytes, not the
+        // original commit. source_origin::verify also rejects committed origins.
+        || (transformed && source.url.is_some())
         || (source.authority == "EXACT_DEPENDENCY_SOURCE_ARCHIVE" && source.url.is_some())
         || (audit
             && source.url.is_some()

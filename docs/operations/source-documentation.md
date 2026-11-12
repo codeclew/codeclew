@@ -561,6 +561,14 @@ costs. Above a supported bound, retain the exact refusal and use saved-snapshot
 context or bounded Work for local questions. Repeating capture, recovery, refresh
 or a producer report does not change an unchanged package limit.
 
+Retained compiler transformations keep `TRANSFORMED_SOURCE`, their exact bytes
+and null original-commit URL during export/import. Committed `textOrigin` is not
+permitted for transformed text. A validated compiler-library binding preserves
+this authority inside a SOURCE consumer without promoting the consumer to
+compiler evidence; an unbound SOURCE cannot acquire it. Upgrade and export the
+existing snapshot without recapture or cache edits. See the portable workflow
+below for the retained provenance and trust requirements.
+
 Central import uses an operator-controlled expectation binding the registered
 origin/project, configuration digest, exact source revision, trusted manifest
 digest and increasing sequence. Use `docs evidence expect` with the current

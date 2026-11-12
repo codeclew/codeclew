@@ -1055,3 +1055,367 @@ fn raw_read_keeps_optional_null_fields_omitted_by_typed_reserialization() {
     .unwrap();
     assert_eq!(page["items"][0].get("textOrigin"), Some(&Value::Null));
 }
+
+/// Owned portable records, not a new compiler capture or transformed cache edit.
+fn transformed_fixture() -> (Service, ServiceEvidence) {
+    let mut service = service();
+    service.profile = "java-17plus-maven-writable-then-seal".into();
+    let mut e = evidence(&service);
+    e.extractor = EXTRACTOR.into();
+    e.runtime_mode = "RELEASE".into();
+    e.coverage = "PARTIAL".into();
+    for (id, file, text, authority, url) in [
+        (
+            "transformed",
+            "Expanded.java",
+            "class Expanded { int value() { return 1; } }",
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY,
+            None,
+        ),
+        (
+            "original",
+            "Original.java",
+            "class Original {}",
+            "EXACT_SNAPSHOT_TEXT",
+            Some(format!(
+                "https://example.invalid/orders/blob/{}/Original.java#L1-L1",
+                e.revision
+            )),
+        ),
+    ] {
+        e.sources.insert(
+            id.into(),
+            Source {
+                id: id.into(),
+                service: service.id.clone(),
+                revision: e.revision.clone(),
+                file: file.into(),
+                start_line: 1,
+                end_line: 1,
+                text: text.into(),
+                text_digest: canonical::hash_bytes(text.as_bytes()),
+                evidence_digest: canonical::hash_bytes(b"owned admitted compiler inputs"),
+                authority: authority.into(),
+                text_origin: None,
+                library_origin: None,
+                occurrence: None,
+                url,
+            },
+        );
+    }
+    let normalized = json!({"owned":"compiler fixture"});
+    e.observations.insert(
+        "fact".into(),
+        Observation {
+            id: "fact".into(),
+            kind: "OWNED_TEST_FACT".into(),
+            service: service.id.clone(),
+            symbol: "Expanded.value".into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec!["transformed".into(), "original".into()],
+        },
+    );
+    e.entrypoints.push(Entrypoint {
+        id: "entry".into(),
+        service: service.id.clone(),
+        kind: "SOURCE_DECLARATION".into(),
+        symbol: "Expanded.value".into(),
+        trigger: json!({}),
+        source_ids: vec!["transformed".into()],
+        dependency_ids: vec!["fact".into()],
+        boundaries: vec!["OWNED_NOT_RUNTIME_REGISTRATION".into()],
+    });
+    (service, e)
+}
+
+fn trusted_consumer(root: &Path, service: &Service, manifest_digest: String) -> Repository {
+    Repository::init(root, "Owned authority consumer").unwrap();
+    let repo = Repository::open(root).unwrap();
+    repo.atomic("catalog/services/orders.json", &bytes(service).unwrap())
+        .unwrap();
+    let policy = Expectation {
+        schema: POLICY_SCHEMA.into(),
+        service: service.id.clone(),
+        repository_id: service.repository_id.clone(),
+        service_digest: digest(service).unwrap(),
+        revision: "a".repeat(40),
+        manifest_digest,
+        sequence: 1,
+    };
+    repo.atomic(&policy_path("orders").unwrap(), &bytes(&policy).unwrap())
+        .unwrap();
+    repo
+}
+
+#[test]
+fn transformed_retained_compiler_export_import_preserves_all_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, e) = transformed_fixture();
+    let expected = e.clone();
+    let (producer, snapshot) = retained_fixture(&temp.path().join("producer"), &service, e, false);
+    let output = temp.path().join("package");
+    let exported = export_snapshot(&producer, "orders", &snapshot, &output).unwrap();
+    let p = load(&output).unwrap();
+    assert_eq!(p.evidence().unwrap(), &expected);
+    assert_eq!(p.manifest.schema, RETAINED_SCHEMA);
+    let page = run(Command::Read {
+        input: output.clone(),
+        kind: "sources".into(),
+        cursor: None,
+        limit: 10,
+    })
+    .unwrap();
+    let transformed = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "transformed")
+        .unwrap();
+    assert_eq!(transformed["authority"], "TRANSFORMED_SOURCE");
+    assert!(transformed["url"].is_null());
+    assert!(transformed.get("textOrigin").is_none());
+    let consumer = trusted_consumer(&temp.path().join("consumer"), &service, p.digest.clone());
+    assert_eq!(
+        import(&consumer, &output).unwrap()["status"],
+        "IMPORTED_RETAINED_SNAPSHOT"
+    );
+    assert_eq!(
+        import(&consumer, &output).unwrap()["status"],
+        "RETAINED_ALREADY_IMPORTED"
+    );
+    let stored = load(&consumer.path(&package_path(&p.digest).unwrap()).unwrap()).unwrap();
+    assert_eq!(stored.evidence().unwrap(), &expected);
+    assert_eq!(stored.digest, exported["manifestDigest"].as_str().unwrap());
+    let selected = selected(&consumer, &service).unwrap().unwrap();
+    assert_eq!(selected.sources, expected.sources);
+    assert_eq!(selected.entrypoints, expected.entrypoints);
+    assert!(selected.boundaries.contains(&HISTORICAL_BOUNDARY.into()));
+}
+
+#[test]
+fn transformed_source_rejects_syntax_without_admitted_compiler_library() {
+    let (service, mut e) = transformed_fixture();
+    e.extractor = SOURCE_EXTRACTOR.into();
+    e.runtime_mode = "COMMITTED_SOURCE_NO_BUILD".into();
+    e.coverage = "SYNTAX".into();
+    let (package, _) = serialize(service.clone(), &e);
+    assert!(
+        load(package.path())
+            .err()
+            .unwrap()
+            .message
+            .contains("authority or URL")
+    );
+    let mut source = e.sources["transformed"].clone();
+    source.library_origin = Some(LibrarySourceOrigin {
+        binding: "not-a-compiler-package".into(),
+        original_source_id: "transformed".into(),
+    });
+    assert!(verify_portable_source(&source, &service, false).is_err());
+    let (input, mut manifest) = serialize(service, &e);
+    rewrite_part(input.path(), &mut manifest, "sources", |part| {
+        let row = part["records"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|r| r["id"] == "transformed")
+            .unwrap();
+        row["libraryOrigin"] = json!(source.library_origin);
+    });
+    assert!(
+        load(input.path())
+            .err()
+            .unwrap()
+            .message
+            .contains("library source has no unique retained binding")
+    );
+}
+
+fn published_evidence_bytes(repo: &Repository) -> BTreeMap<PathBuf, Vec<u8>> {
+    ["evidence/packages", ".codeclew/evidence/selected"]
+        .into_iter()
+        .flat_map(|prefix| {
+            walkdir::WalkDir::new(repo.root.join(prefix))
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|item| item.file_type().is_file())
+                .map(|item| {
+                    (
+                        item.path().strip_prefix(&repo.root).unwrap().to_path_buf(),
+                        fs::read(item.path()).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn transformed_invalid_origins_and_corruption_preserve_prior_import() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, e) = transformed_fixture();
+    let (valid, manifest) = serialize(service.clone(), &e);
+    let consumer = trusted_consumer(
+        &temp.path().join("consumer"),
+        &service,
+        digest(&manifest).unwrap(),
+    );
+    import(&consumer, valid.path()).unwrap();
+    let before = published_evidence_bytes(&consumer);
+    for case in [
+        "original-url",
+        "committed-origin",
+        "unsupported-authority",
+        "text",
+        "evidence-digest",
+        "changed-valid-evidence-digest",
+        "reference",
+    ] {
+        let (input, mut manifest) = serialize(service.clone(), &e);
+        let kind = if case == "reference" {
+            "observations"
+        } else {
+            "sources"
+        };
+        rewrite_part(input.path(), &mut manifest, kind, |part| {
+            let rows = part["records"].as_array_mut().unwrap();
+            let row = if case == "reference" {
+                &mut rows[0]
+            } else {
+                rows.iter_mut().find(|r| r["id"] == "transformed").unwrap()
+            };
+            match case {
+                "original-url" => {
+                    row["url"] = json!(format!(
+                        "https://example.invalid/orders/blob/{}/Expanded.java#L1-L1",
+                        e.revision
+                    ))
+                }
+                "committed-origin" => {
+                    let s = &e.sources["transformed"];
+                    let mut origin = CommittedTextOrigin {
+                        schema: "codeclew-committed-source-text/1.0".into(),
+                        revision: s.revision.clone(),
+                        file: s.file.clone(),
+                        git_blob: "b".repeat(40),
+                        content_digest: s.text_digest.clone(),
+                        snapshot_digest: canonical::hash_bytes(b"owned snapshot"),
+                        start_byte: 0,
+                        end_byte: s.text.len(),
+                        line_start: 1,
+                        line_end: 1,
+                        text_digest: s.text_digest.clone(),
+                        evidence_digest: s.evidence_digest.clone(),
+                        receipt: String::new(),
+                    };
+                    origin.receipt = digest(&origin).unwrap();
+                    row["textOrigin"] = json!(origin);
+                }
+                "unsupported-authority" => row["authority"] = json!("UNSUPPORTED_SOURCE_AUTHORITY"),
+                "text" => row["text"] = json!("changed transformed text"),
+                "evidence-digest" => row["evidenceDigest"] = json!("not-an-evidence-digest"),
+                "changed-valid-evidence-digest" => {
+                    row["evidenceDigest"] = json!(canonical::hash_bytes(
+                        b"different untrusted compiler binding"
+                    ))
+                }
+                "reference" => row["sourceIds"] = json!(["missing-source"]),
+                _ => unreachable!(),
+            }
+        });
+        // Well-formed opaque compiler hashes are not standalone authenticity
+        // proofs; the trusted manifest still prevents admission of changed data.
+        if case == "changed-valid-evidence-digest" {
+            assert!(load(input.path()).is_ok());
+        } else {
+            assert!(load(input.path()).is_err(), "{case}");
+        }
+        assert!(import(&consumer, input.path()).is_err(), "{case}");
+        assert_eq!(published_evidence_bytes(&consumer), before, "{case}");
+    }
+    assert_eq!(
+        selected(&consumer, &service).unwrap().unwrap().sources,
+        e.sources
+    );
+}
+
+#[test]
+fn transformed_compiler_library_keeps_authority_inside_syntax_consumer() {
+    let (_temp, repo, mut binding, mut a, mut b) =
+        super::super::library_projection::tests::fixture();
+    for source in b.sources.values_mut() {
+        source.authority = crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY.into();
+        source.url = None;
+    }
+    binding.capture = super::super::cache::store_capture(&repo, &b).unwrap();
+    a.extractor = SOURCE_EXTRACTOR.into();
+    a.coverage = "SYNTAX".into();
+    a.runtime_mode = "COMMITTED_SOURCE_NO_BUILD".into();
+    binding.input.consumer_compilation.clear();
+    binding.input.consumer_revision = Some(a.revision.clone());
+    for o in a
+        .observations
+        .values_mut()
+        .filter(|o| matches!(o.kind.as_str(), "SYMBOL" | "FLOW"))
+    {
+        o.normalized.as_object_mut().unwrap().remove("scope");
+        o.normalized["authority"] = json!("SYNTAX");
+        if o.kind == "FLOW" {
+            o.normalized.as_object_mut().unwrap().remove("target");
+            o.normalized["libraryCallCandidate"] = json!({"receiver":"Policy","name":"decide","argumentCount":1,"shadowedReceiver":false});
+        }
+        o.digest = digest(&o.normalized).unwrap();
+    }
+    let normalized = json!({"syntaxKind":"import","text":"import owned.library.Policy"});
+    a.observations.insert(
+        "import".into(),
+        Observation {
+            id: "import".into(),
+            kind: "SYNTAX_DETAIL".into(),
+            symbol: "import".into(),
+            service: a.service.clone(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec!["source-handle".into()],
+        },
+    );
+    let mut service = binding.service.clone();
+    service.id = a.service.clone();
+    service.repository_id = a.service.clone();
+    service.repository = "https://example.invalid/owned/application.git".into();
+    service.profile = "source-syntax".into();
+    service.compilations.clear();
+    service.source = Some(SourceConfig {
+        roots: vec!["src".into()],
+        dialect: "2.4.10".into(),
+        generated_inputs: vec![],
+    });
+    a.service_digest = digest(&service).unwrap();
+    let mut services = BTreeMap::from([(a.service.clone(), a)]);
+    super::super::library_projection::apply(
+        &repo,
+        &BTreeMap::from([(binding.input.id.clone(), binding)]),
+        &mut services,
+    )
+    .unwrap();
+    let joined = services.remove("application").unwrap();
+    assert_eq!(joined.extractor, SOURCE_EXTRACTOR);
+    assert!(
+        joined
+            .sources
+            .values()
+            .any(|s| s.authority == "TRANSFORMED_SOURCE" && s.library_origin.is_some())
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("package");
+    write_capture_result(service, Ok(joined.clone()), &output, false, None, None).unwrap();
+    assert_eq!(load(&output).unwrap().evidence().unwrap(), &joined);
+    assert!(
+        joined
+            .sources
+            .values()
+            .filter(|s| s.authority == "TRANSFORMED_SOURCE")
+            .all(|s| s.url.is_none() && s.text_origin.is_none())
+    );
+}
