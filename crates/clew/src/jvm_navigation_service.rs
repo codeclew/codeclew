@@ -664,6 +664,7 @@ mod tests {
                     value_projection: None,
                     interfaces: Vec::new(),
                     superclass: None,
+                    record_components: vec![],
                     file: "src/main/java/api/Service.java".into(),
                     start: Some(1),
                     end: Some(2),

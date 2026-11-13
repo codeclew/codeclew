@@ -413,6 +413,11 @@ final class CodeclewJavaAnalyzer {
             }
             facts.add(row);
             row.put("jvmAnnotations", new JvmAnnotationReader().readInherited(type));
+            if (type.getKind() == ElementKind.RECORD) {
+                row.put("recordComponents", type.getRecordComponents().stream()
+                        .map(component -> "field:" + identity + "#" + component.getSimpleName()
+                                + ":" + descriptor(component.asType())).toList());
+            }
             owners.push(identity);
             super.visitClass(tree, unused);
             owners.pop();
@@ -831,8 +836,34 @@ final class CodeclewJavaAnalyzer {
                             && Path.of(unit.getSourceFile().toUri()).toRealPath().startsWith(root);
                 } catch (IOException | RuntimeException unavailable) { retained = false; }
             }
-            row.put("declarationStatus", retained ? "SOURCE_RETAINED" : "DECLARATION_SOURCE_UNAVAILABLE");
+            Map<String, Object> implicit = retained ? null : implicitRecordParameter(variable, declaration);
+            row.put("declarationStatus", retained ? "SOURCE_RETAINED"
+                    : implicit != null ? "IMPLICIT_RECORD_COMPONENT_RETAINED" : "DECLARATION_SOURCE_UNAVAILABLE");
+            if (implicit != null) row.put("implicitRecordParameter", implicit);
             facts.add(row);
+        }
+
+        private Map<String, Object> implicitRecordParameter(VariableElement variable, TreePath declaration) {
+            if (variable.getKind() != ElementKind.PARAMETER || declaration == null
+                    || positions.getEndPosition(declaration.getCompilationUnit(), declaration.getLeaf()) >= 0
+                    || !variableUnits.contains(declaration.getCompilationUnit())
+                    || !(variable.getEnclosingElement() instanceof ExecutableElement constructor)
+                    || constructor.getKind() != ElementKind.CONSTRUCTOR
+                    || !(constructor.getEnclosingElement() instanceof TypeElement record)
+                    || record.getKind() != ElementKind.RECORD) return null;
+            TreePath constructorPath = trees.getPath(constructor);
+            if (constructorPath == null || !hasSourceRange(constructorPath.getLeaf())) return null;
+            var components = record.getRecordComponents();
+            var parameters = constructor.getParameters();
+            int slot = parameters.indexOf(variable);
+            if (slot < 0 || parameters.size() != components.size()) return null;
+            for (int index = 0; index < components.size(); index++) {
+                if (!types.isSameType(parameters.get(index).asType(), components.get(index).asType())) return null;
+            }
+            var component = components.get(slot);
+            if (!variable.getSimpleName().contentEquals(component.getSimpleName())) return null;
+            return Map.of("componentIdentity", "field:" + classIdentity(record) + "#"
+                    + component.getSimpleName() + ":" + descriptor(component.asType()), "parameterIndex", slot);
         }
 
         /** Bounded source structure, not a runtime trace or a general control-flow proof. */

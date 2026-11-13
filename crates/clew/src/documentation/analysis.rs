@@ -1611,16 +1611,28 @@ fn validate_variable_facts(
                     ));
                 }
             } else {
-                let target = target.filter(|rows| rows.len() == 1).ok_or_else(|| {
-                    invalid("variable target is missing or ambiguous in its scope")
-                })?[0];
+                let implicit = fact["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED";
+                let target = if implicit {
+                    if target.is_some() {
+                        return Err(invalid(
+                            "implicit record parameter conflicts with a retained parameter declaration",
+                        ));
+                    }
+                    implicit_record_component(fact, owners[0], &scope, &declarations)?
+                } else {
+                    target.filter(|rows| rows.len() == 1).ok_or_else(|| {
+                        invalid("variable target is missing or ambiguous in its scope")
+                    })?[0]
+                };
                 let field = fact["variableKind"] == "FIELD";
                 if target["name"] != fact["name"]
                     || target["jvmDescriptor"] != fact["jvmDescriptor"]
-                    || (field
+                    || (!implicit
+                        && field
                         && (target["declarationKind"] != "FIELD"
                             || target["ownerIdentity"] != fact["variableOwnerIdentity"]))
-                    || (!field
+                    || (!implicit
+                        && !field
                         && (target["variableKind"] != fact["variableKind"]
                             || target["enclosingCallable"] != callable))
                 {
@@ -1666,6 +1678,126 @@ fn validate_variable_facts(
         }
     }
     Ok(variable_lines)
+}
+
+/// A component anchor is outside the compact constructor. Only the access span
+/// is a callable-body span; the implicit parameter has no invented declaration.
+fn implicit_record_component<'a>(
+    fact: &Value,
+    constructor: &Value,
+    scope: &str,
+    declarations: &BTreeMap<(String, String), Vec<&'a Value>>,
+) -> Result<&'a Value, ClewError> {
+    let binding: crate::java_adapter_v2::JavaImplicitRecordParameter =
+        serde_json::from_value(fact["implicitRecordParameter"].clone())
+            .map_err(|_| invalid("implicit record parameter binding is invalid"))?;
+    let lookup = |identity: &str| -> Result<&'a Value, ClewError> {
+        declarations
+            .get(&(scope.into(), identity.into()))
+            .filter(|rows| rows.len() == 1)
+            .map(|rows| rows[0])
+            .ok_or_else(|| invalid("record component target is missing or ambiguous in its scope"))
+    };
+    let record_id = constructor["ownerIdentity"]
+        .as_str()
+        .ok_or_else(|| invalid("record constructor owner is missing"))?;
+    let record = lookup(record_id)?;
+    let components = record["recordComponents"]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+        .ok_or_else(|| invalid("record component inventory is missing"))?;
+    let slot = binding.parameter_index as usize;
+    if fact["kind"] != "VARIABLE_ACCESS"
+        || fact["variableKind"] != "PARAMETER"
+        || fact["variableOwnerIdentity"] != constructor["symbolIdentity"]
+        || fact["enclosingCallable"] != constructor["symbolIdentity"]
+        || binding.component_identity
+            != format!(
+                "field:{record_id}#{}:{}",
+                fact["name"].as_str().unwrap_or_default(),
+                fact["jvmDescriptor"].as_str().unwrap_or_default()
+            )
+        || constructor["declarationKind"] != "CONSTRUCTOR"
+        || record["declarationKind"] != "RECORD"
+        || record["superclass"] != "class:java.lang.Record"
+        || record["file"] != fact["file"]
+        || components.get(slot).and_then(Value::as_str) != Some(binding.component_identity.as_str())
+        || fact["variableIdentity"]
+            != format!(
+                "parameter:{}/slot/{slot}",
+                fact["enclosingCallable"].as_str().unwrap_or_default()
+            )
+    {
+        return Err(invalid(
+            "implicit parameter differs from its record component or constructor slot",
+        ));
+    }
+    let mut descriptor = String::from("(");
+    let mut seen = BTreeSet::new();
+    let mut previous_end = record["byteStart"]
+        .as_u64()
+        .ok_or_else(|| invalid("record source span is unavailable"))?;
+    let constructor_start = constructor["byteStart"]
+        .as_u64()
+        .ok_or_else(|| invalid("record constructor source start is unavailable"))?;
+    let constructor_end = constructor["byteEnd"]
+        .as_u64()
+        .filter(|end| *end > constructor_start)
+        .ok_or_else(|| invalid("record constructor source end is unavailable"))?;
+    if record["byteEnd"]
+        .as_u64()
+        .is_none_or(|end| end < constructor_end)
+    {
+        return Err(invalid("record does not contain its constructor source"));
+    }
+    for identity in components {
+        let identity = identity
+            .as_str()
+            .ok_or_else(|| invalid("invalid record component identity"))?;
+        let component = lookup(identity)?;
+        let start = component["byteStart"]
+            .as_u64()
+            .ok_or_else(|| invalid("record component source span is unavailable"))?;
+        let end = component["byteEnd"]
+            .as_u64()
+            .ok_or_else(|| invalid("record component source span is unavailable"))?;
+        if !seen.insert(identity)
+            || component["declarationKind"] != "FIELD"
+            || component["ownerIdentity"] != record_id
+            || component["file"] != fact["file"]
+            || component["modifiers"]
+                .as_array()
+                .is_none_or(|rows| rows.iter().any(|m| m == "STATIC"))
+            || start < previous_end
+            || start >= end
+            || end > constructor_start
+        {
+            return Err(invalid(
+                "record component order, owner or source anchor is inconsistent",
+            ));
+        }
+        previous_end = end;
+        descriptor.push_str(
+            component["jvmDescriptor"]
+                .as_str()
+                .ok_or_else(|| invalid("record component descriptor is missing"))?,
+        );
+    }
+    descriptor.push_str(")V");
+    if constructor["jvmDescriptor"] != descriptor
+        || constructor["symbolIdentity"] != format!("method:{record_id}#<init>{descriptor}")
+    {
+        return Err(invalid(
+            "implicit parameter constructor is not the canonical record constructor",
+        ));
+    }
+    let component = lookup(&binding.component_identity)?;
+    if component["name"] != fact["name"] || component["jvmDescriptor"] != fact["jvmDescriptor"] {
+        return Err(invalid(
+            "implicit record parameter component metadata differs",
+        ));
+    }
+    Ok(component)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1725,6 +1857,48 @@ pub(crate) fn project_scoped(
                 ) && let Some(identity) = attempt["propertyIdentity"].as_str()
                 {
                     accessor_properties.insert(scoped_identity(&scope, identity));
+                }
+            }
+        }
+    }
+    // Retain exact declaration sites only for the new implicit-parameter closure.
+    // Portable evidence can then apply the same component/source invariants as
+    // raw admission, without inventing an explicit parameter declaration.
+    let mut implicit_record_symbols = BTreeSet::new();
+    for (fact, _) in &facts {
+        if fact["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED" {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            implicit_record_symbols.insert(scoped_identity(
+                &scope,
+                fact["enclosingCallable"].as_str().unwrap(),
+            ));
+        }
+    }
+    let mut implicit_records = BTreeSet::new();
+    for (fact, _) in &facts {
+        if fact["declarationKind"] == "CONSTRUCTOR" {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            if implicit_record_symbols.contains(&scoped_identity(
+                &scope,
+                fact["symbolIdentity"].as_str().unwrap_or_default(),
+            )) {
+                implicit_records.insert(scoped_identity(
+                    &scope,
+                    fact["ownerIdentity"].as_str().unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    for (fact, _) in &facts {
+        if fact["declarationKind"] == "RECORD" {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let identity =
+                scoped_identity(&scope, fact["symbolIdentity"].as_str().unwrap_or_default());
+            if implicit_records.contains(&identity) {
+                implicit_record_symbols.insert(identity);
+                for component in fact["recordComponents"].as_array().into_iter().flatten() {
+                    implicit_record_symbols
+                        .insert(scoped_identity(&scope, component.as_str().unwrap()));
                 }
             }
         }
@@ -2031,6 +2205,18 @@ pub(crate) fn project_scoped(
                     &scoped_identity(&scope, variable)
                 )?);
             }
+            if !declaration && fact["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED" {
+                normalized["recordComponentObservationId"] = json!(dependency_id(
+                    &service.id,
+                    "symbol",
+                    &scoped_identity(
+                        &scope,
+                        fact["implicitRecordParameter"]["componentIdentity"]
+                            .as_str()
+                            .unwrap()
+                    )
+                )?);
+            }
             normalized["variableSite"] = json!({"file":fact["file"],"service":service.id,"revision":revision,
                 "byteStart":start,"byteEnd":end,"sourceByteStart":source_start,"sourceByteEnd":source_end,
                 "startLine":fact["startLine"],"endLine":fact["endLine"],
@@ -2286,7 +2472,8 @@ pub(crate) fn project_scoped(
         let has_outline_spans = fact["documentation"]["events"]
             .as_array()
             .is_some_and(|events| events.iter().any(|event| event.get("sourceSpan").is_some()));
-        let exact_outline_owner = has_outline_spans
+        let exact_outline_owner = implicit_record_symbols.contains(&scoped)
+            || has_outline_spans
             || fact["documentation"]["controlRegions"].is_object()
             || fact["schema"] == "codeclew-rust-syntax-fact/1.2"
             || (fact["schema"] == "declaration-descriptor/0.1"
@@ -2705,6 +2892,11 @@ fn bind_original_byte_documentation(
 fn verify_variable_site(e: &ServiceEvidence, observation: &Observation) -> Result<(), ClewError> {
     let site = &observation.normalized["variableSite"];
     if site.get("sourceByteStart").is_none() && site.get("sourceByteEnd").is_none() {
+        if observation.normalized["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED" {
+            return Err(invalid(
+                "implicit record parameter requires an exact source site",
+            ));
+        }
         return Ok(());
     }
     let number = |key: &str| {
@@ -2757,6 +2949,166 @@ fn verify_variable_site(e: &ServiceEvidence, observation: &Observation) -> Resul
         .ok_or_else(|| invalid("portable variable local span is not UTF-8"))?;
     if site["spanDigest"] != canonical::hash_bytes(exact.as_bytes()) {
         return Err(invalid("portable variable local span digest differs"));
+    }
+    Ok(())
+}
+
+fn verify_implicit_record_parameter(
+    e: &ServiceEvidence,
+    observation: &Observation,
+) -> Result<(), ClewError> {
+    let fact = &observation.normalized;
+    if fact["declarationStatus"] != "IMPLICIT_RECORD_COMPONENT_RETAINED" {
+        if fact.get("implicitRecordParameter").is_some() {
+            return Err(invalid("portable implicit record parameter status differs"));
+        }
+        return Ok(());
+    }
+    if observation.kind != "VARIABLE_ACCESS" || fact["kind"] != "VARIABLE_ACCESS" {
+        return Err(invalid(
+            "implicit record parameter cannot declare a variable",
+        ));
+    }
+    let binding: crate::java_adapter_v2::JavaImplicitRecordParameter =
+        serde_json::from_value(fact["implicitRecordParameter"].clone())
+            .map_err(|_| invalid("portable implicit record parameter binding is invalid"))?;
+    let scope = fact["scope"]
+        .as_str()
+        .ok_or_else(|| invalid("portable record parameter scope is absent"))?;
+    let symbol = |identity: &str| -> Result<&Observation, ClewError> {
+        let id = dependency_id(&e.service, "symbol", &scoped_identity(scope, identity))?;
+        e.observations
+            .get(&id)
+            .filter(|o| {
+                o.kind == "SYMBOL"
+                    && o.symbol == identity
+                    && o.service == e.service
+                    && o.normalized["scope"] == scope
+            })
+            .ok_or_else(|| invalid("portable record parameter target is not retained in its scope"))
+    };
+    let callable = fact["enclosingCallable"]
+        .as_str()
+        .ok_or_else(|| invalid("portable record constructor is absent"))?;
+    let constructor = symbol(callable)?;
+    let record_id = constructor.normalized["ownerIdentity"]
+        .as_str()
+        .ok_or_else(|| invalid("portable record owner is absent"))?;
+    let record = symbol(record_id)?;
+    let components = record.normalized["recordComponents"]
+        .as_array()
+        .ok_or_else(|| invalid("portable record component inventory is absent"))?;
+    let component = symbol(&binding.component_identity)?;
+    if fact["recordComponentObservationId"] != component.id
+        || fact["callableObservationId"] != constructor.id
+        || fact.get("declarationObservationId").is_some()
+        || e.observations.values().any(|o| {
+            o.kind == "VARIABLE_DECLARATION"
+                && o.normalized["scope"] == scope
+                && o.normalized["variableIdentity"] == fact["variableIdentity"]
+        })
+    {
+        return Err(invalid(
+            "portable implicit record parameter identity differs",
+        ));
+    }
+    let access_site = &fact["variableSite"];
+    let declaration = |target: &Observation| -> Result<Value, ClewError> {
+        let site = &target.normalized["outlineOwnerSource"];
+        let source = target.source_ids.as_slice();
+        let source = match source {
+            [id] if site["sourceId"] == *id => e.sources.get(id),
+            _ => None,
+        }
+        .ok_or_else(|| invalid("portable record declaration source is unavailable"))?;
+        let start = site["byteStart"].as_u64();
+        let end = site["byteEnd"].as_u64();
+        if source.file != access_site["file"]
+            || source.service != e.service
+            || source.revision != e.revision
+            || site["file"] != source.file
+            || site["sourceStatus"] != "SOURCE_RETAINED"
+            || site["sourceDigest"] != source.text_digest
+            || source.text_digest != canonical::hash_bytes(source.text.as_bytes())
+            || site["evidenceDigest"] != source.evidence_digest
+            || site["startLine"] != source.start_line
+            || site["endLine"] != source.end_line
+            || site["fullCompilationSourceDigest"] != access_site["sourceContentDigest"]
+            || start
+                .zip(end)
+                .is_none_or(|(start, end)| start >= end || end - start != source.text.len() as u64)
+        {
+            return Err(invalid("portable record declaration source pins differ"));
+        }
+        let mut value = target.normalized.clone();
+        for key in ["file", "byteStart", "byteEnd"] {
+            value[key] = site[key].clone();
+        }
+        Ok(value)
+    };
+    let mut targets = BTreeMap::from([
+        (callable.to_owned(), declaration(constructor)?),
+        (record_id.to_owned(), declaration(record)?),
+    ]);
+    for identity in components {
+        let identity = identity
+            .as_str()
+            .ok_or_else(|| invalid("portable record component identity is invalid"))?;
+        targets.insert(identity.to_owned(), declaration(symbol(identity)?)?);
+    }
+    let declarations = targets
+        .iter()
+        .map(|(identity, value)| ((scope.to_owned(), identity.clone()), vec![value]))
+        .collect();
+    let mut access = fact.clone();
+    for key in ["file", "byteStart", "byteEnd"] {
+        access[key] = access_site[key].clone();
+    }
+    let constructor = &targets[callable];
+    implicit_record_component(&access, constructor, scope, &declarations)?;
+    let record_start = targets[record_id]["byteStart"].as_u64().unwrap();
+    let record_source = &e.sources[&record.source_ids[0]].text;
+    for target in std::iter::once(record)
+        .chain(std::iter::once(symbol(callable)?))
+        .chain(
+            components
+                .iter()
+                .map(|id| symbol(id.as_str().unwrap()))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    {
+        let site = &target.normalized["outlineOwnerSource"];
+        let range = site["byteStart"]
+            .as_u64()
+            .unwrap()
+            .checked_sub(record_start)
+            .zip(site["byteEnd"].as_u64().unwrap().checked_sub(record_start));
+        if range.is_none_or(|(start, end)| {
+            record_source.get(start as usize..end as usize)
+                != Some(e.sources[&target.source_ids[0]].text.as_str())
+        }) {
+            return Err(invalid(
+                "portable record declaration differs from its enclosing source",
+            ));
+        }
+    }
+    let start = access_site["byteStart"].as_u64().unwrap();
+    let end = access_site["byteEnd"].as_u64().unwrap();
+    let source_start = access_site["sourceByteStart"].as_u64().unwrap();
+    let source = &e.sources[access_site["sourceId"].as_str().unwrap()].text;
+    if start < constructor["byteStart"].as_u64().unwrap()
+        || end > constructor["byteEnd"].as_u64().unwrap()
+        || start
+            .checked_sub(record_start)
+            .zip(end.checked_sub(record_start))
+            .is_none_or(|(a, b)| {
+                record_source.get(a as usize..b as usize)
+                    != source.get((start - source_start) as usize..(end - source_start) as usize)
+            })
+    {
+        return Err(invalid(
+            "portable implicit parameter access is outside its constructor source",
+        ));
     }
     Ok(())
 }
@@ -2844,6 +3196,7 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
         csharp_regions::verify(e, o)?;
         if matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION") {
             verify_variable_site(e, o)?;
+            verify_implicit_record_parameter(e, o)?;
         }
         if o.kind == "LOCAL_CFG" {
             let source = match o.source_ids.as_slice() {
@@ -3717,12 +4070,281 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "qualification launches the real JDK compiler variable producer"]
-    fn javac_variables_resolve_storage_modes_spans_and_scoped_admission() {
+    fn produce_java_variable_facts(root: &Path, file: &str, source: &str) -> Vec<(Value, String)> {
         use crate::java_adapter_v2::build_java_compiler_index;
         use crate::java_project_model::{JavaBuildSystem, JavaOperationalModel, JavaProjectModel};
         use std::process::Command;
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, source).unwrap();
+        let version = Command::new("javac").arg("-version").output().unwrap();
+        assert!(version.status.success());
+        let compiler_version = format!(
+            "{}{}",
+            String::from_utf8_lossy(&version.stdout),
+            String::from_utf8_lossy(&version.stderr)
+        )
+        .trim()
+        .to_string();
+        let mut authority = JavaProjectModel {
+            schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            model_digest: String::new(),
+            build_system: JavaBuildSystem::Maven,
+            compilation: ":/main".into(),
+            source_files: vec![file.into()],
+            classpath: vec![],
+            dependency_sources: vec![],
+            release: 17,
+            compiler_version,
+            compiler_options: vec![],
+            annotation_processors: vec![],
+            annotation_processor_paths: vec![],
+            boundaries: vec![],
+        };
+        authority.model_digest = canonical::hash(&authority).unwrap();
+        let operational = JavaOperationalModel {
+            authority,
+            source_paths: vec![path],
+            classpath_paths: vec![],
+            annotation_processor_paths: vec![],
+            java_executable: "java".into(),
+        };
+        let index = build_java_compiler_index(
+            root,
+            &operational,
+            &BTreeMap::from([(file.into(), canonical::hash_bytes(source.as_bytes()))]),
+            false,
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        index
+            .facts
+            .iter()
+            .map(|fact| {
+                let mut value = serde_json::to_value(fact).unwrap();
+                let binding = java_fact_binding(fact);
+                value["scope"] = json!({"compilation":":/main"});
+                (value, binding)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "qualification launches the real JDK compiler record producer"]
+    fn javac_compact_record_parameters_bind_components_without_invented_declarations() {
+        let original = "package example;\npublic record Sample(int x, String label) {\n public Sample { if (x < 0) throw new IllegalArgumentException(label); }\n public int value() { System.out.println(label); return x; }\n}\n";
+        let file = "src/main/java/example/Sample.java";
+        let temp = tempfile::tempdir().unwrap();
+        let facts = produce_java_variable_facts(temp.path(), file, original);
+        let tables = compile_sources(
+            vec![(
+                ":/main",
+                BTreeMap::from([(file.into(), original.into())]),
+                false,
+            )],
+            BTreeMap::new(),
+        );
+        let known = BTreeSet::from([":/main".into()]);
+        validate_variable_facts(&facts, &tables, &known).unwrap();
+        let implicit: Vec<_> = facts
+            .iter()
+            .enumerate()
+            .filter(|(_, (f, _))| f["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED")
+            .collect();
+        assert_eq!(
+            implicit.len(),
+            2,
+            "both actual parameter reads must survive"
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|(f, _)| f["kind"] == "VARIABLE_DECLARATION"
+                    && f["variableKind"] == "PARAMETER")
+        );
+        for (_, (fact, _)) in &implicit {
+            let start = fact["byteStart"].as_u64().unwrap() as usize;
+            let end = fact["byteEnd"].as_u64().unwrap() as usize;
+            assert_eq!(&original[start..end], fact["name"].as_str().unwrap());
+            assert_eq!(fact["variableOwnerIdentity"], fact["enclosingCallable"]);
+        }
+        let constructor = facts
+            .iter()
+            .find(|(f, _)| f["declarationKind"] == "CONSTRUCTOR")
+            .unwrap();
+        assert!(
+            constructor.0["documentation"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "THROW")
+        );
+        assert!(
+            constructor.0["documentation"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "IF")
+        );
+        assert!(facts.iter().any(|(f, _)| f["name"] == "out"
+            && f["declarationStatus"] == "DECLARATION_SOURCE_UNAVAILABLE"));
+        let evidence =
+            project_scoped_ok(&projection_service(), facts.clone(), &tables, &[":/main"]);
+        verify_evidence(&evidence).unwrap();
+        let mut duplicate_component = evidence.clone();
+        let record = duplicate_component
+            .observations
+            .values_mut()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["declarationKind"] == "RECORD")
+            .unwrap();
+        let components = record.normalized["recordComponents"]
+            .as_array_mut()
+            .unwrap();
+        components.push(components[0].clone());
+        record.digest = digest(&record.normalized).unwrap();
+        assert!(
+            verify_evidence(&duplicate_component).is_err(),
+            "portable evidence must reject a duplicate record component"
+        );
+        for mutation in [
+            "component-order",
+            "constructor-descriptor",
+            "component-modifier",
+            "declaration-kind",
+            "source-site",
+        ] {
+            let mut bad = evidence.clone();
+            let target = bad
+                .observations
+                .values_mut()
+                .find(|o| match mutation {
+                    "component-order" => {
+                        o.kind == "SYMBOL" && o.normalized["declarationKind"] == "RECORD"
+                    }
+                    "constructor-descriptor" => {
+                        o.kind == "SYMBOL" && o.normalized["declarationKind"] == "CONSTRUCTOR"
+                    }
+                    "component-modifier" => {
+                        o.kind == "SYMBOL"
+                            && o.symbol == "field:class:example.Sample#label:Ljava/lang/String;"
+                    }
+                    _ => o.normalized["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED",
+                })
+                .unwrap();
+            match mutation {
+                "component-order" => target.normalized["recordComponents"]
+                    .as_array_mut()
+                    .unwrap()
+                    .swap(0, 1),
+                "constructor-descriptor" => {
+                    target.normalized["jvmDescriptor"] = json!("(JLjava/lang/String;)V")
+                }
+                "component-modifier" => target.normalized["modifiers"] = json!(["STATIC"]),
+                "declaration-kind" => {
+                    target.kind = "VARIABLE_DECLARATION".into();
+                    target.normalized["kind"] = json!("VARIABLE_DECLARATION");
+                }
+                "source-site" => {
+                    target.normalized["variableSite"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("sourceByteStart");
+                    target.normalized["variableSite"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("sourceByteEnd");
+                }
+                _ => unreachable!(),
+            }
+            target.digest = digest(&target.normalized).unwrap();
+            assert!(verify_evidence(&bad).is_err(), "{mutation}");
+        }
+        let access = implicit
+            .iter()
+            .find(|(_, (f, _))| f["name"] == "x")
+            .unwrap()
+            .0;
+        let rebind = |rows: &mut Vec<(Value, String)>, index: usize| {
+            let mut raw = rows[index].0.clone();
+            raw.as_object_mut().unwrap().remove("scope");
+            rows[index].1 = java_fact_binding(&raw);
+        };
+        for (key, value) in [
+            ("parameterIndex", json!(1)),
+            (
+                "componentIdentity",
+                json!("field:class:example.Sample#label:Ljava/lang/String;"),
+            ),
+        ] {
+            let mut bad = facts.clone();
+            bad[access].0["implicitRecordParameter"][key] = value;
+            rebind(&mut bad, access);
+            assert!(
+                validate_variable_facts(&bad, &tables, &known).is_err(),
+                "{key}"
+            );
+        }
+        let mut unavailable = facts.clone();
+        unavailable[access].0["declarationStatus"] = json!("DECLARATION_SOURCE_UNAVAILABLE");
+        unavailable[access]
+            .0
+            .as_object_mut()
+            .unwrap()
+            .remove("implicitRecordParameter");
+        rebind(&mut unavailable, access);
+        assert!(validate_variable_facts(&unavailable, &tables, &known).is_err());
+        let ctor_index = facts
+            .iter()
+            .position(|(f, _)| f["declarationKind"] == "CONSTRUCTOR")
+            .unwrap();
+        let mut wrong_owner = facts.clone();
+        wrong_owner[ctor_index].0["ownerIdentity"] = json!("class:example.Other");
+        rebind(&mut wrong_owner, ctor_index);
+        assert!(validate_variable_facts(&wrong_owner, &tables, &known).is_err());
+        let component_index = facts
+            .iter()
+            .position(|(f, _)| f["symbolIdentity"] == "field:class:example.Sample#x:I")
+            .unwrap();
+        let mut wrong_scope = facts.clone();
+        wrong_scope[component_index].0["scope"] = json!({"compilation":":other/main"});
+        assert!(
+            validate_variable_facts(
+                &wrong_scope,
+                &tables,
+                &BTreeSet::from([":/main".into(), ":other/main".into()])
+            )
+            .is_err()
+        );
+        let field_access = facts
+            .iter()
+            .position(|(f, _)| {
+                f["kind"] == "VARIABLE_ACCESS" && f["variableKind"] == "FIELD" && f["name"] == "x"
+            })
+            .unwrap();
+        let mut contradictory = facts.clone();
+        contradictory[field_access].0["declarationStatus"] =
+            json!("DECLARATION_SOURCE_UNAVAILABLE");
+        rebind(&mut contradictory, field_access);
+        assert!(validate_variable_facts(&contradictory, &tables, &known).is_err());
+        let observation_id = evidence
+            .observations
+            .values()
+            .find(|o| o.normalized["declarationStatus"] == "IMPLICIT_RECORD_COMPONENT_RETAINED")
+            .unwrap()
+            .id
+            .clone();
+        let mut bad_portable = evidence.clone();
+        let observation = bad_portable.observations.get_mut(&observation_id).unwrap();
+        observation.normalized["implicitRecordParameter"]["parameterIndex"] = json!(99);
+        observation.digest = digest(&observation.normalized).unwrap();
+        assert!(verify_evidence(&bad_portable).is_err());
+    }
+
+    #[test]
+    #[ignore = "qualification launches the real JDK compiler variable producer"]
+    fn javac_variables_resolve_storage_modes_spans_and_scoped_admission() {
         let original = r#"package example;
 class Variables {
     int value; int attempts;
@@ -3742,66 +4364,12 @@ class Variables {
     void localShadow() { int value = 1; this.value = value; }
 }
 "#;
-        fn produce(root: &Path, source: &str) -> Vec<(Value, String)> {
-            let file = "src/main/java/example/Variables.java";
-            let path = root.join(file);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, source).unwrap();
-            let version = Command::new("javac").arg("-version").output().unwrap();
-            assert!(version.status.success());
-            let compiler_version = format!(
-                "{}{}",
-                String::from_utf8_lossy(&version.stdout),
-                String::from_utf8_lossy(&version.stderr)
-            )
-            .trim()
-            .to_string();
-            let mut authority = JavaProjectModel {
-                schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
-                model_digest: String::new(),
-                build_system: JavaBuildSystem::Maven,
-                compilation: ":/main".into(),
-                source_files: vec![file.into()],
-                classpath: vec![],
-                dependency_sources: vec![],
-                release: 17,
-                compiler_version,
-                compiler_options: vec![],
-                annotation_processors: vec![],
-                annotation_processor_paths: vec![],
-                boundaries: vec![],
-            };
-            authority.model_digest = canonical::hash(&authority).unwrap();
-            let operational = JavaOperationalModel {
-                authority,
-                source_paths: vec![path],
-                classpath_paths: vec![],
-                annotation_processor_paths: vec![],
-                java_executable: "java".into(),
-            };
-            let index = build_java_compiler_index(
-                root,
-                &operational,
-                &BTreeMap::from([(file.into(), canonical::hash_bytes(source.as_bytes()))]),
-                false,
-                None,
-                &[],
-                None,
-            )
-            .unwrap();
-            index
-                .facts
-                .iter()
-                .map(|fact| {
-                    let mut value = serde_json::to_value(fact).unwrap();
-                    let binding = java_fact_binding(fact);
-                    value["scope"] = json!({"compilation":":/main"});
-                    (value, binding)
-                })
-                .collect()
-        }
         let temp = tempfile::tempdir().unwrap();
-        let facts = produce(temp.path(), original);
+        let facts = produce_java_variable_facts(
+            temp.path(),
+            "src/main/java/example/Variables.java",
+            original,
+        );
         let file = "src/main/java/example/Variables.java";
         let variable: Vec<_> = facts
             .iter()
@@ -4223,7 +4791,11 @@ class UseTask {
     }
 }
 "#;
-        let task_facts = produce(temp.path(), task_probe);
+        let task_facts = produce_java_variable_facts(
+            temp.path(),
+            "src/main/java/example/Variables.java",
+            task_probe,
+        );
         let task_tables = compile_sources(
             vec![(
                 ":/main",
@@ -4301,7 +4873,11 @@ class UseTask {
             );
         }
         let relocated = format!("// unrelated file line relocation 🙂\n\n{original}");
-        let relocated_facts = produce(temp.path(), &relocated);
+        let relocated_facts = produce_java_variable_facts(
+            temp.path(),
+            "src/main/java/example/Variables.java",
+            &relocated,
+        );
         let identities = |fs: &[(Value, String)]| {
             fs.iter()
                 .filter(|(f, _)| {
@@ -4336,7 +4912,11 @@ class UseTask {
             ("CRLF", multiline.replace('\n', "\r\n")),
             ("mixed", mixed),
         ] {
-            let probe_facts = produce(temp.path(), &probe);
+            let probe_facts = produce_java_variable_facts(
+                temp.path(),
+                "src/main/java/example/Variables.java",
+                &probe,
+            );
             assert_eq!(
                 identities(&facts),
                 identities(&probe_facts),

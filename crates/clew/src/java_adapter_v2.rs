@@ -105,6 +105,16 @@ pub enum JavaVariableDefinitionKind {
 pub enum JavaVariableDeclarationStatus {
     SourceRetained,
     DeclarationSourceUnavailable,
+    ImplicitRecordComponentRetained,
+}
+
+/// A compact constructor's implicit input, backed by its actual record component.
+/// The access keeps its body span; this does not invent a parameter declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaImplicitRecordParameter {
+    pub component_identity: String,
+    pub parameter_index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +160,8 @@ pub struct JavaVariableAccess {
     pub resolution: String,
     pub access_mode: JavaVariableAccessMode,
     pub declaration_status: JavaVariableDeclarationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_record_parameter: Option<JavaImplicitRecordParameter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +205,8 @@ pub enum JavaCompilerFact {
         interfaces: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         superclass: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        record_components: Vec<String>,
         file: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         start: Option<u64>,
@@ -1548,6 +1562,38 @@ pub(crate) fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
             if !row.occurrence_path.starts_with("body/") {
                 return Err(corrupt("Java variable access is outside an immediate body"));
             }
+            if (row.declaration_status
+                == JavaVariableDeclarationStatus::ImplicitRecordComponentRetained)
+                != row.implicit_record_parameter.is_some()
+            {
+                return Err(corrupt(
+                    "Java implicit record parameter status differs from its binding",
+                ));
+            }
+            if let Some(binding) = &row.implicit_record_parameter {
+                let owner = row
+                    .enclosing_callable
+                    .strip_prefix("method:")
+                    .and_then(|value| value.split_once("#<init>("))
+                    .map(|(owner, _)| owner)
+                    .ok_or_else(|| {
+                        corrupt("Java implicit record parameter must belong to a constructor")
+                    })?;
+                if row.variable_kind != JavaVariableKind::Parameter
+                    || row.variable_owner_identity != row.enclosing_callable
+                    || row.variable_identity
+                        != format!(
+                            "parameter:{}/slot/{}",
+                            row.enclosing_callable, binding.parameter_index
+                        )
+                    || binding.component_identity
+                        != format!("field:{owner}#{}:{}", row.name, row.jvm_descriptor)
+                {
+                    return Err(corrupt(
+                        "Java implicit record parameter identity is inconsistent",
+                    ));
+                }
+            }
         }
         _ => {}
     }
@@ -1938,6 +1984,34 @@ mod tests {
         access["accessMode"] = json!("READ");
         access["declarationStatus"] = json!("SOURCE_RETAINED");
         assert!(parse(&access).is_ok());
+        let mut implicit = access.clone();
+        implicit["enclosingCallable"] = json!("method:class:example.R#<init>(I)V");
+        implicit["variableOwnerIdentity"] = implicit["enclosingCallable"].clone();
+        implicit["variableIdentity"] = json!("parameter:method:class:example.R#<init>(I)V/slot/0");
+        implicit["declarationStatus"] = json!("IMPLICIT_RECORD_COMPONENT_RETAINED");
+        implicit["implicitRecordParameter"] =
+            json!({"componentIdentity":"field:class:example.R#x:I","parameterIndex":0});
+        assert!(parse(&implicit).is_ok());
+        for (key, value) in [
+            ("declarationStatus", json!("SOURCE_RETAINED")),
+            ("implicitRecordParameter", json!(null)),
+            (
+                "implicitRecordParameter",
+                json!({"componentIdentity":"field:class:example.R#x:I","parameterIndex":1}),
+            ),
+            (
+                "implicitRecordParameter",
+                json!({"componentIdentity":"field:class:example.Other#x:I","parameterIndex":0}),
+            ),
+            (
+                "implicitRecordParameter",
+                json!({"componentIdentity":"field:class:example.R#x:I","parameterIndex":0,"guessed":true}),
+            ),
+        ] {
+            let mut bad = implicit.clone();
+            bad[key] = value;
+            assert!(parse(&bad).is_err(), "implicit {key}");
+        }
         for (key, value) in [
             ("accessMode", json!("MAY_WRITE")),
             ("declarationStatus", json!("LATEST")),
