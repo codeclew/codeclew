@@ -1271,10 +1271,26 @@ final class CodeclewJavaAnalyzer {
             }
             String name = executable.getKind() == ElementKind.CONSTRUCTOR
                     ? "<init>" : executable.getSimpleName().toString();
+            String owner = ownerOf(executable);
+            if (tree instanceof MemberReferenceTree reference
+                    && (executable.getKind() == ElementKind.CONSTRUCTOR || name.equals("clone"))) {
+                TypeMirror qualifier = trees.getTypeMirror(new TreePath(getCurrentPath(),
+                        reference.getQualifierExpression()));
+                // javac's synthetic Array owner is not an attachable class named Array.
+                // Bind its reference identity to the compiler-resolved array type instead.
+                if (qualifier != null && qualifier.getKind() == TypeKind.ARRAY) {
+                    String arrayDescriptor = descriptor(qualifier);
+                    if (arrayDescriptor == null) {
+                        boundary("JAVA_CALL_DESCRIPTOR_UNRESOLVED", tree);
+                        return;
+                    }
+                    owner = "array:" + arrayDescriptor;
+                }
+            }
             Map<String, Object> row = base("RELATION");
             row.put("relationKind", kind);
             row.put("sourceIdentity", executableOwners.peek());
-            row.put("targetIdentity", "method:" + ownerOf(executable) + "#" + name + descriptor);
+            row.put("targetIdentity", "method:" + owner + "#" + name + descriptor);
             anchor(row, tree);
             row.put("resolution", "COMPILER_EXACT");
             facts.add(row);
@@ -1287,9 +1303,14 @@ final class CodeclewJavaAnalyzer {
             TypeElement owner = executable instanceof TypeElement type ? type
                     : executable.getEnclosingElement() instanceof TypeElement type ? type : null;
             if (owner == null) return;
+            var module = elements.getModuleOf(owner);
+            if (module == null) {
+                boundary("JAVA_DEPENDENCY_MODULE_ORIGIN_UNAVAILABLE", call);
+                return;
+            }
             // Platform source attachment is an explicit capability boundary.
-            if (!elements.getModuleOf(owner).isUnnamed()) {
-                String moduleName = elements.getModuleOf(owner).getQualifiedName().toString();
+            if (!module.isUnnamed()) {
+                String moduleName = module.getQualifiedName().toString();
                 if (!java.lang.module.ModuleFinder.ofSystem().find(moduleName).isPresent()
                         && dependencyTargets.add("module:" + moduleName))
                     boundary("JAVA_NAMED_MODULE_ORIGIN_UNSUPPORTED", call);
