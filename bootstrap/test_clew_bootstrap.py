@@ -1091,6 +1091,21 @@ class BootstrapAuthorityTest(unittest.TestCase):
             ["env", f"HOME={Path.home()}", "dotnet", "publish"],
         )
 
+    def test_dotnet_capsule_publish_selects_the_worker_sdk_directory(self) -> None:
+        contract = {
+            "runtimeName": "csharp",
+            "project": "workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj",
+            "distribution": "workers/dotnet/publish",
+        }
+        with mock.patch.object(bootstrap, "run_build_stage") as publish:
+            bootstrap.build_toolchains(
+                Path("/stage"), {}, cargo_required=False, dotnet_contracts=[contract],
+                plan=bootstrap.runtime_build_plan(4, 8 * 1024**3, "SERIAL"),
+            )
+        arguments, cwd, *_ = publish.call_args.args
+        self.assertEqual(cwd, Path(arguments[arguments.index("publish") + 1]).parent)
+        self.assertEqual(cwd, Path("/stage/workers/dotnet/src"))
+
     def test_csharp_release_manifest_is_staged_bound_and_enforced(self) -> None:
         repository = MODULE_PATH.parent.parent
         registry = bootstrap.load_component_registry(repository)

@@ -2441,7 +2441,14 @@ def build_toolchains(
     gradle_tasks = sorted(set(gradle_tasks or []))
     evidence_profile = plan["profile"] in {"SERIAL", "PARALLEL"}
     stages: list[tuple[str, list[str]]] = []
+    stage_directories: dict[str, Path] = {}
     for contract in sorted(dotnet_contracts or [], key=lambda value: str(value["runtimeName"])):
+        # SDK selection searches upward from cwd, not the project argument.
+        # Keep publish under the worker's admitted global.json, even when the
+        # host also has a newer SDK installed.
+        stage_directories[f"DOTNET_WORKER_{str(contract['runtimeName']).upper()}"] = (
+            stage / str(contract["project"])
+        ).parent
         stages.append((
             f"DOTNET_WORKER_{str(contract['runtimeName']).upper()}",
             dotnet_publish_command(stage, contract),
@@ -2482,7 +2489,7 @@ def build_toolchains(
 
     def execute(name: str, arguments: list[str]) -> tuple[str, int]:
         stage_started = time.monotonic()
-        run_build_stage(arguments, stage, environment, name, supervisor)
+        run_build_stage(arguments, stage_directories.get(name, stage), environment, name, supervisor)
         return name, int((time.monotonic() - stage_started) * 1000)
 
     with build_signal_scope(supervisor):

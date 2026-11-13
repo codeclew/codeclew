@@ -148,7 +148,7 @@ def publish_csharp(environment: dict[str, str], *, offline: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="codeclew-nuget-offline-") as empty_feed:
         if package_source or offline:
             command += ["--source", package_source or empty_feed]
-        subprocess.run(command, cwd=ROOT, env=environment, check=True)
+        subprocess.run(command, cwd=ROOT / "workers/dotnet", env=environment, check=True)
 
 
 def main() -> None:

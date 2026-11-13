@@ -54,13 +54,14 @@ TMPDIR=$TEST_TMP_ROOT
 export TMPDIR
 
 qualify_csharp() {
-  set -- dotnet publish workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj --configuration Release \
-    --output workers/dotnet/publish -p:UseAppHost=false -p:RestoreLockedMode=true \
+  set -- dotnet publish "$ROOT/workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj" --configuration Release \
+    --output "$ROOT/workers/dotnet/publish" -p:UseAppHost=false -p:RestoreLockedMode=true \
     -nodeReuse:false -p:UseSharedCompilation=false
   if [ -n "${CODECLEW_DOTNET_PACKAGE_SOURCE-}" ]; then
     set -- "$@" --source "$CODECLEW_DOTNET_PACKAGE_SOURCE"
   fi
-  "$@"
+  # Select the same global.json SDK used by the version probe above.
+  (cd "$ROOT/workers/dotnet" && "$@")
   test -f workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll
   python3 -I -S scripts/build-trusted-worker-distributions.py --variant csharp --verify-only
   CODECLEW_TEST_CSHARP_WORKER="$ROOT/workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll"

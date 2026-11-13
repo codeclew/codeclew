@@ -5,6 +5,7 @@ from collections import Counter
 import json
 import os
 import re
+import runpy
 from pathlib import Path
 import shlex
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +33,10 @@ if name == "python3" and "-c" in args:
 elif name == "dotnet" and args == ["--version"]:
     print(os.environ.get("CLEW_TEST_DOTNET_VERSION", "10.0.401"))
 elif name == "dotnet" and args[0] == "publish":
-    artifact = Path("workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll")
+    if os.environ.get("CLEW_TEST_MIXED_DOTNET_SDKS") == "1" and Path.cwd() != Path(os.environ["CLEW_TEST_DOTNET_PROJECT_ROOT"]).resolve():
+        print("publish selected the unpinned root SDK", file=sys.stderr)
+        sys.exit(23)
+    artifact = Path(args[args.index("--output") + 1]) / "Codeclew.CSharp.Analyzer.dll"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.touch()
 elif name == "cargo" and "--list" in args:
@@ -66,7 +71,7 @@ class CiDispatchTests(unittest.TestCase):
         java.chmod(0o700)
         self.counter = 0
 
-    def run_ci(self, *args, failure="", jdk25=True, dotnet_version="10.0.401"):
+    def run_ci(self, *args, failure="", jdk25=True, dotnet_version="10.0.401", mixed_sdks=False):
         self.counter += 1
         log = self.root / f"commands-{self.counter}.jsonl"
         environment = dict(os.environ)
@@ -76,6 +81,8 @@ class CiDispatchTests(unittest.TestCase):
             CLEW_TEST_CI_TMP_BASE=str(self.root),
             CLEW_TEST_FAIL_COMMAND=failure,
             CLEW_TEST_DOTNET_VERSION=dotnet_version,
+            CLEW_TEST_MIXED_DOTNET_SDKS="1" if mixed_sdks else "0",
+            CLEW_TEST_DOTNET_PROJECT_ROOT=str(self.root / "workers/dotnet"),
         )
         environment.pop("CODECLEW_TEST_JDK25_HOME", None)
         if jdk25:
@@ -142,6 +149,20 @@ class CiDispatchTests(unittest.TestCase):
         result, _ = self.run_ci("--csharp-only", jdk25=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout.splitlines()[-1])["scope"], "CSHARP")
+
+    def test_csharp_publish_uses_the_pinned_worker_sdk_when_root_has_a_newer_sdk(self):
+        result, commands = self.run_ci("--csharp-only", jdk25=False, mixed_sdks=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum(c[:2] == ["dotnet", "publish"] for c in commands), 1)
+
+    def test_trusted_distribution_publish_uses_the_same_sdk_directory_as_its_probe(self):
+        builder = runpy.run_path(str(ROOT / "scripts/build-trusted-worker-distributions.py"))
+        with (
+            mock.patch("subprocess.check_output", return_value=b"10.0.401\n") as probe,
+            mock.patch("subprocess.run") as publish,
+        ):
+            builder["publish_csharp"]({}, offline=True)
+        self.assertEqual(publish.call_args.kwargs["cwd"], probe.call_args.kwargs["cwd"])
 
     def test_checks_reject_unsupported_dotnet_before_tasks(self):
         result, commands = self.run_ci("--suite", "checks", dotnet_version="9.0.0")
