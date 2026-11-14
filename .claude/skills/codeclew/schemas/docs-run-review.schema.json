@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit author assessments with mechanically derived bookkeeping; no semantic certificate",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/canonical"
+    },
+    {
+      "$ref": "#/$defs/compact"
+    }
+  ],
+  "$defs": {
+    "canonical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "requirements",
+        "claims",
+        "unresolved",
+        "visual"
+      ],
+      "properties": {
+        "schema": {
+          "const": "codeclew-docs-run-review/1.0"
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "requirement",
+              "page",
+              "section",
+              "evidence",
+              "disposition"
+            ],
+            "properties": {
+              "requirement": {
+                "type": "string"
+              },
+              "page": {
+                "type": "string"
+              },
+              "section": {
+                "type": "string"
+              },
+              "diagram": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "disposition": {
+                "enum": [
+                  "EXPLAINED",
+                  "EXPLICIT_UNKNOWN"
+                ]
+              }
+            }
+          }
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "page",
+              "claim",
+              "evidence",
+              "disposition"
+            ],
+            "properties": {
+              "page": {
+                "type": "string"
+              },
+              "claim": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "disposition": {
+                "enum": [
+                  "SUPPORTED",
+                  "EXPLICIT_UNKNOWN"
+                ]
+              }
+            }
+          }
+        },
+        "unresolved": {
+          "type": "array"
+        },
+        "visual": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "REVIEWED",
+                "UNAVAILABLE"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "compact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "requirements",
+        "claims",
+        "unresolved",
+        "visual"
+      ],
+      "properties": {
+        "schema": {
+          "const": "codeclew-docs-run-review/1.1"
+        },
+        "requirements": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "disposition"
+            ],
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "EXPLAINED",
+                  "EXPLICIT_UNKNOWN"
+                ]
+              },
+              "section": {
+                "type": "string"
+              },
+              "diagram": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional override with genuine cite handles only; raw SOURCE IDs are invalid."
+              },
+              "discoveryDisposition": {
+                "enum": [
+                  "NO_ADDITIONAL_STARTS",
+                  "ADDITIONAL_STARTS"
+                ]
+              },
+              "discoveredEntries": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "claims": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": [
+                "SUPPORTED",
+                "EXPLICIT_UNKNOWN"
+              ]
+            }
+          }
+        },
+        "unresolved": {
+          "type": "array"
+        },
+        "visual": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "REVIEWED",
+                "UNAVAILABLE"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

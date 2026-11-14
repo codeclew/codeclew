@@ -22,6 +22,239 @@ INDEX = '# Start\n\n[Guide](guide.html#1-read)\n'
 INDEX_HTML = '<!doctype html><main><h1 id="start">Start</h1><a href="guide.html#1-read">Guide</a></main>'
 
 
+def sequence_fixture():
+    # Use the real packaged producer, without npm, capture or a native build.
+    return subprocess.run(['node', '--input-type=module', '-e', '''
+import {renderSequence} from './skills/codeclew/examples/markdown-renderer/sequence.mjs';
+console.log(renderSequence({title:'Accept reservation',participants:[
+ {id:'client',title:'Client'},{id:'handler',title:'Reservation handler'}],steps:[
+ {from:'client',to:'handler',kind:'call',label:'POST /reservations'},
+ {from:'handler',to:'client',kind:'return',label:'Accepted'}]}));
+'''], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+
+
+class SequencePresenceTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.diagram = sequence_fixture()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.navigation = {'schema': 'codeclew-markdown-navigation/1', 'services': [
+            {'starts': [{'kind': 'http', 'target': 'post.md#handler'},
+                        {'kind': 'http', 'target': 'post.md#other'},
+                        {'kind': 'scheduled', 'target': 'worker.md'}]}],
+            'routes': [{'target': 'process.md'}]}
+        self.nav = self.root / 'navigation.json'
+        self.argv = ['node', 'render.mjs', '--navigation', str(self.nav)]
+        self.pages = {'post.html': self.diagram.encode(), 'process.html': self.diagram.encode(),
+                      'worker.html': b'<p>Worker overview</p>'}
+
+    def check(self):
+        self.nav.write_text(json.dumps(self.navigation))
+        return E['check_sequences'](self.pages, self.argv)
+
+    def test_real_diagrams_cover_http_and_shared_pages_without_requiring_every_overview(self):
+        self.pages['process.html'] += self.diagram.encode()  # Split sequences allowed.
+        result = self.check()
+        self.assertEqual(result['status'], 'SEQUENCE_STRUCTURE_CHECKED')
+        self.assertEqual(result['pages'], {'post.html': 1, 'process.html': 2})
+        self.assertFalse(result['semanticCoverageAssessed']); self.assertFalse(result['browserBehaviorVerified'])
+
+    def test_headings_lists_code_examples_and_diagram_on_another_page_do_not_cover_entry(self):
+        for body in ['<h2>Handler-started sequence</h2><ol><li>Accept</li></ol>',
+                     '<pre><code class="language-clew-sequence">{}</code></pre>',
+                     '<pre>&lt;figure class="clew-sequence"&gt;Example&lt;/figure&gt;</pre>']:
+            with self.subTest(body=body):
+                self.pages['post.html'] = body.encode()
+                with self.assertRaises(E['Stop']) as caught: self.check()
+                self.assertEqual(caught.exception.status, 'REQUIRED_SEQUENCE_MISSING')
+                self.assertEqual(caught.exception.details['page'], 'post.html')
+
+    def test_missing_trace_empty_rows_or_mismatched_trace_are_not_complete(self):
+        for body in [self.diagram.replace('class="sequence-text"', 'class="other"'),
+                     self.diagram.replace('class="sequence-row"', 'class="other"'),
+                     self.diagram.replace('</ol>', '<li>Extra</li></ol>'),
+                     '<figure class="clew-sequence"><div class="sequence-diagram">'
+                     '<div class="sequence-row"></div></div><details class="sequence-text">'
+                     '<ol><li></li></ol></details></figure>']:
+            with self.subTest(body=body[:70]):
+                self.pages['post.html'] = body.encode()
+                with self.assertRaises(E['Stop']) as caught: self.check()
+                self.assertEqual(caught.exception.status, 'REQUIRED_SEQUENCE_INCOMPLETE')
+
+    def test_local_registry_narrative_is_required_remote_narrative_is_not_fetched(self):
+        registry = {'schema': 'codeclew-cross-docset-routes/1.1', 'routes': [
+            {'narrative': {'docset': 'local', 'page': 'events.html'}},
+            {'narrative': {'docset': 'peer', 'page': 'remote.html'}}]}
+        path = self.root / 'routes.json'; path.write_text(json.dumps(registry))
+        self.argv += ['--docset-routes', str(path), '--docset', 'local']
+        with self.assertRaises(E['Stop']) as caught: self.check()
+        self.assertEqual(caught.exception.status, 'SEQUENCE_TARGET_MISSING')
+        self.pages['events.html'] = b'<p>Only prose</p>'
+        with self.assertRaises(E['Stop']) as caught: self.check()
+        self.assertEqual(caught.exception.status, 'REQUIRED_SEQUENCE_MISSING')
+        self.pages['events.html'] = self.diagram.encode()
+        result = self.check()
+        self.assertEqual(set(result['pages']), {'post.html', 'process.html', 'events.html'})
+        self.assertEqual(result['registryDigest'], E['sha'](path.read_bytes()))
+
+    def test_missing_configuration_and_empty_selection_do_not_report_success(self):
+        self.argv = []
+        with self.assertRaises(E['Stop']) as caught: self.check()
+        self.assertEqual(caught.exception.status, 'SEQUENCE_CONFIGURATION_MISSING')
+        self.argv = ['--navigation', str(self.nav)]
+        self.navigation.update(services=[], routes=[])
+        with self.assertRaises(E['Stop']) as caught: self.check()
+        self.assertEqual(caught.exception.status, 'SEQUENCE_REQUIRED_PAGES_EMPTY')
+
+
+class ProcessSearchTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.registry = {
+            'schema': 'codeclew-cross-docset-routes/1.1', 'revision': 'r1',
+            'catalog': {'docset': 'docs', 'page': 'index.html'},
+            'docsets': [{'id': 'docs', 'version': 'v1', 'baseURL': 'https://example.invalid/docs/',
+                         'services': [{'id': s, 'overview': {'docset': 'docs', 'page': s + '.html'}} for s in ['a', 'b']]}],
+            'routes': [{'id': 'request', 'narrative': {'docset': 'docs', 'page': 'process.html'},
+                        'origin': {'status': 'unknown', 'reason': 'Not classified'},
+                        'occurrences': [{'id': 'step', 'target': {'docset': 'docs', 'page': 'b.html', 'anchor': 'step'}}]}]}
+        self.path = self.root / 'registry.json'
+        self.argv = ['node', 'render.mjs', '{input}', '{output}', '--docset-routes', str(self.path), '--docset', 'docs', '--docset-version', 'v1']
+        self.payload = {'registry': self.registry}
+        self.controls = ''.join(f'<input type="checkbox" name="{field}" value="docs/{s}">' for field in ['start', 'end', 'intermediate'] for s in ['a', 'b'])
+        self.controls += ''.join(f'<input type="checkbox" name="outcomeKinds" value="{kind}">' for kind in ['normal', 'error', 'handoff', 'unknown'])
+        self.controls += '<input type="checkbox" name="includeUnknown" checked>'
+        self.card = '<article class="route-card" data-route-id="request"><a href="process.html">Process</a><a href="b.html#step">Step</a></article>'
+
+    def pages(self):
+        self.path.write_text(json.dumps(self.registry))
+        html = ('<section class="route-catalog" id="clew-route-catalog"><a href="a.html">A</a><a href="b.html">B</a>'
+                '<form class="route-filters">' + self.controls + '</form>' + self.card + '</section>'
+                '<script type="application/json" id="clew-route-data">' + json.dumps(self.payload) + '</script>'
+                '<script>catalogClient(evaluate,"clew-route",savedFilters)</script>')
+        return {'index.html': html.encode(), 'a.html': b'<h1>A</h1>', 'b.html': b'<h1 id="step">B</h1>', 'process.html': b'<h1>Request</h1>'}
+
+    def refused(self, status, *, pages=None, argv=None):
+        with self.assertRaises(E['Stop']) as caught:
+            E['check_process_search'](self.pages() if pages is None else pages, self.argv if argv is None else argv)
+        self.assertEqual(caught.exception.status, status)
+
+    def test_actual_catalog_controls_registry_routes_and_links_preserve_unknown(self):
+        result = E['check_process_search'](self.pages(), self.argv)
+        self.assertEqual(result['status'], 'PROCESS_SEARCH_STRUCTURE_CHECKED')
+        self.assertEqual(result['routes'], 1)
+        self.assertFalse(result['browserBehaviorVerified'])
+        self.assertFalse(result['remoteTargetsVerified'])
+        self.assertEqual(self.payload['registry']['routes'][0]['origin']['status'], 'unknown')
+
+    def test_packaged_catalog_passes_and_filters_one_outcome_at_a_time(self):
+        self.registry['externalActors'] = []
+        docset = self.registry['docsets'][0]
+        docset['title'] = 'Docs'
+        for service in docset['services']:
+            service['title'] = service['id'].upper()
+        def occurrence(identity, service, page, anchor=None):
+            target = {'docset': 'docs', 'page': page}
+            if anchor: target['anchor'] = anchor
+            return {'id': identity, 'actor': {'kind': 'service', 'docset': 'docs', 'service': service},
+                    'role': identity, 'target': target}
+        route = self.registry['routes'][0]
+        route.update(version='v1', title='Request',
+                     origin={'status': 'known', 'occurrence': 'start', 'kind': 'http', 'title': 'Request', 'summary': 'Accept request'},
+                     occurrences=[occurrence('start', 'a', 'a.html'), occurrence('step', 'b', 'b.html', 'step'),
+                                  occurrence('done', 'b', 'b.html', 'step'), occurrence('failed', 'a', 'a.html')],
+                     branches=[{'id': 'result', 'title': 'Result', 'condition': 'Request completes', 'target': route['narrative']}],
+                     coverage={'outcomeInventory': 'complete-for-declared-scope', 'scope': 'Declared request', 'reference': route['narrative']})
+        route['outcomes'] = [
+            {'id': identity, 'branch': 'result', 'kind': kind, 'title': identity, 'target': route['narrative'],
+             'internal': {'coverage': 'complete-for-this-outcome', 'occurrences': internal},
+             'end': {'status': 'known', 'ownerOccurrence': owner, 'boundary': 'return', 'recipient': {'kind': 'none'}}}
+            for identity, kind, internal, owner in [('ok', 'normal', ['step'], 'done'), ('bad', 'error', [], 'failed')]]
+        script = '''
+import {readFileSync} from 'node:fs';
+import {validateNavigation} from './skills/codeclew/examples/markdown-renderer/navigation.mjs';
+import {validateDocsetRoutes,filterRoutes} from './skills/codeclew/examples/markdown-renderer/docset-routes.mjs';
+import {docsetView} from './skills/codeclew/examples/markdown-renderer/route-view.mjs';
+const registry=JSON.parse(readFileSync(0,'utf8'));
+const pages=[{file:'index.md',html:'<h1>Catalog</h1>'},{file:'a.md',html:'<h1>A</h1>'},
+ {file:'b.md',html:'<h1 id="step">B</h1>'},{file:'process.md',html:'<h1>Request</h1>'}];
+const nav=validateNavigation({schema:'codeclew-markdown-navigation/1',home:{title:'Docs',target:'index.md'},
+ services:['a','b'].map(id=>({id,title:id,overview:id+'.md',pages:[id+'.md'],
+ starts:id==='a'?[{title:'Request',kind:'http',summary:'Accept request',target:'a.md'}]:[],data:[]})),routes:[]},pages);
+const model=validateDocsetRoutes(registry,nav,'docs','v1'),view=docsetView(model,'index.md');
+const status=query=>filterRoutes(registry,query)[0].status;
+const results=[status({start:['docs/a'],end:['docs/b'],intermediate:['docs/b'],outcomeKinds:['normal']}),
+ status({end:['docs/b'],outcomeKinds:['error']}),status({end:['docs/a'],outcomeKinds:['error']}),
+ status({intermediate:['docs/a']})];
+registry.routes[0].outcomes[1].internal.coverage='partial';
+results.push(status({intermediate:['docs/a'],outcomeKinds:['error']}));
+console.log(JSON.stringify({html:view.hub+view.script,results}));
+'''
+        # The HTML payload must reflect the exact registry, before the separate
+        # evaluator's deliberate partial-coverage mutation.
+        generated = json.loads(subprocess.run(['node', '--input-type=module', '-e', script], cwd=ROOT,
+            input=json.dumps(self.registry), check=True, capture_output=True, text=True).stdout)
+        self.assertEqual(generated['results'], ['MATCH', 'NO_MATCH', 'MATCH', 'NO_MATCH', 'UNCLASSIFIED'])
+        pages = self.pages()
+        pages['index.html'] = generated['html'].encode()
+        self.assertEqual(E['check_process_search'](pages, self.argv)['routes'], 1)
+        for field in ['start', 'end', 'intermediate', 'outcomeKinds', 'includeUnknown']:
+            with self.subTest(field=field):
+                broken = dict(pages)
+                broken['index.html'] = broken['index.html'].replace(('name="' + field + '"').encode(), b'name="removed"')
+                self.refused('PROCESS_SEARCH_CONTROLS_MISSING', pages=broken)
+
+    def test_legacy_service_links_are_not_process_search(self):
+        self.refused('PROCESS_SEARCH_CONFIGURATION_MISSING', argv=['node', 'render.mjs', '--navigation', 'services.json'])
+        self.refused('PROCESS_SEARCH_CATALOG_MISSING', pages={'index.html': b'<a href="a.html">A</a><a href="b.html">B</a>'})
+
+    def test_missing_disabled_or_unscoped_controls_refuse(self):
+        for change in [lambda p: p.replace(b'name="intermediate"', b'name="other"'),
+                       lambda p: p.replace(b'name="end"', b'name="other"'),
+                       lambda p: p.replace(b'value="error"', b'value="invalid"'),
+                       lambda p: p.replace(b'name="includeUnknown" checked', b'name="includeUnknown"'),
+                       lambda p: p.replace(b'name="start"', b'disabled name="start"'),
+                       lambda p: p.replace(b'<form class=', b'<form hidden class='),
+                       lambda p: p.replace(b'class="route-filters"', b'class="unrelated"')]:
+            with self.subTest(change=change):
+                pages = self.pages(); pages['index.html'] = change(pages['index.html'])
+                self.refused('PROCESS_SEARCH_CONTROLS_MISSING', pages=pages)
+
+    def test_empty_registry_and_missing_route_card_refuse(self):
+        self.card = ''
+        self.refused('PROCESS_SEARCH_ROUTES_MISSING')
+        self.registry['routes'] = []
+        self.refused('PROCESS_SEARCH_EMPTY')
+
+    def test_payload_drift_and_missing_client_refuse(self):
+        pages = self.pages(); pages['index.html'] = pages['index.html'].replace(b'"revision": "r1"', b'"revision": "r2"')
+        self.refused('PROCESS_SEARCH_REGISTRY_MISMATCH', pages=pages)
+        pages = self.pages(); pages['index.html'] = pages['index.html'].replace(b'catalogClient(', b'noClient(')
+        self.refused('PROCESS_SEARCH_CLIENT_MISSING', pages=pages)
+
+    def test_missing_narrative_step_or_service_link_refuse(self):
+        for old, status in [(b'href="process.html"', 'PROCESS_SEARCH_ROUTE_LINK_MISSING'),
+                            (b'href="b.html#step"', 'PROCESS_SEARCH_ROUTE_LINK_MISSING'),
+                            (b'href="a.html"', 'PROCESS_SEARCH_SERVICE_LINK_MISSING')]:
+            with self.subTest(old=old):
+                pages = self.pages(); pages['index.html'] = pages['index.html'].replace(old, b'href="other.html"')
+                self.refused(status, pages=pages)
+        pages = self.pages(); pages['b.html'] = b'<h1 id="other">B</h1>'
+        self.refused('PROCESS_SEARCH_TARGET_MISSING', pages=pages)
+
+    def test_legacy_visits_cannot_replace_outcome_filters(self):
+        self.controls = self.controls.replace('name="intermediate"', 'name="visits"')
+        self.refused('PROCESS_SEARCH_CONTROLS_MISSING')
+
+    def test_remote_catalog_declaration_cannot_pass_without_its_export(self):
+        self.registry['catalog']['docset'] = 'peer'
+        self.refused('PROCESS_SEARCH_LOCAL_CATALOG_REQUIRED')
+
+
 class ReaderExportCheckTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
@@ -85,6 +318,33 @@ if rows.get('_favicon') is not None:
         self.assertEqual({p: Path(p).read_bytes() for p in before}, before)
         self.assertTrue((self.output / 'native-check.json').is_file())
         self.assertEqual(json.loads((self.output / 'expected.render.command.json').read_text())['exitCode'], 0)
+
+    def test_explicit_search_requirement_blocks_legacy_export_without_changing_inputs(self):
+        before = {p: p.read_bytes() for p in self.exported.iterdir()}
+        with self.assertRaises(E['Stop']) as caught:
+            E['verify']([self.manifest], self.package / 'index.json', self.authored,
+                        self.exported, self.command, self.root / 'required-search', require_process_search=True)
+        self.assertEqual(caught.exception.status, 'PROCESS_SEARCH_CONFIGURATION_MISSING')
+        self.assertEqual({p: p.read_bytes() for p in self.exported.iterdir()}, before)
+
+    def test_explicit_sequence_requirement_rejects_prose_only_export_through_cli(self):
+        nav = self.root / 'navigation.json'
+        nav.write_text(json.dumps({'schema': 'codeclew-markdown-navigation/1', 'services': [
+            {'starts': [{'kind': 'http', 'target': 'guide.md'}]}], 'routes': []}))
+        self.renderer.write_text(self.renderer.read_text().replace('sys.argv[1:]', 'sys.argv[1:4]'))
+        self.command.write_text(json.dumps([*json.loads(self.command.read_text()), '--navigation', str(nav)]))
+        before = {p: p.read_bytes() for p in self.exported.iterdir()}
+        output = self.root / 'required-sequences'
+        args = ['--manifest', str(self.manifest), '--index', str(self.package / 'index.json'),
+                '--authored-root', str(self.authored), '--rendered-root', str(self.exported),
+                '--renderer-command', str(self.command), '--output-dir', str(output), '--require-sequences']
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream): self.assertEqual(E['main'](args), 2)
+        result = json.loads(stream.getvalue())
+        self.assertEqual(result['status'], 'REQUIRED_SEQUENCE_MISSING')
+        self.assertEqual(result['details']['page'], 'guide.html')
+        self.assertEqual(json.loads((output / 'result.json').read_text()), result)
+        self.assertEqual({p: p.read_bytes() for p in self.exported.iterdir()}, before)
 
     def test_stale_outer_markdown_and_page_inventory_refuse(self):
         path = self.authored / 'guide.md'; path.write_text(GUIDE.replace('10', '11'))
@@ -395,6 +655,42 @@ for path in source.glob('*.md'):
         self.assertEqual((result['status'], result['stageStatus']), ('FINALIZATION_FAILED', 'EXPORT_INPUT_CHANGED'))
         self.assertEqual(self.command.read_bytes(), original)
         self.assertFalse((self.output / 'receipts/export-check.command.json').exists())
+
+    def test_required_process_search_stops_finalization_before_success(self):
+        self.manual(self.package, 'manual')
+        output = self.root / 'required-process-search'
+        result = E['finalize'](self.package, [self.a], self.command, output,
+                               repositories=self.mapping, require_process_search=True)
+        self.assertEqual((result['status'], result['stage'], result['stageStatus']),
+                         ('FINALIZATION_FAILED', 'process-search', 'PROCESS_SEARCH_CONFIGURATION_MISSING'))
+        self.assertFalse((output / 'receipts/export-check.command.json').exists())
+
+    def test_required_sequence_finalization_blocks_lists_then_passes_real_diagram_and_recheck(self):
+        self.manual(self.package, 'manual')
+        nav = self.root / 'navigation.json'
+        nav.write_text(json.dumps({'schema': 'codeclew-markdown-navigation/1', 'services': [
+            {'starts': [{'kind': 'http', 'target': 'guide.md'}]}], 'routes': []}))
+        self.renderer.write_text(self.renderer.read_text().replace('sys.argv[1:]', 'sys.argv[1:4]'))
+        self.command.write_text(json.dumps([*json.loads(self.command.read_text()), '--navigation', str(nav)]))
+        before = self.snapshot(self.package)
+        output = self.root / 'no-sequences'
+        result = E['finalize'](self.package, [self.a], self.command, output,
+                               repositories=self.mapping, require_sequences=True)
+        self.assertEqual((result['status'], result['stage'], result['stageStatus']),
+                         ('FINALIZATION_FAILED', 'sequences', 'REQUIRED_SEQUENCE_MISSING'))
+        self.assertFalse((output / 'receipts/export-check.command.json').exists())
+        contract = json.loads(self.contract.read_text())
+        contract['guide.md']['html'] += sequence_fixture()
+        self.contract.write_text(json.dumps(contract))
+        output = self.root / 'with-sequences'
+        result = E['finalize'](self.package, [self.a], self.command, output,
+                               repositories=self.mapping, require_sequences=True)
+        self.assertEqual(result['status'], 'CHECKED_PAGES_FINALIZED')
+        self.assertEqual(result['sequences']['pages'], {'guide.html': 1})
+        check = json.loads((output / 'check/result.json').read_text())
+        self.assertEqual(check['sequences'], result['sequences'])
+        self.assertIn('--require-sequences', json.loads((output / 'receipts/export-check.command.json').read_text())['argv'])
+        self.assertEqual(self.snapshot(self.package), before)
 
 
 if __name__ == '__main__':

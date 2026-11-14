@@ -11,7 +11,7 @@ from pathlib import Path
 import runpy
 import subprocess
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
 
 M = runpy.run_path(str(Path(__file__).with_name("page_citations.py")))
@@ -109,7 +109,225 @@ def check_links(pages, favicon=None):
     return count
 
 
-def verify(manifests, index_path, authored, exported, renderer, output):
+class SearchHTML(Links):
+    """Inspect the packaged catalog's actual controls, data and card links."""
+    def __init__(self):
+        super().__init__()
+        self.stack, self.catalogs, self.scripts, self.sequences = [], [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        node = {"tag": tag, "attrs": dict(attrs), "children": [], "text": ""}
+        if self.stack:
+            self.stack[-1]["children"].append(node)
+        if tag == "section" and "route-catalog" in (dict(attrs).get("class") or "").split():
+            self.catalogs.append(node)
+        if tag == "script":
+            self.scripts.append(node)
+        if tag == "figure" and "clew-sequence" in (dict(attrs).get("class") or "").split():
+            self.sequences.append(node)
+        if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i]["tag"] == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if self.stack:
+            self.stack[-1]["text"] += data
+
+
+def check_sequences(pages, argv):
+    """Opt-in packaged diagram/trace presence, using declared reader destinations.
+
+    No Markdown guessing, endpoint inference, semantic or browser assessment.
+    """
+    def option(flag, required=True):
+        count = argv.count(flag)
+        require(count == 1 if required else count <= 1, "SEQUENCE_CONFIGURATION_MISSING", option=flag)
+        if not count:
+            return None
+        require(argv.index(flag) + 1 < len(argv), "SEQUENCE_CONFIGURATION_MISSING", option=flag)
+        return argv[argv.index(flag) + 1]
+
+    path = Path(option("--navigation"))
+    raw = read(path.parent, path.name, 1024 * 1024)
+    navigation = json.loads(raw)
+    require(navigation.get("schema") == "codeclew-markdown-navigation/1", "SEQUENCE_NAVIGATION_INVALID")
+    required_pages = set()
+
+    def destination(target, suffix):
+        name = target.split("#", 1)[0]
+        require(name and Path(name).name == name and name.endswith(suffix)
+                and not any(c in name for c in "\\:?"), "SEQUENCE_TARGET_INVALID", target=target)
+        html = str(Path(name).with_suffix(".html"))
+        require(html in pages, "SEQUENCE_TARGET_MISSING", page=html)
+        required_pages.add(html)
+
+    for service in navigation["services"]:
+        for start in service["starts"]:
+            if start["kind"] == "http":
+                destination(start["target"], ".md")
+    for route in navigation["routes"]:
+        destination(route["target"], ".md")
+    registry_digest = None
+    registry_path = option("--docset-routes", required=False)
+    if registry_path is not None:
+        registry_path = Path(registry_path)
+        registry_raw = read(registry_path.parent, registry_path.name, 1024 * 1024)
+        registry = json.loads(registry_raw)
+        require(registry.get("schema") in {"codeclew-cross-docset-routes/1.1", "codeclew-cross-docset-routes/1.2"},
+                "SEQUENCE_REGISTRY_INVALID")
+        docset = option("--docset")
+        for route in registry["routes"]:
+            target = route["narrative"]
+            if target["docset"] == docset and not target.get("problem"):
+                destination(target["page"], ".html")
+        registry_digest = sha(registry_raw)
+    require(required_pages, "SEQUENCE_REQUIRED_PAGES_EMPTY")
+
+    def descendants(node):
+        for child in node["children"]:
+            yield child
+            yield from descendants(child)
+
+    def has_class(node, value):
+        return value in (node["attrs"].get("class") or "").split()
+
+    counts = {}
+    for name in sorted(required_pages):
+        document = SearchHTML(); document.feed(pages[name].decode("utf-8")); document.close()
+        require(document.sequences, "REQUIRED_SEQUENCE_MISSING", page=name,
+                action="Author a clew-sequence fence for this entry/process; a heading or numbered list is not a diagram.")
+        for figure in document.sequences:
+            nodes = list(descendants(figure))
+            diagrams = [n for n in nodes if has_class(n, "sequence-diagram")]
+            traces = [n for n in nodes if n["tag"] == "details" and has_class(n, "sequence-text")]
+            require(len(diagrams) == len(traces) == 1, "REQUIRED_SEQUENCE_INCOMPLETE", page=name)
+            rows = [n for n in descendants(diagrams[0]) if has_class(n, "sequence-row")]
+            lists = [n for n in descendants(traces[0]) if n["tag"] == "ol"]
+            steps = [] if len(lists) != 1 else [n for n in lists[0]["children"] if n["tag"] == "li"]
+            require(rows and len(rows) == len(steps)
+                    and all(any(n["text"].strip() for n in descendants(row)) for row in rows)
+                    and all(step["text"].strip() or any(n["text"].strip() for n in descendants(step)) for step in steps),
+                    "REQUIRED_SEQUENCE_INCOMPLETE", page=name)
+        counts[name] = len(document.sequences)
+    return {"status": "SEQUENCE_STRUCTURE_CHECKED", "pages": counts, "navigationDigest": sha(raw),
+            "registryDigest": registry_digest, "semanticCoverageAssessed": False, "browserBehaviorVerified": False}
+
+
+def check_process_search(pages, argv):
+    """Opt-in structural guard for skill-owned multi-service process search.
+
+    No network fetch, semantic coverage or browser/JavaScript execution claim.
+    Legacy and caller-selected renderers remain outside this explicit contract.
+    """
+    def option(flag):
+        require(argv.count(flag) == 1 and argv.index(flag) + 1 < len(argv),
+                "PROCESS_SEARCH_CONFIGURATION_MISSING", option=flag,
+                action="Configure packaged docset routes, a local catalog, --docset and --docset-version; service links alone are not process search.")
+        return argv[argv.index(flag) + 1]
+
+    registry_path = Path(option("--docset-routes"))
+    docset, version = option("--docset"), option("--docset-version")
+    raw = read(registry_path.parent, registry_path.name, 1024 * 1024)
+    registry = json.loads(raw)
+    require(registry.get("schema") in {"codeclew-cross-docset-routes/1.1", "codeclew-cross-docset-routes/1.2"},
+            "PROCESS_SEARCH_REGISTRY_INVALID")
+    sets = registry["docsets"]
+    require(any(d["id"] == docset and d["version"] == version for d in sets), "PROCESS_SEARCH_VERSION_MISMATCH")
+    services = {d["id"] + "/" + s["id"] for d in sets for s in d["services"]}
+    routes = registry["routes"]
+    require(len(services) > 1 and routes, "PROCESS_SEARCH_EMPTY", action="Declare the evidenced processes and participating services; preserve unknown roles.")
+    catalog = registry.get("catalog", {})
+    require(catalog.get("docset") == docset, "PROCESS_SEARCH_LOCAL_CATALOG_REQUIRED",
+            action="Check the catalog's own export. A remote peer link is only a declaration, never an availability or functional PASS.")
+    name = catalog.get("page")
+    require(name in pages, "PROCESS_SEARCH_CATALOG_MISSING", page=name)
+    documents = {}
+    for page, body in pages.items():
+        parsed = SearchHTML(); parsed.feed(body.decode("utf-8")); parsed.close()
+        documents[page] = parsed
+    document = documents[name]
+    require(len(document.catalogs) == 1, "PROCESS_SEARCH_CATALOG_MISSING", page=name)
+    root = document.catalogs[0]
+
+    def descendants(node):
+        yield node
+        for child in node["children"]:
+            yield from descendants(child)
+
+    nodes = list(descendants(root))
+    require("hidden" not in root["attrs"], "PROCESS_SEARCH_CONTROLS_MISSING")
+    forms = [n for n in nodes if n["tag"] == "form" and "route-filters" in (n["attrs"].get("class") or "").split()]
+    require(len(forms) == 1, "PROCESS_SEARCH_CONTROLS_MISSING")
+
+    def enabled(node):
+        if "hidden" not in node["attrs"] and "disabled" not in node["attrs"]:
+            yield node
+            for child in node["children"]:
+                yield from enabled(child)
+
+    form_nodes = {id(n) for n in descendants(forms[0])}
+    enabled_inputs = [n for n in enabled(root) if id(n) in form_nodes and n["tag"] == "input"]
+    for field in ("start", "end", "intermediate"):
+        controls = [n for n in enabled_inputs if n["attrs"].get("name") == field]
+        require(len(controls) == len(services) and {n["attrs"].get("value") for n in controls} == services
+                and all(n["attrs"].get("type") == "checkbox" and "disabled" not in n["attrs"] for n in controls),
+                "PROCESS_SEARCH_CONTROLS_MISSING", field=field)
+    outcomes = [n for n in enabled_inputs if n["attrs"].get("name") == "outcomeKinds"]
+    require(len(outcomes) == 4 and {n["attrs"].get("value") for n in outcomes}
+            == {"normal", "error", "handoff", "unknown"}
+            and all(n["attrs"].get("type") == "checkbox" for n in outcomes),
+            "PROCESS_SEARCH_CONTROLS_MISSING", field="outcomeKinds")
+    unknown = [n for n in enabled_inputs if n["attrs"].get("name") == "includeUnknown"]
+    require(len(unknown) == 1 and unknown[0]["attrs"].get("type") == "checkbox"
+            and "checked" in unknown[0]["attrs"],
+            "PROCESS_SEARCH_CONTROLS_MISSING", field="includeUnknown")
+    prefix = (root["attrs"].get("id") or "").removesuffix("-catalog")
+    payloads = [s for s in document.scripts if s["attrs"].get("id") == prefix + "-data" and s["attrs"].get("type") == "application/json"]
+    require(prefix and len(payloads) == 1, "PROCESS_SEARCH_DATA_MISSING")
+    payload = json.loads(payloads[0]["text"])
+    require(payload.get("registry") == registry, "PROCESS_SEARCH_REGISTRY_MISMATCH")
+    require(any(s["attrs"].get("type") != "application/json" and json.dumps(prefix) in s["text"]
+                and "catalogClient" in s["text"] for s in document.scripts), "PROCESS_SEARCH_CLIENT_MISSING")
+    cards = [n for n in nodes if n["tag"] == "article" and "route-card" in (n["attrs"].get("class") or "").split()]
+    require(len(cards) == len(routes) and {n["attrs"].get("data-route-id") for n in cards} == {r["id"] for r in routes},
+            "PROCESS_SEARCH_ROUTES_MISSING")
+    by_id = {n["attrs"]["data-route-id"]: n for n in cards}
+
+    def href(target):
+        path = quote(target["page"], safe="-_.!~*'()")
+        if target.get("anchor"):
+            path += "#" + quote(target["anchor"], safe="-_.!~*'()")
+        if target["docset"] == docset:
+            require(not target.get("problem") and target["page"] in documents
+                    and (not target.get("anchor") or target["anchor"] in documents[target["page"]].targets),
+                    "PROCESS_SEARCH_TARGET_MISSING", target=target)
+        else:
+            base = next(d["baseURL"] for d in sets if d["id"] == target["docset"])
+            path = base + path
+        return path
+
+    catalog_links = {n["attrs"].get("href") for n in nodes if n["tag"] == "a"}
+    for d in sets:
+        for service in d["services"]:
+            if not service["overview"].get("problem"):
+                require(href(service["overview"]) in catalog_links, "PROCESS_SEARCH_SERVICE_LINK_MISSING")
+    for route in routes:
+        links = {n["attrs"].get("href") for n in descendants(by_id[route["id"]]) if n["tag"] == "a"}
+        for target in [route["narrative"], *(o["target"] for o in route["occurrences"])]:
+            if not target.get("problem"):
+                require(href(target) in links, "PROCESS_SEARCH_ROUTE_LINK_MISSING", route=route["id"])
+    return {"status": "PROCESS_SEARCH_STRUCTURE_CHECKED", "catalog": name, "registryDigest": sha(raw),
+            "services": len(services), "routes": len(routes), "remoteTargetsVerified": False,
+            "browserBehaviorVerified": False, "semanticCoverageAssessed": False}
+
+
+def verify(manifests, index_path, authored, exported, renderer, output, *, require_process_search=False, require_sequences=False):
     authored, exported, output = map(Path, (authored, exported, output))
     index_path = Path(index_path)
     require(not output.exists() and not output.is_symlink(), "OUTPUT_ALREADY_EXISTS")
@@ -164,7 +382,11 @@ def verify(manifests, index_path, authored, exported, renderer, output):
     require((read(exported, FAVICON) if (exported / FAVICON).exists() else None) == favicon,
             "EXPORT_INPUT_CHANGED")
     links = check_links(actual, favicon)
+    search = check_process_search(actual, argv) if require_process_search else None
+    sequences = check_sequences(actual, argv) if require_sequences else None
     return {"schema": "codeclew-reader-export-check/1.0", "status": "EXPORT_CHECKED",
+        **({"processSearch": search} if search is not None else {}),
+        **({"sequences": sequences} if sequences is not None else {}),
         "pages": len(names), "claims": native["claims"], "internalLinks": links,
         "nativeCheck": "native-check.json", "indexDigest": index["indexDigest"],
         "rendererCommandDigest": sha(command_raw), "rendererReceipt": receipt,
@@ -200,7 +422,7 @@ def checked_command(argv, receipts, label, expected):
 
 
 def finalize(compose_root, manifests, renderer, output, *, previous=None, repositories=None,
-             source_footers=False, source_views=()):
+             source_footers=False, source_views=(), require_process_search=False, require_sequences=False):
     """Complete reviewed pages using existing bind, renderer and full check."""
     compose_root, renderer, output = map(Path, (compose_root, renderer, output))
     require(source_footers or not source_views, "SOURCE_VIEW_REQUIRES_FOOTERS")
@@ -285,12 +507,27 @@ def finalize(compose_root, manifests, renderer, output, *, previous=None, reposi
                 path = receipts / (stage + ".render." + suffix)
                 if not path.exists(): path.write_bytes(b"")
         require(read(output, state["rendererCommand"]) == renderer_raw, "EXPORT_INPUT_CHANGED")
+        if require_process_search:
+            stage = "process-search"
+            html_root = output / state["renderedRoot"]
+            state["processSearch"] = check_process_search(
+                {p.name: read(html_root, p.name) for p in html_root.glob("*.html")}, argv)
+        if require_sequences:
+            stage = "sequences"
+            html_root = output / state["renderedRoot"]
+            state["sequences"] = check_sequences(
+                {p.name: read(html_root, p.name) for p in html_root.glob("*.html")}, argv)
         stage = "export-check"
         checked = checked_command([sys.executable, "-I", "-S", str(scripts / "reader_export_check.py"),
             *manifest_args, *NATIVE_ENGINE_ARGS, "--index", str(index), "--authored-root", str(authored),
             "--rendered-root", str(output / state["renderedRoot"]), "--renderer-command", str(command_path),
-            "--output-dir", str(output / "check")], receipts, stage, "EXPORT_CHECKED")
+            "--output-dir", str(output / "check"),
+            *(["--require-process-search"] if require_process_search else []),
+            *(["--require-sequences"] if require_sequences else [])], receipts, stage, "EXPORT_CHECKED")
         require(M["json_file"](output / state["exportCheck"]) == checked, "FINALIZATION_CHECK_RESULT_MISMATCH")
+        require(not require_process_search or checked.get("processSearch") == state["processSearch"],
+                "PROCESS_SEARCH_INPUT_CHANGED")
+        require(not require_sequences or checked.get("sequences") == state["sequences"], "SEQUENCE_INPUT_CHANGED")
         # The explicit trusted renderer must not silently change the reviewed
         # original/outer inputs while producing its first render.
         require(read(compose_root, "original.json", M["MAX_MAP"]) == original
@@ -319,6 +556,10 @@ def main(argv=None):
     parser.add_argument("--evidence-inputs", type=Path, help="Caller-trusted manifest identities and owning roots")
     parser.add_argument("--components", type=Path, help="Mandatory pre-author component ticket")
     parser.add_argument("--component-set-digest", help="Exact independently selected ticket ID")
+    parser.add_argument("--require-process-search", action="store_true",
+                        help="Require the packaged multi-service catalog's actual Starts/Includes controls, registry, routes and links; no browser/remote availability claim")
+    parser.add_argument("--require-sequences", action="store_true",
+                        help="Require packaged diagrams and nonempty matching-length text traces on navigation HTTP/shared-route pages and local docset narrative pages; no semantic/browser claim")
     for name in (("compose-root", "renderer-command", "output-dir") if finalizing else
                  ("index", "authored-root", "rendered-root", "renderer-command", "output-dir")):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -334,11 +575,13 @@ def main(argv=None):
         if finalizing:
             result = finalize(args.compose_root, args.manifest, args.renderer_command, args.output_dir,
                               previous=args.previous_index, repositories=args.repositories,
-                              source_footers=args.source_footers, source_views=args.source_view)
+                              source_footers=args.source_footers, source_views=args.source_view,
+                              require_process_search=args.require_process_search, require_sequences=args.require_sequences)
             code = 0 if result["status"] == "CHECKED_PAGES_FINALIZED" else 2
         else:
             result = verify(args.manifest, args.index, args.authored_root, args.rendered_root,
-                            args.renderer_command, args.output_dir)
+                            args.renderer_command, args.output_dir, require_process_search=args.require_process_search,
+                            require_sequences=args.require_sequences)
             code = 0
     except (Stop, OSError, ValueError, TypeError, KeyError, IndexError) as error:
         result = {"schema": "codeclew-reader-export-check/1.0",

@@ -20,12 +20,15 @@ handler-started sequence.
 
 | Result | Read next |
 | --- | --- |
-| Generate/update durable service or process documentation | [Guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages) |
+| Generate/update durable service or process documentation | [Bounded documentation run](references/documentation-runner.md) |
 | Bounded SOURCE Q&A or saved-answer maintenance | [Prepared SOURCE](README.md) |
 | Inspect shared semantic candidates across retained service caches | [Shared catalog inputs](references/shared-semantic-catalog.md) |
 
-Broad documentation requests use authored originals/Markdown and the packaged
-renderer for checked local HTML. Reuse frozen evidence. A new repository first
+Broad documentation requests use the bounded runner with authored originals and
+the packaged renderer for checked local HTML. The calling agent fills the job and
+launcher; the author follows [guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages)
+and writes the draft and self-review, without starting another runner.
+Reuse frozen evidence. A new repository first
 needs [registration/capture](references/service-documentation.md#start-or-recover),
 then the same human route. Native output is not the fallback for new repositories.
 `EXPORT_CHECKED` is technical success; completion also requires requested pages/

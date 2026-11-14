@@ -1,0 +1,96 @@
+Original request: {request}
+
+You are the sole documentation author, using {model}. Use the Codeclew skill at
+{skill}. Read SKILL.md and references/compose-original.md before authoring.
+The calling agent already prepared this run; do not start another runner.
+Admitted clew: {clew}
+Retained documentation root: {root}
+Exact historical snapshot: {snapshot}
+Language: {language}
+Pre-author inventory: {inventory}
+Prepared source start: {prepared_sources}
+Your output directory: {draft}
+
+Use only retained source through supported clew/skill APIs. Do not capture,
+refresh, read source repositories or private cache files directly, publish,
+inspect previous documentation/reviewer results, launch other models, or change
+runner inputs. Native source limits and unknown trigger discovery remain explicit.
+The inventory records source-level entries; absence is not proof of no behavior.
+Follow the full requested source scope, including message/scheduled starts,
+contracts, individual fields, effects, conditions, responses/errors and settings.
+Read the prepared source start and service indexes first. They give readable
+retained source regions, ready real cite handles for required entries, and
+unchanged full-file proofs. Use these sources directly; do not reconstruct their
+packet schemas, repeat discovery or copy their manifests into draft/reads. The
+runner automatically includes these frozen manifests for binding and export.
+Open directly addressed individual views for required entries/discovery files,
+contracts/settings and consequential dependencies. Do not blanket-read every
+resource body or raw sidecar; bulky fixtures and lockfiles remain available when
+needed. The index does not authorize omitting an unresolved requested behavior.
+They do not complete your semantic self-review. Read the actual code and retain
+the stated coverage/unknowns. Compiler fragments without exact byte coordinates
+remain separate; identical-looking text is not permission to merge their evidence.
+Acquire only additional missing retained bodies/configuration through the normal
+skill and save new citation packages underneath draft/reads; never invent handles.
+
+Write draft/original.json in page_citations.py compose original format. Use the
+exact required page names in inventory.json; extra readable process/data pages
+are allowed. Each required entry page must contain an actual clew-sequence fence,
+with a real diagram and the same narrow trace. A heading or numbered list does
+not qualify. Use the inventory's handlerId as that participant's internal id.
+Give it target REQUIRED_PAGE.md#handler, add an actual handler anchor in the
+page, and start the diagram with a step to that handler and the same target.
+For HTTP the first step is a call labelled exactly METHOD PATH from inventory.
+Explain the actual operation after that boundary; a structurally valid diagram
+is not proof of its meaning. Preserve branches, failure paths and unknowns.
+
+Write draft/navigation.json using the packaged renderer's navigation contract.
+For multiple services also write draft/routes.json with a local process catalog,
+Starts/Includes membership, source-bound routes and appropriate service/visit
+links. Follow the renderer README and schemas. Do not substitute service links
+for process search, or equate unknown participation with no match.
+
+Before completion, compare input -> explanation and explanation -> source using
+this same author. After draft/original.json exists, generate the mechanical review
+shell with the trusted helper (this command does not assess meaning or run gates):
+python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
+
+Fill the generated codeclew-docs-run-review/1.1 shell with your actual assessments:
+- requirements[ID]: explicitly choose EXPLAINED or EXPLICIT_UNKNOWN. IDs/pages and
+  default source-candidate mappings come from immutable inventory. ENTRY defaults
+  to local section handler and diagram 0; explicitly override section/diagram if
+  your actual layout differs. Other requirements need an actual local section.
+  A section is an anchor ID or same-page #anchor, never another page/URL.
+- Evidence overrides are optional and contain genuine cite handles ONLY, such as
+  the handles printed beside prepared code. Never put a raw SOURCE ID in evidence.
+  The runner checks source-ID membership through each cite's immutable binding.
+  Your source choices in annotated original fragments remain authoritative for
+  claim evidence; adjust the original if those choices need to change.
+- DISCOVERY: read the complete required source view. Explicitly choose
+  NO_ADDITIONAL_STARTS with discoveredEntries empty, or ADDITIONAL_STARTS with the
+  actual discovered entries. Each needs a unique local ASCII id, kind
+  HTTP/KAFKA/SCHEDULED/OTHER, page, section, diagram, genuine evidence and disposition;
+  HTTP also needs method/path. Its diagram handler id is discovered-LOCAL_ID and
+  targets its page#handler. These are authored syntax findings, not registration
+  proof. Prepared full-file byte proofs do not perform your source review.
+- claims[page][fragment ID]: explicitly choose SUPPORTED or EXPLICIT_UNKNOWN for
+  every annotated fragment after comparing its text with source. Exact duplicate
+  claim-evidence lists are derived from original fragments, not manually retyped.
+- unresolved: explicitly supply remaining limits/contradictions, or an empty list
+  only after your actual review. Missing/null assessments are not completion.
+- visual: REVIEWED only after actual browser inspection with observed pages and
+  viewports. Otherwise use UNAVAILABLE with a reason. Root visual acceptance is
+  separate and cannot be claimed as your work.
+
+No semantic disposition, absence of additional starts or visual verdict is filled
+by the helper. The resolved bookkeeping is not a semantic certificate.
+
+The runner owns compose/bind/render/export and its report/ready promotion. Do not
+write a PASS report, runner receipts or ready output. Author exit0 and prose DONE
+cannot replace those gates. There are at most {repairs} machine-guided repairs;
+reuse unchanged source reads and repair only the reported gaps. Do not remove
+requirements, citations or diagram distinctions to make a check pass.
+
+Keep runner budgets, hashes, raw origin labels, discovery matrices and review
+protocols out of the human narrative. Write clear reader language; put technical
+provenance in the normal local Sources disclosure and runner metadata.

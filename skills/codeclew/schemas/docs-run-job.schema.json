@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Frozen retained documentation job; validators are runner-owned",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request", "clew", "root", "snapshot", "services", "language", "renderer", "node", "author", "budget"],
+  "properties": {
+    "schema": {"const": "codeclew-docs-run-job/1.0"},
+    "request": {"type": "string", "minLength": 1},
+    "clew": {"type": "string", "description": "Absolute supported launcher"},
+    "root": {"type": "string", "description": "Retained documentation root; never refreshed by this runner"},
+    "snapshot": {"type": "string", "description": "Exact immutable docs snapshot, distinct from Git revision or source occurrence snapshot"},
+    "services": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string"}},
+    "language": {"enum": ["en", "ru"]},
+    "renderer": {"type": "string", "description": "Absolute directory of the unchanged packaged renderer, with locked dependencies installed"},
+    "node": {"type": "string", "description": "Absolute Node executable"},
+    "author": {"type": "object", "additionalProperties": false, "required": ["executable", "model", "reasoningEffort"], "properties": {
+      "executable": {"type": "string", "description": "Configured existing Codex CLI, with its existing authentication"},
+      "model": {"type": "string", "minLength": 1},
+      "reasoningEffort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]},
+      "stateRoot": {"type": "string", "description": "Optional absolute admitted Codeclew state root needing native lock/receipt writes outside the author workspace"}
+    }},
+    "budget": {"type": "object", "additionalProperties": false, "required": ["wallSeconds", "maxModelTokens", "maxRepairs"], "properties": {
+      "wallSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+      "maxModelTokens": {"type": "integer", "minimum": 1, "maximum": 250000, "description": "Primary budget across author and repairs: input_tokens minus cached_input_tokens plus output_tokens. Raw/cached input and reasoning-output subsets remain separately reported; unavailable cache counters do not become zero."},
+      "maxRepairs": {"type": "integer", "minimum": 0, "maximum": 2}
+    }},
+    "components": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {
+      "path": {"type": "string"}, "digest": {"type": "string"}
+    }}
+  }
+}
