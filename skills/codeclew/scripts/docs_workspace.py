@@ -5,6 +5,7 @@ Scaffolding and a checked local preview never assert semantic completion or READ
 import html
 import json
 import re
+import shlex
 import uuid
 from pathlib import Path
 
@@ -107,11 +108,11 @@ def install_author_entry(run, skill, python):
         'semantic self-review and final source/route/export requirements unchanged.\n'
         'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
     helper = workspace / 'docs'
-    helper.write_text('#!' + python + '\nimport runpy,sys\n'
-        'if len(sys.argv)<2 or sys.argv[1] not in ("save-pages","check","review-template"):\n'
-        ' raise SystemExit("Use: ./docs save-pages --input pages/PAGE.md.json | check --page PAGE.md | review-template")\n'
-        'sys.argv=[' + repr(str(skill / 'scripts/docs_run.py')) + ',*sys.argv[1:],"--run-dir",' + repr(str(run)) + ']\n'
-        'runpy.run_path(sys.argv[0],run_name="__main__")\n', encoding='utf-8');helper.chmod(0o700)
+    helper.write_text('#!/bin/sh\ncase "${1-}" in\n'
+        ' save-pages|check|review-template) ;;\n'
+        ' *) printf "%s\\n" "Use: ./docs save-pages --input pages/PAGE.md.json | check --page PAGE.md | review-template" >&2; exit 2 ;;\n'
+        'esac\nexec ' + shlex.quote(python) + ' -I -S ' + shlex.quote(str(skill / 'scripts/docs_run.py')) +
+        ' "$@" --run-dir ' + shlex.quote(str(run)) + '\n', encoding='utf-8');helper.chmod(0o700)
     return ['AGENTS.md', '.agents/skills/codeclew/SKILL.md', 'docs']
 
 

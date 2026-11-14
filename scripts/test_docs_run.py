@@ -377,6 +377,17 @@ else:
         self.assertNotEqual(result.returncode,0)
         self.assertEqual(D['load'](self.run/'state.json')['attempts'],[])
 
+    def test_short_entry_executes_pinned_python_isolated_without_site_and_preserves_arguments(self):
+        run=self.root/"isolated wrapper's run";(run/'workspace').mkdir(parents=True)
+        skill=self.root/'skill with spaces';(skill/'scripts').mkdir(parents=True)
+        (skill/'scripts/docs_run.py').write_text('import json,sys\nprint(json.dumps({"isolated":sys.flags.isolated,"noSite":sys.flags.no_site,"argv":sys.argv[1:]}))\n')
+        D['W']['install_author_entry'](run,skill,sys.executable)
+        result=subprocess.run([str(run/'workspace/docs'),'save-pages','--input','pages/a file.json'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        observed=json.loads(result.stdout)
+        self.assertEqual(observed['isolated'],1);self.assertEqual(observed['noSite'],1)
+        self.assertEqual(observed['argv'],['save-pages','--input','pages/a file.json','--run-dir',str(run)])
+
     def check(self, debug=False):
         return D['verify'](self.run, debug=debug)
 
