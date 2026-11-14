@@ -57,7 +57,7 @@ def digest(value):
     return sha(encode(value))
 
 
-def token_accounting(attempts):
+def _sum_usage(attempts):
     """Primary metric excludes cached input; retain all raw reported usage separately."""
     primary, lower_bound, missing, invalid = 0, 0, [], []
     fields = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
@@ -98,6 +98,60 @@ def token_accounting(attempts):
             'knownBudgetTokensLowerBound': lower_bound, 'rawTotals': totals,
             'totalInputOutputFootprint': raw + output if raw is not None and output is not None else None,
             'missing': missing, 'invalid': invalid, 'monetaryCost': 'UNAVAILABLE'}
+
+
+def token_accounting(attempts):
+    """Codex terminal counters are cumulative within a thread, including resume.
+
+    Preserve reports verbatim, derive each turn's delta, and sum distinct threads
+    only once. A historical single report needs no subtraction. Ambiguous identity
+    or missing/regressing counters cannot establish an exact within-budget result.
+    """
+    latest, bounds, missing, invalid, turns, reported = {}, {}, [], [], [], []
+    unidentified = []
+    for number, attempt in enumerate(attempts):
+        usage = attempt.get('usage')
+        checked = _sum_usage([{'usage': usage}])
+        missing += [{**row, 'attempt': number} for row in checked['missing']]
+        invalid += [{**row, 'attempt': number} for row in checked['invalid']]
+        thread = attempt.get('threadId')
+        reported.append({'attempt': number, 'threadId': thread, 'usage': usage})
+        if not isinstance(thread, str) or not thread:
+            if len(attempts) == 1:
+                thread = 'historical-single-report'
+            else:
+                missing.append({'attempt': number, 'fields': ['threadId']})
+                unidentified.append(checked['knownBudgetTokensLowerBound'])
+                turns.append({'attempt': number, 'threadId': None, 'usage': None, 'budgetTokens': None})
+                continue
+        current = usage if isinstance(usage, dict) else {}
+        previous = latest.get(thread)
+        delta = {}
+        for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens'):
+            value = current.get(key)
+            if type(value) is not int or value < 0:continue
+            prior = 0 if previous is None else previous.get(key)
+            if type(prior) is not int or prior < 0:continue
+            if value < prior:
+                invalid.append({'attempt': number, 'field': key, 'code': 'CUMULATIVE_COUNTER_REGRESSED'})
+                continue
+            delta[key] = value - prior
+        incremental = _sum_usage([{'usage': delta}])
+        invalid += [{**row, 'attempt': number, 'scope': 'turnDelta'} for row in incremental['invalid']]
+        latest[thread] = current
+        bounds[thread] = max(bounds.get(thread, 0), checked['knownBudgetTokensLowerBound'])
+        turns.append({'attempt': number, 'threadId': thread, 'usage': delta,
+                      'budgetTokens': incremental['budgetTokens'] if checked['status'] == 'MEASURED' else None})
+    aggregate = _sum_usage([{'usage': usage} for usage in latest.values()])
+    status = 'INVALID' if invalid else 'UNAVAILABLE' if missing else 'MEASURED'
+    aggregate.update(status=status, missing=missing, invalid=invalid,
+                     budgetTokens=aggregate['budgetTokens'] if status == 'MEASURED' else None,
+                     knownBudgetTokensLowerBound=max(sum(bounds.values()), max(unidentified, default=0)),
+                     counterScope='THREAD_CUMULATIVE', reportedUsage=reported, attemptUsage=turns)
+    if unidentified:
+        aggregate['rawTotals'] = dict.fromkeys(aggregate['rawTotals'])
+        aggregate['totalInputOutputFootprint'] = None
+    return aggregate
 
 
 def budget_tokens(accounting):
@@ -563,11 +617,11 @@ def prepare(job_path, run):
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
 
 
-def frozen_inputs(run):
+def frozen_inputs(run, *, skill=SKILL):
     """Read immutable input pins without native commands or receipt writes."""
     job = validate_job(load(run / 'inputs/job.json')); pins = load(run / 'pins.json')
     need(digest(job) == pins['jobDigest'] and digest(load(run / 'inputs/inventory.json')) == pins['inventoryDigest']
-         and tree(run / 'inputs') == pins['inputFiles'] and tree(SKILL, skill=True) == pins['skillFiles']
+         and tree(run / 'inputs') == pins['inputFiles'] and tree(skill, skill=True) == pins['skillFiles']
          and sha((run / 'prompt.txt').read_bytes()) == pins['promptDigest']
          and sha(Path(job['author']['executable']).read_bytes()) == pins['authorExecutableDigest']
          and sha(Path(job['node']).read_bytes()) == pins['nodeExecutableDigest']
@@ -578,13 +632,77 @@ def frozen_inputs(run):
     return job, load(run / 'inputs/inventory.json'), pins
 
 
-def inputs_unchanged(run):
-    job, inventory, pins = frozen_inputs(run)
+def inputs_unchanged(run, *, skill=SKILL):
+    job, inventory, pins = frozen_inputs(run, skill=skill)
     current_version = command([job['clew'], '--version'], run / 'runtime-checks', uuid.uuid4().hex)
     need(current_version == pins['clewVersion'], 'ADMITTED_RUNTIME_CHANGED', blocked=True)
     parser = subprocess.run([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], '--probe'], capture_output=True)
     need(parser.returncode == 0 and json.loads(parser.stdout) == pins['renderer']['parser'], 'RENDERER_PARSER_CHANGED')
     return job, inventory, pins
+
+
+def recover_accounting(run, previous_skill):
+    """Trusted caller migration after the old summed cumulative counters stop.
+
+    Only a completed unit's proven false budget stop is recoverable. Preserve
+    raw history and every original limit; no author invocation occurs here.
+    """
+    run = Path(run).absolute()
+    job, _, old_pins = inputs_unchanged(run, skill=previous_skill)
+    old_state = load(run / 'state.json')
+    need(old_state['status'] == 'AUTHOR_BUDGET_EXCEEDED', 'ACCOUNTING_RECOVERY_NOT_APPLICABLE')
+    attempts = old_state['attempts']
+    need(attempts and all(a.get('status') == 'COMPLETED' and a.get('exitCode') == 0 for a in attempts),
+         'COMPLETED_AUTHOR_REQUIRED')
+    need(tree(run / 'workspace/draft') == attempts[-1]['draftFiles'], 'ACCEPTED_DRAFT_CHANGED')
+    updated = json.loads(json.dumps(old_state))
+    thread = old_state.get('threadId')
+    need(isinstance(thread, str) and thread, 'AUTHOR_THREAD_REQUIRED')
+    logs = []
+    for number, attempt in enumerate(updated['attempts']):
+        path = run / 'attempts' / str(number) / 'stdout.jsonl'
+        need(path.is_file() and not path.is_symlink() and path.stat().st_size <= 128 * 1024 * 1024,
+             'AUTHOR_HISTORY_REQUIRED')
+        starts, completed = [], []
+        for line in path.read_text().splitlines():
+            try:event = json.loads(line)
+            except ValueError:continue
+            if event.get('type') == 'thread.started':starts.append(event.get('thread_id'))
+            if event.get('type') == 'turn.completed':completed.append(event.get('usage'))
+        need(starts == [thread] and completed == [attempt.get('usage')], 'AUTHOR_HISTORY_MISMATCH', attempt=number)
+        argv = attempt['argv']
+        need(('resume' not in argv if number == 0 else
+              'resume' in argv and argv[argv.index('resume') + 1] == thread), 'AUTHOR_RESUME_CHAIN_MISMATCH')
+        need(attempt.get('threadId', thread) == thread, 'AUTHOR_THREAD_CHANGED')
+        attempt['threadId'] = thread
+        logs.append({'attempt': number, 'stdoutDigest': sha(path.read_bytes())})
+    old_usage = _sum_usage(attempts)
+    corrected = token_accounting(updated['attempts'])
+    need(old_usage['status'] == corrected['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE')
+    maximum = job['budget']['maxModelTokens']
+    need(old_usage['budgetTokens'] == old_state['modelTokens'] > maximum
+         and corrected['budgetTokens'] < maximum, 'FALSE_BUDGET_STOP_NOT_PROVEN')
+    need(type(old_state.get('authorStartedAt')) in (int, float)
+         and 0 <= time.time() - old_state['authorStartedAt'] < job['budget']['wallSeconds'], 'AUTHOR_WALL_BUDGET_EXHAUSTED')
+    need(sum(a.get('kind') == 'repair' for a in attempts) <= job['budget']['maxRepairs'], 'AUTHOR_REPAIR_BUDGET_EXHAUSTED')
+    units = load(run / 'inputs/scaffold.json')['units']; cursor = old_state.get('unitCursor', 0)
+    need(type(cursor) is int and 0 <= cursor < len(units) and attempts[-1].get('kind') == 'unit'
+         and old_state.get('completedUnit') == attempts[-1].get('unit') == units[cursor]['id'], 'COMPLETED_UNIT_REQUIRED')
+    folder = run / 'accounting-recoveries' / uuid.uuid4().hex; folder.mkdir(mode=0o700, parents=True)
+    for name in ('state.json', 'pins.json'):
+        (folder / ('original-' + name)).write_bytes((run / name).read_bytes())
+    new_pins = {**old_pins, 'skillFiles': tree(SKILL, skill=True)}
+    updated.update(status='AUTHOR_COMPLETED', modelTokens=corrected['budgetTokens'], usageAvailable=True,
+                   tokenAccounting=corrected, accountingRecovery=str(folder.relative_to(run)))
+    receipt = {'status': 'PREPARED', 'counterScope': 'THREAD_CUMULATIVE', 'threadId': thread, 'logs': logs,
+               'oldUsage': old_usage, 'correctedUsage': corrected, 'originalStartedAt': old_state['authorStartedAt'],
+               'originalBudget': job['budget'], 'originalPinsDigest': digest(old_pins), 'successorPinsDigest': digest(new_pins),
+               'previousSkill': str(Path(previous_skill).absolute()), 'successorSkill': str(SKILL),
+               'modelCalls': 0, 'ready': False, 'semanticTruthAssessed': False}
+    save(folder / 'receipt.json', receipt)
+    save(run / 'pins.json', new_pins); save(run / 'state.json', updated)
+    receipt['status'] = 'ACCOUNTING_RECOVERED'; save(folder / 'receipt.json', receipt)
+    return {**receipt, 'receipt': str(folder / 'receipt.json')}
 
 
 def review_for_run(run):
@@ -1005,6 +1123,9 @@ def author(run, *, unit=None, repair=False):
     if unit:
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
                           'stopAfterUnit': True, 'fullRequestStillRequired': True})
+    if state.get('accountingRecovery'):
+        prompt += encode({'instruction': 'This same logical run recovered a cumulative-counter accounting error. Use the successor helper below for save-pages, check and review-template; keep your existing source reads, pages and context. The request, source scope and original time/token/repair caps are unchanged.',
+                          'helper': str(HERE / 'docs_run.py'), 'runDirectory': str(run)})
     (folder / 'prompt.txt').write_bytes(prompt)
     backend = job['author']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
@@ -1041,6 +1162,7 @@ def author(run, *, unit=None, repair=False):
                 continue
             if event.get('type') == 'thread.started':
                 state['threadId'] = event['thread_id']
+                attempt['threadId'] = event['thread_id']
             if event.get('type') == 'turn.completed':
                 usage = event.get('usage')
     attempt['draftFiles'] = tree(run / 'workspace/draft')
@@ -1082,7 +1204,7 @@ def execute(run, *, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check'))
+    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
@@ -1090,6 +1212,7 @@ def main():
     parser.add_argument('--input', type=Path)
     parser.add_argument('--page', action='append', default=[])
     parser.add_argument('--scaffold', action='store_true')
+    parser.add_argument('--previous-skill', type=Path)
     args = parser.parse_args()
     lock = None
     try:
@@ -1104,7 +1227,10 @@ def main():
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
-        if args.command == 'save-pages':
+        if args.command == 'recover-accounting':
+            need(args.previous_skill is not None, 'PREVIOUS_ADMITTED_SKILL_REQUIRED')
+            result = recover_accounting(args.run_dir, args.previous_skill)
+        elif args.command == 'save-pages':
             need(args.input is not None, 'PAGE_INPUT_REQUIRED')
             result = W['save_pages'](args.run_dir.absolute(), args.input, globals())
         elif args.command == 'check':
@@ -1125,7 +1251,7 @@ def main():
     finally:
         if lock is not None:os.close(lock)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED') else 2
+    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED') else 2
 
 
 if __name__ == '__main__':

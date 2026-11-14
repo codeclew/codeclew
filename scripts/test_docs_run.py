@@ -49,6 +49,16 @@ if mode=='repair-on-resume' and 'resume' in sys.argv:
  path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
 usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
 if mode=='uneven-units':usage={{'input_tokens':2000 if 'resume' in sys.argv else 130000,'cached_input_tokens':0,'output_tokens':0}}
+counter=Path.cwd()/'backend-usage.json'
+if mode=='recorded-weather':
+ prior=json.loads(counter.read_text()) if 'resume' in sys.argv and counter.exists() else None
+ if prior is None:usage={{'input_tokens':1771674,'cached_input_tokens':1688320,'output_tokens':36956,'reasoning_output_tokens':24378}}
+ elif prior['input_tokens']==1771674:usage={{'input_tokens':1021621,'cached_input_tokens':982656,'output_tokens':25588,'reasoning_output_tokens':18720}}
+ else:usage={{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10,'reasoning_output_tokens':0}}
+if 'resume' in sys.argv and counter.exists():
+ previous=json.loads(counter.read_text())
+ usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
+counter.write_text(json.dumps(usage))
 print(json.dumps({{'type':'turn.completed','usage':usage}}))
 sys.exit(23 if mode=='exit-failed' else 0)
 ''')
@@ -549,8 +559,8 @@ else:
 
     def test_usage_accumulates_author_and_repairs_without_double_counting_subsets(self):
         result = D['token_accounting']([
-            {'usage':{'input_tokens':5000,'cached_input_tokens':4990,'output_tokens':10,'reasoning_output_tokens':4}},
-            {'usage':{'input_tokens':30,'cached_input_tokens':5,'output_tokens':7,'reasoning_output_tokens':2}}])
+            {'threadId':'first', 'usage':{'input_tokens':5000,'cached_input_tokens':4990,'output_tokens':10,'reasoning_output_tokens':4}},
+            {'threadId':'second', 'usage':{'input_tokens':30,'cached_input_tokens':5,'output_tokens':7,'reasoning_output_tokens':2}}])
         self.assertEqual(result['budgetTokens'], 52)
         self.assertEqual(result['rawTotals'], {'input_tokens':5030,'cached_input_tokens':4995,
                                              'output_tokens':17,'reasoning_output_tokens':6})
@@ -558,14 +568,134 @@ else:
 
     def test_missing_cache_counter_stays_explicitly_unavailable_across_repairs(self):
         result = D['token_accounting']([
-            {'usage':{'input_tokens':100,'output_tokens':20}},
-            {'usage':{'input_tokens':50,'cached_input_tokens':45,'output_tokens':10}}])
+            {'threadId':'first', 'usage':{'input_tokens':100,'output_tokens':20}},
+            {'threadId':'second', 'usage':{'input_tokens':50,'cached_input_tokens':45,'output_tokens':10}}])
         self.assertEqual(result['status'], 'UNAVAILABLE')
         self.assertIsNone(result['budgetTokens'])
         self.assertIsNone(result['rawTotals']['cached_input_tokens'])
         self.assertIsNone(result['rawTotals']['reasoning_output_tokens'])
         self.assertEqual(result['missing'], [{'attempt':0,'fields':['cached_input_tokens']}])
         self.assertEqual(D['budget_tokens'](result), 35)
+
+    def test_cumulative_same_thread_resume_uses_deltas_and_preserves_raw_reports(self):
+        # Public counters observed across real CLI 0.159.2 resume boundaries.
+        first = {'input_tokens':1771674, 'cached_input_tokens':1688320,
+                 'output_tokens':36956, 'reasoning_output_tokens':24378}
+        second = {'input_tokens':2793295, 'cached_input_tokens':2670976,
+                  'output_tokens':62544, 'reasoning_output_tokens':43098}
+        attempts = [{'threadId':'same', 'usage': first}, {'threadId':'same', 'usage': second}]
+        before = json.dumps(attempts)
+        result = D['token_accounting'](attempts)
+        self.assertEqual(result['status'], 'MEASURED')
+        self.assertEqual(result['budgetTokens'], 184863)
+        self.assertEqual(result['rawTotals'], second)
+        self.assertEqual([a['budgetTokens'] for a in result['attemptUsage']], [120310, 64553])
+        self.assertEqual(result['reportedUsage'][1]['usage'], second)
+        self.assertEqual(json.dumps(attempts), before)
+        self.assertNotEqual(result['budgetTokens'], 305173)
+
+    def recorded_false_stop(self):
+        self.mode.write_text('recorded-weather');self.readmit_budget(250000,2)
+        scaffold = D['load'](self.run / 'inputs/scaffold.json')
+        pages = list(scaffold['pages'])
+        scaffold['units'] = [{'id':name,'pages':pages} for name in ('dashboard','places','forecasts','complete-docset')]
+        D['save'](self.run / 'inputs/scaffold.json', scaffold)
+        pins = D['load'](self.run / 'pins.json');pins['inputFiles'] = D['tree'](self.run / 'inputs');D['save'](self.run / 'pins.json',pins)
+        D['author'](self.run,unit=scaffold['units'][0]);state=D['author'](self.run,unit=scaffold['units'][1])
+        self.assertEqual(state['modelTokens'],184863)
+        for attempt in state['attempts']:attempt.pop('threadId')
+        state.update(status='AUTHOR_BUDGET_EXCEEDED',modelTokens=305173,unitCursor=1)
+        D['save'](self.run / 'state.json',state)
+        old = self.root / 'old-skill'
+        shutil.copytree(ROOT / 'skills/codeclew',old,ignore=shutil.ignore_patterns('node_modules','__pycache__','.git'))
+        with (old / 'scripts/docs_run.py').open('a') as stream:stream.write('\n# Owned previous-admission fixture.\n')
+        pins['skillFiles'] = D['tree'](old,skill=True);D['save'](self.run / 'pins.json',pins)
+        return old
+
+    def test_recorded_false_stop_recovers_same_run_without_duplicate_places_author(self):
+        old = self.recorded_false_stop()
+        state_before = (self.run/'state.json').read_bytes();pins_before=(self.run/'pins.json').read_bytes()
+        draft_before=D['tree'](self.run/'workspace/draft');input_before=D['tree'](self.run/'inputs');prompt_before=(self.run/'prompt.txt').read_bytes()
+        result = subprocess.run([sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+            'recover-accounting','--run-dir',str(self.run),'--previous-skill',str(old)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        receipt=json.loads(result.stdout);self.assertEqual(receipt['status'],'ACCOUNTING_RECOVERED')
+        self.assertEqual(receipt['correctedUsage']['budgetTokens'],184863)
+        self.assertEqual(receipt['oldUsage']['budgetTokens'],305173)
+        folder=Path(receipt['receipt']).parent
+        self.assertEqual((folder/'original-state.json').read_bytes(),state_before)
+        self.assertEqual((folder/'original-pins.json').read_bytes(),pins_before)
+        state=D['load'](self.run/'state.json');original=json.loads(state_before)
+        self.assertEqual(state['authorStartedAt'],original['authorStartedAt'])
+        self.assertEqual(state['unitCursor'],1);self.assertEqual(state['completedUnit'],'places')
+        self.assertEqual([a['usage'] for a in state['attempts']],[a['usage'] for a in original['attempts']])
+        self.assertEqual(len(state['attempts']),2)
+        self.assertEqual(D['tree'](self.run/'workspace/draft'),draft_before)
+        self.assertEqual(D['tree'](self.run/'inputs'),input_before)
+        self.assertEqual((self.run/'prompt.txt').read_bytes(),prompt_before)
+        final=D['execute'](self.run);self.assertEqual(final['status'],'READY_PROMOTED',final)
+        resumed=D['load'](self.run/'state.json')
+        self.assertEqual([a['unit'] for a in resumed['attempts']],['dashboard','places','forecasts','complete-docset'])
+        self.assertEqual(resumed['modelTokens'],184903)
+        self.assertEqual(resumed['authorStartedAt'],original['authorStartedAt'])
+        continuation=(self.run/'attempts/2/prompt.txt').read_text()
+        self.assertIn(str(ROOT/'skills/codeclew/scripts/docs_run.py'),continuation)
+        self.assertIn('original time/token/repair caps are unchanged',continuation)
+
+    def test_recovery_refuses_actual_over_cap_and_expired_original_wall_budget(self):
+        old=self.recorded_false_stop();state=D['load'](self.run/'state.json');state['authorStartedAt']-=31
+        D['save'](self.run/'state.json',state)
+        with self.assertRaises(D['Stop']) as error:D['recover_accounting'](self.run,old)
+        self.assertEqual(error.exception.code,'AUTHOR_WALL_BUDGET_EXHAUSTED')
+        state['authorStartedAt']+=31;D['save'](self.run/'state.json',state)
+        job=D['load'](self.run/'inputs/job.json');job['budget']['maxModelTokens']=180000
+        D['save'](self.run/'inputs/job.json',job)
+        pins=D['load'](self.run/'pins.json');pins.update(jobDigest=D['digest'](job),inputFiles=D['tree'](self.run/'inputs'))
+        D['save'](self.run/'pins.json',pins)
+        before=(self.run/'state.json').read_bytes()
+        with self.assertRaises(D['Stop']) as error:D['recover_accounting'](self.run,old)
+        self.assertEqual(error.exception.code,'FALSE_BUDGET_STOP_NOT_PROVEN')
+        self.assertEqual((self.run/'state.json').read_bytes(),before)
+        self.assertFalse((self.run/'accounting-recoveries').exists())
+
+    def test_recovery_refuses_changed_sources_raw_counters_and_thread_mismatch(self):
+        old=self.recorded_false_stop()
+        targets=[self.run/'state.json',self.run/'attempts/1/stdout.jsonl',self.run/'inputs/inventory.json']
+        originals=[p.read_bytes() for p in targets]
+        badstate=json.loads(originals[0]);badstate['attempts'][1]['usage']['input_tokens']+=1
+        badthread=originals[1].replace(b'owned-test-session',b'foreign-session')
+        variants=[(targets[0],D['encode'](badstate),'AUTHOR_HISTORY_MISMATCH'),
+                  (targets[1],badthread,'AUTHOR_HISTORY_MISMATCH'),
+                  (targets[2],originals[2]+b'\n','FROZEN_INPUTS_CHANGED')]
+        for path,bad,code in variants:
+            path.write_bytes(bad);before=(self.run/'state.json').read_bytes()
+            with self.assertRaises(D['Stop']) as error:D['recover_accounting'](self.run,old)
+            self.assertEqual(error.exception.code,code)
+            self.assertEqual((self.run/'state.json').read_bytes(),before)
+            for target,raw in zip(targets,originals):target.write_bytes(raw)
+        self.assertFalse((self.run/'accounting-recoveries').exists())
+
+    def test_cumulative_counter_reset_and_inconsistent_delta_refuse_exact_usage(self):
+        first = {'input_tokens':100, 'cached_input_tokens':80, 'output_tokens':20, 'reasoning_output_tokens':10}
+        for second in [dict(first, input_tokens=99), dict(first, output_tokens=19),
+                       dict(first, reasoning_output_tokens=9),
+                       dict(first, input_tokens=110, cached_input_tokens=95)]:
+            result = D['token_accounting']([{'threadId':'same','usage':first}, {'threadId':'same','usage':second}])
+            self.assertEqual(result['status'], 'INVALID', second)
+            self.assertIsNone(result['budgetTokens'])
+            self.assertGreaterEqual(result['knownBudgetTokensLowerBound'],40)
+
+    def test_missing_thread_or_counters_never_invent_an_exact_resume_cost(self):
+        raw = {'input_tokens':100, 'cached_input_tokens':80, 'output_tokens':20}
+        for attempts in [[{'usage':raw}, {'usage':raw}],
+                         [{'threadId':'same','usage':raw}, {'usage':raw}],
+                         [{'threadId':'same','usage':raw}, {'threadId':'same','usage':None}],
+                         [{'threadId':'same','usage':{'input_tokens':100,'output_tokens':20}},
+                          {'threadId':'same','usage':dict(raw,input_tokens=150,cached_input_tokens=100)}]]:
+            result = D['token_accounting'](attempts)
+            self.assertEqual(result['status'], 'UNAVAILABLE')
+            self.assertIsNone(result['budgetTokens'])
+            self.assertEqual(result['knownBudgetTokensLowerBound'],40 if len(attempts[-1].get('usage') or {})<3 or 'threadId' not in attempts[-1] else 70)
 
     def test_missing_cache_cannot_pass_budget_ready_or_start_another_author(self):
         state = self.generated()

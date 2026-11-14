@@ -116,6 +116,23 @@ then and prevents readiness/further calls; it is not a provider billing guarante
 or an enforceable token ceiling inside one CLI turn. Actual wall timeout is enforced.
 Missing counters remain unavailable; bytes are never presented as tokens or cost.
 
+Codex CLI terminal usage is cumulative within the same thread across resumes.
+The runner preserves every raw report, derives turn deltas within that thread and
+counts its latest total once. Different threads sum. Missing thread attribution
+across multiple reports, missing required counters, resets and inconsistent deltas
+cannot establish exact cost or pass a budget gate. A single historical report is
+still usable without subtraction.
+
+For a proven false stop from the previous cumulative-counter summation bug, a
+trusted caller may use `recover-accounting --run-dir RUN --previous-skill OLD_SKILL`.
+It validates the old admission and saved CLI history, refuses genuine overspend,
+expired original time or changed drafts, and saves the original state/pins before
+admitting the reviewed successor skill. It performs no author call and preserves
+the same thread, source, prompt, raw history, start time and all original limits.
+Then `run --run-dir RUN` checks the completed unit before advancing, without
+regenerating it. The saved continuation prompt names the successor helper only;
+record the mixed helper lineage rather than claiming an unchanged treatment.
+
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.
 A real source handle can accompany a false claim. Author visual review is recorded

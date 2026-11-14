@@ -259,7 +259,8 @@ def run_units(run, api, debug=False):
             remaining = job['budget']['maxModelTokens'] - api['budget_tokens'](accounting)
             repairs = [a for a in state['attempts'] if a.get('kind') == 'repair']
             observed = repairs[-1:] or state['attempts'][-1:]
-            reserve = api['budget_tokens'](api['token_accounting'](observed)) if observed else 0
+            deltas = accounting.get('attemptUsage', [])
+            reserve = (deltas[state['attempts'].index(observed[-1])]['budgetTokens'] or 0) if observed else 0
             state['budgetPlan'] = {'remainingTokens': remaining, 'repairReserveEstimate': reserve,
                 'basis': 'latest completed repair' if repairs else 'latest completed unit proxy' if observed else 'no observed cost yet',
                 'advisoryOnly': True, 'hardProviderCeiling': False}
