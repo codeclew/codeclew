@@ -555,7 +555,8 @@ def prepare(job_path, run):
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
 
 
-def inputs_unchanged(run):
+def frozen_inputs(run):
+    """Read immutable input pins without native commands or receipt writes."""
     job = validate_job(load(run / 'inputs/job.json')); pins = load(run / 'pins.json')
     need(digest(job) == pins['jobDigest'] and digest(load(run / 'inputs/inventory.json')) == pins['inventoryDigest']
          and tree(run / 'inputs') == pins['inputFiles'] and tree(SKILL, skill=True) == pins['skillFiles']
@@ -564,13 +565,23 @@ def inputs_unchanged(run):
          and sha(Path(job['node']).read_bytes()) == pins['nodeExecutableDigest']
          and digest(load(run / 'workspace/inventory.json')) == pins.get('authorInventoryDigest', pins['inventoryDigest']), 'FROZEN_INPUTS_CHANGED')
     need(tree(job['renderer'], skill=True) == pins['renderer']['files'], 'RENDERER_CHANGED')
+    if 'components' in job:
+        need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
+    return job, load(run / 'inputs/inventory.json'), pins
+
+
+def inputs_unchanged(run):
+    job, inventory, pins = frozen_inputs(run)
     current_version = command([job['clew'], '--version'], run / 'runtime-checks', uuid.uuid4().hex)
     need(current_version == pins['clewVersion'], 'ADMITTED_RUNTIME_CHANGED', blocked=True)
     parser = subprocess.run([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], '--probe'], capture_output=True)
     need(parser.returncode == 0 and json.loads(parser.stdout) == pins['renderer']['parser'], 'RENDERER_PARSER_CHANGED')
-    if 'components' in job:
-        need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
-    return job, load(run / 'inputs/inventory.json'), pins
+    return job, inventory, pins
+
+
+def review_for_run(run):
+    _, inventory, _ = frozen_inputs(run)
+    return review_template(inventory, load(run / 'workspace/draft/original.json'))
 
 
 def check_source_membership(job, inventory, entry, checks, cache):
@@ -1061,8 +1072,7 @@ def main():
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
         if args.command == 'review-template':
-            _, inventory, _ = inputs_unchanged(args.run_dir.absolute())
-            result = review_template(inventory, load(args.run_dir / 'workspace/draft/original.json'))
+            result = review_for_run(args.run_dir.absolute())
             print(encode(result).decode(), end='')
             return 0
         elif args.command == 'prepare':

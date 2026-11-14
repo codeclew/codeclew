@@ -66,6 +66,8 @@ coverage and authority through the existing validators.
 After writing annotated originals, the author can run `review-template --run-dir
 RUN` and save its JSON as draft/self-review.json. This read-only template command
 works during the active author invocation; it performs no gate or promotion.
+It checks frozen input hashes without native commands or receipt writes. Runtime
+identity and parser checks remain mandatory in runner verification and promotion.
 The compact 1.1 review maps stable requirement IDs to explicit semantic answers,
 and maps page/fragment IDs to explicit claim dispositions. Pages, duplicate claim
 evidence and default entry/discovery cite candidates are derived from immutable

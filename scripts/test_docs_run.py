@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -144,6 +145,40 @@ else:
         self.assertEqual(len(service['pages']), len(set(service['pages'])))
         self.assertTrue(all(r['page'] in service['pages'] for r in inventory['requirements']))
         self.assertEqual(nav['routes'], [])
+
+    def test_review_template_is_read_only_but_runtime_gate_still_runs(self):
+        D['save'](self.run / 'workspace/draft/original.json', self.original)
+        before = D['tree'](self.run)
+        def blocked(*args, **kwargs):raise PermissionError('Native receipts are outside author writable roots')
+        with patch.dict(D['review_for_run'].__globals__, {'command': blocked}), patch.object(subprocess, 'run', blocked):
+            review = D['review_for_run'](self.run)
+            self.assertEqual(review['schema'], D['COMPACT_REVIEW'])
+            self.assertEqual(set(review['requirements']), {r['id'] for r in self.inventory['requirements']})
+            with self.assertRaisesRegex(PermissionError, 'Native receipts'):
+                D['inputs_unchanged'](self.run)
+        self.assertEqual(D['tree'](self.run), before)
+        self.assertFalse((self.run / 'runtime-checks').exists())
+        self.assertTrue(all(answer['disposition'] is None for answer in review['requirements'].values()))
+        changed = D['load'](self.run / 'workspace/inventory.json');changed['requirements'].pop()
+        D['save'](self.run / 'workspace/inventory.json', changed)
+        with self.assertRaises(D['Stop']) as error:D['review_for_run'](self.run)
+        self.assertEqual(error.exception.code, 'FROZEN_INPUTS_CHANGED')
+
+    def test_verify_and_promotion_still_refuse_a_runtime_version_change(self):
+        self.generated();accepted = self.check()
+        self.assertEqual(accepted['status'], 'READY')
+        original_command = D['inputs_unchanged'].__globals__['command']
+        def changed(argv, *args, **kwargs):
+            if argv == [str(self.clew), '--version']:return 'clew changed-runtime'
+            return original_command(argv, *args, **kwargs)
+        with patch.dict(D['inputs_unchanged'].__globals__, {'command': changed}):
+            failed = self.check()
+            self.assertEqual(failed['status'], 'BLOCKED')
+            self.assertEqual(failed['checks']['inputs']['code'], 'ADMITTED_RUNTIME_CHANGED')
+            D['save'](self.run / 'report.json', accepted)
+            with self.assertRaises(D['Stop']) as error:D['promote'](self.run)
+            self.assertEqual(error.exception.code, 'PROMOTION_RECHECK_FAILED')
+            self.assertFalse((self.run / 'ready').exists())
 
     def generated(self):
         return D['author'](self.run)
