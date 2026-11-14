@@ -1,100 +1,57 @@
 Original request: {request}
 
-You are the sole documentation author, using {model}. Use the Codeclew skill at
-{skill}. Read references/docs-run-author.md before authoring. It is the prepared
-author entry point; acquisition and export are already owned by this runner.
-The calling agent already prepared this run; do not start another runner.
+You are the sole documentation author using {model}. Read
+{skill}/references/docs-run-author.md, then the assigned unit appended below.
+The caller owns this run; do not start another runner or model.
+
 Admitted clew: {clew}
-Retained documentation root: {root}
-Exact historical snapshot: {snapshot}
+Retained root: {root}
+Exact snapshot: {snapshot}
 Language: {language}
-Pre-author inventory: {inventory}
-Prepared source start: {prepared_sources}
-Your output directory: {draft}
+Compact inventory: {inventory}
+Readable retained source start: {prepared_sources}
+Saved page files: {run}/workspace/pages/PAGE.md.json
+Assembled draft: {draft}
 
-Use only retained source through supported clew/skill APIs. Do not capture,
-refresh, read source repositories or private cache files directly, publish,
-inspect previous documentation/reviewer results, launch other models, or change
-runner inputs. Native source limits and unknown trigger discovery remain explicit.
-The inventory records source-level entries; absence is not proof of no behavior.
-Follow the full requested source scope, including message/scheduled starts,
-contracts, individual fields, effects, conditions, responses/errors and settings.
-Read the prepared source start and service indexes first. They give readable
-retained source regions, ready real cite handles for required entries, and
-unchanged full-file proofs. Use these sources directly; do not reconstruct their
-packet schemas, repeat discovery or copy their manifests into draft/reads. The
-runner automatically includes these frozen manifests for binding and export.
-Open directly addressed individual views for required entries/discovery files,
-contracts/settings and consequential dependencies. Do not blanket-read every
-resource body or raw sidecar; bulky fixtures and lockfiles remain available when
-needed. The index does not authorize omitting an unresolved requested behavior.
-They do not complete your semantic self-review. Read the actual code and retain
-the stated coverage/unknowns. Compiler fragments without exact byte coordinates
-remain separate; identical-looking text is not permission to merge their evidence.
-Acquire only additional missing retained bodies/configuration through the normal
-skill and save new citation packages underneath draft/reads; never invent handles.
+Complete only the assigned related-page unit in this turn. All requirements and
+full requested source scope remain required across units. Open relevant individual
+views through the service indexes; do not list proof/receipt trees or blanket-read
+bulky fixtures. Native authority/coverage and unavailable evidence remain explicit.
+Do not capture/refresh, read target repositories/private caches directly, inspect
+previous documentation/critic answers, publish, or alter frozen inputs/budgets.
 
-Write draft/original.json in page_citations.py compose original format. Use the
-exact required page names in inventory.json; extra readable process/data pages
-are allowed. Each required entry page must contain an actual clew-sequence fence,
-with a real diagram and the same narrow trace. A heading or numbered list does
-not qualify. Use the inventory's handlerId as that participant's internal id.
-Give it target REQUIRED_PAGE.md#handler, add an actual handler anchor in the
-page, and start the diagram with a step to that handler and the same target.
-For HTTP the first step is a call labelled exactly METHOD PATH from inventory.
-Explain the actual operation after that boundary; a structurally valid diagram
-is not proof of its meaning. Preserve branches, failure paths and unknowns.
+For each saved page, replace the unfinished placeholder with source-backed prose,
+field tables and the actual handler-started sequence. Keep exact page/handler IDs.
+Save only the affected page(s), then run the supported early check:
+python3 -I -S {skill}/scripts/docs_run.py save-pages --run-dir {run} --input {run}/workspace/pages/PAGE.md.json
+python3 -I -S {skill}/scripts/docs_run.py check --run-dir {run} --page PAGE.md
+Repeat --page for a related group. These commands are explicitly allowed now.
+Fix the precise local error in that saved file, save and check again. Managed
+anchors and dedicated anchor-fragment separators are supplied by save-pages.
+Do not add a second handler/clew-scope anchor. Preserve other pages and source reads.
+Do not generate or rewrite the whole site to repair one file.
 
-Update the prepared draft/navigation.json: its page ownership and entry addresses
-come from inventory, but its labels/summaries are placeholders for you to author.
-Add your actual data pages and any discovered starts, keeping exact required targets.
-For multiple services also write draft/routes.json with a local process catalog,
-Starts/Includes membership, source-bound routes and appropriate service/visit
-links. Use the compact contracts in docs-run-author.md; open a specific renderer
-reference only for a feature not described there. Do not substitute service links
-for process search, or equate unknown participation with no match.
+Before ending a unit, compare the actual source to all its explanations/diagrams,
+then every visible claim back to source; preserve consequential branches, effects,
+failures and completion boundaries. End the turn after the unit; the runner resumes
+the same author/context for remaining units and checks cumulative usage between them.
+The budget plan is a measured planning estimate, not a continuous provider ceiling.
+Do not cut source scope or fake completion to fit it. At most {repairs} additional
+machine-repair rounds share the same global cap.
 
-Before completion, compare input -> explanation and explanation -> source using
-this same author. After draft/original.json exists, generate the mechanical review
-shell with the trusted helper (this command does not assess meaning or run gates):
+In the complete-docset unit, finish shared process/data/catalog navigation and
+routes.json for multiple services, including Starts/Includes/Ends and real targets.
+Add extra page files in the same existing original format as needed. Update
+navigation.json with actual reader labels and owned data pages, preserving entries.
+Then generate the global review shell and fill actual semantic assessments:
 python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
+Requirements use EXPLAINED or EXPLICIT_UNKNOWN with actual local sections;
+DISCOVERY also records NO_ADDITIONAL_STARTS or ADDITIONAL_STARTS with genuine
+handles/entry diagrams. Claims use SUPPORTED or EXPLICIT_UNKNOWN. Unresolved is an
+explicit list. Visual is REVIEWED only after observed browser inspection; otherwise
+UNAVAILABLE with a reason. No answer/disposition is prefilled by the helper.
 
-Fill the generated codeclew-docs-run-review/1.1 shell with your actual assessments:
-- requirements[ID]: explicitly choose EXPLAINED or EXPLICIT_UNKNOWN. IDs/pages and
-  default source-candidate mappings come from immutable inventory. ENTRY defaults
-  to local section handler and diagram 0; explicitly override section/diagram if
-  your actual layout differs. Other requirements need an actual local section.
-  A section is an anchor ID or same-page #anchor, never another page/URL.
-- Evidence overrides are optional and contain genuine cite handles ONLY, such as
-  the handles printed beside prepared code. Never put a raw SOURCE ID in evidence.
-  The runner checks source-ID membership through each cite's immutable binding.
-  Your source choices in annotated original fragments remain authoritative for
-  claim evidence; adjust the original if those choices need to change.
-- DISCOVERY: read the complete required source view. Explicitly choose
-  NO_ADDITIONAL_STARTS with discoveredEntries empty, or ADDITIONAL_STARTS with the
-  actual discovered entries. Each needs a unique local ASCII id, kind
-  HTTP/KAFKA/SCHEDULED/OTHER, page, section, diagram, genuine evidence and disposition;
-  HTTP also needs method/path. Its diagram handler id is discovered-LOCAL_ID and
-  targets its page#handler. These are authored syntax findings, not registration
-  proof. Prepared full-file byte proofs do not perform your source review.
-- claims[page][fragment ID]: explicitly choose SUPPORTED or EXPLICIT_UNKNOWN for
-  every annotated fragment after comparing its text with source. Exact duplicate
-  claim-evidence lists are derived from original fragments, not manually retyped.
-- unresolved: explicitly supply remaining limits/contradictions, or an empty list
-  only after your actual review. Missing/null assessments are not completion.
-- visual: REVIEWED only after actual browser inspection with observed pages and
-  viewports. Otherwise use UNAVAILABLE with a reason. Root visual acceptance is
-  separate and cannot be claimed as your work.
-
-No semantic disposition, absence of additional starts or visual verdict is filled
-by the helper. The resolved bookkeeping is not a semantic certificate.
-
-The runner owns compose/bind/render/export and its report/ready promotion. Do not
-write a PASS report, runner receipts or ready output. Author exit0 and prose DONE
-cannot replace those gates. There are at most {repairs} machine-guided repairs;
-reuse unchanged source reads and repair only the reported gaps. Do not remove
-requirements, citations or diagram distinctions to make a check pass.
-
-Keep runner budgets, hashes, raw origin labels, discovery matrices and review
-protocols out of the human narrative. Write clear reader language; put technical
-provenance in the normal local Sources disclosure and runner metadata.
+The caller performs complete native source, coverage, link, renderer and export
+checks. Do not write PASS/READY receipts or promote. Empty scaffolding, unit PASS,
+exit0 or DONE is not final READY. Keep technical proof/review metadata out of reader
+prose and preserve the normal Sources disclosure. No rubric or old prose is supplied.

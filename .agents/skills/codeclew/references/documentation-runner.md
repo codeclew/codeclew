@@ -52,8 +52,28 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
+Readable views live under inputs/author-source; native packets, receipts and full
+binding metadata live under inputs/source-proof. Both are frozen together.
+
+Prepare creates unfinished pages, entry anchors and navigation from the inventory,
+using the existing original and sequence formats. This structure contains no
+semantic explanation. The runner gives one author a related service group at a
+time, then the complete docset, retaining the same context, sources and drafts.
+All stages and repairs share the original aggregate time/token budget. A reserve
+estimate is advisory; observed unit cost is not a proven repair-cost bound.
+
+The author edits persisted workspace/pages/PAGE.md.json files and calls
+`save-pages --run-dir RUN --input FILE` to merge only those pages. Managed anchors
+and standalone anchor blocks are separated safely from adjacent Markdown. Call
+`check --run-dir RUN --page PAGE.md` (repeat --page for a related group) before
+advancing. It uses the final parser, renderer and source-binding rules, reports
+the affected page/fragment/field, preserves other pages and reads, and keeps the
+last valid preview after a failed edit. Pending cross-page targets remain explicit
+failures until their real anchors are saved. Unit checks and `check --scaffold`
+never mean READY; unfinished pages block final verification.
+
 The runner builds its prompt from the request, admitted inputs and versioned
-contract. The author writes draft/original.json, navigation.json, routes.json for
+contract. The author also fills draft/navigation.json, routes.json for
 multiple services, retained citation reads under draft/reads, and the bidirectional
 [self-review protocol](../schemas/docs-run-review.schema.json). Required entry
 pages and handler identities are fixed; additional discovered entry accounts cannot

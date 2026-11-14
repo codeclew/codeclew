@@ -44,7 +44,12 @@ if mode!='empty':
   if source.is_dir():shutil.copytree(source,target)
   else:shutil.copyfile(source,target)
 (draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
-print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}}}))
+if mode=='repair-on-resume' and 'resume' in sys.argv:
+ path=draft/'original.json'
+ path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
+usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
+if mode=='uneven-units':usage={{'input_tokens':2000 if 'resume' in sys.argv else 130000,'cached_input_tokens':0,'output_tokens':0}}
+print(json.dumps({{'type':'turn.completed','usage':usage}}))
 sys.exit(23 if mode=='exit-failed' else 0)
 ''')
         self.backend.chmod(0o700)
@@ -183,6 +188,134 @@ else:
     def generated(self):
         return D['author'](self.run)
 
+    def local_page(self):
+        page = json.loads(json.dumps(self.original['pages'][0]))
+        page['fragments'][0]['text'] = page['fragments'][0]['text'].replace('<a id="handler"></a>', '')
+        return page
+
+    def save_local(self, page):
+        path = self.run / 'workspace/pages' / (page['page'] + '.json')
+        D['save'](path, {'pages': [page]})
+        return D['W']['save_pages'](self.run, path, D)
+
+    def local_check(self, page):
+        return D['W']['check'](self.run, [page], False, D)
+
+    def local_reads(self):
+        shutil.copytree(self.seed / 'reads', self.run / 'workspace/draft/reads')
+
+    def test_inventory_scaffold_renders_but_is_explicitly_unfinished(self):
+        result = D['W']['check'](self.run, [], True, D)
+        self.assertEqual(result['status'], 'SCAFFOLD_CHECKED', result)
+        self.assertEqual(set(result['unfinishedPages']), {r['page'] for r in self.inventory['requirements']})
+        self.assertFalse(result['ready']);self.assertFalse(result['sourceBindingsChecked'])
+        self.assertTrue((Path(result['directory']) / 'html' / self.entry['page'].replace('.md','.html')).exists())
+
+    def test_malformed_admitted_entry_kind_has_pre_author_field_diagnostic(self):
+        for value in (None, '', 'http', {'kind':'HTTP_ENDPOINT'}):
+            inventory = json.loads(json.dumps(self.inventory));inventory['requirements'][0]['entryKind'] = value
+            with self.assertRaises(D['Stop']) as error:D['W']['build'](inventory, D)
+            self.assertEqual(error.exception.code, 'INVALID_ENTRY_KIND')
+            self.assertEqual(error.exception.details['field'], 'entryKind')
+            self.assertEqual(error.exception.details['requirement'], self.entry['id'])
+
+    def test_local_repair_keeps_other_pages_reads_and_last_valid_preview(self):
+        self.local_reads();page = self.local_page()
+        other = self.run / 'workspace/pages' / (self.service + '.md.json')
+        other_bytes = other.read_bytes();reads = D['tree'](self.run / 'workspace/draft/reads')
+        saved = self.save_local(page)
+        self.assertEqual(saved['changed'], [self.entry['page']]);self.assertIn(self.service+'.md', saved['unchanged'])
+        checked = self.local_check(page['page']);self.assertEqual(checked['status'], 'UNIT_CHECKED', checked)
+        self.assertTrue(checked['sourceBindingsChecked']);self.assertFalse(checked['fullSiteReady'])
+        pointer = (self.run / 'workspace/last-valid-preview.json').read_bytes()
+        page['fragments'][1]['text'] += '\n[Missing](reservations.md#absent)\n'
+        self.save_local(page);failed = self.local_check(page['page'])
+        self.assertEqual(failed['status'], 'FAILED', failed)
+        self.assertIn('reservations.md#absent',failed['pendingTargets'])
+        self.assertTrue(any(x['page']==page['page'] and x['fragment']=='entry' for x in failed['locations']), failed)
+        self.assertEqual((self.run / 'workspace/last-valid-preview.json').read_bytes(), pointer)
+        page['fragments'][1]['text'] = page['fragments'][1]['text'].replace('\n[Missing](reservations.md#absent)\n','')
+        self.save_local(page);self.assertEqual(self.local_check(page['page'])['status'],'UNIT_CHECKED')
+        self.assertEqual(other.read_bytes(),other_bytes);self.assertEqual(D['tree'](self.run / 'workspace/draft/reads'),reads)
+
+    def test_local_component_and_source_errors_never_become_ready(self):
+        self.local_reads();page = self.local_page()
+        page['fragments'][1]['text'] = page['fragments'][1]['text'].replace('"kind": "call"','"kind": "invented"')
+        self.save_local(page);bad = self.local_check(page['page'])
+        self.assertEqual(bad['code'],'INVALID_REQUIRED_SEQUENCE',bad)
+        self.assertEqual(bad['locations'][0]['page'],page['page'])
+        self.assertIn('/steps/0/kind',bad['locations'][0]['componentField'])
+        page = self.local_page();page['fragments'][1]['evidence'] = ['invented-cite']
+        self.save_local(page);bad = self.local_check(page['page'])
+        self.assertEqual(bad['status'],'FAILED');self.assertFalse(bad['sourceBindingsChecked']);self.assertFalse(bad['ready'])
+
+    def test_standalone_anchor_block_after_table_is_saved_safely(self):
+        self.local_reads();page = self.local_page()
+        page['fragments'] += [{'id':'table','text':'\n\n| Field | Meaning |\n| --- | --- |\n| value | Value |','evidence':[self.handle]},
+                              {'text':'<a id="request-event"></a>'},
+                              {'text':'\n[Input](#request-event)\n'}]
+        self.save_local(page);result = self.local_check(page['page'])
+        self.assertEqual(result['status'],'UNIT_CHECKED',result)
+        original = D['load'](self.run / 'workspace/draft/original.json')
+        content = next(p for p in original['pages'] if p['page']==page['page'])
+        self.assertIn('\n\n<a id="request-event"></a>\n\n',[f['text'] for f in content['fragments']])
+
+    def test_duplicate_anchor_is_located_on_the_affected_saved_page(self):
+        self.local_reads();page = self.local_page()
+        page['fragments'] += [{'text':'<a id="duplicate"></a>'},{'text':'<a id="duplicate"></a>'}]
+        self.save_local(page);result = self.local_check(page['page'])
+        self.assertEqual(result['code'],'AMBIGUOUS_EXPORT_ANCHOR',result)
+        self.assertTrue(all(x['page']==page['page'] for x in result['locations']),result)
+
+    def test_local_check_rejects_changed_frozen_input(self):
+        raw = D['load'](self.run / 'workspace/inventory.json');raw['snapshot']='foreign'
+        D['save'](self.run / 'workspace/inventory.json',raw)
+        with self.assertRaises(D['Stop']) as error:D['W']['check'](self.run,[],True,D)
+        self.assertEqual(error.exception.code,'FROZEN_INPUTS_CHANGED')
+
+    def readmit_budget(self, maximum, repairs):
+        job=D['load'](self.run/'inputs/job.json');job['budget'].update(maxModelTokens=maximum,maxRepairs=repairs)
+        D['save'](self.run/'inputs/job.json',job)
+        pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs')
+        D['save'](self.run/'pins.json',pins)
+
+    def test_related_units_share_one_author_context_and_aggregate_budget(self):
+        result=D['execute'](self.run)
+        self.assertEqual(result['status'],'READY_PROMOTED',result)
+        state=D['load'](self.run/'state.json')
+        self.assertEqual([a['kind'] for a in state['attempts']],['unit','unit'])
+        self.assertEqual(state['modelTokens'],40)
+        self.assertTrue('resume' in state['attempts'][1]['argv'])
+        self.assertEqual(state['threadId'],'owned-test-session')
+
+    def test_early_failure_repairs_same_unit_before_advancing(self):
+        self.readmit_budget(1000,1);self.mode.write_text('repair-on-resume')
+        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.html)\n';self.seed_files()
+        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
+        state=D['load'](self.run/'state.json')
+        self.assertEqual([a['kind'] for a in state['attempts']],['unit','repair','unit'])
+        self.assertEqual(state['attempts'][0]['unit'],state['attempts'][1]['unit'])
+        self.assertEqual(state['modelTokens'],60)
+        self.assertTrue((self.run/'attempts/0/draft/original.json').exists())
+
+    def test_advisory_reserve_does_not_replace_the_actual_aggregate_cap(self):
+        self.readmit_budget(35,0)
+        with self.assertRaises(D['Stop']) as error:D['execute'](self.run)
+        self.assertEqual(error.exception.code,'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+        state=D['load'](self.run/'state.json');self.assertEqual(len(state['attempts']),2)
+        self.assertEqual(state['budgetPlan']['repairReserveEstimate'],20)
+        self.assertEqual(state['modelTokens'],40)
+        self.assertFalse((self.run/'ready').exists())
+
+    def test_uneven_units_are_not_stopped_by_unproven_repair_proxy(self):
+        self.readmit_budget(250000,0);self.mode.write_text('uneven-units')
+        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
+        state=D['load'](self.run/'state.json')
+        self.assertEqual(state['modelTokens'],132000)
+        self.assertEqual(state['budgetPlan']['remainingTokens'],120000)
+        self.assertEqual(state['budgetPlan']['repairReserveEstimate'],130000)
+        self.assertTrue(state['budgetPlan']['advisoryOnly'])
+
     def check(self, debug=False):
         return D['verify'](self.run, debug=debug)
 
@@ -231,6 +364,33 @@ else:
         with self.assertRaises(D['Stop']):
             D['compiler_source_pairs']([{'id':'one', 'sourceIds':['s1'], 'sourceReferences':['e1']},
                                         {'id':'two', 'sourceIds':['s1'], 'sourceReferences':['e2']}])
+
+    def test_source_preparation_keeps_discovery_proof_separate_from_readable_views(self):
+        inventory = json.loads(json.dumps(self.inventory))
+        inventory['services'][self.service].update(work='work-a', sourceInventory=[{'kind':'THREAD_SCOPE'}])
+        destination = self.root / 'prepared' / 'author-source'; destination.parent.mkdir()
+        calls = []
+        def command(argv, directory, label, **kwargs):
+            calls.append(label)
+            out = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                out.mkdir()
+                D['save'](out / 'packet.json', {'queryComplete': True, 'choices': [{'file': self.source['file']}]})
+            else:
+                shutil.copytree(self.manifest.parent, out)
+        with patch.dict(D['_prepare_sources'].__globals__, {'command':command}):
+            result = D['prepare_sources'](self.job, inventory, destination)
+        self.assertEqual(calls, ['discover', 'read'])
+        self.assertEqual(result['sourceBindings'], 1)
+        scope = result['services'][self.service]
+        discovery = next(r for r in inventory['requirements'] if r['kind'] == 'DISCOVERY')
+        self.assertEqual(scope['discoveryProofs'][discovery['id']]['status'], 'COMPLETE_RETAINED_GIT_BLOB')
+        self.assertTrue(Path(scope['citationIndex']).is_file())
+        self.assertIn('/source-proof/', scope['citationIndex'])
+        self.assertFalse(list(destination.rglob('citations.json')))
+        self.assertFalse(list(destination.rglob('receipts.json')))
+        self.assertEqual(D['load'](destination / self.service / 'requirements.json')[discovery['id']]['evidenceCandidates'], [self.handle])
+        self.assertEqual(len(list(destination.rglob('views/*.md'))), 1)
 
     def test_preparation_file_limit_refuses_before_body_reads(self):
         calls = []
@@ -440,7 +600,7 @@ else:
     def test_empty_exit_zero_and_author_pass_report_never_replace_ready(self):
         ready = self.run / 'ready'; ready.mkdir(); (ready / 'current.json').write_text('previous accepted output')
         self.mode.write_text('empty'); self.generated(); result = self.check()
-        self.assertEqual(result['status'], 'FAILED'); self.assertEqual(result['checks']['output']['code'], 'MISSING_REQUIRED_OUTPUT')
+        self.assertEqual(result['status'], 'FAILED'); self.assertEqual(result['checks']['output']['code'], 'UNFINISHED_SCAFFOLD')
         self.assertEqual((ready / 'current.json').read_text(), 'previous accepted output')
 
     def test_broken_link_is_not_overridden_by_author_pass(self):

@@ -28,6 +28,7 @@ E = runpy.run_path(str(HERE / 'reader_export_check.py'))
 M = E['M']
 T = runpy.run_path(str(HERE / 'work_transport.py'))
 U = runpy.run_path(str(HERE / 'source_union.py'))
+W = runpy.run_path(str(HERE / 'docs_workspace.py'))
 SCHEMA = 'codeclew-docs-run-job/1.0'
 REVIEW = 'codeclew-docs-run-review/1.0'
 COMPACT_REVIEW = 'codeclew-docs-run-review/1.1'
@@ -212,7 +213,11 @@ def requirements(service, rows, initial):
     for row in rows:
         if row['kind'] != 'THREAD_ENTRY' or row['record'].get('classification') != 'DISCOVERED_TRIGGER':
             continue
-        record = row['record']; entry = record['entrypoint']; trigger = entry.get('trigger', {})
+        record = row['record']; entry = record.get('entrypoint')
+        need(isinstance(entry, dict), 'INVALID_ENTRY_KIND', field='entrypoint')
+        W['entry_kind']({'id': entry.get('id'), 'entryKind': entry.get('kind'),
+                         'method': 'deferred', 'path': 'deferred'}, need)
+        trigger = entry.get('trigger', {})
         routes = trigger.get('sourceRoutes') or [dict(method=m, path=p) for m in trigger.get('methods', []) for p in trigger.get('paths', [])]
         if entry['kind'] != 'HTTP_ENDPOINT':
             routes = [{}]
@@ -300,6 +305,7 @@ def compiler_source_pairs(choices):
 def _prepare_sources(job, inventory, directory):
     """Prepare supported retained reads serially, without an author or new capture."""
     started = time.monotonic(); directory.mkdir(mode=0o700)
+    proof_root = directory.parent / 'source-proof'; proof_root.mkdir(mode=0o700)
     bounds = {'wallSeconds': 300, 'files': 128, 'visibleBytes': 8 * 1024 * 1024}
     services, all_bindings, count, visible_bytes = {}, {}, 0, 0
     M['configure_engine'](job['clew'], job['root'])
@@ -308,35 +314,36 @@ def _prepare_sources(job, inventory, directory):
         remaining = bounds['wallSeconds'] - (time.monotonic() - started)
         need(remaining > 0, 'SOURCE_PREPARATION_WALL_LIMIT')
         result = command(arguments, output, label, timeout=remaining)
-        tree(directory)  # Existing closure byte/file limits apply after each bounded helper.
+        tree(directory); tree(proof_root)  # Keep both presentation and proof closures bounded.
         return result
 
     for service, scope in inventory['services'].items():
         home = directory / service; home.mkdir(mode=0o700)
+        proof_home = proof_root / service; proof_home.mkdir(mode=0o700)
         resource_count = None
         base = [sys.executable, '-I', '-S', str(HERE / 'evidence_packet.py')]
         common = ['--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot']]
         source_scope = any(r['kind'] == 'THREAD_SCOPE' for r in scope['sourceInventory'])
         action = 'discover-files' if source_scope else 'discover'
-        invoke(base + [action, *common, '--work', scope['work'], '--output-dir', str(home / 'discovery')], home, 'discover')
-        discovery = load(home / 'discovery/packet.json')
+        invoke(base + [action, *common, '--work', scope['work'], '--output-dir', str(proof_home / 'discovery')], proof_home, 'discover')
+        discovery = load(proof_home / 'discovery/packet.json')
         need(discovery.get('queryComplete'), 'PREPARED_DISCOVERY_INCOMPLETE', service=service)
         choices = discovery['choices']
         if source_scope:
             selection = [{'file': row['file']} for row in choices]
             count += len(selection)
             need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT')
-            save(home / 'selection.json', selection)
-            arguments = ['read-files', *common, '--packet', str(home / 'discovery/packet.json')]
+            save(proof_home / 'selection.json', selection)
+            arguments = ['read-files', *common, '--packet', str(proof_home / 'discovery/packet.json')]
         else:
             pairs = compiler_source_pairs(choices)
-            save(home / 'resources-selection.json', {'query': {'kind': 'RETAINED_RESOURCE', 'projection': 'NAVIGATION'}})
+            save(proof_home / 'resources-selection.json', {'query': {'kind': 'RETAINED_RESOURCE', 'projection': 'NAVIGATION'}})
             resources = invoke([sys.executable, '-I', '-S', str(HERE / 'work_session.py'), 'read',
                                 '--launcher', job['clew'], '--root', job['root'], '--work', scope['work'],
-                                '--input-root', str(home), '--input', 'resources-selection.json',
-                                '--output', 'resources', '--max-pages', '128'], home, 'resources')
+                                '--input-root', str(proof_home), '--input', 'resources-selection.json',
+                                '--output', 'resources', '--max-pages', '128'], proof_home, 'resources')
             need(resources['status'] == 'COMPLETE', 'PREPARED_RESOURCES_INCOMPLETE')
-            resource_rows = load(home / 'resources/read-collection/items.json')
+            resource_rows = load(proof_home / 'resources/read-collection/items.json')
             resource_count = len(resource_rows)
             for row in resource_rows:
                 need(row['kind'] == 'SOURCE_NAVIGATION', 'PREPARED_RESOURCE_KIND_CHANGED')
@@ -344,12 +351,12 @@ def _prepare_sources(job, inventory, directory):
                 need(identity not in pairs or pairs[identity] == reference, 'PREPARED_SOURCE_REFERENCE_CHANGED')
                 pairs[identity] = reference
             selection = [{'sourceId': identity, 'sourceReference': reference} for identity, reference in sorted(pairs.items())]
-            save(home / 'selection.json', selection)
+            save(proof_home / 'selection.json', selection)
             arguments = ['read-sources', *common, '--work', scope['work']]
         need(selection, 'PREPARED_SOURCE_SELECTION_EMPTY', service=service)
-        invoke(base + [*arguments, '--selection', str(home / 'selection.json'), '--source-union',
-                       '--output-dir', str(home / 'read')], home, 'read')
-        manifest = home / 'read/citations.json'
+        invoke(base + [*arguments, '--selection', str(proof_home / 'selection.json'), '--source-union',
+                       '--output-dir', str(proof_home / 'read')], proof_home, 'read')
+        manifest = proof_home / 'read/citations.json'
         _, packet, _, entries = M['C']['load'](manifest)
         need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work'], 'PREPARED_SOURCE_SCOPE_CHANGED')
         for handle, entry in entries.items():
@@ -366,7 +373,7 @@ def _prepare_sources(job, inventory, directory):
         for key, region in regions.items():
             raw = region['text'].encode()
             full = [h for h in region['citations'] if bindings[h]['byteSlice'] == {'startByte': 0, 'endByte': len(raw)}]
-            lines = ['# ' + region['file'], 'Cite: ' + (full[0] if full else 'see citation-index.json for original fragments'), '']
+            lines = ['# ' + region['file'], 'Cite: ' + (full[0] if full else ', '.join(region['citations'])), '']
             fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', region['text'])), default=3))
             lines += [fence, region['text'], fence, '']
             view = '\n'.join(lines); visible_bytes += len(view.encode())
@@ -374,7 +381,7 @@ def _prepare_sources(job, inventory, directory):
             (views / (key + '.md')).write_text(view, encoding='utf-8')
             view_index[key] = {'file': region['file'], 'view': 'views/' + key + '.md', 'codeBytes': len(raw),
                                'coveringCitations': full, 'originalCitations': region['citations']}
-        save(home / 'citation-index.json', bindings)
+        save(proof_home / 'citation-index.json', bindings)
         source_ids = {value['source']['id'] for value in bindings.values()}
         requirements_index, proofs, ready = {}, {}, {}
         source_texts = {o['source']['id']: packet['texts'][o['textKey']] for o in packet['outcomes']}
@@ -406,10 +413,10 @@ def _prepare_sources(job, inventory, directory):
                     'views': list(dict.fromkeys(view_index[bindings[h]['region']]['view'] for h in suggested)),
                     'meaningReviewed': False}
         save(home / 'requirements.json', ready)
-        save(home / 'views.json', view_index)
+        save(home / 'views.json', {k: {field: value for field, value in row.items() if field != 'originalCitations'} for k, row in view_index.items()})
         services[service] = {'work': scope['work'], 'revision': scope['revision'], 'coverage': scope['coverage'],
                              'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': str(manifest),
-                             'citationIndex': str(home / 'citation-index.json'), 'requirements': requirements_index,
+                             'citationIndex': str(proof_home / 'citation-index.json'), 'requirements': requirements_index,
                              'discoveryProofs': proofs, 'records': len(bindings), 'regions': len(regions), 'union': metrics,
                              'retainedResourceRecords': resource_count,
                              'inventoryKind': 'SOURCE_FILES' if source_scope else 'COMPILER_SYMBOLS_AND_RETAINED_RESOURCES',
@@ -446,7 +453,7 @@ def _prepare_sources(job, inventory, directory):
               'snapshot': job['snapshot'], 'requirements': inventory['requirements'],
               'seconds': time.monotonic() - started, 'visibleBytes': visible_bytes, 'sourceFiles': count,
               'sourceBindings': len(all_bindings), 'semanticTruthAssessed': False}
-    save(directory / 'proof-index.json', result)
+    save(proof_root / 'index.json', result)
     save(directory / 'index.json', {
         'services': {service: {'index': service + '/index.md', 'requirements': service + '/requirements.json'}
                      for service in services},
@@ -481,7 +488,7 @@ def navigation_starter(inventory):
             if row['kind'] != 'ENTRY':
                 continue
             label = (row['method'] + ' ' + row['path']) if row.get('method') else row['entryKind']
-            kind = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka', 'SCHEDULED_JOB': 'scheduled'}.get(row['entryKind'], 'other')
+            kind = W['entry_kind'](row, need)
             starts.append({'title': label, 'target': row['page'] + '#handler', 'kind': kind,
                            'summary': 'Describe this entry from its retained source.'})
         services.append({'id': service, 'title': service, 'overview': overview,
@@ -529,6 +536,9 @@ def prepare(job_path, run):
                  'requirements': expected, 'scope': 'Retained captured source; unclassified surfaces and runtime registration remain explicit limits.'}
     save(inputs / 'inventory.json', inventory)
     prepare_sources(job, inventory, inputs / 'author-source')
+    workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
+    (workspace / 'draft').mkdir(mode=0o700)
+    W['install'](inventory, run, globals())
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
             'authorExecutableDigest': sha(Path(job['author']['executable']).read_bytes()),
@@ -537,8 +547,6 @@ def prepare(job_path, run):
         pins['componentTicketDigest'] = sha(Path(job['components']['path']).read_bytes())
     pins['inputFiles'] = tree(inputs)
     save(run / 'pins.json', pins)
-    workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
-    (workspace / 'draft').mkdir(mode=0o700)
     author_input = author_inventory(inventory)
     save(workspace / 'inventory.json', author_input)
     save(workspace / 'draft/navigation.json', navigation_starter(inventory))
@@ -581,7 +589,11 @@ def inputs_unchanged(run):
 
 def review_for_run(run):
     _, inventory, _ = frozen_inputs(run)
-    return review_template(inventory, load(run / 'workspace/draft/original.json'))
+    result = review_template(inventory, load(run / 'workspace/draft/original.json'))
+    if (run / 'inputs/scaffold.json').exists():
+        for row in inventory['requirements']:
+            if row['kind'] != 'ENTRY':result['requirements'][row['id']]['section'] = 'clew-scope'
+    return result
 
 
 def check_source_membership(job, inventory, entry, checks, cache):
@@ -630,6 +642,8 @@ def cite_entries(job, inventory, draft, checks, prepared=None):
     manifests = sorted((draft / 'reads').rglob('citations.json'))
     if prepared is not None:
         manifests += sorted(prepared.rglob('citations.json'))
+        proof = prepared.parent / 'source-proof'
+        if proof.exists():manifests += sorted(proof.rglob('citations.json'))
     need(manifests, 'SOURCE_READS_REQUIRED')
     entries = {}
     for path in manifests:
@@ -855,6 +869,7 @@ def verify(run, *, debug=False):
         stage = 'output'; before = tree(draft)
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
+        need(not W['unfinished'](original), 'UNFINISHED_SCAFFOLD', pages=W['unfinished'](original))
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, _, _ = M['compose_pages'](original)
@@ -963,7 +978,7 @@ def promote(run, destination=None):
     return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output), 'publicationPerformed': False}
 
 
-def author(run):
+def author(run, *, unit=None, repair=False):
     run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
     tokens = token_accounting(attempts)
@@ -973,15 +988,23 @@ def author(run):
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
-    need(remaining > 0 and len(attempts) <= job['budget']['maxRepairs'], 'AUTHOR_BUDGET_EXHAUSTED')
+    kind = 'repair' if repair or attempts and unit is None else 'unit' if unit else 'full'
+    repair_count = sum(a.get('kind', 'full' if i == 0 else 'repair') == 'repair' for i, a in enumerate(attempts))
+    need(remaining > 0 and (kind != 'repair' or repair_count < job['budget']['maxRepairs']), 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
     if not attempts:
         prompt = (run / 'prompt.txt').read_bytes()
+    elif unit and not repair:
+        prompt = encode({'instruction': 'Continue the same frozen request and source scope. Complete only this related-page unit, save local page files, run the supported early check and repair them, then end this turn. Do not rebuild previous units. The complete-docset unit owns shared processes, data/navigation additions and the full bidirectional review; no scope may be dropped.',
+                         'unit': unit, 'budgetPlan': state.get('budgetPlan'), 'remainingSeconds': int(remaining)})
     else:
         failures = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
         prompt = encode({'instruction': 'Repair the draft and repeat your bidirectional self-review. Preserve scope and existing unchanged reads; acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
                          'failures': failures.get('checks', failures),
-                         'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - len(attempts)})
+                         'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - repair_count})
+    if unit:
+        prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
+                          'stopAfterUnit': True, 'fullRequestStillRequired': True})
     (folder / 'prompt.txt').write_bytes(prompt)
     backend = job['author']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
@@ -994,7 +1017,8 @@ def author(run):
         need(state.get('threadId'), 'INTERRUPTED_AUTHOR_SESSION_UNAVAILABLE')
         argv += ['resume', state['threadId']]
     argv += ['-']
-    attempt = {'argv': argv, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
+    attempt = {'argv': argv, 'kind': kind, 'unit': unit['id'] if unit else None,
+               'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
     usage = None; interrupted = False
     with (folder / 'stdout.jsonl').open('wb') as stdout, (folder / 'stderr.log').open('wb') as stderr:
@@ -1022,6 +1046,7 @@ def author(run):
     attempt['draftFiles'] = tree(run / 'workspace/draft')
     shutil.copytree(run / 'workspace/draft', folder / 'draft')
     attempt.update(status='INTERRUPTED' if interrupted else 'COMPLETED', exitCode=process.returncode, usage=usage)
+    if unit and not interrupted and process.returncode == 0:state['completedUnit'] = unit['id']
     tokens = token_accounting(attempts)
     state['tokenAccounting'] = tokens
     state['usageAvailable'] = tokens['status'] == 'MEASURED'
@@ -1042,6 +1067,7 @@ def author(run):
 
 def execute(run, *, debug=False):
     run = Path(run).absolute(); state = load(run / 'state.json')
+    if (run / 'inputs/scaffold.json').exists():return W['run_units'](run, globals(), debug)
     while True:
         if state['status'] != 'AUTHOR_COMPLETED':
             state = author(run)
@@ -1056,22 +1082,34 @@ def execute(run, *, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template'))
+    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--input', type=Path)
+    parser.add_argument('--page', action='append', default=[])
+    parser.add_argument('--scaffold', action='store_true')
     args = parser.parse_args()
     lock = None
     try:
-        if args.command not in ('prepare', 'review-template'):
+        if args.command in ('save-pages', 'check'):
+            need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
+            lock = os.open(args.run_dir / 'workspace/.edit.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        elif args.command not in ('prepare', 'review-template'):
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / '.runner.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
-        if args.command == 'review-template':
+        if args.command == 'save-pages':
+            need(args.input is not None, 'PAGE_INPUT_REQUIRED')
+            result = W['save_pages'](args.run_dir.absolute(), args.input, globals())
+        elif args.command == 'check':
+            result = W['check'](args.run_dir.absolute(), args.page, args.scaffold, globals())
+        elif args.command == 'review-template':
             result = review_for_run(args.run_dir.absolute())
             print(encode(result).decode(), end='')
             return 0
@@ -1080,14 +1118,14 @@ def main():
         elif args.command == 'run': result = execute(args.run_dir, debug=args.debug)
         elif args.command == 'verify': result = verify(args.run_dir, debug=args.debug)
         else: result = promote(args.run_dir, args.output_dir)
-    except (Stop, OSError, ValueError, TypeError, KeyError) as error:
+    except (Stop, E['Stop'], M['Stop'], OSError, ValueError, TypeError, KeyError) as error:
         result = {'status': 'BLOCKED' if getattr(error, 'blocked', False) else 'FAILED',
-                  'code': getattr(error, 'code', 'INVALID_RUN_INPUT'), 'details': getattr(error, 'details', str(error)),
+                  'code': getattr(error, 'code', getattr(error, 'status', 'INVALID_RUN_INPUT')), 'details': getattr(error, 'details', str(error)),
                   'publicationPerformed': False}
     finally:
         if lock is not None:os.close(lock)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED') else 2
+    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED') else 2
 
 
 if __name__ == '__main__':
