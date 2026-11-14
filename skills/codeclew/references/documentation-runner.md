@@ -111,6 +111,10 @@ counter makes the primary metric explicitly unavailable; invalid counters refuse
 completion. Known usage supplies a lower bound that can prove an over-budget
 failure; it cannot prove a within-budget pass. Unavailable primary usage blocks
 READY and another author invocation, preserving the draft for diagnosis.
+Set maxModelTokens to null when no token cutoff was requested: measured usage
+remains mandatory, including every same-author stage and repair. Numeric cutoffs
+remain supported. wallSeconds is an explicit operational anti-hang guard (up to
+7200 seconds), separate from quality and efficiency acceptance.
 Counters arrive at turn completion, so a token limit is checked
 then and prevents readiness/further calls; it is not a provider billing guarantee
 or an enforceable token ceiling inside one CLI turn. Actual wall timeout is enforced.
@@ -132,6 +136,16 @@ the same thread, source, prompt, raw history, start time and all original limits
 Then `run --run-dir RUN` checks the completed unit before advancing, without
 regenerating it. The saved continuation prompt names the successor helper only;
 record the mixed helper lineage rather than claiming an unchanged treatment.
+
+New prepared workspaces pin AGENTS.md, a project-local prepared codeclew skill
+profile and the short ./docs save-pages/check/review-template entry. This keeps
+the admitted workflow discoverable after compaction, without restarting generic
+admission or acquisition. Changes to these managed files refuse frozen checks.
+The pinned per-process skills.config disables the generic codeclew name and
+enables this exact project profile; user-global configuration stays unchanged.
+Save/check stdout is compact by default; complete receipts remain in the workspace
+and --full returns the original receipt. Failure diagnostics retain their actual
+code, source/parser details and affected page/fragment/field.
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.

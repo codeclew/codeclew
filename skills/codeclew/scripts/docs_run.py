@@ -245,8 +245,10 @@ def validate_job(job):
     need(Path(job['author']['executable']).is_absolute() and job['author']['model']
          and job['author']['reasoningEffort'] in ('none', 'low', 'medium', 'high', 'xhigh', 'max'), 'INVALID_AUTHOR')
     closed(job['budget'], ('wallSeconds', 'maxModelTokens', 'maxRepairs'))
-    for key, lower, upper in (('wallSeconds', 1, 3600), ('maxModelTokens', 1, 250000), ('maxRepairs', 0, 2)):
+    for key, lower, upper in (('wallSeconds', 1, 7200), ('maxRepairs', 0, 2)):
         need(type(job['budget'][key]) is int and lower <= job['budget'][key] <= upper, 'INVALID_BUDGET', field=key)
+    limit = job['budget']['maxModelTokens']
+    need(limit is None or type(limit) is int and limit > 0, 'INVALID_BUDGET', field='maxModelTokens')
     if 'components' in job:
         closed(job['components'], ('path', 'digest'))
         need(Path(job['components']['path']).is_absolute(), 'ABSOLUTE_LOCATOR_REQUIRED')
@@ -593,10 +595,13 @@ def prepare(job_path, run):
     workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
     (workspace / 'draft').mkdir(mode=0o700)
     W['install'](inventory, run, globals())
+    author_files = W['install_author_entry'](run, SKILL, sys.executable)
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
             'authorExecutableDigest': sha(Path(job['author']['executable']).read_bytes()),
-            'nodeExecutableDigest': sha(Path(job['node']).read_bytes())}
+            'nodeExecutableDigest': sha(Path(job['node']).read_bytes()),
+            'authorSkillsConfig': W['author_skill_config'](run),
+            'authorWorkspaceFiles': {name: sha((workspace / name).read_bytes()) for name in author_files}}
     if 'components' in job:
         pins['componentTicketDigest'] = sha(Path(job['components']['path']).read_bytes())
     pins['inputFiles'] = tree(inputs)
@@ -627,6 +632,13 @@ def frozen_inputs(run, *, skill=SKILL):
          and sha(Path(job['node']).read_bytes()) == pins['nodeExecutableDigest']
          and digest(load(run / 'workspace/inventory.json')) == pins.get('authorInventoryDigest', pins['inventoryDigest']), 'FROZEN_INPUTS_CHANGED')
     need(tree(job['renderer'], skill=True) == pins['renderer']['files'], 'RENDERER_CHANGED')
+    for name, expected in pins.get('authorWorkspaceFiles', {}).items():
+        path = run / 'workspace' / name
+        need(path.is_file() and not path.is_symlink() and sha(path.read_bytes()) == expected,
+             'PREPARED_AUTHOR_ENTRY_CHANGED', file=name)
+    if 'authorSkillsConfig' in pins:
+        need(pins['authorSkillsConfig'] == W['author_skill_config'](run),
+             'PREPARED_AUTHOR_ENTRY_CHANGED', file='authorSkillsConfig')
     if 'components' in job:
         need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
     return job, load(run / 'inputs/inventory.json'), pins
@@ -680,7 +692,7 @@ def recover_accounting(run, previous_skill):
     corrected = token_accounting(updated['attempts'])
     need(old_usage['status'] == corrected['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE')
     maximum = job['budget']['maxModelTokens']
-    need(old_usage['budgetTokens'] == old_state['modelTokens'] > maximum
+    need(type(maximum) is int and old_usage['budgetTokens'] == old_state['modelTokens'] > maximum
          and corrected['budgetTokens'] < maximum, 'FALSE_BUDGET_STOP_NOT_PROVEN')
     need(type(old_state.get('authorStartedAt')) in (int, float)
          and 0 <= time.time() - old_state['authorStartedAt'] < job['budget']['wallSeconds'], 'AUTHOR_WALL_BUDGET_EXHAUSTED')
@@ -977,7 +989,8 @@ def verify(run, *, debug=False):
         stage = 'author'; draft = run / 'workspace/draft'
         tokens = token_accounting(accounting.get('attempts', []))
         need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-        need(budget_tokens(tokens) <= job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+        limit = job['budget']['maxModelTokens']
+        need(limit is None or budget_tokens(tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
         need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
         last = accounting.get('attempts', [])[-1:]
         need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
@@ -1097,11 +1110,12 @@ def promote(run, destination=None):
 
 
 def author(run, *, unit=None, repair=False):
-    run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
+    run = Path(run).absolute(); job, inventory, pins = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
     tokens = token_accounting(attempts)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(budget_tokens(tokens) < job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXHAUSTED')
+    limit = job['budget']['maxModelTokens']
+    need(limit is None or budget_tokens(tokens) < limit, 'AUTHOR_TOKEN_BUDGET_EXHAUSTED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
@@ -1122,7 +1136,10 @@ def author(run, *, unit=None, repair=False):
                          'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - repair_count})
     if unit:
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
-                          'stopAfterUnit': True, 'fullRequestStillRequired': True})
+                          'stopAfterUnit': True, 'fullRequestStillRequired': True,
+                          'preparedAuthorContract': str(SKILL / 'references/docs-run-author.md'),
+                          'authorCommands': './docs save-pages --input pages/PAGE.md.json; ./docs check --page PAGE.md; ./docs review-template',
+                          'workflow': 'Continue the admitted prepared-author workflow. Do not rediscover the globally installed skill or restart generic source acquisition/export. Full semantic requirements and source reads remain required.'})
     if state.get('accountingRecovery'):
         prompt += encode({'instruction': 'This same logical run recovered a cumulative-counter accounting error. Use the successor helper below for save-pages, check and review-template; keep your existing source reads, pages and context. The request, source scope and original time/token/repair caps are unchanged.',
                           'helper': str(HERE / 'docs_run.py'), 'runDirectory': str(run)})
@@ -1132,6 +1149,8 @@ def author(run, *, unit=None, repair=False):
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
             '-c', 'approval_policy="never"', '-s', 'workspace-write', '-C', str(run / 'workspace'),
             '--add-dir', job['root'], '--disable', 'multi_agent', '-o', str(folder / 'last-message.txt')]
+    if 'authorSkillsConfig' in pins:
+        argv += ['-c', pins['authorSkillsConfig']]
     if backend.get('stateRoot'):
         argv += ['--add-dir', backend['stateRoot']]
     if attempts:
@@ -1175,12 +1194,12 @@ def author(run, *, unit=None, repair=False):
     state['modelTokens'] = tokens['budgetTokens']
     state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 else
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
-                       'AUTHOR_BUDGET_EXCEEDED' if budget_tokens(tokens) > job['budget']['maxModelTokens'] else
+                       'AUTHOR_BUDGET_EXCEEDED' if limit is not None and budget_tokens(tokens) > limit else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
     need(not interrupted and process.returncode == 0, 'AUTHOR_NOT_COMPLETED')
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(budget_tokens(tokens) <= job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+    need(limit is None or budget_tokens(tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
     # This is reported turn accounting, available after a turn, not a provider
     # billing guarantee or a continuously enforceable in-turn token ceiling.
@@ -1213,6 +1232,7 @@ def main():
     parser.add_argument('--page', action='append', default=[])
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
+    parser.add_argument('--full', action='store_true', help='Print complete local save/check receipt instead of its compact summary.')
     args = parser.parse_args()
     lock = None
     try:
@@ -1250,6 +1270,8 @@ def main():
                   'publicationPerformed': False}
     finally:
         if lock is not None:os.close(lock)
+    if args.command in ('save-pages', 'check') and not args.full:
+        result = W['summary'](result)
     print(encode(result).decode(), end='')
     return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED') else 2
 

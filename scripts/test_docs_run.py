@@ -326,6 +326,57 @@ else:
         self.assertEqual(state['budgetPlan']['repairReserveEstimate'],130000)
         self.assertTrue(state['budgetPlan']['advisoryOnly'])
 
+    def test_no_token_cutoff_still_requires_measured_usage_and_full_export(self):
+        self.readmit_budget(None,0);self.mode.write_text('budget')
+        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
+        state=D['load'](self.run/'state.json')
+        self.assertGreater(state['modelTokens'],250000)
+        self.assertIsNone(state['budgetPlan']['remainingTokens'])
+        state['attempts'][-1]['usage'].pop('cached_input_tokens');D['save'](self.run/'state.json',state)
+        failed=self.check();self.assertEqual(failed['checks']['author']['code'],'AUTHOR_USAGE_UNAVAILABLE')
+        with self.assertRaises(D['Stop']) as error:D['author'](self.run)
+        self.assertEqual(error.exception.code,'AUTHOR_USAGE_UNAVAILABLE')
+
+    def test_short_entry_compact_success_full_receipts_and_actionable_errors(self):
+        page=self.local_page();self.save_local(page);self.local_reads()
+        wrapper=self.run/'workspace/docs'
+        def call(*args):
+            return subprocess.run([str(wrapper),*args],cwd=self.run/'workspace',capture_output=True,text=True)
+        saved=call('save-pages','--input','pages/'+page['page']+'.json')
+        self.assertEqual(saved.returncode,0,saved.stdout+saved.stderr)
+        compact=json.loads(saved.stdout);full=D['load'](self.run/'workspace/last-save-pages.json')
+        self.assertEqual(compact['changed'],full['changed'])
+        self.assertLess(len(saved.stdout),len(D['encode'](full)))
+        checked=call('check','--page',page['page']);self.assertEqual(checked.returncode,0,checked.stdout+checked.stderr)
+        compact=json.loads(checked.stdout);full=D['load'](self.run/'workspace/last-local-check.json')
+        self.assertTrue(compact['sourceBindingsChecked']);self.assertFalse(compact['ready'])
+        self.assertLess(len(checked.stdout),len(D['encode'](full)))
+        complete=call('check','--page',page['page'],'--full')
+        self.assertEqual(complete.returncode,0,complete.stdout+complete.stderr)
+        self.assertEqual(json.loads(complete.stdout),D['load'](self.run/'workspace/last-local-check.json'))
+        page['fragments'][1]['text']+='\n[Wrong](missing.md#anchor)\n';self.save_local(page)
+        failed=call('check','--page',page['page']);self.assertEqual(failed.returncode,2)
+        diagnostic=json.loads(failed.stdout);self.assertTrue(diagnostic['code'])
+        self.assertEqual(diagnostic['locations'][0]['page'],page['page'])
+        self.assertEqual(diagnostic['locations'][0]['fragment'],'entry')
+        self.assertTrue(diagnostic['locations'][0]['field'])
+
+    def test_managed_author_entry_and_local_skill_are_pinned(self):
+        for name in ['AGENTS.md','.agents/skills/codeclew/SKILL.md','docs']:
+            path=self.run/'workspace'/name;raw=path.read_bytes();path.write_bytes(raw+b'\nchanged')
+            with self.assertRaises(D['Stop']) as error:D['frozen_inputs'](self.run)
+            self.assertEqual(error.exception.code,'PREPARED_AUTHOR_ENTRY_CHANGED')
+            path.write_bytes(raw)
+        pins=D['load'](self.run/'pins.json');original=pins['authorSkillsConfig'];pins['authorSkillsConfig']='skills.config=[]'
+        D['save'](self.run/'pins.json',pins)
+        with self.assertRaises(D['Stop']) as error:D['frozen_inputs'](self.run)
+        self.assertEqual(error.exception.code,'PREPARED_AUTHOR_ENTRY_CHANGED')
+        pins['authorSkillsConfig']=original;D['save'](self.run/'pins.json',pins)
+        wrapper=self.run/'workspace/docs'
+        result=subprocess.run([str(wrapper),'run'],cwd=self.run/'workspace',capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(D['load'](self.run/'state.json')['attempts'],[])
+
     def check(self, debug=False):
         return D['verify'](self.run, debug=debug)
 

@@ -81,6 +81,61 @@ def unfinished(original):
             not any('id' in f and 'evidence' in f for f in p['fragments'])]
 
 
+def install_author_entry(run, skill, python):
+    workspace = run / 'workspace'
+    contract = str(skill / 'references/docs-run-author.md')
+    instructions = ('# Prepared Codeclew author\n\n'
+        'This run has already admitted its runtime, source scope and workflow.\n'
+        'Use the local codeclew skill profile and read ' + contract + '.\n'
+        'Keep that full semantic contract through every unit and context compaction.\n'
+        'Do not restart the globally installed skill, generic HTTP closure, source\n'
+        'admission or export workflow. The caller already owns those operations.\n'
+        'Use ./docs save-pages --input pages/PAGE.md.json, ./docs check --page PAGE.md,\n'
+        'and ./docs review-template. Finish the assigned unit, retain source reads\n'
+        'and local page files, and perform the required bidirectional semantic review.\n'
+        'Successful checks print compact summaries. Full receipts remain on disk\n'
+        'and --full is available for diagnostics; do not reread assembled checker\n'
+        'inputs after PASS. Review the actual source and relevant saved page instead.\n'
+        'Neither a local check nor this scaffold certifies meaning or full readiness.\n'
+        'Do not modify this entry, ./docs or the local skill profile.\n')
+    (workspace / 'AGENTS.md').write_text(instructions, encoding='utf-8')
+    profile = workspace / '.agents/skills/codeclew/SKILL.md';profile.parent.mkdir(parents=True)
+    profile.write_text('---\nname: codeclew\ndescription: Author documentation in this already prepared Codeclew run, using its admitted retained sources and fixed final gates.\n---\n\n'
+        '# Prepared documentation author\n\nRead ' + contract + '.\n\n'
+        'This project profile selects the prepared-author workflow for this run.\n'
+        'Use ./docs and the local AGENTS.md; keep the full request, source scope,\n'
+        'semantic self-review and final source/route/export requirements unchanged.\n'
+        'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
+    helper = workspace / 'docs'
+    helper.write_text('#!' + python + '\nimport runpy,sys\n'
+        'if len(sys.argv)<2 or sys.argv[1] not in ("save-pages","check","review-template"):\n'
+        ' raise SystemExit("Use: ./docs save-pages --input pages/PAGE.md.json | check --page PAGE.md | review-template")\n'
+        'sys.argv=[' + repr(str(skill / 'scripts/docs_run.py')) + ',*sys.argv[1:],"--run-dir",' + repr(str(run)) + ']\n'
+        'runpy.run_path(sys.argv[0],run_name="__main__")\n', encoding='utf-8');helper.chmod(0o700)
+    return ['AGENTS.md', '.agents/skills/codeclew/SKILL.md', 'docs']
+
+
+def author_skill_config(run):
+    # Per-process CLI selection: the prepared profile wins; global user config
+    # stays unchanged. Path selection overrides the disabled generic name.
+    profile = str(run / 'workspace/.agents/skills/codeclew/SKILL.md')
+    return 'skills.config=[{name="codeclew",enabled=false},{path=' + json.dumps(profile) + ',enabled=true}]'
+
+
+def summary(result):
+    """Small author feedback; complete receipts and source diagnostics stay available."""
+    small = {'status': result['status'], 'ready': False}
+    if result['status'] == 'PAGES_SAVED':
+        small.update(changed=result['changed'], unchangedCount=len(result['unchanged']),
+                     unfinishedCount=len(result['unfinishedPages']), receipt='last-save-pages.json')
+    elif 'selectedPages' in result:
+        small.update(selectedCount=len(result['selectedPages']), unfinishedCount=len(result['unfinishedPages']),
+                     sourceBindingsChecked=result['sourceBindingsChecked'], receipt='last-local-check.json')
+    for key in ('code', 'stage', 'details', 'locations', 'pendingTargets', 'recovery'):
+        if key in result:small[key] = result[key]
+    return small
+
+
 def save_pages(run, input_path, api):
     api['frozen_inputs'](run)
     patch = api['load'](input_path)
@@ -117,9 +172,11 @@ def save_pages(run, input_path, api):
     before = {p['page']: api['digest'](p) for p in original['pages']}
     original['pages'] = list(by_name.values())
     api['save'](run / 'workspace/draft/original.json', original)
-    return {'status': 'PAGES_SAVED', 'changed': changed,
+    result = {'status': 'PAGES_SAVED', 'changed': changed,
             'unchanged': [name for name, value in before.items() if name not in changed and api['digest'](by_name[name]) == value],
             'unfinishedPages': unfinished(original), 'ready': False, 'semanticTruthAssessed': False}
+    api['save'](run / 'workspace/last-save-pages.json', result)
+    return result
 
 
 def locations(original, details):
@@ -256,7 +313,8 @@ def run_units(run, api, debug=False):
         repair = state.get('status') == 'REPAIR_REQUIRED'
         if not (state.get('status') == 'AUTHOR_COMPLETED' and state.get('completedUnit') == unit['id']):
             accounting = api['token_accounting'](state['attempts'])
-            remaining = job['budget']['maxModelTokens'] - api['budget_tokens'](accounting)
+            limit = job['budget']['maxModelTokens']
+            remaining = None if limit is None else limit - api['budget_tokens'](accounting)
             repairs = [a for a in state['attempts'] if a.get('kind') == 'repair']
             observed = repairs[-1:] or state['attempts'][-1:]
             deltas = accounting.get('attemptUsage', [])

@@ -1,7 +1,10 @@
 Original request: {request}
 
-You are the sole documentation author using {model}. Read
+You are the sole documentation author using {model}. Use this workspace's local
+.agents/skills/codeclew/SKILL.md profile and read its prepared-author contract at
 {skill}/references/docs-run-author.md, then the assigned unit appended below.
+AGENTS.md preserves this workflow through context compaction; do not rediscover
+the globally installed skill or restart generic admission/acquisition/export.
 The caller owns this run; do not start another runner or model.
 
 Admitted clew: {clew}
@@ -23,13 +26,16 @@ previous documentation/critic answers, publish, or alter frozen inputs/budgets.
 For each saved page, replace the unfinished placeholder with source-backed prose,
 field tables and the actual handler-started sequence. Keep exact page/handler IDs.
 Save only the affected page(s), then run the supported early check:
-python3 -I -S {skill}/scripts/docs_run.py save-pages --run-dir {run} --input {run}/workspace/pages/PAGE.md.json
-python3 -I -S {skill}/scripts/docs_run.py check --run-dir {run} --page PAGE.md
+./docs save-pages --input pages/PAGE.md.json
+./docs check --page PAGE.md
 Repeat --page for a related group. These commands are explicitly allowed now.
 Fix the precise local error in that saved file, save and check again. Managed
 anchors and dedicated anchor-fragment separators are supplied by save-pages.
 Do not add a second handler/clew-scope anchor. Preserve other pages and source reads.
 Do not generate or rewrite the whole site to repair one file.
+Successful commands print compact summaries; full receipts stay on disk and
+--full is available for targeted diagnostics. After a successful check, review
+the actual source and relevant saved page, not the assembled sequences.json input.
 
 Before ending a unit, compare the actual source to all its explanations/diagrams,
 then every visible claim back to source; preserve consequential branches, effects,
@@ -44,7 +50,7 @@ routes.json for multiple services, including Starts/Includes/Ends and real targe
 Add extra page files in the same existing original format as needed. Update
 navigation.json with actual reader labels and owned data pages, preserving entries.
 Then generate the global review shell and fill actual semantic assessments:
-python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
+./docs review-template > draft/self-review.json
 Requirements use EXPLAINED or EXPLICIT_UNKNOWN with actual local sections;
 DISCOVERY also records NO_ADDITIONAL_STARTS or ADDITIONAL_STARTS with genuine
 handles/entry diagrams. Claims use SUPPORTED or EXPLICIT_UNKNOWN. Unresolved is an

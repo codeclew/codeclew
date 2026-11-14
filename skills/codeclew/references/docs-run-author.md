@@ -5,6 +5,8 @@ on that runtime. One author/context works through related-page units; the comple
 request remains required. Finish only the assigned unit, then end the turn so the
 runner can check its cost and resume you for the next unit. Do not start a runner,
 other models, capture, refresh, publish, or read source repositories/private stores.
+The local skill profile and AGENTS.md select this prepared workflow; retain it
+after context compaction rather than restarting the global generic workflow.
 
 ## Short working loop
 
@@ -18,18 +20,21 @@ other models, capture, refresh, publish, or read source repositories/private sto
    placeholder with a reader explanation and evidence-bound diagram/field table.
    Extend the prepared entry sequence through actual work and outcomes. The first
    handler identity/address is fixed. Keep the original request's data/process scope.
-3. Save with `docs_run.py save-pages --run-dir RUN --input PAGE_FILE`. This merges
+3. Save with `./docs save-pages --input pages/PAGE.md.json`. This merges
    only those pages into `draft/original.json`; other pages/reads remain intact.
    It supplies managed `handler`/`clew-scope` anchors. Do not type those anchors in
    authored fragments or use headings that duplicate them. For additional anchors,
    use a dedicated plain `{text:"<a id=\"name\"></a>"}` fragment: save-pages owns
    its block separators. Keep a sequence fence within one bound fragment.
-4. You ARE allowed and expected to run `docs_run.py check --run-dir RUN --page PAGE`
+4. You ARE allowed and expected to run `./docs check --page PAGE.md`
    (repeat `--page` for a related group). It binds selected claims through the real
    source rules and uses the same final parser/renderer and actual HTML link checks.
    Read its compact result. Fix the named saved page/fragment/field, save and repeat.
    Check output and the last valid preview live under `workspace/checks`; a failed
    preview never replaces `last-valid-preview.json`. Unit checks are not READY.
+   Success prints a compact summary; full receipts remain available on disk or
+   with `--full` for targeted diagnostics. Do not reread assembled sequences.json
+   after PASS; compare actual source with the relevant saved page and diagram.
 5. Compare source to every explanation and diagram, then every visible claim back
    to source. Repair the same saved unit. Check predicates/precedence, before/after
    effects, failures, response/error variants, defaults and completion boundaries.
@@ -47,7 +52,7 @@ Do not retransmit every page for a local failure.
 
 The `complete-docset` unit finishes shared process/routes/data navigation, resolves
 pending cross-page targets and runs the full bidirectional review. Only then call
-`review-template --run-dir RUN` and fill its actual assessments in self-review.json.
+`./docs review-template` and fill its actual assessments in self-review.json.
 The caller retains the full source-binding/export/coverage gate and promotion.
 A scaffold, UNIT_CHECKED, exit0 or DONE never means the complete site is READY.
 
