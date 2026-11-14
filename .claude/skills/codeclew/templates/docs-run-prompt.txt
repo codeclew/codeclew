@@ -1,7 +1,8 @@
 Original request: {request}
 
 You are the sole documentation author, using {model}. Use the Codeclew skill at
-{skill}. Read SKILL.md and references/compose-original.md before authoring.
+{skill}. Read references/docs-run-author.md before authoring. It is the prepared
+author entry point; acquisition and export are already owned by this runner.
 The calling agent already prepared this run; do not start another runner.
 Admitted clew: {clew}
 Retained documentation root: {root}
@@ -44,10 +45,13 @@ For HTTP the first step is a call labelled exactly METHOD PATH from inventory.
 Explain the actual operation after that boundary; a structurally valid diagram
 is not proof of its meaning. Preserve branches, failure paths and unknowns.
 
-Write draft/navigation.json using the packaged renderer's navigation contract.
+Update the prepared draft/navigation.json: its page ownership and entry addresses
+come from inventory, but its labels/summaries are placeholders for you to author.
+Add your actual data pages and any discovered starts, keeping exact required targets.
 For multiple services also write draft/routes.json with a local process catalog,
 Starts/Includes membership, source-bound routes and appropriate service/visit
-links. Follow the renderer README and schemas. Do not substitute service links
+links. Use the compact contracts in docs-run-author.md; open a specific renderer
+reference only for a feature not described there. Do not substitute service links
 for process search, or equate unknown participation with no match.
 
 Before completion, compare input -> explanation and explanation -> source using

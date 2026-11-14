@@ -112,6 +112,39 @@ else:
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
             D['save'](self.seed / name, value)
 
+    def test_author_projection_preserves_scope_and_addresses_without_proof_metadata(self):
+        before = D['digest'](self.inventory)
+        projected = D['load'](self.run / 'workspace/inventory.json')
+        self.assertEqual(projected, D['author_inventory'](self.inventory))
+        self.assertEqual(projected['services'][self.service]['coverage'], self.inventory['services'][self.service]['coverage'])
+        for actual, original in zip(projected['requirements'], self.inventory['requirements']):
+            for field in ('id', 'kind', 'service', 'page', 'handlerId', 'method', 'path', 'entryKind', 'file', 'topics', 'authority', 'boundaries'):
+                if field in original:self.assertEqual(actual[field], original[field])
+            self.assertNotIn('sourceIds', actual)
+        self.assertNotIn('work', projected['services'][self.service])
+        self.assertNotIn('sourceInventory', projected['services'][self.service])
+        self.assertEqual(D['digest'](self.inventory), before)
+        D['inputs_unchanged'](self.run)
+        projected['requirements'][0]['page'] = 'forged.md'
+        D['save'](self.run / 'workspace/inventory.json', projected)
+        with self.assertRaises(D['Stop']) as error:D['inputs_unchanged'](self.run)
+        self.assertEqual(error.exception.code, 'FROZEN_INPUTS_CHANGED')
+
+    def test_navigation_starter_keeps_native_start_kinds_and_exact_targets(self):
+        inventory = json.loads(json.dumps(self.inventory))
+        for number, kind in enumerate(('KAFKA_LISTENER', 'SCHEDULED_JOB', 'OTHER')):
+            row = {**self.entry, 'id': 'extra-' + str(number), 'page': 'extra-' + str(number) + '.md', 'entryKind': kind}
+            row.pop('method'); row.pop('path')
+            inventory['requirements'].append(row)
+        nav = D['navigation_starter'](inventory)
+        service = nav['services'][0]
+        entries = [r for r in inventory['requirements'] if r['kind'] == 'ENTRY']
+        self.assertEqual([s['kind'] for s in service['starts']], ['http', 'kafka', 'scheduled', 'other'])
+        self.assertEqual([s['target'] for s in service['starts']], [r['page'] + '#handler' for r in entries])
+        self.assertEqual(len(service['pages']), len(set(service['pages'])))
+        self.assertTrue(all(r['page'] in service['pages'] for r in inventory['requirements']))
+        self.assertEqual(nav['routes'], [])
+
     def generated(self):
         return D['author'](self.run)
 
@@ -493,6 +526,57 @@ else:
     def test_unknown_job_gate_override_is_rejected(self):
         job = dict(self.job); job['skipChecks'] = ['entrySequences']
         with self.assertRaises(D['Stop']):D['validate_job'](job)
+
+
+class SourceMembershipTests(unittest.TestCase):
+    """Identity metadata supplements complete body proof; never replaces it."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.calls=0
+        self.job={'clew':'trusted-test-engine','root':'retained','snapshot':'frozen'}
+        self.inventory={'services':{'owned':{'sourceInventory':[{'kind':'THREAD_SCOPE'}]}}}
+        self.source={'id':'owned-large','service':'owned','file':'large.json','revision':'same',
+                     'startLine':1,'endLine':5000,'textDigest':'sha256:complete-body',
+                     'authority':'EXACT_SNAPSHOT_TEXT','occurrence':{'startByte':0,'endByte':72092}}
+        self.entry={'work':'immutable-work','source':self.source,'sourceRecordDigest':'sha256:full-record'}
+        self.rows=[{'id':self.source['id'],'kind':'SOURCE_NAVIGATION','record':{
+            'authority':'NAVIGATION_ONLY','textDelivered':False,'recordDigest':self.entry['sourceRecordDigest'],
+            'source':dict(self.source),'fullRecordReference':'s7'}}]
+        self.response={'status':'COMPLETE','omittedRecords':0,'identity':{'snapshot':'frozen'}}
+
+    def collect(self,clew,root,work,output,**kwargs):
+        self.calls+=1;self.assertEqual(work,'immutable-work')
+        output.mkdir();D['save'](output/'items.json',self.rows)
+        return self.response
+
+    def test_large_saved_body_validates_by_native_record_identity_and_reuses_file_metadata(self):
+        with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['check_source_membership'].__globals__,{
+            'command':lambda *a,**k:self.fail('Source file scope must not request a stdout-sized body')}):
+            cache={};D['check_source_membership'](self.job,self.inventory,self.entry,self.root,cache)
+            D['check_source_membership'](self.job,self.inventory,self.entry,self.root,cache)
+        self.assertEqual(self.calls,1)
+
+    def test_foreign_digest_metadata_missing_member_and_incomplete_inventory_refuse(self):
+        changes=[lambda:setattr(self,'rows',[]),
+                 lambda:self.rows[0]['record'].update(recordDigest='sha256:foreign'),
+                 lambda:self.rows[0]['record']['source'].update(revision='other'),
+                 lambda:self.rows[0]['record'].update(textDelivered=True),
+                 lambda:self.response.update(omittedRecords=1),
+                 lambda:self.response['identity'].update(snapshot='other')]
+        for i,change in enumerate(changes):
+            with self.subTest(case=i):
+                original_rows=json.loads(json.dumps(self.rows));original_response=json.loads(json.dumps(self.response))
+                change();path=self.root/str(i);path.mkdir()
+                with patch.dict(D['T'],{'collect':self.collect}):
+                    with self.assertRaises(D['Stop']):D['check_source_membership'](self.job,self.inventory,self.entry,path,{})
+                self.rows=original_rows;self.response=original_response
+
+    def test_compiler_scope_keeps_supported_source_context_route(self):
+        self.inventory['services']['owned']['sourceInventory']=[]
+        response={'snapshot':'frozen','items':[{'kind':'SOURCE','id':self.source['id'],'record':self.source}]}
+        with patch.dict(D['T'],{'collect':lambda *a,**k:self.fail('No SOURCE inventory for compiler Work')}),patch.dict(
+            D['check_source_membership'].__globals__,{'command':lambda *a,**k:response}):
+            D['check_source_membership'](self.job,self.inventory,self.entry,self.root,{})
 
 
 if __name__ == '__main__':

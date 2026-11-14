@@ -415,7 +415,7 @@ def _prepare_sources(job, inventory, directory):
                              'inventoryKind': 'SOURCE_FILES' if source_scope else 'COMPILER_SYMBOLS_AND_RETAINED_RESOURCES',
                              'wholeServiceOrRuntimeCompletenessClaimed': False}
         lookup = ['# ' + service + ' source index', '', 'Open the individual source views needed for your explanation. Cite supplied handles directly.',
-                  'Full original bindings and exact slice reconstruction: citation-index.json.',
+                  'Ready requirement IDs, views and cite handles: requirements.json.',
                   'Capture coverage: ' + scope['coverage']['coverage'] + '. No runtime proof.', '']
         if metrics['fallbacks']:
             lookup += ['Some original fragments lack compatible exact coordinates; they remain separate, including overlapping text.', '']
@@ -430,7 +430,7 @@ def _prepare_sources(job, inventory, directory):
         for region in view_index.values():
             lookup.append('- ' + region['view'] + ': ' + region['file'] + ' (' + str(region['codeBytes']) + ' bytes of code)')
         lookup += ['', 'Open large resource bodies when needed; all remain available, with no scope filter or truncation.',
-                   'Requirements and ready evidence candidates: requirements.json. All original handles and full-file proofs: ../index.json.',
+                   'Read code views and cite their supplied handles. Raw citation/proof sidecars are for targeted diagnostics, not routine reading.',
                    'These mappings are input navigation, not semantic self-review or registration proof.']
         (home / 'index.md').write_text('\n'.join(lookup) + '\n', encoding='utf-8')
     need(time.monotonic() - started <= bounds['wallSeconds'], 'SOURCE_PREPARATION_WALL_LIMIT')
@@ -446,8 +446,48 @@ def _prepare_sources(job, inventory, directory):
               'snapshot': job['snapshot'], 'requirements': inventory['requirements'],
               'seconds': time.monotonic() - started, 'visibleBytes': visible_bytes, 'sourceFiles': count,
               'sourceBindings': len(all_bindings), 'semanticTruthAssessed': False}
-    save(directory / 'index.json', result)
+    save(directory / 'proof-index.json', result)
+    save(directory / 'index.json', {
+        'services': {service: {'index': service + '/index.md', 'requirements': service + '/requirements.json'}
+                     for service in services},
+        'scope': 'Retained source only; read the service indexes and individual code views. Proof metadata is not narrative context.'})
     return result
+
+
+def author_inventory(inventory):
+    """Task addresses and coverage, without native proof bookkeeping.
+
+    The complete immutable inventory remains the authority for every gate.
+    Source text, cite bindings and requirement identities are unchanged.
+    """
+    fields = ('id', 'kind', 'service', 'page', 'handlerId', 'method', 'path',
+              'entryKind', 'file', 'topics', 'authority', 'boundaries')
+    return {'schema': 'codeclew-docs-run-author-inventory/1.0', 'snapshot': inventory['snapshot'],
+            'scope': inventory['scope'],
+            'services': {service: {'revision': scope['revision'], 'coverage': scope['coverage']}
+                         for service, scope in inventory['services'].items()},
+            'requirements': [{key: row[key] for key in fields if key in row}
+                             for row in inventory['requirements']]}
+
+
+def navigation_starter(inventory):
+    """Derive page ownership and entry addresses; author supplies reader labels."""
+    services = []
+    for service in inventory['services']:
+        rows = [r for r in inventory['requirements'] if r['service'] == service]
+        overview = next(r['page'] for r in rows if r['kind'] == 'SERVICE')
+        starts = []
+        for row in rows:
+            if row['kind'] != 'ENTRY':
+                continue
+            label = (row['method'] + ' ' + row['path']) if row.get('method') else row['entryKind']
+            kind = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka', 'SCHEDULED_JOB': 'scheduled'}.get(row['entryKind'], 'other')
+            starts.append({'title': label, 'target': row['page'] + '#handler', 'kind': kind,
+                           'summary': 'Describe this entry from its retained source.'})
+        services.append({'id': service, 'title': service, 'overview': overview,
+                         'pages': list(dict.fromkeys(r['page'] for r in rows)), 'starts': starts, 'data': []})
+    return {'schema': 'codeclew-markdown-navigation/1',
+            'home': {'title': 'Overview', 'target': services[0]['overview']}, 'services': services, 'routes': []}
 
 
 def prepare(job_path, run):
@@ -499,7 +539,10 @@ def prepare(job_path, run):
     save(run / 'pins.json', pins)
     workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
     (workspace / 'draft').mkdir(mode=0o700)
-    save(workspace / 'inventory.json', inventory)
+    author_input = author_inventory(inventory)
+    save(workspace / 'inventory.json', author_input)
+    save(workspace / 'draft/navigation.json', navigation_starter(inventory))
+    pins['authorInventoryDigest'] = digest(author_input)
     prompt = (SKILL / 'templates/docs-run-prompt.txt').read_text().format(
         request=job['request'], language=job['language'], skill=str(SKILL), clew=job['clew'], root=job['root'], run=str(run),
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
@@ -519,7 +562,7 @@ def inputs_unchanged(run):
          and sha((run / 'prompt.txt').read_bytes()) == pins['promptDigest']
          and sha(Path(job['author']['executable']).read_bytes()) == pins['authorExecutableDigest']
          and sha(Path(job['node']).read_bytes()) == pins['nodeExecutableDigest']
-         and digest(load(run / 'workspace/inventory.json')) == pins['inventoryDigest'], 'FROZEN_INPUTS_CHANGED')
+         and digest(load(run / 'workspace/inventory.json')) == pins.get('authorInventoryDigest', pins['inventoryDigest']), 'FROZEN_INPUTS_CHANGED')
     need(tree(job['renderer'], skill=True) == pins['renderer']['files'], 'RENDERER_CHANGED')
     current_version = command([job['clew'], '--version'], run / 'runtime-checks', uuid.uuid4().hex)
     need(current_version == pins['clewVersion'], 'ADMITTED_RUNTIME_CHANGED', blocked=True)
@@ -528,6 +571,47 @@ def inputs_unchanged(run):
     if 'components' in job:
         need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
     return job, load(run / 'inputs/inventory.json'), pins
+
+
+def check_source_membership(job, inventory, entry, checks, cache):
+    """Reload identity without requiring a large SOURCE body on stdout.
+
+    Complete saved body/part proof is still checked by C.load. SOURCE navigation
+    supplies only an independently reloaded Work record digest and metadata; it
+    is never treated as a new body read or source evidence.
+    """
+    source=entry['source'];service=source['service']
+    keys=('id','service','revision','file','textDigest','startLine','endLine','occurrence','authority','evidenceDigest','textOrigin')
+    source_scope=any(r['kind']=='THREAD_SCOPE' for r in inventory['services'][service].get('sourceInventory',[]))
+    if source_scope:
+        work=entry.get('work');need(work,'SOURCE_WORK_IDENTITY_REQUIRED')
+        key=(work,source['file'])
+        if key not in cache:
+            directory=Path(checks)/('source-navigation-'+str(len(cache)))
+            result=T['collect'](job['clew'],job['root'],work,directory,kind='work-selection',
+                selection={'query':{'kind':'SOURCE','projection':'NAVIGATION','file':source['file']}})
+            need(result['status']=='COMPLETE' and not result['omittedRecords']
+                 and result['identity']['snapshot']==job['snapshot'],'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE')
+            rows=load(directory/'items.json')
+            need(all(r['kind']=='SOURCE_NAVIGATION' for r in rows),'SOURCE_MEMBERSHIP_NAVIGATION_CHANGED')
+            need(len({r['id'] for r in rows})==len(rows),'SOURCE_MEMBERSHIP_NAVIGATION_AMBIGUOUS')
+            cache[key]={r['id']:r['record'] for r in rows}
+        row=cache[key].get(source['id'])
+        need(row is not None and row.get('authority')=='NAVIGATION_ONLY' and row.get('textDelivered') is False
+             and row.get('recordDigest')==entry['sourceRecordDigest']
+             and all(row.get('source',{}).get(k)==source.get(k) for k in keys),
+             'PROVENANCE_MISMATCH',source=source['id'])
+        return
+    # Compiler Work without SOURCE_SCOPE keeps its own supported context route.
+    # Never retry unsupported file inventory or silently substitute syntax.
+    page=command([job['clew'],'docs','context','--root',job['root'],'--service',service,
+        '--snapshot',job['snapshot'],'--source',source['id'],'--format','compact','--limit','100'],
+        checks,'source-'+str(len(cache)))
+    records=[r['record'] for r in page.get('items',[]) if r.get('kind')=='SOURCE' and r.get('id')==source['id']]
+    need(page.get('selectedSnapshot',page.get('snapshot'))==job['snapshot'] and len(records)==1
+         and all(records[0].get(k)==source.get(k) for k in keys),'PROVENANCE_MISMATCH',
+         source=source['id'],omitted=page.get('omitted',[]))
+    cache[(service,source['id'])]=True
 
 
 def cite_entries(job, inventory, draft, checks, prepared=None):
@@ -549,16 +633,11 @@ def cite_entries(job, inventory, draft, checks, prepared=None):
             need(len(matches) == 1 and matches[0]['textKey'] in packet['texts'], 'CITATION_TEXT_UNAVAILABLE')
             entries[handle] = {**entry, 'readText': packet['texts'][matches[0]['textKey']]}
     # Native source membership is reloaded independently of author-written proof.
-    for index, entry in enumerate({(v['source']['service'], v['source']['id']): v for v in entries.values()}.values()):
+    membership_cache={}
+    for entry in {(v['source']['service'], v['source']['id']): v for v in entries.values()}.values():
         if entry.get('nativeBinding', {}).get('kind') == 'SOURCE_NATIVE':
             continue  # C.load already reloaded the exact registered native bytes.
-        source = entry['source']
-        page = command([job['clew'], 'docs', 'context', '--root', job['root'], '--service', source['service'],
-                        '--snapshot', job['snapshot'], '--source', source['id'], '--format', 'compact', '--limit', '100'], checks, 'source-' + str(index))
-        records = [r['record'] for r in page.get('items', []) if r.get('kind') == 'SOURCE' and r.get('id') == source['id']]
-        need(page.get('selectedSnapshot', page.get('snapshot')) == job['snapshot'] and len(records) == 1
-             and all(records[0].get(key) == source.get(key) for key in ('id', 'service', 'revision', 'file', 'textDigest', 'startLine', 'endLine', 'occurrence', 'authority', 'evidenceDigest', 'textOrigin')),
-             'PROVENANCE_MISMATCH', source=source['id'])
+        check_source_membership(job,inventory,entry,checks,membership_cache)
     return manifests, entries
 
 
