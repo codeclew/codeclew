@@ -749,6 +749,8 @@ struct Report {
     retry: Vec<String>,
     worker_failure: Option<Value>,
     maven_failure: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_budget: Option<Value>,
     capabilities: Vec<Value>,
     semantic_outcomes: Vec<Value>,
     source_count: usize,
@@ -762,6 +764,12 @@ fn validate_report(value: &Value) -> Result<(), ClewError> {
     if r.schema != "codeclew-documentation-diagnostic-report/1.0" || bytes(value)?.len() > 16 * 1024
     {
         return Err(invalid("unsupported or oversized diagnostic report"));
+    }
+    if r.object_budget
+        .as_ref()
+        .is_some_and(|d| super::cache::budget_summary(d).as_ref() != Some(d))
+    {
+        return Err(invalid("invalid source-free object budget diagnostic"));
     }
     Ok(())
 }
@@ -777,14 +785,16 @@ fn report(
     let maven_failure = error
         .and_then(|e| crate::maven_diagnostics::from_evidence(&e.evidence))
         .and_then(|d| crate::maven_diagnostics::safe_summary(&d));
+    let object_budget = error.and_then(super::cache::budget_diagnostic);
     serde_json::to_value(Report {
         schema:"codeclew-documentation-diagnostic-report/1.0".into(), producer_version:env!("CARGO_PKG_VERSION").into(),
         platform:std::env::consts::OS.into(), architecture:std::env::consts::ARCH.into(), language:service.language.clone(),profile:service.profile.clone(),
         declared_dialect:service.source.as_ref().map(|s|s.dialect.clone()),project_java_minimum:crate::analysis_modules::JAVA_MIN_MAJOR,
         kotlin_worker_java:21,outcome:outcome.into(),error_code:error.map(|e|e.code.clone()),worker_failure:worker_failure.clone(),maven_failure:maven_failure.clone(),
-        stage:worker_failure.as_ref().or(maven_failure.as_ref()).and_then(|v|v["stage"].as_str()).unwrap_or("LOCAL_SERVICE_CAPTURE").into(),
+        object_budget:object_budget.clone(),
+        stage:worker_failure.as_ref().or(maven_failure.as_ref()).or(object_budget.as_ref()).and_then(|v|v["stage"].as_str()).unwrap_or("LOCAL_SERVICE_CAPTURE").into(),
         runtime_mode:crate::runtime::RuntimeAuthority::from_environment().ok().flatten().map(|r|format!("{:?}",r.mode)).unwrap_or_else(||"UNAVAILABLE".into()),
-        retry:vec![format!("clew docs modules list --root <docs> --service {}",service.id),format!("clew docs evidence report --root <docs> --service {} --output <new-report-directory>",service.id)],
+        retry:if let Some(budget) = &object_budget {vec![budget["nextAction"].as_str().unwrap_or_default().into()]} else {vec![format!("clew docs modules list --root <docs> --service {}",service.id),format!("clew docs evidence report --root <docs> --service {} --output <new-report-directory>",service.id)]},
         capabilities:super::modules::catalog()?.into_iter().map(|r|json!({"id":r["id"],"implementationDigest":r["implementationDigest"],"availability":r["availability"],"producer":r["producer"],"producers":r["producers"],"knownAnalyzers":r["knownAnalyzers"]})).collect(),
         semantic_outcomes:evidence.map(|e|e.observations.values().filter(|o|o.kind=="SOURCE_SCOPE").filter_map(|o|o.normalized.get("semantic").and_then(|s|s.get("provider")).cloned()).collect()).unwrap_or_default(),
         source_count:evidence.map_or(0,|e|e.sources.len()), observation_count:evidence.map_or(0,|e|e.observations.len()),entrypoint_count:evidence.map_or(0,|e|e.entrypoints.len()),

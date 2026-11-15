@@ -336,8 +336,7 @@ fn capture_selected_with(
                 evidence.insert(id.clone(), value);
             }
             Err(error) => {
-                let mut failure =
-                    json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message});
+                let mut failure = capture_failure(&error);
                 if let Some(target) = targets.targets.get(id) {
                     failure["targetRevision"] = json!(target.revision);
                 }
@@ -1313,17 +1312,10 @@ impl Check {
                         return super::cache::load_capture(repo, capture);
                     }
                     super::cache::validate_capture(capture)?;
-                    // Source storage is still a whole per-service object. Keep
+                    // Keep
                     // every source available, including cross-service entity
                     // citations, while avoiding observation/contract hydration.
-                    let sources =
-                        super::cache::get_json(repo, &capture.sources, PORTABLE_CACHE_MAX_BYTES)?
-                            .ok_or_else(|| {
-                            ClewError::new(
-                                crate::error::ErrorCode::StateCorrupt,
-                                "capture sources object is missing",
-                            )
-                        })?;
+                    let sources = super::cache::load_capture_sources(repo, capture)?;
                     Ok(ServiceEvidence {
                         schema: "codeclew-documentation-service-evidence/1.0".into(),
                         service: capture.service.clone(),
@@ -1390,6 +1382,14 @@ impl Check {
 
 /// Public diagnostic fields only; private worker artifacts and full evidence
 /// packages remain in the stored Check and are not copied into reader errors.
+fn capture_failure(error: &ClewError) -> Value {
+    let mut record = json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message});
+    if let Some(diagnostic) = super::cache::budget_diagnostic(error) {
+        record["objectBudget"] = diagnostic;
+    }
+    record
+}
+
 pub(super) fn unresolved_summary(record: &Value) -> Value {
     let mut summary = serde_json::Map::new();
     for key in ["status", "reason", "nextAction", "targetRevision"] {
@@ -1409,6 +1409,12 @@ pub(super) fn unresolved_summary(record: &Value) -> Value {
     {
         summary.insert("mavenFailure".into(), value);
     }
+    if let Some(value) = record
+        .get("objectBudget")
+        .and_then(super::cache::budget_summary)
+    {
+        summary.insert("objectBudget".into(), value);
+    }
     Value::Object(summary)
 }
 
@@ -1418,6 +1424,52 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn capture_object_budget_survives_unresolved_public_summary_without_private_fields() {
+        let mut error = super::super::cache::budget_error(
+            super::super::cache::SOURCES_OBJECT_SCHEMA,
+            "CACHE_PUT",
+            PORTABLE_CACHE_MAX_BYTES + 1,
+        );
+        error.details.as_mut().unwrap()["source"] = json!("private-source-marker");
+        error.evidence.push("private-artifact-marker".into());
+        let failure = capture_failure(&error);
+        let public = unresolved_summary(&failure);
+        assert_eq!(public["reason"], "SLICE_BUDGET_EXCEEDED");
+        assert_eq!(
+            public["objectBudget"]["actualBytes"],
+            PORTABLE_CACHE_MAX_BYTES + 1
+        );
+        assert_eq!(
+            public["objectBudget"]["objectSchema"],
+            super::super::cache::SOURCES_OBJECT_SCHEMA
+        );
+        assert_eq!(public["objectBudget"]["stage"], "CACHE_PUT");
+        assert_eq!(
+            public["objectBudget"]["limitBytes"],
+            PORTABLE_CACHE_MAX_BYTES
+        );
+        assert!(!public.to_string().contains("private-"));
+        assert!(
+            public["objectBudget"]["nextAction"]
+                .as_str()
+                .unwrap()
+                .contains("clew support collect")
+        );
+        let checked = assemble(
+            "owned-input".into(),
+            BTreeMap::new(),
+            BTreeMap::from([("owned".into(), failure)]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            checked.summary()["unresolved"]["owned"]["objectBudget"],
+            public["objectBudget"]
+        );
+    }
 
     fn add_kotlin_service(repo: &Repository, id: &str) -> Service {
         let service: Service = serde_json::from_value(json!({

@@ -622,8 +622,15 @@ fn copy_capture_closure(
     budget: &mut ImportBudget,
     batch: &mut CopyBatch,
 ) -> Result<(), ClewError> {
-    copy_external_ref(reader, stage, &manifest.sources, budget, batch)?;
-    copy_external_ref(reader, stage, &manifest.contracts, budget, batch)?;
+    for (reference, schema) in [
+        (&manifest.sources, cache::SOURCES_OBJECT_SCHEMA),
+        (&manifest.contracts, cache::CONTRACTS_OBJECT_SCHEMA),
+    ] {
+        let raw = copy_external_ref(reader, stage, reference, budget, batch)?;
+        for part in super::capture_maps::part_references(reference, &raw, schema)? {
+            copy_external_ref(reader, stage, &part, budget, batch)?;
+        }
+    }
     import_fact_index(
         reader,
         stage,
@@ -1948,6 +1955,58 @@ fn verify_completed_import(
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn recovery_copies_indexed_source_and_contract_parts_before_hydration() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source_root = temporary.path().canonicalize().unwrap().join("source");
+        Repository::init(&source_root, "Owned source").unwrap();
+        let source_repo = Repository::open(&source_root).unwrap();
+        let mut sources = BTreeMap::new();
+        let mut contracts = BTreeMap::new();
+        for i in 0..7 {
+            let text = format!("class Item{i} {{ /*{}*/ }}", "x".repeat(1024 * 1024));
+            let id = format!("owned:module-{i}/main:Item");
+            let source =
+                serde_json::from_value(json!({"id":id,"service":"owned","revision":"a".repeat(40),
+                "file":format!("module-{i}/Item.java"),"startLine":1,"endLine":1,"text":text,
+                "textDigest":crate::canonical::hash_bytes(text.as_bytes()),"evidenceDigest":"owned",
+                "authority":"EXACT_SNAPSHOT_TEXT","url":null}))
+                .unwrap();
+            sources.insert(id.clone(), source);
+            contracts.insert(id, json!({"text":text}));
+        }
+        let evidence = super::super::model::ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "owned".into(),
+            revision: "a".repeat(40),
+            service_digest: "owned".into(),
+            extractor: super::super::model::SOURCE_EXTRACTOR.into(),
+            runtime_mode: "COMMITTED_SOURCE_NO_BUILD".into(),
+            coverage: "SYNTAX".into(),
+            boundaries: vec!["OWNED_STORAGE_CONTROL_NOT_COMPILER_PROOF".into()],
+            entrypoints: vec![],
+            sources,
+            contracts,
+            observations: BTreeMap::new(),
+        };
+        let manifest = cache::store_capture(&source_repo, &evidence).unwrap();
+        assert_eq!(
+            manifest.sources.schema,
+            super::super::capture_maps::INDEX_SCHEMA
+        );
+        drop(source_repo); // Export recovery deliberately requires a stopped SQLite store.
+        let reader = ExportReader::open(&source_root.join(".codeclew")).unwrap();
+        let stage_root = temporary.path().join("stage");
+        Repository::init(&stage_root, "Owned stage").unwrap();
+        let stage = Repository::open(&stage_root).unwrap();
+        let mut batch = CopyBatch::default();
+        let mut budget = ImportBudget::default();
+        copy_capture_closure(&reader, &stage, &manifest, &mut budget, &mut batch).unwrap();
+        batch.flush(&stage).unwrap();
+        assert_eq!(cache::load_capture(&stage, &manifest).unwrap(), evidence);
+        assert!(budget.references.len() > 3);
+    }
 
     fn service(id: &str) -> Service {
         serde_json::from_value(json!({

@@ -32,6 +32,12 @@ and allowlisted worker/Maven process metadata. `status=COMPLETE` describes the
 **diagnostic inspection**, and does not mean source capture succeeded. A complete
 bundle can describe an `UNRESOLVED` Check with no captured services.
 
+Capture-object budget failures also retain an allowlisted `objectBudget` with
+the object schema, stage, actual bytes, limit and deterministic next action.
+An atomic record above 128 MiB cannot be repaired by repeating unchanged capture
+or omitting modules. Preserve the failed run and share this metadata for a
+bounded producer-record fix; collection itself does not capture sources again.
+
 The default latest manifest is read once and pinned by its exact bytes. Collection
 reads only that Check manifest and the source-selection envelope. It does not
 open source checkouts, run compilers, call doctor, contact a model or network,

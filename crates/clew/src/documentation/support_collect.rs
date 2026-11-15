@@ -233,6 +233,11 @@ fn safe_failure(value: &Value) -> Value {
     if let Some(safe) = crate::maven_diagnostics::saved_summary(&value["mavenFailure"]) {
         result["mavenFailure"] = safe;
     }
+    if let Some(safe) = super::cache::budget_summary(&value["objectBudget"]) {
+        result["objectBudget"] = safe;
+        result["remediationId"] = json!("INSPECT_CAPTURE_OBJECT_BUDGET");
+        result["retryable"] = json!(false);
+    }
     result
 }
 
@@ -764,6 +769,33 @@ pub fn collect_with_cache(
 mod compiler_tests {
     use super::*;
     use crate::{compiler_failure, state::StateAuthority};
+
+    #[test]
+    fn object_budget_support_metadata_preserves_safe_action_and_counts() {
+        let error = super::super::cache::budget_error(
+            super::super::cache::SOURCES_OBJECT_SCHEMA,
+            "SERIALIZE_CAPTURE_MAP_RECORD",
+            super::super::check::PORTABLE_CACHE_MAX_BYTES + 1,
+        );
+        let mut diagnostic = *error.details.unwrap();
+        diagnostic["source"] = json!("private-source-marker");
+        let public = safe_failure(
+            &json!({"reason":"SLICE_BUDGET_EXCEEDED","objectBudget":diagnostic,
+            "nextAction":"private-original-message","source":"private-source-marker"}),
+        );
+        assert_eq!(
+            public["objectBudget"]["actualBytes"],
+            super::super::check::PORTABLE_CACHE_MAX_BYTES + 1
+        );
+        assert_eq!(public["retryable"], false);
+        assert!(
+            public["objectBudget"]["nextAction"]
+                .as_str()
+                .unwrap()
+                .contains("clew support collect")
+        );
+        assert!(!public.to_string().contains("private-"));
+    }
 
     #[test]
     fn posthoc_export_reads_only_selected_exact_failure_and_reports_missing_record() {

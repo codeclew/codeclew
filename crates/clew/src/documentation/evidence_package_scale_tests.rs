@@ -2,6 +2,124 @@
 //! They are synthetic records, not a compiler run or private-project evidence.
 use super::*;
 
+#[test]
+fn object_budget_is_in_source_free_typed_report_without_private_payload() {
+    let mut error = super::super::cache::budget_error(
+        super::super::cache::CONTRACTS_OBJECT_SCHEMA,
+        "SERIALIZE_CAPTURE_MAP_RECORD",
+        super::super::check::PORTABLE_CACHE_MAX_BYTES + 17,
+    );
+    error.details.as_mut().unwrap()["source"] = json!("private-source-marker");
+    error.evidence.push("private-artifact-marker".into());
+    let diagnostic = report(&service(), "PRODUCER_FAILURE", None, Some(&error)).unwrap();
+    validate_report(&diagnostic).unwrap();
+    assert_eq!(diagnostic["stage"], "SERIALIZE_CAPTURE_MAP_RECORD");
+    assert_eq!(
+        diagnostic["objectBudget"]["objectSchema"],
+        super::super::cache::CONTRACTS_OBJECT_SCHEMA
+    );
+    assert_eq!(
+        diagnostic["objectBudget"]["actualBytes"],
+        super::super::check::PORTABLE_CACHE_MAX_BYTES + 17
+    );
+    assert_eq!(
+        diagnostic["objectBudget"]["limitBytes"],
+        super::super::check::PORTABLE_CACHE_MAX_BYTES
+    );
+    assert_eq!(diagnostic["sourceIncluded"], false);
+    assert!(
+        diagnostic["retry"][0]
+            .as_str()
+            .unwrap()
+            .contains("Do not retry unchanged capture")
+    );
+    assert!(
+        diagnostic["objectBudget"]["nextAction"]
+            .as_str()
+            .unwrap()
+            .contains("One atomic record")
+    );
+    assert!(!diagnostic.to_string().contains("private-"));
+    let mut forged = diagnostic.clone();
+    forged["objectBudget"]["source"] = json!("private-marker");
+    assert!(validate_report(&forged).is_err());
+}
+
+#[test]
+#[ignore = "Real >128 MiB maps through retained export/import; run with one test thread"]
+fn retained_export_import_preserves_two_large_capture_maps() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = if let Some(path) = std::env::var_os("CODECLEW_TEST_CAPTURE_STORAGE_ROOT") {
+        let path = PathBuf::from(path);
+        assert!(path.is_absolute() && !path.exists());
+        fs::create_dir(&path).unwrap();
+        path
+    } else {
+        temporary.path().to_path_buf()
+    };
+    let service = service();
+    let mut evidence = evidence(&service);
+    for i in 0..129 {
+        let id = format!("owned:module-{i:04}/main:Item");
+        let text = format!("class Owned{i} {{ /*{}*/ }}", "x".repeat(1024 * 1024));
+        let source: Source = serde_json::from_value(json!({"id":id,"service":"orders","revision":evidence.revision,
+            "file":format!("module-{i:04}/src/Item.java"),"startLine":1,"endLine":1,"text":text,
+            "textDigest":canonical::hash_bytes(text.as_bytes()),"evidenceDigest":canonical::hash_bytes(id.as_bytes()),
+            "authority":"EXACT_SNAPSHOT_TEXT","url":null})).unwrap();
+        evidence.sources.insert(id.clone(), source);
+        evidence.contracts.insert(id.clone(), json!({"source":id,"next":format!("owned:module-{:04}/main:Item",(i+1)%129),"text":text}));
+    }
+    analysis::verify_evidence(&evidence).unwrap();
+    let source_bytes = bytes(&evidence.sources).unwrap().len();
+    let contract_bytes = bytes(&evidence.contracts).unwrap().len();
+    assert!(source_bytes as u64 > super::super::check::PORTABLE_CACHE_MAX_BYTES);
+    assert!(contract_bytes as u64 > super::super::check::PORTABLE_CACHE_MAX_BYTES);
+    let oracle = digest(&evidence).unwrap();
+    let (repo, snapshot) = retained_fixture(&root.join("docs"), &service, evidence, false);
+    let output = root.join("package");
+    export_snapshot(&repo, "orders", &snapshot, &output).unwrap();
+    let package = load(&output).unwrap();
+    let recovered = package.evidence().unwrap();
+    assert_eq!(recovered.sources.len(), 129);
+    assert_eq!(recovered.contracts.len(), 129);
+    // Historical export adds its explicit authority boundary; payloads remain exact.
+    let mut normalized = recovered.clone();
+    normalized.boundaries.retain(|b| b != HISTORICAL_BOUNDARY);
+    assert_eq!(digest(&normalized).unwrap(), oracle);
+    let policy = Expectation {
+        schema: POLICY_SCHEMA.into(),
+        service: service.id.clone(),
+        repository_id: service.repository_id.clone(),
+        service_digest: digest(&service).unwrap(),
+        revision: normalized.revision.clone(),
+        manifest_digest: package.digest.clone(),
+        sequence: 1,
+    };
+    let import_root = root.join("import-docs");
+    Repository::init(&import_root, "Owned retained import").unwrap();
+    let imported_repo = Repository::open(&import_root).unwrap();
+    imported_repo
+        .atomic("catalog/services/orders.json", &bytes(&service).unwrap())
+        .unwrap();
+    imported_repo
+        .atomic(&policy_path(&service.id).unwrap(), &bytes(&policy).unwrap())
+        .unwrap();
+    let imported = import_loaded(&imported_repo, &output, package).unwrap();
+    assert_eq!(imported["status"], "IMPORTED_RETAINED_SNAPSHOT");
+    assert_eq!(
+        imported["retained"]["sourceAuthority"],
+        "RETAINED_SOURCE_NOT_REVERIFIED"
+    );
+    fs::write(root.join("ORACLE.json"),bytes(&json!({"schema":"owned-capture-storage-oracle/1.0",
+        "authority":"SYNTHETIC_STORAGE_TRANSPORT_NOT_COMPILER_OR_PRIVATE_CAPTURE",
+        "snapshot":snapshot,"sourceMapBytes":source_bytes,"contractMapBytes":contract_bytes,
+        "fullEvidenceDigestBeforeHistoricalBoundary":oracle,"sources":129,"contracts":129,
+        "packageManifestDigest":policy.manifest_digest,"coverage":"SYNTAX","revision":"a".repeat(40)})).unwrap()).unwrap();
+    eprintln!(
+        "RETAINED_LARGE_MAPS_PASS sourceBytes={source_bytes} contractBytes={contract_bytes} sources=129 contracts=129"
+    );
+}
+
 fn service() -> Service {
     serde_json::from_value(json!({
         "schema":"codeclew-documentation-service/1.0", "id":"orders",
