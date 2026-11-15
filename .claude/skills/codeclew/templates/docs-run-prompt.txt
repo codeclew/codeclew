@@ -13,7 +13,7 @@ Exact snapshot: {snapshot}
 Language: {language}
 Compact inventory: {inventory}
 Readable retained source start: {prepared_sources}
-Saved page files: {run}/workspace/pages/PAGE.md.json
+Saved content: ./docs show --page PAGE.md [--fragment ID]
 Assembled draft: {draft}
 
 Complete only the assigned related-page unit in this turn. All requirements and
@@ -23,7 +23,7 @@ bulky fixtures. Native authority/coverage and unavailable evidence remain explic
 Do not capture/refresh, read target repositories/private caches directly, inspect
 previous documentation/critic answers, publish, or alter frozen inputs/budgets.
 
-Use the normal prepared-author commands: put for small Markdown claims, sequence
+Use show for addressed saved content and entry/route IDs, put for small Markdown claims, sequence
 for semantic diagram rows, register-entry for genuine discovered starts, page-info
 for owned data pages, route for one semantic route declaration, check for local
 feedback and review-page for explicit semantic assessments. See the prepared

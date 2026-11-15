@@ -255,7 +255,8 @@ def install_author_entry(run, skill, python):
         'Keep that full semantic contract through every unit and context compaction.\n'
         'Do not restart the globally installed skill, generic HTTP closure, source\n'
         'admission or export workflow. The caller already owns those operations.\n'
-        'Use ./docs put/sequence for small semantic updates, ./docs check --page PAGE.md,\n'
+        'Use ./docs show --page PAGE.md [--fragment ID] for saved content,\n'
+        './docs put/sequence for small semantic updates, ./docs check --page PAGE.md,\n'
         'and ./docs review-page for explicit local judgments. Finish the assigned unit, retain source reads\n'
         'and local page files, and perform the required bidirectional semantic review.\n'
         'Successful checks print compact summaries. Full receipts remain on disk\n'
@@ -273,8 +274,8 @@ def install_author_entry(run, skill, python):
         'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
     helper = workspace / 'docs'
     helper.write_text('#!/bin/sh\ncase "${1-}" in\n'
-        ' save-pages|check|review-template|register-entry|put|sequence|page-info|route|review-page|finish-review|--help|-h) ;;\n'
-        ' *) printf "%s\\n" "Use ./docs --help for put, sequence, register-entry, page-info, route, review-page, finish-review, check and advanced commands." >&2; exit 2 ;;\n'
+        ' show|save-pages|check|review-template|register-entry|put|sequence|page-info|route|review-page|finish-review|--help|-h) ;;\n'
+        ' *) printf "%s\\n" "Use ./docs --help for show, put, sequence, register-entry, page-info, route, review-page, finish-review, check and advanced commands." >&2; exit 2 ;;\n'
         'esac\nexec ' + shlex.quote(python) + ' -I -S ' + shlex.quote(str(skill / 'scripts/docs_run.py')) +
         ' "$@" --run-dir ' + shlex.quote(str(run)) + '\n', encoding='utf-8');helper.chmod(0o700)
     return ['AGENTS.md', '.agents/skills/codeclew/SKILL.md', 'docs']

@@ -289,6 +289,104 @@ else:
         page = next(p for p in D['load'](self.run / 'workspace/draft/original.json')['pages'] if p['page'] == self.entry['page'])
         self.assertEqual(next(f['text'].strip() for f in page['fragments'] if f.get('id') == 'entry'), body.read_text().strip())
 
+    def prepare_show(self):
+        def sources(job, inventory, directory):
+            folder = directory / self.service;folder.mkdir(parents=True)
+            D['save'](folder / 'views.json', {'u16': {'coveringCitations': [self.handle], 'view': 'views/u16.md'}})
+            D['save'](folder / 'requirements.json', {self.entry['id']: {'evidenceCandidates': [self.handle]}})
+            (folder / 'views').mkdir();(folder / 'views/u16.md').write_text(self.source['text'])
+        self.run = self.root / 'show-run'
+        with patch.dict(D['T'], {'collect': self.collect}), patch.dict(D['prepare'].__globals__, {'prepare_sources': sources}):
+            D['prepare'](self.job_path, self.run)
+        D['save'](self.run / 'workspace/draft/original.json', self.original)
+
+    def show_cli(self, *args, success=True):
+        done = subprocess.run(['./docs', 'show', *args], cwd=self.run / 'workspace', capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0 if success else 2, done.stdout + done.stderr)
+        return done.stdout
+
+    def test_show_page_fragment_sources_and_assessments_are_read_only(self):
+        self.prepare_show()
+        before = D['tree'](self.run)
+        whole = self.show_cli('--page', self.entry['page'], '--limit', '0')
+        for f in self.original['pages'][0]['fragments']:self.assertIn(f['text'], whole)
+        self.assertIn('Fragment: (unannotated structure)', whole)
+        self.assertIn('Cites: ' + self.handle, whole)
+        self.assertIn('../inputs/author-source/reservations/views/u16.md', whole)
+        selected = self.show_cli('--page', self.entry['page'], '--fragment', 'entry')
+        self.assertIn(self.original['pages'][0]['fragments'][1]['text'], selected)
+        self.assertNotIn('unannotated structure', selected)
+        self.assertEqual(before, D['tree'](self.run))
+        self.assertFalse((self.run / '.runner.lock').exists())
+        self.assertFalse((self.run / 'workspace/.edit.lock').exists())
+        assessment = D['W']['review_page'](self.run, self.entry['page'], None, D)
+        self.assertEqual(set(assessment['claims']), {'entry'})
+        self.assertEqual(before, D['tree'](self.run))
+        bad = json.loads(self.show_cli('--page', self.entry['page'], '--fragment', 'invented', success=False))
+        self.assertEqual(bad['code'], 'SHOW_FRAGMENT_NOT_FOUND')
+        self.assertEqual(bad['details']['available'], ['entry'])
+        missing = json.loads(self.show_cli('--page', 'missing.md', success=False))
+        self.assertEqual(set(missing['details']['available']), {p['page'] for p in self.original['pages']})
+        self.assertEqual(before, D['tree'](self.run))
+
+    def test_show_large_unicode_content_has_lossless_explicit_continuation(self):
+        import shlex
+        self.prepare_show()
+        fragment = self.original['pages'][0]['fragments'][1]
+        fragment['text'] = 'First line\n' + ('Weather → città 🌦\n' * 650) + '\nLAST LINE\n'
+        D['save'](self.run / 'workspace/draft/original.json', self.original)
+        before = D['tree'](self.run)
+        args = ['--page', self.entry['page'], '--fragment', 'entry']
+        all_text = self.show_cli(*args, '--limit', '0').rsplit('\n[Characters ', 1)[0]
+        chunks = [];continuations = []
+        while True:
+            output = self.show_cli(*args)
+            content, footer = output.rsplit('\n[Characters ', 1)
+            chunks.append(content)
+            if 'Continue: ' not in footer:break
+            command = footer.split('Continue: ', 1)[1].strip();continuations.append(command)
+            args = shlex.split(command)[2:]
+        self.assertTrue(continuations)
+        self.assertEqual(''.join(chunks), all_text)
+        self.assertIn(fragment['text'], all_text)
+        self.assertIn('LAST LINE', chunks[-1])
+        self.assertEqual(before, D['tree'](self.run))
+        for flags in (('--offset', '-1'), ('--limit', '-1'), ('--offset', '999999')):
+            self.show_cli('--page', self.entry['page'], *flags, success=False)
+
+    def test_show_entries_list_shape_and_routes_use_real_ids_and_complete_rows(self):
+        self.prepare_show()
+        parent = next(r for r in self.inventory['requirements'] if r['kind'] == 'DISCOVERY')
+        declaration = {'id': 'events', 'kind': 'KAFKA', 'page': 'events.md', 'title': 'Apply reservation events',
+                       'evidence': [self.handle], 'disposition': None}
+        registered = D['W']['register_entry'](self.run, parent['id'], declaration, D)['entry']
+        self.assertIsInstance(D['load'](self.run / 'workspace/draft/entries.json'), list)
+        route = {'id': 'reserve-process', 'title': 'Reserve an item', 'narrative': {'page': 'reserve.html'},
+                 'occurrences': [{'id': 'first', 'label': 'Start'}], 'outcomes': [{'id': 'last', 'label': 'Complete'}]}
+        D['save'](self.run / 'workspace/draft/routes.json', {'routes': [route]})
+        before = D['tree'](self.run)
+        entries = self.show_cli('--entries', '--service', self.service)
+        self.assertIn(registered['id'], entries);self.assertIn(self.entry['id'], entries)
+        self.assertNotIn('sourceIds', entries)
+        for identity in (registered['id'], self.entry['id']):
+            selected = self.show_cli('--entry', identity, '--limit', '0')
+            body = selected.split('\n', 1)[1].split('\nSource views:', 1)[0]
+            row = json.loads(body)
+            self.assertEqual(row['id'], identity)
+            self.assertIn(self.handle, row['evidence'])
+            self.assertEqual(row['target'], row['page'] + '#handler')
+            self.assertNotIn('sourceIds', row)
+            self.assertIn('views/u16.md', selected)
+        routes = self.show_cli('--routes')
+        self.assertIn('reserve-process | Reserve an item | reserve.html', routes)
+        selected = self.show_cli('--route', route['id'], '--limit', '0')
+        self.assertEqual(json.loads(selected.split('\n', 1)[1].rsplit('\n[Characters ', 1)[0]), route)
+        for flag, code, choices in (('--entry', 'SHOW_ENTRY_NOT_FOUND', [self.entry['id'], registered['id']]),
+                                     ('--route', 'SHOW_ROUTE_NOT_FOUND', [route['id']])):
+            bad = json.loads(self.show_cli(flag, 'invented', success=False))
+            self.assertEqual(bad['code'], code);self.assertEqual(bad['details']['available'], choices)
+        self.assertEqual(before, D['tree'](self.run))
+
     def test_local_entry_check_honors_recorded_diagram_and_discovered_source_evidence(self):
         self.local_reads();page = self.local_page()
         diagram = json.loads(page['fragments'][1]['text'].split('```clew-sequence\n')[1].split('```')[0])
@@ -501,6 +599,10 @@ else:
         self.assertEqual(result['checks']['author']['continuationModelTokens'],3)
         prompt=json.loads((child / 'attempts/1/prompt.txt').read_text())
         self.assertEqual(prompt['request'],self.job['request']);self.assertIn('standalone full-docset review',prompt['instruction'])
+        receipt=Path(prompt['historyReceipt'])
+        if not receipt.is_absolute():receipt=child / 'workspace' / receipt
+        self.assertTrue(receipt.is_file(), 'Receipt link must resolve from the author workspace')
+        self.assertEqual(D['load'](receipt)['threadId'],state['threadId'])
         self.assertEqual(D['load'](child / 'history/report.json')['status'],'FAILED')
         self.assertEqual(parent_draft,D['tree'](self.run / 'workspace/draft'))
         for name,value in before.items():

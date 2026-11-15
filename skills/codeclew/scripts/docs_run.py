@@ -30,6 +30,7 @@ T = runpy.run_path(str(HERE / 'work_transport.py'))
 U = runpy.run_path(str(HERE / 'source_union.py'))
 W = runpy.run_path(str(HERE / 'docs_workspace.py'))
 S = runpy.run_path(str(HERE / 'docs_successor.py'))
+H = runpy.run_path(str(HERE / 'docs_show.py'))
 SCHEMA = 'codeclew-docs-run-job/1.0'
 REVIEW = 'codeclew-docs-run-review/1.0'
 COMPACT_REVIEW = 'codeclew-docs-run-review/1.1'
@@ -1190,7 +1191,7 @@ def author(run, *, unit=None, repair=False):
                          'predecessorMachineFailure': repair_facts(load(run / 'history/report.json')),
                          'inheritedModelTokens': state['successor']['inheritedModelTokens'],
                          'continuationAllowance': job['budget'], 'budgetScope': 'NEW_ATTEMPTS_ONLY',
-                         'historyReceipt': 'inputs/successor.json', 'sameAuthorThread': state['threadId']})
+                         'historyReceipt': str(run / 'inputs/successor.json'), 'sameAuthorThread': state['threadId']})
     elif not attempts:
         prompt = (run / 'prompt.txt').read_bytes()
     elif unit and not repair:
@@ -1205,7 +1206,7 @@ def author(run, *, unit=None, repair=False):
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
                           'stopAfterUnit': True, 'fullRequestStillRequired': True,
                           'preparedAuthorContract': str(SKILL / 'references/docs-run-author.md'),
-                          'authorCommands': './docs put --page PAGE.md --fragment CLAIM --text-file FILE --evidence HANDLE; ./docs sequence --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE; ./docs check --page PAGE.md; ./docs review-page --page PAGE.md',
+                          'authorCommands': './docs show --page PAGE.md [--fragment ID]; ./docs put --page PAGE.md --fragment CLAIM --text-file FILE --evidence HANDLE; ./docs sequence --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE; ./docs check --page PAGE.md; ./docs review-page --page PAGE.md',
                           'workflow': 'Continue the admitted prepared-author workflow. Do not rediscover the globally installed skill or restart generic source acquisition/export. Full semantic requirements and source reads remain required.'})
     if state.get('accountingRecovery'):
         prompt += encode({'instruction': 'This same logical run recovered a cumulative-counter accounting error. Use the successor helper below for save-pages, check and review-template; keep your existing source reads, pages and context. The request, source scope and original time/token/repair caps are unchanged.',
@@ -1295,13 +1296,13 @@ def execute(run, *, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog=(
-        'Normal author commands: put, sequence, register-entry, page-info, route, review-page, finish-review, check. '
+        'Normal author commands: show, put, sequence, register-entry, page-info, route, review-page, finish-review, check. '
         'review-page records explicit per-page judgments; finish-review validates the assembled review. '
         'Requirement disposition: EXPLAINED or EXPLICIT_UNKNOWN. Discovery discoveryDisposition: '
         'ADDITIONAL_STARTS for a nonempty declared finding list, or NO_ADDITIONAL_STARTS for an explicitly reviewed empty list. '
         'These are separate fields; an empty registry does not prove no additions. '
         'Use route --input FILE for route metadata repair; keep prose and other routes unchanged.'))
-    parser.add_argument('command', choices=('prepare', 'prepare-successor', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
+    parser.add_argument('command', choices=('prepare', 'prepare-successor', 'run', 'verify', 'promote', 'review-template', 'show', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
@@ -1322,6 +1323,12 @@ def main():
     parser.add_argument('--path')
     parser.add_argument('--service')
     parser.add_argument('--data', action='store_true')
+    parser.add_argument('--entries', action='store_true', help='Show the compact entry registry; select one with --entry ID.')
+    parser.add_argument('--entry')
+    parser.add_argument('--routes', action='store_true', help='Show the compact route registry; select one with --route ID.')
+    parser.add_argument('--route')
+    parser.add_argument('--offset', type=int, default=0, help='show: character offset (default 0).')
+    parser.add_argument('--limit', type=int, default=8000, help='show: maximum characters; 0 returns the full remainder (default 8000).')
     args = parser.parse_args()
     edits = ('save-pages', 'check', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review')
     lock = None
@@ -1330,14 +1337,21 @@ def main():
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / 'workspace/.edit.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-        elif args.command not in ('prepare', 'prepare-successor', 'review-template'):
+        elif args.command not in ('prepare', 'prepare-successor', 'review-template', 'show'):
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / '.runner.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
-        if args.command == 'prepare-successor':
+        if args.command == 'show':
+            result = H['show'](args.run_dir.absolute(), args, globals())
+            print(result['text'], end='')
+            print('\n[Characters ' + str(result['offset']) + ':' + str(result['end']) +
+                  ' of ' + str(result['total']) + '; remaining ' + str(result['remaining']) + ']')
+            if result['next']:print('Continue: ' + result['next'])
+            return 0
+        elif args.command == 'prepare-successor':
             need(args.job is not None and args.previous_run is not None and args.previous_skill is not None,
                  'SUCCESSOR_JOB_AND_PREDECESSOR_REQUIRED')
             result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals())

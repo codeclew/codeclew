@@ -11,33 +11,32 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
 
 ## Normal working loop
 
-1. Read consequential prepared views through each service index. Real cite handles
-   accompany the code. Available-but-unread evidence is unfinished work. Preserve
-   source coverage and runtime/registration uncertainty.
-2. Write a small reader explanation as ordinary Markdown in a local text file.
-   Save it with `./docs put --page PAGE.md --fragment CLAIM --text-file FILE
-   --evidence HANDLE` (repeat evidence for each genuine handle). The helper merges
-   one claim, serializes its envelope, and supplies block separators and anchors.
-   Quotes/backslashes are literal; do not write a JSON string around the prose.
-3. Write a semantic sequence object in a local JSON file and use `./docs sequence
-   --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE`. The helper owns
-   the fence and serialization. On an entry page, use participant ID `handler`;
-   its registered ID, target and initial HTTP label are supplied automatically.
-   Other participants, ordering, conditions, labels and outcomes are your work.
-   Replace the unfinished entry diagram; an initial stub is not accepted content.
-4. Run `./docs check --page PAGE.md` (repeat page for a related group). It uses the
-   actual parser/renderer/source rules. Read compact success; full receipts stay
-   on disk. On failure use the named page/fragment/field and expected/actual values
-   to repair only that content. Last valid preview remains available. Do not
-   reread checker input dumps after PASS or regenerate the whole docset.
-5. Compare source to all visible claims and steps, then every claim/step back to
-   source. Include predicates, consequential helper calls, before/after effects,
-   failures, response variants, defaults and completion boundaries. A correct
-   sentence does not excuse an incorrect diagram. Record this page's decisions:
-   `./docs review-page --page PAGE.md > assessment.json`, fill its actual claim
-   and requirement dispositions, then `./docs review-page --page PAGE.md --input
-   assessment.json`. Empty/null dispositions are not approvals. Reviews are tied
-   to page hashes: changing content invalidates its review; other reviews persist.
+1. Read consequential source views through service indexes. `views.json` maps real
+   cite handles to exact paths; never derive a view number from a cite. Inspect
+   saved content with `./docs show --page PAGE.md [--fragment ID]`. Use `show
+   --entries [--service SERVICE]` or `show --routes` for IDs, then `--entry ID` or
+   `--route ID` for one object. Invalid IDs list choices; plain fragments need no
+   ID. Follow the printed continuation for remaining characters, or use `--limit
+   0` for all. Available-but-unread source remains unfinished work.
+2. Write ordinary Markdown in a text file; save with `./docs put --page PAGE.md
+   --fragment CLAIM --text-file FILE --evidence HANDLE` (repeat genuine evidence).
+   Quotes/backslashes stay literal; the helper merges, serializes and anchors.
+   For a semantic sequence JSON file use `./docs sequence --page PAGE.md --fragment
+   FLOW --input FILE --evidence HANDLE`; the helper owns the fence. On an entry
+   page, participant `handler` receives its registered ID, target and initial HTTP
+   label. Supply all other participants, order, conditions, labels and outcomes.
+   Replace the unfinished diagram; a stub is not accepted content.
+3. Run `./docs check --page PAGE.md` (repeat page for a group). It uses the actual
+   parser/renderer/source rules. Repair only named page/fragment/fields from the
+   compact result; full receipts stay on disk and the last valid preview remains.
+   After PASS, do not reread checker dumps or regenerate the docset.
+4. Compare source to every visible claim/step and each back to source, including
+   predicates, helper calls, before/after effects, failures, response variants,
+   defaults and completion boundaries. Check prose and diagrams. Get assessments
+   with `./docs review-page --page PAGE.md > assessment.json`, fill claim and
+   requirement dispositions, then record with `./docs review-page --page PAGE.md
+   --input assessment.json`. Empty/null is not approval. Changed page hashes
+   invalidate their reviews; unchanged reviews persist.
 
 Use `./docs register-entry --requirement DISCOVERY_ID --kind HTTP|KAFKA|SCHEDULED|OTHER
 --page ENTRY.md --title "Reader action" --evidence HANDLE` for a genuine discovered
