@@ -218,7 +218,7 @@ else:
         self.local_reads()
         parent = next(r for r in self.inventory['requirements'] if r['kind'] == 'DISCOVERY')
         declaration = {'id': 'events', 'kind': 'KAFKA', 'page': 'events.md', 'title': 'Apply reservation events',
-                       'evidence': [self.handle], 'disposition': None}
+                       'evidence': ['invented-handle'], 'disposition': None}
         registered = D['W']['register_entry'](self.run, parent['id'], declaration, D)
         row = registered['entry'];self.assertEqual(row['handlerId'], 'discovered-events')
         other = (self.run / 'workspace/pages' / (self.entry['page'] + '.json')).read_bytes()
@@ -231,8 +231,19 @@ else:
         details = failed['details']['response']['details']
         self.assertEqual(details['expected']['handlerId'], 'discovered-events')
         self.assertEqual(details['actual']['firstTo'], 'wrong');self.assertIn('./docs sequence', details['recovery'])
+        self.assertIn('./docs sequence', failed['recovery']);self.assertNotIn('call save-pages', failed['recovery'])
         sequence['participants'][1]['id'] = 'handler';sequence['steps'][0]['to'] = 'handler'
         D['W']['put'](self.run, 'events.md', 'flow', json.dumps(sequence), [self.handle], True, D)
+        wrong_evidence = self.local_check('events.md')
+        self.assertEqual(wrong_evidence['code'], 'INVALID_DISCOVERED_ENTRY_ACCOUNT', wrong_evidence)
+        content_before = D['load'](self.run / 'workspace/draft/original.json')
+        declaration['evidence'] = [self.handle]
+        repair = subprocess.run([str(self.run / 'workspace/docs'), 'register-entry', '--requirement', parent['id'],
+                                 '--page', 'events.md', '--evidence', self.handle], capture_output=True, text=True)
+        self.assertEqual(repair.returncode, 0, repair.stdout + repair.stderr)
+        repaired_registration = json.loads(repair.stdout)
+        self.assertEqual(repaired_registration['entry'], registered['entry'])
+        self.assertEqual(content_before, D['load'](self.run / 'workspace/draft/original.json'))
         checked = self.local_check('events.md');self.assertEqual(checked['status'], 'UNIT_CHECKED', checked)
         self.assertEqual(other, (self.run / 'workspace/pages' / (self.entry['page'] + '.json')).read_bytes())
         assembled = D['load'](self.run / 'workspace/draft/original.json')
@@ -266,6 +277,8 @@ else:
         done = subprocess.run([str(wrapper), 'put', '--page', self.entry['page'], '--fragment', 'entry',
                                '--text-file', str(body), '--evidence', self.handle], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        compact = json.loads(done.stdout);self.assertNotIn('unchanged', compact);self.assertNotIn('unfinishedPages', compact)
+        self.assertIn('unchangedCount', compact);self.assertTrue((self.run / 'workspace/last-save-pages.json').is_file())
         after = D['review_for_run'](self.run)
         self.assertIsNone(after['claims'][self.entry['page']]['entry'])
         self.assertEqual(after['claims'][self.service + '.md'], before['claims'][self.service + '.md'])
@@ -292,6 +305,27 @@ else:
         bad = self.local_check('events.md')
         self.assertEqual(bad['code'],'INVALID_DISCOVERED_ENTRY_ACCOUNT',bad)
         self.assertEqual(bad['details']['actual'],['invented-handle'])
+
+    def test_registration_evidence_repair_invalidates_only_affected_reviews(self):
+        parent = next(r for r in self.inventory['requirements'] if r['kind'] == 'DISCOVERY')
+        declaration = {'id':'events','kind':'OTHER','page':'events.md','title':'Apply event',
+                       'evidence':['invented-handle'],'disposition':None}
+        D['W']['register_entry'](self.run,parent['id'],declaration,D)
+        before = D['load'](self.run / 'workspace/draft/original.json')
+        review = D['review_for_run'](self.run)
+        row = review['requirements'][parent['id']];row['disposition']='EXPLAINED'
+        row['discoveredEntries'][0]['disposition']='EXPLAINED'
+        D['save'](self.run / 'workspace/draft/self-review.json',review)
+        D['save'](self.run / 'workspace/draft/reviewed-pages.json',{
+            parent['page']:'old-parent','events.md':'old-entry',self.entry['page']:'unaffected'})
+        declaration['evidence']=[self.handle]
+        D['W']['register_entry'](self.run,parent['id'],declaration,D)
+        self.assertEqual(before,D['load'](self.run / 'workspace/draft/original.json'))
+        hashes=D['load'](self.run / 'workspace/draft/reviewed-pages.json')
+        self.assertEqual(hashes,{self.entry['page']:'unaffected'})
+        repaired=D['load'](self.run / 'workspace/draft/self-review.json')['requirements'][parent['id']]
+        self.assertIsNone(repaired['disposition']);self.assertIsNone(repaired['discoveredEntries'][0]['disposition'])
+        self.assertEqual(repaired['discoveredEntries'][0]['evidence'],[self.handle])
 
     def test_small_route_and_navigation_updates_keep_unrelated_declarations(self):
         first = {'catalog': 'processes.html', 'route': {'title': 'First process', 'narrative': {'page': 'first.md'},

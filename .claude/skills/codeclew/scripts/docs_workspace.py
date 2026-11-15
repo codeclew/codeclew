@@ -107,9 +107,12 @@ def register_entry(run, parent_id, declaration, api):
     if account is None:
         account = {'requirement': parent_id, 'discoveredEntries': []};accounts.append(account)
     previous = next((c for c in account['discoveredEntries'] if c['id'] == candidate['id']), None)
-    api['need'](previous is None or previous == candidate, 'ENTRY_ALREADY_REGISTERED',
-                requirement=row['id'], recovery='Keep the registered identity; update its content with put or sequence.')
+    same_identity = lambda item: {k: v for k, v in item.items() if k != 'evidence'}
+    api['need'](previous is None or same_identity(previous) == same_identity(candidate), 'ENTRY_ALREADY_REGISTERED',
+                requirement=row['id'], recovery='Keep the registered identity and title. Repeat register-entry with corrected evidence; update content with put or sequence.')
+    changed = previous != candidate
     if previous is None:account['discoveredEntries'].append(candidate)
+    else:account['discoveredEntries'][account['discoveredEntries'].index(previous)] = candidate
     entry_registry(inventory, accounts, api)
     original = api['load'](run / 'workspace/draft/original.json')
     api['need'](previous is not None or not any(p['page'] == row['page'] for p in original['pages']),
@@ -121,6 +124,24 @@ def register_entry(run, parent_id, declaration, api):
         original['pages'].append({'page': row['page'], 'fragments': [anchors(info), *body['fragments']]})
         api['save'](run / 'workspace/draft/original.json', original)
     api['save'](run / 'workspace/draft/entries.json', accounts)
+    if changed:
+        # Evidence repair preserves content/identity and never carries forward a
+        # semantic verdict made against different evidence declarations.
+        review_path = run / 'workspace/draft/self-review.json'
+        if review_path.exists():
+            review = api['load'](review_path)
+            rows = review['requirements']
+            reviewed = rows.get(parent_id) if isinstance(rows, dict) else next((r for r in rows if r['requirement'] == parent_id), None)
+            if reviewed:
+                reviewed['disposition'] = None
+                for found in reviewed.get('discoveredEntries') or []:
+                    if found['id'] == candidate['id']:found.update(evidence=candidate['evidence'], disposition=None)
+            api['save'](review_path, review)
+        hashes_path = run / 'workspace/draft/reviewed-pages.json'
+        if hashes_path.exists():
+            hashes = api['load'](hashes_path)
+            hashes.pop(parent['page'], None);hashes.pop(row['page'], None)
+            api['save'](hashes_path, hashes)
     navigation = api['load'](run / 'workspace/draft/navigation.json')
     service = next(s for s in navigation['services'] if s['id'] == row['service'])
     if row['page'] not in service['pages']:service['pages'].append(row['page'])
@@ -554,7 +575,9 @@ def check(run, pages, scaffold_only, api):
         result['locations'] = locations(original, result['details'])
         result['pendingTargets'] = sorted({target for target in re.findall(r'[A-Za-z0-9._-]+\.md(?:#[A-Za-z0-9._-]+)?', str(result['details']).replace('.html','.md'))
                                           if target.split('#')[0] in pending})
-        result['recovery'] = 'Edit the affected saved workspace/pages file, call save-pages, then repeat check. Unfinished targets are provisional; this is not READY.'
+        result['recovery'] = ('Use the named page/fragment/field with ./docs put for prose or ./docs sequence for diagram rows; '
+                              'repair registration evidence by repeating ./docs register-entry --requirement ID --page PAGE --evidence HANDLE. '
+                              'Then repeat check only for affected pages. Preserve other pages and reviews. Unfinished targets are provisional; this is not READY.')
         api['save'](run / 'workspace/last-local-check.json', result)
     api['save'](folder / 'result.json', result)
     return result

@@ -41,7 +41,10 @@ Use `./docs register-entry --requirement DISCOVERY_ID --kind HTTP|KAFKA|SCHEDULE
 --page ENTRY.md --title "Reader action" --evidence HANDLE` for a genuine discovered
 start (HTTP also requires method/path). The helper derives the local ID, handler
 address, stub and navigation from this declaration once. Each entry has its own
-page; link shared behavior instead of merging unrelated entries. Registration is
+page; link shared behavior instead of merging unrelated entries. To repair a wrong
+evidence handle, repeat `./docs register-entry --requirement ID --page PAGE.md
+--evidence HANDLE`; existing kind/title/identity are reused. Content and IDs stay intact; affected review is
+invalidated explicitly. Do not edit managed entries.json. Registration is
 an authored syntax finding, not compiler/runtime binding or semantic approval.
 Review the parent discovery requirement and each discovered disposition explicitly.
 
@@ -107,15 +110,16 @@ The helper binds both the diagram and text trace to your supplied source handles
 
 For multiple services, `./docs route --input FILE` merges one `{route: ROW, externalActors?: [...], catalog?: "processes.html"}` update. Supply catalog on the first call. The helper owns top-level schema, revision, local docset (`docs`/`v1`), service inventory and serialization; it preserves other routes. In ROW, route id defaults to its narrative filename and version to `v1`; destinations may omit the local docset and use `.md` pages. Service actors may omit local docset. Supply actual semantic actor/occurrence/branch/outcome/coverage values using this existing route representation:
 
-- Top: `schema:"codeclew-cross-docset-routes/1.1"`, `revision` (ASCII ID),
-  `catalog` (local process-catalog destination), `docsets`, `externalActors`,
-  `routes`. A destination is `{docset,page:"flat.html",anchor?}`; anchors omit `#`.
-- Docset: `{id,title,version,baseURL,services:[{id,title,overview:DEST}]}`.
-  Choose stable docset/version IDs (for example `docs`/`v1`) and an explicit HTTP(S)
-  directory baseURL. The local service inventory must match navigation.
+The normal input contains no top-level schema, revision, docsets, service inventory
+or baseURL: the helper constructs them. Do not copy a full routes.json envelope
+into this update. `catalog` selects an actual unowned catalog page on the first
+call; it is not a request to assemble catalog metadata. A destination is
+`{page:"flat.md",anchor?}` (local docset is automatic); anchors omit `#`.
+
 - External actor: `{id,title}`. Actor: `{kind:"service",docset,service}` or
   `{kind:"external",id}`. IDs are ASCII letters/digits plus `. _ -`.
-- Route: `{id,version,title,narrative:DEST,origin,occurrences,branches,outcomes,coverage}`.
+- ROW: `{title,narrative:DEST,origin,occurrences,branches,outcomes,coverage}`;
+  `id` and `version` are optional stable overrides, not required author bookkeeping.
   Each route has a unique canonical unowned narrative page.
 - Occurrence: `{id,actor,role,target:DEST}`. A known origin is
   `{status:"known",occurrence,kind,title,summary}` naming a service occurrence

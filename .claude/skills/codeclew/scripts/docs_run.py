@@ -1296,11 +1296,18 @@ def main():
         elif args.command in ('put', 'sequence', 'register-entry', 'page-info', 'review-page'):
             need(len(args.page) == 1, 'ONE_PAGE_REQUIRED')
             if args.command == 'register-entry':
-                need(args.kind and args.title, 'ENTRY_KIND_AND_TITLE_REQUIRED')
-                declaration = {'id': args.page[0].removesuffix('.md').replace('.', '-'),
-                    'kind': args.kind, 'page': args.page[0], 'title': args.title,
-                    'evidence': args.evidence, 'disposition': None}
-                if args.kind == 'HTTP':declaration.update(method=args.method, path=args.path)
+                prior = next((c for a in W['registered_accounts'](args.run_dir.absolute(), globals()) if a['requirement'] == args.requirement
+                              for c in a['discoveredEntries'] if c['page'] == args.page[0]), None)
+                if prior:
+                    declaration = {**prior, 'evidence': args.evidence}
+                    for key in ('kind', 'title', 'method', 'path'):
+                        if getattr(args, key) is not None:declaration[key] = getattr(args, key)
+                else:
+                    need(args.kind and args.title, 'ENTRY_KIND_AND_TITLE_REQUIRED')
+                    declaration = {'id': args.page[0].removesuffix('.md').replace('.', '-'),
+                        'kind': args.kind, 'page': args.page[0], 'title': args.title,
+                        'evidence': args.evidence, 'disposition': None}
+                    if args.kind == 'HTTP':declaration.update(method=args.method, path=args.path)
                 result = W['register_entry'](args.run_dir.absolute(), args.requirement, declaration, globals())
             elif args.command == 'page-info':
                 need(args.title, 'PAGE_TITLE_REQUIRED')
@@ -1340,7 +1347,7 @@ def main():
                   'publicationPerformed': False}
     finally:
         if lock is not None:os.close(lock)
-    if args.command in ('save-pages', 'check') and not args.full:
+    if args.command in ('save-pages', 'check', 'put', 'sequence') and not args.full:
         result = W['summary'](result)
     print(encode(result).decode(), end='')
     return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED') else 2
