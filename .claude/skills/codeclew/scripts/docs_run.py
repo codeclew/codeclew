@@ -723,6 +723,24 @@ def review_for_run(run):
     if (run / 'inputs/scaffold.json').exists():
         for row in inventory['requirements']:
             if row['kind'] != 'ENTRY':result['requirements'][row['id']]['section'] = 'clew-scope'
+    original = load(run / 'workspace/draft/original.json')
+    reviewed_path = run / 'workspace/draft/reviewed-pages.json'
+    previous_path = run / 'workspace/draft/self-review.json'
+    if reviewed_path.exists() and previous_path.exists():
+        reviewed, previous = load(reviewed_path), load(previous_path)
+        if previous.get('schema') == COMPACT_REVIEW:
+            for page in original['pages']:
+                if reviewed.get(page['page']) != digest(page):continue
+                for requirement in inventory['requirements']:
+                    if requirement['page'] == page['page'] and requirement['id'] in previous['requirements']:
+                        result['requirements'][requirement['id']] = previous['requirements'][requirement['id']]
+                if page['page'] in result['claims']:
+                    result['claims'][page['page']] = previous['claims'].get(page['page'], result['claims'][page['page']])
+            result['unresolved'], result['visual'] = previous['unresolved'], previous['visual']
+    for account in W['registered_accounts'](run, globals()):
+        row = result['requirements'][account['requirement']]
+        dispositions = {c['id']: c.get('disposition') for c in row.get('discoveredEntries') or []}
+        row['discoveredEntries'] = [{**c, 'disposition': dispositions.get(c['id'])} for c in account['discoveredEntries']]
     return result
 
 
@@ -939,14 +957,10 @@ def review_accounts(review, inventory, pages, entries, original):
                 need(isinstance(local, str) and local and all(c.isascii() and (c.isalnum() or c in '-_') for c in local)
                      and local not in local_ids, 'INVALID_DISCOVERED_ENTRY_ID')
                 local_ids.add(local)
-                identity = requirement['id'] + ':discovered:' + local
                 need(candidate.get('kind') in ('HTTP', 'KAFKA', 'SCHEDULED', 'OTHER'), 'INVALID_DISCOVERED_ENTRY_KIND')
-                member = {'id': identity, 'kind': 'ENTRY', 'service': requirement['service'],
-                          'page': candidate.get('page'), 'handlerId': 'discovered-' + local,
-                          'sourceIds': [source['id'] for source in evidence],
-                          'method': candidate.get('method'), 'path': candidate.get('path'),
-                          'authority': 'AUTHOR_DISCOVERED_SYNTAX_NOT_COMPILER_BINDING',
-                          'entryKind': {'HTTP': 'HTTP_ENDPOINT', 'KAFKA': 'KAFKA_LISTENER', 'SCHEDULED': 'SCHEDULED_JOB', 'OTHER': 'OTHER'}[candidate['kind']]}
+                member = W['discovered_entry'](requirement, candidate, globals())
+                identity = member['id']
+                member['sourceIds'] = [source['id'] for source in evidence]
                 if candidate['kind'] == 'HTTP':
                     need(isinstance(member['method'], str) and member['method'] and isinstance(member['path'], str)
                          and member['path'], 'DISCOVERED_HTTP_IDENTITY_REQUIRED')
@@ -962,6 +976,11 @@ def review_accounts(review, inventory, pages, entries, original):
             need(type(account.get('diagram')) is int and account['diagram'] >= 0, 'REQUIRED_SEQUENCE_MISSING', requirement=requirement['id'])
             need(set(requirement['sourceIds']) & {entries[h]['source']['id'] for h in account['evidence']},
                  'ENTRY_SOURCE_BINDING_MISMATCH', requirement=requirement['id'])
+    canonical, _ = W['entry_registry'](inventory, accounts, globals())
+    need({r['id'] for r in canonical} == {r['id'] for r in effective if r['kind'] == 'ENTRY'}, 'ENTRY_REGISTRY_MISMATCH')
+    W['validate_discovered_sources'](inventory, additional, entries, globals())
+    by_identity = {r['id']: r for r in canonical}
+    effective = [{**r, 'target': by_identity[r['id']]['target']} if r['kind'] == 'ENTRY' else r for r in effective]
     claims = {(p['page'], f['id']): f for p in original['pages'] for f in p['fragments'] if 'id' in f}
     assessed = review['claims']
     need(isinstance(assessed, list) and len(assessed) == len(claims)
@@ -1009,16 +1028,29 @@ def verify(run, *, debug=False):
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
         stage = 'selfReview'; review = load(draft / 'self-review.json')
+        W['local_registry'](run, inventory, globals())
         defaults = {}
         for path in (run / 'inputs/author-source').glob('*/requirements.json'):
             defaults.update({key: value['evidenceCandidates'] for key, value in load(path).items()})
         review = resolve_review(review, inventory, entries, original, defaults)
+        registered = W['registered_accounts'](run, globals())
+        for account in registered:
+            actual = next(r for r in review['requirements'] if r['requirement'] == account['requirement'])
+            need(W['declaration_identity'](actual.get('discoveredEntries') or []) == W['declaration_identity'](account['discoveredEntries']),
+                 'ENTRY_REGISTRATION_REVIEW_MISMATCH', requirement=account['requirement'])
+        reviewed = draft / 'reviewed-pages.json'
+        if reviewed.exists():
+            hashes = load(reviewed)
+            need(all(hashes.get(p['page']) == digest(p) for p in original['pages']), 'PAGE_REVIEW_STALE',
+                 pages=[p['page'] for p in original['pages'] if hashes.get(p['page']) != digest(p)],
+                 recovery='Review only the listed pages using ./docs review-page; unchanged page reviews remain valid.')
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
         checks[stage] = {'status': 'PASS', 'discoveryCoverage': discovery_proofs}; result['semanticReviewRecorded'] = True
         result['authorVisualReview'] = review['visual']
         stage = 'entrySequences'; request = directory / 'sequences.json'
-        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts})
+        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts,
+                       'processPages': W['process_pages'](run, globals())})
         sequence = command([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], str(request)], directory, 'sequences')
         need(sequence.get('status') == 'ENTRY_SEQUENCES_CHECKED', 'ENTRY_SEQUENCES_NOT_CHECKED')
         checks[stage] = {'status': 'PASS', 'result': sequence}
@@ -1035,7 +1067,7 @@ def verify(run, *, debug=False):
         compose = directory / 'compose'
         M['compose'](draft / 'original.json', compose)
         renderer = directory / 'renderer.json'
-        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', job['request'],
+        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', 'Service documentation',
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
         if len(job['services']) > 1:
             registry = load(draft / 'routes.json')
@@ -1127,18 +1159,18 @@ def author(run, *, unit=None, repair=False):
     if not attempts:
         prompt = (run / 'prompt.txt').read_bytes()
     elif unit and not repair:
-        prompt = encode({'instruction': 'Continue the same frozen request and source scope. Complete only this related-page unit, save local page files, run the supported early check and repair them, then end this turn. Do not rebuild previous units. The complete-docset unit owns shared processes, data/navigation additions and the full bidirectional review; no scope may be dropped.',
+        prompt = encode({'instruction': 'Continue the same frozen request and source scope. Complete only this related-page unit, save local page files, run the supported early check and repair them, then end this turn. Do not rebuild previous units. Record local semantic assessments with review-page before leaving each unit. The complete-docset unit finishes shared full-process diagrams and necessary cross-service semantic reconciliation, not a rewrite or rereview of unchanged accepted unit content. No scope may be dropped.',
                          'unit': unit, 'budgetPlan': state.get('budgetPlan'), 'remainingSeconds': int(remaining)})
     else:
         failures = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
-        prompt = encode({'instruction': 'Repair the draft and repeat your bidirectional self-review. Preserve scope and existing unchanged reads; acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
+        prompt = encode({'instruction': 'Repair only the affected fragments named below and repeat semantic self-review for changed content and its consequential dependencies. Preserve unchanged pages, valid local review and source reads; do not replay the whole docset. Acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
                          'failures': failures.get('checks', failures),
                          'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - repair_count})
     if unit:
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
                           'stopAfterUnit': True, 'fullRequestStillRequired': True,
                           'preparedAuthorContract': str(SKILL / 'references/docs-run-author.md'),
-                          'authorCommands': './docs save-pages --input pages/PAGE.md.json; ./docs check --page PAGE.md; ./docs review-template',
+                          'authorCommands': './docs put --page PAGE.md --fragment CLAIM --text-file FILE --evidence HANDLE; ./docs sequence --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE; ./docs check --page PAGE.md; ./docs review-page --page PAGE.md',
                           'workflow': 'Continue the admitted prepared-author workflow. Do not rediscover the globally installed skill or restart generic source acquisition/export. Full semantic requirements and source reads remain required.'})
     if state.get('accountingRecovery'):
         prompt += encode({'instruction': 'This same logical run recovered a cumulative-counter accounting error. Use the successor helper below for save-pages, check and review-template; keep your existing source reads, pages and context. The request, source scope and original time/token/repair caps are unchanged.',
@@ -1223,7 +1255,7 @@ def execute(run, *, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting'))
+    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
@@ -1233,10 +1265,21 @@ def main():
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
     parser.add_argument('--full', action='store_true', help='Print complete local save/check receipt instead of its compact summary.')
+    parser.add_argument('--text-file', type=Path)
+    parser.add_argument('--fragment')
+    parser.add_argument('--evidence', action='append', default=[])
+    parser.add_argument('--requirement')
+    parser.add_argument('--kind', choices=('HTTP', 'KAFKA', 'SCHEDULED', 'OTHER'))
+    parser.add_argument('--title')
+    parser.add_argument('--method')
+    parser.add_argument('--path')
+    parser.add_argument('--service')
+    parser.add_argument('--data', action='store_true')
     args = parser.parse_args()
+    edits = ('save-pages', 'check', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review')
     lock = None
     try:
-        if args.command in ('save-pages', 'check'):
+        if args.command in edits:
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / 'workspace/.edit.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1250,6 +1293,33 @@ def main():
         if args.command == 'recover-accounting':
             need(args.previous_skill is not None, 'PREVIOUS_ADMITTED_SKILL_REQUIRED')
             result = recover_accounting(args.run_dir, args.previous_skill)
+        elif args.command in ('put', 'sequence', 'register-entry', 'page-info', 'review-page'):
+            need(len(args.page) == 1, 'ONE_PAGE_REQUIRED')
+            if args.command == 'register-entry':
+                need(args.kind and args.title, 'ENTRY_KIND_AND_TITLE_REQUIRED')
+                declaration = {'id': args.page[0].removesuffix('.md').replace('.', '-'),
+                    'kind': args.kind, 'page': args.page[0], 'title': args.title,
+                    'evidence': args.evidence, 'disposition': None}
+                if args.kind == 'HTTP':declaration.update(method=args.method, path=args.path)
+                result = W['register_entry'](args.run_dir.absolute(), args.requirement, declaration, globals())
+            elif args.command == 'page-info':
+                need(args.title, 'PAGE_TITLE_REQUIRED')
+                result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals())
+            elif args.command == 'review-page':
+                result = W['review_page'](args.run_dir.absolute(), args.page[0], load(args.input) if args.input else None, globals())
+                if args.input is None:
+                    print(encode(result).decode(), end='');return 0
+            else:
+                path = args.input if args.command == 'sequence' else args.text_file
+                need(path is not None and args.fragment, 'FRAGMENT_AND_CONTENT_REQUIRED')
+                result = W['put'](args.run_dir.absolute(), args.page[0], args.fragment, path.read_text(),
+                                   args.evidence, args.command == 'sequence', globals())
+        elif args.command == 'finish-review':
+            need(args.input is not None, 'GLOBAL_REVIEW_REQUIRED')
+            result = W['finish_review'](args.run_dir.absolute(), load(args.input), globals())
+        elif args.command == 'route':
+            need(args.input is not None, 'ROUTE_INPUT_REQUIRED')
+            result = W['route'](args.run_dir.absolute(), load(args.input), globals())
         elif args.command == 'save-pages':
             need(args.input is not None, 'PAGE_INPUT_REQUIRED')
             result = W['save_pages'](args.run_dir.absolute(), args.input, globals())
@@ -1273,7 +1343,7 @@ def main():
     if args.command in ('save-pages', 'check') and not args.full:
         result = W['summary'](result)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED') else 2
+    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED') else 2
 
 
 if __name__ == '__main__':

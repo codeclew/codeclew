@@ -214,6 +214,112 @@ else:
     def local_reads(self):
         shutil.copytree(self.seed / 'reads', self.run / 'workspace/draft/reads')
 
+    def test_registered_discovery_uses_same_local_final_binding_and_scoped_repair(self):
+        self.local_reads()
+        parent = next(r for r in self.inventory['requirements'] if r['kind'] == 'DISCOVERY')
+        declaration = {'id': 'events', 'kind': 'KAFKA', 'page': 'events.md', 'title': 'Apply reservation events',
+                       'evidence': [self.handle], 'disposition': None}
+        registered = D['W']['register_entry'](self.run, parent['id'], declaration, D)
+        row = registered['entry'];self.assertEqual(row['handlerId'], 'discovered-events')
+        other = (self.run / 'workspace/pages' / (self.entry['page'] + '.json')).read_bytes()
+        D['W']['put'](self.run, 'events.md', 'meaning', 'Apply an incoming reservation event.', [self.handle], False, D)
+        self.assertIn('events.md', D['W']['unfinished'](D['load'](self.run / 'workspace/draft/original.json')))
+        sequence = {'title': 'Apply event', 'participants': [{'id': 'broker', 'title': 'Broker'}, {'id': 'wrong', 'title': 'Application'}],
+                    'steps': [{'from': 'broker', 'to': 'wrong', 'kind': 'call', 'label': 'Reservation record'}]}
+        D['W']['put'](self.run, 'events.md', 'flow', json.dumps(sequence), [self.handle], True, D)
+        failed = self.local_check('events.md');self.assertEqual(failed['code'], 'SEQUENCE_ENTRY_MISMATCH', failed)
+        details = failed['details']['response']['details']
+        self.assertEqual(details['expected']['handlerId'], 'discovered-events')
+        self.assertEqual(details['actual']['firstTo'], 'wrong');self.assertIn('./docs sequence', details['recovery'])
+        sequence['participants'][1]['id'] = 'handler';sequence['steps'][0]['to'] = 'handler'
+        D['W']['put'](self.run, 'events.md', 'flow', json.dumps(sequence), [self.handle], True, D)
+        checked = self.local_check('events.md');self.assertEqual(checked['status'], 'UNIT_CHECKED', checked)
+        self.assertEqual(other, (self.run / 'workspace/pages' / (self.entry['page'] + '.json')).read_bytes())
+        assembled = D['load'](self.run / 'workspace/draft/original.json')
+        new_page = next(p for p in assembled['pages'] if p['page'] == 'events.md')
+        self.assertEqual(sum('<a id="handler"></a>' in f['text'] for f in new_page['fragments']), 1)
+        self.original['pages'].append(new_page)
+        self.navigation = D['load'](self.run / 'workspace/draft/navigation.json')
+        for account in self.review['requirements']:
+            if account['requirement'] == parent['id']:
+                account.update(discoveryDisposition='ADDITIONAL_STARTS', discoveredEntries=[{
+                    **D['W']['registered_accounts'](self.run, D)[0]['discoveredEntries'][0], 'disposition': 'EXPLAINED'}])
+        self.review['claims'] += [{'page': 'events.md', 'claim': f['id'], 'evidence': f['evidence'], 'disposition': 'SUPPORTED'}
+                                 for f in new_page['fragments'] if 'id' in f]
+        self.seed_files();self.generated();final = D['verify'](self.run)
+        self.assertEqual(final['status'], 'READY', final)
+        self.assertIn(row['id'], final['checks']['entrySequences']['result']['entries'])
+
+    def test_fragment_commands_serialize_text_and_page_reviews_survive_other_edits(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        for page in (self.entry['page'], self.service + '.md'):
+            shell = D['W']['review_page'](self.run, page, None, D)
+            for row in shell['requirements'].values():
+                row['disposition'] = 'EXPLAINED'
+                if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS', discoveredEntries=[])
+            shell['claims'] = {key: 'SUPPORTED' for key in shell['claims']}
+            D['W']['review_page'](self.run, page, shell, D)
+        before = D['review_for_run'](self.run)
+        self.assertEqual(before['claims'][self.service + '.md']['overview'], 'SUPPORTED')
+        body = self.run / 'workspace/claim.md';body.write_text('## Input "value"\n\nA backslash \\ and `code` remain literal.\n')
+        wrapper = self.run / 'workspace/docs'
+        done = subprocess.run([str(wrapper), 'put', '--page', self.entry['page'], '--fragment', 'entry',
+                               '--text-file', str(body), '--evidence', self.handle], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        after = D['review_for_run'](self.run)
+        self.assertIsNone(after['claims'][self.entry['page']]['entry'])
+        self.assertEqual(after['claims'][self.service + '.md'], before['claims'][self.service + '.md'])
+        page = next(p for p in D['load'](self.run / 'workspace/draft/original.json')['pages'] if p['page'] == self.entry['page'])
+        self.assertEqual(next(f['text'].strip() for f in page['fragments'] if f.get('id') == 'entry'), body.read_text().strip())
+
+    def test_local_entry_check_honors_recorded_diagram_and_discovered_source_evidence(self):
+        self.local_reads();page = self.local_page()
+        diagram = json.loads(page['fragments'][1]['text'].split('```clew-sequence\n')[1].split('```')[0])
+        unrelated = {'title': 'Other operation', 'participants': [{'id': 'x', 'title': 'Other'}, {'id':'y','title':'Peer'}],
+                     'steps': [{'from': 'x', 'to': 'x', 'kind': 'note', 'label': 'Different operation'}]}
+        page['fragments'][1]['text'] = '```clew-sequence\n' + json.dumps(unrelated) + '\n```\n\n```clew-sequence\n' + json.dumps(diagram) + '\n```\n'
+        self.save_local(page)
+        review = json.loads(json.dumps(self.review))
+        next(r for r in review['requirements'] if r['requirement'] == self.entry['id'])['diagram'] = 1
+        D['save'](self.run / 'workspace/draft/self-review.json', review)
+        result = self.local_check(page['page']);self.assertEqual(result['status'], 'UNIT_CHECKED', result)
+        parent = next(r for r in self.inventory['requirements'] if r['kind'] == 'DISCOVERY')
+        D['W']['register_entry'](self.run, parent['id'], {'id':'events','kind':'OTHER','page':'events.md','title':'Apply event',
+                                    'evidence':['invented-handle'],'disposition':None}, D)
+        seq = {'title':'Apply event','participants':[{'id':'caller','title':'Caller'},{'id':'handler','title':'Application'}],
+               'steps':[{'from':'caller','to':'handler','kind':'call','label':'Event'}]}
+        D['W']['put'](self.run,'events.md','flow',json.dumps(seq),[self.handle],True,D)
+        bad = self.local_check('events.md')
+        self.assertEqual(bad['code'],'INVALID_DISCOVERED_ENTRY_ACCOUNT',bad)
+        self.assertEqual(bad['details']['actual'],['invented-handle'])
+
+    def test_small_route_and_navigation_updates_keep_unrelated_declarations(self):
+        first = {'catalog': 'processes.html', 'route': {'title': 'First process', 'narrative': {'page': 'first.md'},
+                 'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {}}}
+        second = {'route': {'title': 'Second process', 'narrative': {'page': 'second.md'},
+                  'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {}}}
+        D['W']['route'](self.run, first, D)
+        before = D['load'](self.run / 'workspace/draft/routes.json')['routes'][0]
+        D['W']['route'](self.run, second, D)
+        registry = D['load'](self.run / 'workspace/draft/routes.json')
+        self.assertEqual(registry['routes'][0], before)
+        self.assertEqual(registry['routes'][1]['narrative'], {'docset': 'docs', 'page': 'second.html'})
+        self.assertEqual(D['W']['process_pages'](self.run, D), ['first.md', 'second.md'])
+        navigation = D['load'](self.run / 'workspace/draft/navigation.json')
+        starts = navigation['services'][0]['starts']
+        D['W']['page_info'](self.run, 'data.md', self.service, 'Reservation data', True, D)
+        updated = D['load'](self.run / 'workspace/draft/navigation.json')['services'][0]
+        self.assertEqual(updated['starts'], starts)
+        self.assertIn({'title': 'Reservation data', 'target': 'data.md'}, updated['data'])
+
+    def test_process_page_without_full_sequence_is_explicitly_rejected(self):
+        request = self.root / 'sequences.json'
+        D['save'](request, {'pages': {'process.md': '# Process\nOnly links.'}, 'requirements': [], 'accounts': [], 'processPages': ['process.md']})
+        with self.assertRaises(D['Stop']) as error:
+            D['command']([self.job['node'], str(ROOT / 'skills/codeclew/scripts/docs_run_sequences.mjs'), str(RENDERER), str(request)], self.root / 'sequence-check', 'check')
+        self.assertEqual(error.exception.code, 'PROCESS_SEQUENCE_MISSING')
+        self.assertEqual(error.exception.details['response']['details']['actual'], 0)
+
     def test_inventory_scaffold_renders_but_is_explicitly_unfinished(self):
         result = D['W']['check'](self.run, [], True, D)
         self.assertEqual(result['status'], 'SCAFFOLD_CHECKED', result)

@@ -29,15 +29,22 @@ try {
    });
   }
   const counts={};
+  for(const page of value.processPages||[])need(sequences[page]?.length,
+   'PROCESS_SEQUENCE_MISSING',{page,field:'fragments',expected:'At least one full-process clew-sequence',actual:sequences[page]?.length||0,
+    recovery:'Describe the complete source-backed process with ./docs sequence on this narrative page. Local entry diagrams do not replace it; meaning still requires review.'});
   for(const requirement of value.requirements) {
    if(requirement.kind!=='ENTRY')continue;
    const account=value.accounts.find(row=>row.requirement===requirement.id);
    const selected=sequences[requirement.page]?.[account?.diagram];
    need(selected,'REQUIRED_SEQUENCE_MISSING',{requirement:requirement.id,page:requirement.page});
    const handler=selected.participants.find(p=>p.id===requirement.handlerId);
-   const first=selected.steps[0],target=requirement.page+'#handler';
+   const first=selected.steps[0],target=requirement.target||requirement.page+'#handler';
    need(handler?.target===target&&first.to===requirement.handlerId&&first.target===target,
-    'SEQUENCE_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page});
+    'SEQUENCE_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page,
+     field:'diagram/'+account.diagram+'/entry',
+     expected:{handlerId:requirement.handlerId,handlerTarget:target,firstTo:requirement.handlerId,firstTarget:target},
+     actual:{handlerTarget:handler?.target??null,participantIds:selected.participants.map(p=>p.id),firstTo:first.to,firstTarget:first.target??null},
+     recovery:'Update this diagram with ./docs sequence --page '+requirement.page+' --fragment CLAIM --input FILE --evidence HANDLE; use participant id handler for the registered entry. Other pages need no rewrite.'});
    if(requirement.method)need(first.kind==='call'&&first.from!==first.to&&first.label===requirement.method+' '+requirement.path,
     'SEQUENCE_HTTP_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page});
    counts[requirement.id]={page:requirement.page,diagram:account.diagram,steps:selected.steps.length};

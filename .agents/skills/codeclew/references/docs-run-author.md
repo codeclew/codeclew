@@ -1,117 +1,111 @@
-# Prepared author: save, check, repair
+# Prepared author: meaning first, mechanical work delegated
 
-The caller has admitted the runtime and retained sources. Keep this running task
-on that runtime. One author/context works through related-page units; the complete
-request remains required. Finish only the assigned unit, then end the turn so the
-runner can check its cost and resume you for the next unit. Do not start a runner,
-other models, capture, refresh, publish, or read source repositories/private stores.
-The local skill profile and AGENTS.md select this prepared workflow; retain it
-after context compaction rather than restarting the global generic workflow.
+The caller has admitted this runtime and retained scope. One author/context works
+through related-page units. Keep the complete request and all source requirements.
+Finish the assigned unit and end the turn; do not start runners, other models,
+capture, refresh, publication, or source-repository/private-store exploration.
+The workspace profile survives compaction: use it rather than restarting the
+installed generic workflow. Proof receipts are for targeted diagnostics.
 
-## Short working loop
+## Normal working loop
 
-1. Read the request, assigned unit and its source indexes. Open consequential code,
-   contracts/settings and dependencies through the prepared readable views. Real
-   cite handles are printed with the code. `inputs/source-proof` contains full
-   proof/receipt sidecars for targeted diagnostics, not ordinary author context.
-   Available-but-unread evidence is unfinished work; preserve actual source limits.
-2. Edit one persisted `workspace/pages/PAGE.md.json` at a time. Each file already
-   uses the ordinary original format with one page. Replace the unfinished draft
-   placeholder with a reader explanation and evidence-bound diagram/field table.
-   Extend the prepared entry sequence through actual work and outcomes. The first
-   handler identity/address is fixed. Keep the original request's data/process scope.
-3. Save with `./docs save-pages --input pages/PAGE.md.json`. This merges
-   only those pages into `draft/original.json`; other pages/reads remain intact.
-   It supplies managed `handler`/`clew-scope` anchors. Do not type those anchors in
-   authored fragments or use headings that duplicate them. For additional anchors,
-   use a dedicated plain `{text:"<a id=\"name\"></a>"}` fragment: save-pages owns
-   its block separators. Keep a sequence fence within one bound fragment.
-4. You ARE allowed and expected to run `./docs check --page PAGE.md`
-   (repeat `--page` for a related group). It binds selected claims through the real
-   source rules and uses the same final parser/renderer and actual HTML link checks.
-   Read its compact result. Fix the named saved page/fragment/field, save and repeat.
-   Check output and the last valid preview live under `workspace/checks`; a failed
-   preview never replaces `last-valid-preview.json`. Unit checks are not READY.
-   Success prints a compact summary; full receipts remain available on disk or
-   with `--full` for targeted diagnostics. Do not reread assembled sequences.json
-   after PASS; compare actual source with the relevant saved page and diagram.
-5. Compare source to every explanation and diagram, then every visible claim back
-   to source. Repair the same saved unit. Check predicates/precedence, before/after
-   effects, failures, response/error variants, defaults and completion boundaries.
-   A correct sentence does not excuse a wrong label. Then finish this unit's turn.
+1. Read consequential prepared views through each service index. Real cite handles
+   accompany the code. Available-but-unread evidence is unfinished work. Preserve
+   source coverage and runtime/registration uncertainty.
+2. Write a small reader explanation as ordinary Markdown in a local text file.
+   Save it with `./docs put --page PAGE.md --fragment CLAIM --text-file FILE
+   --evidence HANDLE` (repeat evidence for each genuine handle). The helper merges
+   one claim, serializes its envelope, and supplies block separators and anchors.
+   Quotes/backslashes are literal; do not write a JSON string around the prose.
+3. Write a semantic sequence object in a local JSON file and use `./docs sequence
+   --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE`. The helper owns
+   the fence and serialization. On an entry page, use participant ID `handler`;
+   its registered ID, target and initial HTTP label are supplied automatically.
+   Other participants, ordering, conditions, labels and outcomes are your work.
+   Replace the unfinished entry diagram; an initial stub is not accepted content.
+4. Run `./docs check --page PAGE.md` (repeat page for a related group). It uses the
+   actual parser/renderer/source rules. Read compact success; full receipts stay
+   on disk. On failure use the named page/fragment/field and expected/actual values
+   to repair only that content. Last valid preview remains available. Do not
+   reread checker input dumps after PASS or regenerate the whole docset.
+5. Compare source to all visible claims and steps, then every claim/step back to
+   source. Include predicates, consequential helper calls, before/after effects,
+   failures, response variants, defaults and completion boundaries. A correct
+   sentence does not excuse an incorrect diagram. Record this page's decisions:
+   `./docs review-page --page PAGE.md > assessment.json`, fill its actual claim
+   and requirement dispositions, then `./docs review-page --page PAGE.md --input
+   assessment.json`. Empty/null dispositions are not approvals. Reviews are tied
+   to page hashes: changing content invalidates its review; other reviews persist.
 
-Create extra page files using the same `{pages:[{page,fragments}]}` shape and save
-with the same command. Update ordinary navigation for added owned data pages.
-Shared process/catalog pages stay unowned. Do not write a whole-site generator.
-If a target belongs to an unfinished page, check reports `pendingTargets`; it does
-not certify the link. Save the target's real anchor in its pending page file, or
-finish the related page in the same group, then repeat check. Pending content stays
-explicit and still blocks final readiness. Never invent an explanation or cite.
-If a small script helps, save it before execution and repair that file locally.
-Do not retransmit every page for a local failure.
+Use `./docs register-entry --requirement DISCOVERY_ID --kind HTTP|KAFKA|SCHEDULED|OTHER
+--page ENTRY.md --title "Reader action" --evidence HANDLE` for a genuine discovered
+start (HTTP also requires method/path). The helper derives the local ID, handler
+address, stub and navigation from this declaration once. Each entry has its own
+page; link shared behavior instead of merging unrelated entries. Registration is
+an authored syntax finding, not compiler/runtime binding or semantic approval.
+Review the parent discovery requirement and each discovered disposition explicitly.
 
-The `complete-docset` unit finishes shared process/routes/data navigation, resolves
-pending cross-page targets and runs the full bidirectional review. Only then call
-`./docs review-template` and fill its actual assessments in self-review.json.
-The caller retains the full source-binding/export/coverage gate and promotion.
-A scaffold, UNIT_CHECKED, exit0 or DONE never means the complete site is READY.
+For owned data pages use `./docs page-info --page PAGE.md --service SERVICE
+--title "Reader title" --data`; the helper merges ownership/navigation. Shared
+process narratives/catalog remain unowned. Save reader titles/contents yourself.
+The old `save-pages --input FILE` representation remains supported for targeted
+advanced edits; no hand-written site generator is necessary in the normal path.
 
-## Reader and evidence quality
+In the final related unit, finish shared data/process pages and necessary
+cross-service reconciliation. Every canonical process narrative needs its own
+full-chain diagram, including actual request replies, external effects, broker
+handoff and consequential outcomes; local entry diagrams do not replace it.
+Preserve route scope and search ownership. Review new/changed pages; reuse the
+recorded semantic work on unchanged pages. Reopen dependencies when a changed
+claim affects their meaning; hashes cannot prove cross-service consistency.
+Do not repeat whole-site authoring or blanket reread all previous page JSON.
+Use `./docs finish-review --input FILE` with the explicit global decisions
+`{unresolved: [...], visual: {status: "UNAVAILABLE", reason: "..."}}` (valid JSON).
+Only record REVIEWED after actual browser inspection. `review-template` remains
+available to inspect all outstanding assessments, never to auto-approve them.
+The caller still runs the full source/coverage/route/navigation/export gate.
+UNIT_CHECKED, exit0 or a generated scaffold never means READY.
 
-Lead with reader purpose, inputs and consequences. Use ordered work and errors
-beside the step that fails; readable field tables preserve exact code identifiers,
-meaning, type/requiredness, units and evidenced aliases. Group representations only
-when their mapping is evidenced. Explain each material distinction once and link.
-Keep proof labels, hashes and review protocols in metadata or source disclosure.
+## Reader and semantic quality
 
-Follow consequential helpers, predicates, configuration and resource notes.
-Distinguish local adapters from remote participants, local acceptance/handoff from
-downstream completion, and source declarations from runtime registration. State
-conditions on every affected sequence step. Do not invent waiting, rollback,
-retry, acknowledgement, durability or collection order. A condition string is not
-machine proof. A genuine citation is not semantic approval. If evidence is really
-unavailable, state its consequence; do not relabel available unread source unknown.
-Additional missing evidence uses the supported acquisition section of
-`compose-original.md`/`thread-preparation.md`, saved under `draft/reads`.
+Lead with purpose, inputs and consequences. Explain steps in order with errors
+beside the step that fails; put technical details in disclosure. Field tables
+retain exact code names, meaning, type/requiredness, units and evidenced aliases.
+Group representations only when their mapping is evidenced. Keep proof metadata
+out of reader prose and preserve source disclosure.
 
-## Files and compact contracts
+Treat a declared schema constraint, producer transformation and consumer predicate
+as separate assertions. A constraint in one layer does not prove another enforces
+it. Distinguish an absent input/default branch from a present malformed value:
+follow parsing exceptions and local catches rather than assuming a fallback.
+Distinguish application execution from external effects. A method called inside
+a transaction is not a database operation; unfold its consequential file/network/
+broker/database effects with correctly owned participants and ordering. Include
+pre-operation guards and the state written on each terminal path. Do not infer
+retry, rollback, acknowledgement, durability or collection order without evidence.
 
-`original.json` is an object with `pages`. Each page is
-`{"page":"name.md","fragments":[...]}`. Use flat Markdown filenames. Headings,
-anchors and navigation-only fragments use `{"text":"..."}`. A substantive claim
-uses `{"id":"local-id","text":"...","evidence":["REAL_HANDLE"]}`; both annotation
-fields are required together. IDs are unique within a page. Markdown fragments
-concatenate literally, so retain newlines. Every page needs at least one meaningful
-source-bound claim; fold a pure navigation hub into an explained overview instead
-of inventing evidence for links. Extra process/data pages are allowed.
+A real citation is not semantic approval; inspect consequential helpers and
+settings. Use genuine explicit unknowns when evidence is unavailable, not to hide
+available unread source. Additional needed evidence follows the supported
+compose-original/thread-preparation acquisition contract, saved in draft/reads.
+No old generated prose, evaluator answers or correcting second author are inputs.
 
-The saved entry page receives its managed `handler` anchor automatically. Its bound Markdown fence
-named `clew-sequence` containing JSON:
+## Sequence representation
 
-```json
-{"title":"Operation","participants":[{"id":"caller","title":"Caller"},{"id":"INVENTORY_HANDLER_ID","title":"Handler","target":"REQUIRED.md#handler"}],"steps":[{"from":"caller","to":"INVENTORY_HANDLER_ID","label":"METHOD /exact-path","kind":"call","target":"REQUIRED.md#handler"},{"from":"INVENTORY_HANDLER_ID","to":"caller","label":"Actual response","kind":"return"}]}
-```
-
-This example illustrates the contract, not an operation's behavior. Expand actual
-work, branches and errors from source. Participants accept `id,title,target?`;
-steps accept `from,to,label,kind,target?,condition?`. Kinds are `call`, `return`,
-`async` (start without waiting), `await`, `note` (local step). Targets use flat
-`page.md#anchor`. The first step addresses the inventory handler and its target;
-HTTP labels are exactly inventory METHOD + space + PATH. The renderer derives
-the diagram and text trace from these same rows; structural validity is not truth.
-
-`navigation.json` is already started for you. Contract:
+Use ordinary `clew-sequence` JSON semantic rows, without writing the fence:
 
 ```json
-{"schema":"codeclew-markdown-navigation/1","home":{"title":"Guide","target":"overview.md"},"services":[{"id":"SERVICE","title":"Service","overview":"overview.md","pages":["overview.md","entry.md"],"starts":[{"title":"Reader action","target":"entry.md#handler","kind":"http","summary":"What it does"}],"data":[{"title":"Object","target":"data.md"}]}],"routes":[]}
+{"title":"Reader operation","participants":[{"id":"caller","title":"Caller"},{"id":"handler","title":"Application"}],"steps":[{"from":"caller","to":"handler","label":"Input","kind":"call"},{"from":"handler","to":"caller","label":"Actual response","kind":"return"}]}
 ```
 
-Kinds: `http,kafka,scheduled,background,manual,other`. Every service destination
-must be one of its uniquely owned pages. Add actual data pages to `pages` and
-`data`. Keep shared process narratives and the process catalog unowned by a
-service, and keep legacy navigation `routes` empty when using `routes.json`.
+This is a shape example, not evidence about any operation. Participants accept
+`id,title,target?`; steps accept `from,to,label,kind,target?,condition?`. Kinds are
+`call`, `return`, `async` (starts without waiting), `await`, `note` (local step).
+On non-entry process pages choose actual participants/targets yourself. Conditions
+and valid structure do not prove semantic truth. Targets use flat page.md#anchor.
+The helper binds both the diagram and text trace to your supplied source handles.
 
-For multiple services write `routes.json` using this field contract:
+For multiple services, `./docs route --input FILE` merges one `{route: ROW, externalActors?: [...], catalog?: "processes.html"}` update. Supply catalog on the first call. The helper owns top-level schema, revision, local docset (`docs`/`v1`), service inventory and serialization; it preserves other routes. In ROW, route id defaults to its narrative filename and version to `v1`; destinations may omit the local docset and use `.md` pages. Service actors may omit local docset. Supply actual semantic actor/occurrence/branch/outcome/coverage values using this existing route representation:
 
 - Top: `schema:"codeclew-cross-docset-routes/1.1"`, `revision` (ASCII ID),
   `catalog` (local process-catalog destination), `docsets`, `externalActors`,
@@ -142,15 +136,6 @@ For multiple services write `routes.json` using this field contract:
 For advanced canonical identity/catalog features, open only the relevant
 `examples/markdown-renderer/README.md` section or `docset-routes.mjs` validator.
 
-## Final same-author review
 
-Use the generated compact review shell after the complete-docset originals exist.
-It derives IDs, default sections and duplicate evidence bookkeeping, never answers.
-Fill every requirement and claim disposition from actual comparison in both
-directions. Read full required discovery views and record additional starts or an
-evidenced no-additions judgment. Preserve unknown/runtime boundaries. Do not remove
-requirements, citations or meaningful distinctions to obtain a check pass.
-
-Record only observed browser inspection; otherwise use UNAVAILABLE with a reason.
-Root reader/visual acceptance is separate. Keep originals, reads, failed local
-checks and full provenance. No previous prose, rubric or critic answers are inputs.
+Preserve originals, reads, failed checks and full provenance. Structural membership
+is not compiler/runtime or semantic proof. Never remove scope to obtain PASS.

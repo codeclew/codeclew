@@ -23,19 +23,13 @@ bulky fixtures. Native authority/coverage and unavailable evidence remain explic
 Do not capture/refresh, read target repositories/private caches directly, inspect
 previous documentation/critic answers, publish, or alter frozen inputs/budgets.
 
-For each saved page, replace the unfinished placeholder with source-backed prose,
-field tables and the actual handler-started sequence. Keep exact page/handler IDs.
-Save only the affected page(s), then run the supported early check:
-./docs save-pages --input pages/PAGE.md.json
-./docs check --page PAGE.md
-Repeat --page for a related group. These commands are explicitly allowed now.
-Fix the precise local error in that saved file, save and check again. Managed
-anchors and dedicated anchor-fragment separators are supplied by save-pages.
-Do not add a second handler/clew-scope anchor. Preserve other pages and source reads.
-Do not generate or rewrite the whole site to repair one file.
-Successful commands print compact summaries; full receipts stay on disk and
---full is available for targeted diagnostics. After a successful check, review
-the actual source and relevant saved page, not the assembled sequences.json input.
+Use the normal prepared-author commands: put for small Markdown claims, sequence
+for semantic diagram rows, register-entry for genuine discovered starts, page-info
+for owned data pages, route for one semantic route declaration, check for local
+feedback and review-page for explicit semantic assessments. See the prepared
+contract for flags. The helper owns IDs, anchors, serialization and mechanical
+navigation/catalog metadata. Do not invent helper scripts or whole-site generators.
+Preserve unchanged pages and source reads; repair only named fields.
 
 Before ending a unit, compare the actual source to all its explanations/diagrams,
 then every visible claim back to source; preserve consequential branches, effects,
@@ -45,17 +39,15 @@ The budget plan is a measured planning estimate, not a continuous provider ceili
 Do not cut source scope or fake completion to fit it. At most {repairs} additional
 machine-repair rounds share the same global cap.
 
-In the complete-docset unit, finish shared process/data/catalog navigation and
-routes.json for multiple services, including Starts/Includes/Ends and real targets.
-Add extra page files in the same existing original format as needed. Update
-navigation.json with actual reader labels and owned data pages, preserving entries.
-Then generate the global review shell and fill actual semantic assessments:
-./docs review-template > draft/self-review.json
-Requirements use EXPLAINED or EXPLICIT_UNKNOWN with actual local sections;
-DISCOVERY also records NO_ADDITIONAL_STARTS or ADDITIONAL_STARTS with genuine
-handles/entry diagrams. Claims use SUPPORTED or EXPLICIT_UNKNOWN. Unresolved is an
-explicit list. Visual is REVIEWED only after observed browser inspection; otherwise
-UNAVAILABLE with a reason. No answer/disposition is prefilled by the helper.
+Before leaving each unit, record its bidirectional semantic review with review-page.
+In the complete-docset unit, finish shared full-chain process diagrams, data and
+semantic route declarations; reconcile cross-service meaning and outstanding
+references. Do not rewrite or blanket reread unchanged, already reviewed pages.
+Use finish-review for explicit unresolved/visual global decisions. Review dispositions
+remain author judgments: EXPLAINED/EXPLICIT_UNKNOWN for requirements and discovered
+entries; SUPPORTED/EXPLICIT_UNKNOWN for claims. Discovery requires the full retained
+file and actual additional starts or an evidenced no-additions judgment. No answers
+are prefilled. Record visual REVIEWED only after real observed browser inspection.
 
 The caller performs complete native source, coverage, link, renderer and export
 checks. Do not write PASS/READY receipts or promote. Empty scaffolding, unit PASS,

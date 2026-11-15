@@ -14,6 +14,123 @@ KINDS = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
 MARKER = '<!-- codeclew:unfinished -->'
 
 
+def discovered_entry(parent, declaration, api):
+    """One identity/address rule for registration, early checks and final review."""
+    local = declaration.get('id')
+    api['need'](isinstance(local, str) and re.fullmatch(r'[A-Za-z0-9_-]+', local),
+                'INVALID_DISCOVERED_ENTRY_ID', actual=local)
+    kind = declaration.get('kind')
+    api['need'](kind in ('HTTP', 'KAFKA', 'SCHEDULED', 'OTHER'), 'INVALID_DISCOVERED_ENTRY_KIND')
+    name = api['M']['page_name'](declaration.get('page'))
+    row = {'id': parent['id'] + ':discovered:' + local, 'kind': 'ENTRY',
+           'service': parent['service'], 'page': name, 'handlerId': 'discovered-' + local,
+           'target': name + '#handler', 'sourceIds': parent.get('sourceIds', []),
+           'method': declaration.get('method'), 'path': declaration.get('path'),
+           'authority': 'AUTHOR_DISCOVERED_SYNTAX_NOT_COMPILER_BINDING',
+           'entryKind': {'HTTP': 'HTTP_ENDPOINT', 'KAFKA': 'KAFKA_LISTENER',
+                         'SCHEDULED': 'SCHEDULED_JOB', 'OTHER': 'OTHER'}[kind]}
+    entry_kind(row, api['need'])
+    return row
+
+
+def entry_registry(inventory, accounts, api):
+    rows = [{**r, 'target': r['page'] + '#handler'} for r in inventory['requirements'] if r['kind'] == 'ENTRY']
+    additional = []
+    parents = {r['id']: r for r in inventory['requirements'] if r['kind'] == 'DISCOVERY'}
+    for account in accounts:
+        parent = parents.get(account.get('requirement'))
+        if not parent:continue
+        for candidate in account.get('discoveredEntries') or []:
+            row = discovered_entry(parent, candidate, api)
+            api['need'](not any(r['id'] == row['id'] for r in rows), 'DUPLICATE_DISCOVERED_ENTRY', requirement=row['id'])
+            api['need'](not any(r['page'] == row['page'] for r in rows), 'ENTRY_PAGE_COLLISION', page=row['page'],
+                        recovery='Register each entry on its own page; link shared explanations.')
+            rows.append(row);additional.append({**candidate, 'requirement': row['id']})
+    return rows, additional
+
+
+def registered_accounts(run, api):
+    path = run / 'workspace/draft/entries.json'
+    return api['load'](path) if path.exists() else []
+
+
+def review_requirements(run, api):
+    path = run / 'workspace/draft/self-review.json'
+    if not path.exists():return []
+    rows = api['load'](path)['requirements']
+    return [{'requirement': key, **value} for key, value in rows.items()] if isinstance(rows, dict) else rows
+
+
+def validate_discovered_sources(inventory, accounts, entries, api):
+    parents = {r['id']: r for r in inventory['requirements'] if r['kind'] == 'DISCOVERY'}
+    for account in accounts:
+        parent = parents[account['requirement'].rsplit(':discovered:', 1)[0]]
+        evidence = account.get('evidence')
+        api['need'](isinstance(evidence, list) and evidence and all(h in entries for h in evidence)
+                    and any(entries[h]['source']['file'] == parent['file']
+                            and entries[h]['source']['service'] == parent['service'] for h in evidence),
+                    'INVALID_DISCOVERED_ENTRY_ACCOUNT', page=account['page'], field='discoveredEntries/evidence',
+                    expected={'service': parent['service'], 'file': parent['file']}, actual=evidence,
+                    recovery='Use genuine retained handles from this discovery file; keep the entry identity and other pages.')
+
+
+def declaration_identity(candidates):
+    return [{k: v for k, v in c.items() if k != 'disposition'} for c in candidates]
+
+
+def local_registry(run, inventory, api):
+    accounts = registered_accounts(run, api)
+    review = review_requirements(run, api)
+    if review:
+        known = {a['requirement']: a for a in accounts}
+        for account in review:
+            if account.get('discoveredEntries'):
+                old = known.get(account['requirement'])
+                if old:
+                    registered = {c['id']: c for c in declaration_identity(old['discoveredEntries'])}
+                    api['need'](all(c == registered.get(c['id']) for c in declaration_identity(account['discoveredEntries'])),
+                                'ENTRY_REGISTRATION_REVIEW_MISMATCH', requirement=account['requirement'],
+                                recovery='Use registered entries in the review template; do not redeclare their identities.')
+                else:accounts.append(account)
+    return entry_registry(inventory, accounts, api)
+
+
+def register_entry(run, parent_id, declaration, api):
+    _, inventory, _ = api['frozen_inputs'](run)
+    parent = next((r for r in inventory['requirements'] if r['id'] == parent_id and r['kind'] == 'DISCOVERY'), None)
+    api['need'](parent is not None, 'DISCOVERY_REQUIREMENT_REQUIRED', actual=parent_id)
+    row = discovered_entry(parent, declaration, api)
+    api['need'](declaration.get('evidence'), 'DISCOVERED_ENTRY_EVIDENCE_REQUIRED')
+    candidate = {**declaration, 'section': 'handler', 'diagram': 0}
+    accounts = registered_accounts(run, api)
+    account = next((a for a in accounts if a['requirement'] == parent_id), None)
+    if account is None:
+        account = {'requirement': parent_id, 'discoveredEntries': []};accounts.append(account)
+    previous = next((c for c in account['discoveredEntries'] if c['id'] == candidate['id']), None)
+    api['need'](previous is None or previous == candidate, 'ENTRY_ALREADY_REGISTERED',
+                requirement=row['id'], recovery='Keep the registered identity; update its content with put or sequence.')
+    if previous is None:account['discoveredEntries'].append(candidate)
+    entry_registry(inventory, accounts, api)
+    original = api['load'](run / 'workspace/draft/original.json')
+    api['need'](previous is not None or not any(p['page'] == row['page'] for p in original['pages']),
+                'ENTRY_PAGE_EXISTS', page=row['page'], recovery='Choose a new entry page; existing content is preserved.')
+    if previous is None:
+        info = {'anchors': ['handler'], 'title': declaration['title'], 'entry': row}
+        body = starter(row['page'], info)
+        api['save'](run / 'workspace/pages' / (row['page'] + '.json'), {'pages': [body]})
+        original['pages'].append({'page': row['page'], 'fragments': [anchors(info), *body['fragments']]})
+        api['save'](run / 'workspace/draft/original.json', original)
+    api['save'](run / 'workspace/draft/entries.json', accounts)
+    navigation = api['load'](run / 'workspace/draft/navigation.json')
+    service = next(s for s in navigation['services'] if s['id'] == row['service'])
+    if row['page'] not in service['pages']:service['pages'].append(row['page'])
+    if not any(s['target'] == row['target'] for s in service['starts']):
+        service['starts'].append({'title': declaration['title'], 'target': row['target'],
+                                  'kind': entry_kind(row, api['need']), 'summary': declaration.get('summary', declaration['title'])})
+    api['save'](run / 'workspace/draft/navigation.json', navigation)
+    return {'status': 'ENTRY_REGISTERED', 'entry': row, 'ready': False}
+
+
 def entry_kind(row, need):
     kind = row.get('entryKind')
     need(isinstance(kind, str) and kind in KINDS, 'INVALID_ENTRY_KIND', requirement=row.get('id'),
@@ -91,8 +208,8 @@ def install_author_entry(run, skill, python):
         'Keep that full semantic contract through every unit and context compaction.\n'
         'Do not restart the globally installed skill, generic HTTP closure, source\n'
         'admission or export workflow. The caller already owns those operations.\n'
-        'Use ./docs save-pages --input pages/PAGE.md.json, ./docs check --page PAGE.md,\n'
-        'and ./docs review-template. Finish the assigned unit, retain source reads\n'
+        'Use ./docs put/sequence for small semantic updates, ./docs check --page PAGE.md,\n'
+        'and ./docs review-page for explicit local judgments. Finish the assigned unit, retain source reads\n'
         'and local page files, and perform the required bidirectional semantic review.\n'
         'Successful checks print compact summaries. Full receipts remain on disk\n'
         'and --full is available for diagnostics; do not reread assembled checker\n'
@@ -109,7 +226,7 @@ def install_author_entry(run, skill, python):
         'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
     helper = workspace / 'docs'
     helper.write_text('#!/bin/sh\ncase "${1-}" in\n'
-        ' save-pages|check|review-template) ;;\n'
+        ' save-pages|check|review-template|register-entry|put|sequence|page-info|route|review-page|finish-review) ;;\n'
         ' *) printf "%s\\n" "Use: ./docs save-pages --input pages/PAGE.md.json | check --page PAGE.md | review-template" >&2; exit 2 ;;\n'
         'esac\nexec ' + shlex.quote(python) + ' -I -S ' + shlex.quote(str(skill / 'scripts/docs_run.py')) +
         ' "$@" --run-dir ' + shlex.quote(str(run)) + '\n', encoding='utf-8');helper.chmod(0o700)
@@ -138,11 +255,12 @@ def summary(result):
 
 
 def save_pages(run, input_path, api):
-    api['frozen_inputs'](run)
+    _, inventory, _ = api['frozen_inputs'](run)
     patch = api['load'](input_path)
     api['need'](set(patch) == {'pages'} and isinstance(patch['pages'], list) and patch['pages'], 'INVALID_PAGE_UPDATE')
     original = api['load'](run / 'workspace/draft/original.json')
     scaffold = api['load'](run / 'inputs/scaffold.json')
+    entries, _ = local_registry(run, inventory, api)
     by_name = {p['page']: p for p in original['pages']}
     changed = []
     for page in patch['pages']:
@@ -150,7 +268,7 @@ def save_pages(run, input_path, api):
         name = api['M']['page_name'](page['page'])
         api['need'](name not in changed, 'DUPLICATE_PAGE_UPDATE', page=name)
         api['need'](isinstance(page['fragments'], list) and page['fragments'], 'INVALID_PAGE_UPDATE', page=name)
-        info = scaffold['pages'].get(name, {'anchors': ['clew-scope']})
+        info = scaffold['pages'].get(name, {'anchors': ['handler'] if any(r['page'] == name for r in entries) else ['clew-scope']})
         fragments = []
         for index, fragment in enumerate(page['fragments']):
             api['need'](isinstance(fragment, dict) and isinstance(fragment.get('text'), str),
@@ -214,6 +332,144 @@ def locations(original, details):
     return candidates
 
 
+def put(run, page, fragment, text, evidence, sequence, api):
+    """Replace one meaningful fragment, serializing envelopes/fences ourselves."""
+    _, inventory, _ = api['frozen_inputs'](run)
+    name = api['M']['page_name'](page)
+    api['need'](isinstance(fragment, str) and re.fullmatch(r'[A-Za-z0-9._-]+', fragment), 'INVALID_FRAGMENT_ID')
+    api['need'](evidence and all(isinstance(h, str) and h for h in evidence), 'CLAIM_EVIDENCE_REQUIRED')
+    original = api['load'](run / 'workspace/draft/original.json')
+    existing = next((p for p in original['pages'] if p['page'] == name), None)
+    managed = {'handler', 'clew-scope'}
+    body = ([f for f in existing['fragments'] if MARKER not in f['text']
+             and not (set(f) == {'text'} and all(not line.strip() or any(line.strip() == '<a id="' + a + '"></a>' for a in managed)
+                                               for line in f['text'].splitlines()))] if existing else [])
+    if sequence:
+        value = json.loads(text)
+        entries, _ = local_registry(run, inventory, api)
+        entry = next((r for r in entries if r['page'] == name), None)
+        if entry:
+            # 'handler' is a local role, not another author-managed global ID.
+            for participant in value.get('participants', []):
+                if participant.get('id') == 'handler':
+                    participant['id'] = entry['handlerId'];participant['target'] = entry['target']
+            for step in value.get('steps', []):
+                for key in ('from', 'to'):
+                    if step.get(key) == 'handler':step[key] = entry['handlerId']
+            if value.get('steps') and value['steps'][0].get('to') == entry['handlerId']:
+                value['steps'][0]['target'] = entry['target']
+                if entry.get('method'):value['steps'][0]['label'] = entry['method'] + ' ' + entry['path']
+        text = '```clew-sequence\n' + json.dumps(value, ensure_ascii=False, separators=(',', ':')) + '\n```'
+        # Replace the unbound starter, not the semantic work on another fragment.
+        body = [f for f in body if not (set(f) == {'text'} and f['text'].startswith('```clew-sequence'))]
+    if any(set(f) == {'text'} and f['text'].startswith('```clew-sequence') for f in body):
+        body.insert(0, {'text': MARKER + '\n\n'})
+    update = {'id': fragment, 'text': '\n\n' + text.strip() + '\n\n', 'evidence': list(dict.fromkeys(evidence))}
+    index = next((i for i, f in enumerate(body) if f.get('id') == fragment), None)
+    if index is None:body.append(update)
+    else:body[index] = update
+    path = run / 'workspace/pages' / (name + '.json')
+    api['save'](path, {'pages': [{'page': name, 'fragments': body}]})
+    return save_pages(run, path, api)
+
+
+def page_info(run, name, service, title, data, api):
+    _, inventory, _ = api['frozen_inputs'](run)
+    name = api['M']['page_name'](name)
+    api['need'](service in inventory['services'], 'UNKNOWN_PAGE_OWNER', actual=service)
+    navigation = api['load'](run / 'workspace/draft/navigation.json')
+    api['need'](not any(name in s['pages'] and s['id'] != service for s in navigation['services']), 'PAGE_ALREADY_OWNED', page=name)
+    owner = next(s for s in navigation['services'] if s['id'] == service)
+    if name not in owner['pages']:owner['pages'].append(name)
+    if data:
+        owner['data'] = [d for d in owner['data'] if d['target'] != name] + [{'title': title, 'target': name}]
+    api['save'](run / 'workspace/draft/navigation.json', navigation)
+    return {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
+
+
+def route(run, value, api):
+    job, inventory, _ = api['frozen_inputs'](run)
+    path = run / 'workspace/draft/routes.json'
+    api['closed'](value, ('route',), ('catalog', 'externalActors'))
+    api['need'](path.exists() or isinstance(value.get('catalog'), str), 'ROUTE_CATALOG_REQUIRED',
+                recovery='Supply catalog: PAGE.html on the first route update.')
+    registry = api['load'](path) if path.exists() else {
+        'schema': 'codeclew-cross-docset-routes/1.1', 'revision': 'authored-v1',
+        'catalog': {'docset': 'docs', 'page': value['catalog']},
+        'docsets': [{'id': 'docs', 'title': 'Service documentation', 'version': 'v1',
+                     'baseURL': 'https://docs.invalid/', 'services': [
+                         {'id': service, 'title': service, 'overview': {'docset': 'docs', 'page': next(
+                             r['page'].removesuffix('.md') + '.html' for r in inventory['requirements'] if r['service'] == service and r['kind'] == 'SERVICE')}}
+                         for service in job['services']]}], 'externalActors': [], 'routes': []}
+    for actor in value.get('externalActors', []):
+        old = next((a for a in registry['externalActors'] if a['id'] == actor['id']), None)
+        api['need'](old is None or old == actor, 'EXTERNAL_ACTOR_CONFLICT', actor=actor['id'])
+        if old is None:registry['externalActors'].append(actor)
+    row = json.loads(json.dumps(value['route']))
+    def local_addresses(item):
+        if isinstance(item, dict):
+            if 'page' in item:
+                item.setdefault('docset', 'docs')
+                item['page'] = item['page'].removesuffix('.md').removesuffix('.html') + '.html'
+            if item.get('kind') == 'service':item.setdefault('docset', 'docs')
+            for child in item.values():local_addresses(child)
+        elif isinstance(item, list):
+            for child in item:local_addresses(child)
+    local_addresses(row)
+    row.setdefault('id', row['narrative']['page'].removesuffix('.html'))
+    row.setdefault('version', 'v1')
+    registry['routes'] = [r for r in registry['routes'] if r['id'] != row['id']] + [row]
+    api['save'](path, registry)
+    return {'status': 'ROUTE_SAVED', 'route': row['id'], 'ready': False}
+
+
+def review_page(run, page, value, api):
+    _, inventory, _ = api['frozen_inputs'](run)
+    original = api['load'](run / 'workspace/draft/original.json')
+    template = api['review_for_run'](run)
+    name = api['M']['page_name'](page)
+    owned = [r['id'] for r in inventory['requirements'] if r['page'] == name]
+    shell = {'requirements': {key: template['requirements'][key] for key in owned},
+             'claims': template['claims'].get(name, {})}
+    if value is None:return shell
+    api['closed'](value, ('requirements', 'claims'))
+    api['need'](isinstance(value['requirements'], dict) and isinstance(value['claims'], dict)
+                and value['requirements'].keys() == shell['requirements'].keys()
+                and value['claims'].keys() == shell['claims'].keys(), 'PAGE_REVIEW_SCOPE_MISMATCH', page=name,
+                expected=shell, actual=value, recovery='Use ./docs review-page --page ' + name + ' to obtain the current local assessment shell.')
+    api['need'](all(v in ('SUPPORTED', 'EXPLICIT_UNKNOWN') for v in value['claims'].values()),
+                'CLAIM_ASSESSMENT_REQUIRED', page=name)
+    api['need'](all(v.get('disposition') in ('EXPLAINED', 'EXPLICIT_UNKNOWN') for v in value['requirements'].values()),
+                'REQUIREMENT_ASSESSMENT_REQUIRED', page=name)
+    template['requirements'].update(value['requirements'])
+    if name in template['claims']:template['claims'][name] = value['claims']
+    api['save'](run / 'workspace/draft/self-review.json', template)
+    path = run / 'workspace/draft/reviewed-pages.json'
+    reviewed = api['load'](path) if path.exists() else {}
+    reviewed[name] = api['digest'](next(p for p in original['pages'] if p['page'] == name))
+    api['save'](path, reviewed)
+    return {'status': 'PAGE_REVIEW_RECORDED', 'page': name, 'ready': False, 'semanticTruthAssessed': False}
+
+
+def process_pages(run, api):
+    path = run / 'workspace/draft/routes.json'
+    if not path.exists():return []
+    registry = api['load'](path)
+    local = registry['catalog']['docset']
+    return sorted({r['narrative']['page'].removesuffix('.html') + '.md' for r in registry['routes']
+                   if r['narrative']['docset'] == local})
+
+
+def finish_review(run, value, api):
+    api['frozen_inputs'](run)
+    api['closed'](value, ('unresolved', 'visual'))
+    review = api['review_for_run'](run)
+    api['need'](isinstance(value['unresolved'], list) and isinstance(value['visual'], dict), 'GLOBAL_REVIEW_REQUIRED')
+    review.update(value)
+    api['save'](run / 'workspace/draft/self-review.json', review)
+    return {'status': 'GLOBAL_REVIEW_RECORDED', 'ready': False, 'semanticTruthAssessed': False}
+
+
 def check(run, pages, scaffold_only, api):
     job, inventory, _ = api['frozen_inputs'](run)
     original = api['load'](run / 'workspace/draft/original.json')
@@ -240,13 +496,20 @@ def check(run, pages, scaffold_only, api):
                 job.get('components', {}).get('path'), job.get('components', {}).get('digest'))
             api['M']['compose'](folder / 'original.json', folder / 'compose')
             stage = 'entry-sequences'
-            reqs = [r for r in inventory['requirements'] if r['page'] in selected]
+            entries, additional = local_registry(run, inventory, api)
+            reqs = [r for r in entries if r['page'] in selected]
+            accounts = {r['id']: {'requirement': r['id'], 'diagram': 0} for r in reqs}
+            accounts.update({r['requirement']: r for r in review_requirements(run, api)
+                             if r['requirement'] in accounts and r.get('diagram') is not None})
+            accounts.update({r['requirement']: r for r in additional if r['requirement'] in accounts})
             api['save'](folder / 'sequences.json', {'pages': {p['page']: ''.join(f['text'] for f in p['fragments']) for p in original['pages']},
-                'requirements': reqs, 'accounts': [{'requirement': r['id'], 'diagram': 0} for r in reqs if r['kind'] == 'ENTRY']})
+                'requirements': reqs, 'accounts': list(accounts.values()),
+                'processPages': [p for p in process_pages(run, api) if p in selected]})
             api['command']([job['node'], str(Path(__file__).with_name('docs_run_sequences.mjs')),
                             job['renderer'], str(folder / 'sequences.json')], folder, 'sequences')
             stage = 'source-bindings'
             manifests, entries = api['cite_entries'](job, inventory, run / 'workspace/draft', folder / 'sources', run / 'inputs/author-source')
+            validate_discovered_sources(inventory, [r for r in additional if r['page'] in selected], entries, api)
             for page in chosen['pages']:
                 for fi, fragment in enumerate(page['fragments']):
                     for ei, handle in enumerate(fragment.get('evidence', [])):
@@ -260,7 +523,7 @@ def check(run, pages, scaffold_only, api):
         for page in original['pages']:
             name = api['M']['page_name'](page['page'])
             (markdown / name).write_text(''.join(f['text'] for f in page['fragments']), encoding='utf-8')
-        options = {'label': job['request'], 'theme': 'codeclew', 'language': job['language'],
+        options = {'label': 'Service documentation', 'theme': 'codeclew', 'language': job['language'],
                    'navigation': str(run / 'workspace/draft/navigation.json')}
         routes = run / 'workspace/draft/routes.json'
         if routes.exists():
