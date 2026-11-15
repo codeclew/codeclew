@@ -429,6 +429,17 @@ else:
         pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs')
         D['save'](self.run/'pins.json',pins)
 
+    def test_service_unit_gate_includes_new_owned_pages_before_global_stage(self):
+        self.original['pages'].append({'page':'data.md','fragments':[{'text':'# Data\n\n' + D['W']['MARKER'] + '\n'}]})
+        self.navigation['services'][0]['pages'].append('data.md')
+        self.seed_files()
+        result = D['execute'](self.run)
+        self.assertEqual(result['status'],'FAILED',result)
+        self.assertEqual(result['unit'],self.service)
+        self.assertEqual(result['checks']['local']['code'],'UNFINISHED_SCAFFOLD')
+        self.assertIn('data.md',result['checks']['local']['selectedPages'])
+        self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']),1)
+
     def test_related_units_share_one_author_context_and_aggregate_budget(self):
         result=D['execute'](self.run)
         self.assertEqual(result['status'],'READY_PROMOTED',result)

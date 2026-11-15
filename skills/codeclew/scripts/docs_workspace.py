@@ -612,6 +612,10 @@ def run_units(run, api, debug=False):
             api['save'](run / 'state.json', state)
             api['author'](run, unit=unit, repair=repair)
         pages = [] if unit['id'] == 'complete-docset' else unit['pages']
+        if unit['id'] != 'complete-docset':
+            navigation = api['load'](run / 'workspace/draft/navigation.json')
+            owned = next((s['pages'] for s in navigation['services'] if s['id'] == unit['id']), [])
+            pages = list(dict.fromkeys([*pages, *owned]))
         checked = check(run, pages, False, api)
         state = api['load'](run / 'state.json')
         if checked['status'] != 'UNIT_CHECKED':
