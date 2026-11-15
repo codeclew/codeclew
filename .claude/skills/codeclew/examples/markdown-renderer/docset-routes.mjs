@@ -1,5 +1,6 @@
 // Navigation declarations only. No source acquisition, graph traversal or remote fetch.
 import {localTarget} from './navigation.mjs';
+import {validateRouteStructure} from './route-structure.mjs';
 export const REGISTRY_BYTES=1024*1024;
 const fail=(ok,path,message)=>{if(!ok)throw Error(`Invalid docset routes ${path}: ${message}`)};
 function shape(v,keys,path,optional=[]){
@@ -20,6 +21,7 @@ export const serviceKey=a=>`${a.docset}/${a.service}`;
 export function validateDocsetRoutes(value,nav,docset,version){
  const semanticVersion=value?.schema==='codeclew-cross-docset-routes/1.2';
  shape(value,['schema','revision','catalog','docsets','externalActors','routes',...(semanticVersion?['semanticCatalog']:[])],'/',['catalog','semanticCatalog']);fail(semanticVersion||value.schema==='codeclew-cross-docset-routes/1.1','/schema','unsupported schema');id(value.revision,'/revision');fail(Buffer.byteLength(JSON.stringify(value),'utf8')<=REGISTRY_BYTES,'/','input exceeds 1 MiB');
+ validateRouteStructure(value.routes);
  const sets=unique(list(value.docsets,'/docsets',1,64),'/docsets');
  const services=new Map(),bases=[];
  for(const [i,d] of value.docsets.entries()){
@@ -71,20 +73,20 @@ export function validateDocsetRoutes(value,nav,docset,version){
   fail(r.origin&&typeof r.origin==='object',p+'/origin','expected tagged origin');
   if(r.origin.status==='known'){
    shape(r.origin,['status','occurrence','kind','title','summary'],p+'/origin');const o=occurrences.get(r.origin.occurrence);fail(o&&o.actor.kind==='service',p,'origin must name a service occurrence');
-   fail(['http','kafka','scheduled','background','manual','other'].includes(r.origin.kind),p,'invalid trigger kind');text(r.origin.title,p,160);text(r.origin.summary,p);
+   text(r.origin.title,p,160);text(r.origin.summary,p);
    if(o.actor.docset===docset){const n=nav.services.find(x=>x.id===o.actor.service),target=occurrenceRows.find(x=>x.id===o.id).to;fail(n.starts.some(s=>s.kind===r.origin.kind&&s.to.file===target.file&&s.to.fragment===target.fragment),p,'local origin is not a documented start')}
-  }else{shape(r.origin,['status','reason'],p+'/origin');fail(r.origin.status==='unknown',p,'invalid origin status');text(r.origin.reason,p)}
+  }else{shape(r.origin,['status','reason'],p+'/origin');text(r.origin.reason,p)}
   const branches=unique(list(r.branches,p+'/branches',0,64),p+'/branches');
   for(const b of branches.values()){shape(b,['id','title','condition','target'],p+'/branch');text(b.title,p,160);text(b.condition,p);destination(b.target,p+'/branch/target')}
   unique(list(r.outcomes,p+'/outcomes',0,128),p+'/outcomes');
   for(const o of r.outcomes){
-   shape(o,['id','branch','kind','title','target','internal','end'],p+'/outcome');fail(branches.has(o.branch),p,'unknown branch');fail(['normal','error','handoff','unknown'].includes(o.kind),p,'invalid outcome kind');text(o.title,p,160);destination(o.target,p+'/outcome/target');
-   shape(o.internal,['coverage','occurrences'],p+'/internal');fail(['complete-for-this-outcome','partial','unknown'].includes(o.internal.coverage),p,'invalid internal coverage');const ids=list(o.internal.occurrences,p+'/internal',0,128);fail(new Set(ids).size===ids.length&&ids.every(x=>occurrences.has(x)),p,'duplicate or unknown internal occurrence');fail(r.origin.status!=='known'||!ids.includes(r.origin.occurrence),p,'origin occurrence is not internal');
+   shape(o,['id','branch','kind','title','target','internal','end'],p+'/outcome');text(o.title,p,160);destination(o.target,p+'/outcome/target');
+   shape(o.internal,['coverage','occurrences'],p+'/internal');list(o.internal.occurrences,p+'/internal',0,128);
    fail(o.end&&typeof o.end==='object',p+'/end','expected tagged end');
-   if(o.end.status==='known'){shape(o.end,['status','ownerOccurrence','boundary','recipient'],p+'/end');fail(occurrences.has(o.end.ownerOccurrence)&&!ids.includes(o.end.ownerOccurrence),p,'unknown or internal terminal occurrence');fail(['return','publish','handoff','stop','other'].includes(o.end.boundary),p,'invalid end boundary');actor(o.end.recipient,p,true)}
-   else{shape(o.end,['status','reason'],p+'/end');fail(o.end.status==='unknown',p,'invalid end status');text(o.end.reason,p)}
+   if(o.end.status==='known'){shape(o.end,['status','ownerOccurrence','boundary','recipient'],p+'/end');actor(o.end.recipient,p,true)}
+   else{shape(o.end,['status','reason'],p+'/end');text(o.end.reason,p)}
   }
-  shape(r.coverage,['outcomeInventory','scope','reference'],p+'/coverage');fail(['complete-for-declared-scope','partial','unknown'].includes(r.coverage.outcomeInventory),p,'invalid inventory coverage');fail(r.coverage.outcomeInventory!=='complete-for-declared-scope'||r.outcomes.length>0,p,'complete inventory requires outcomes');text(r.coverage.scope,p);destination(r.coverage.reference,p+'/scope');
+  shape(r.coverage,['outcomeInventory','scope','reference'],p+'/coverage');fail(r.coverage.outcomeInventory!=='complete-for-declared-scope'||r.outcomes.length>0,p,'complete inventory requires outcomes');text(r.coverage.scope,p);destination(r.coverage.reference,p+'/scope');
   resolved.push({...r,to,occurrences:occurrenceRows});
  }
  let catalog=null;if(value.catalog!==undefined){catalog=destination(value.catalog,'/catalog');if(catalog.kind==='LOCAL_DOCSET')fail(!nav.owners.has(catalog.file),'/catalog','catalog cannot be service-owned')}

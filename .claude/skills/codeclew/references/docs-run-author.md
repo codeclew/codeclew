@@ -2,7 +2,9 @@
 
 The caller has admitted this runtime and retained scope. One author/context works
 through related-page units. Keep the complete request and all source requirements.
-Finish the assigned unit and end the turn; do not start runners, other models,
+A successor may instead assign one standalone full-docset review of preserved work;
+then follow that full assignment without replaying service-unit authoring.
+Finish the assigned unit or standalone review and end the turn; do not start runners, other models,
 capture, refresh, publication, or source-repository/private-store exploration.
 The workspace profile survives compaction: use it rather than restarting the
 installed generic workflow. Proof receipts are for targeted diagnostics.
@@ -64,7 +66,16 @@ claim affects their meaning; hashes cannot prove cross-service consistency.
 Do not repeat whole-site authoring or blanket reread all previous page JSON.
 Use `./docs finish-review --input FILE` with the explicit global decisions
 `{unresolved: [...], visual: {status: "UNAVAILABLE", reason: "..."}}` (valid JSON).
-Only record REVIEWED after actual browser inspection. `review-template` remains
+Only record REVIEWED after actual browser inspection. Requirement `disposition`
+is EXPLAINED or EXPLICIT_UNKNOWN. A DISCOVERY requirement has a separate
+`discoveryDisposition`: explicitly choose NO_ADDITIONAL_STARTS after reviewing the
+full retained file and declaring an empty finding list, or ADDITIONAL_STARTS for
+its nonempty declared findings. EXPLAINED is never a discoveryDisposition. An
+empty registry does not establish that the source has no additional starts.
+`review-page`, `check` and `finish-review` report every invalid discovery field
+with its requirement/page, expected values and declared finding count. Repair only
+those assessments with review-page, preserving other assessments and content.
+Use `./docs --help` for the supported commands and this distinction. `review-template` remains
 available to inspect all outstanding assessments, never to auto-approve them.
 The caller still runs the full source/coverage/route/navigation/export gate.
 UNIT_CHECKED, exit0 or a generated scaffold never means READY.
@@ -93,6 +104,34 @@ available unread source. Additional needed evidence follows the supported
 compose-original/thread-preparation acquisition contract, saved in draft/reads.
 No old generated prose, evaluator answers or correcting second author are inputs.
 
+## Consequential boundaries and readable process coverage
+
+Before recording a semantic assessment, audit each consequential operation across
+its boundary: state written before the call/handoff, successful state written
+after it, and state retained on failure, skipped work, duplicate/no-op paths and
+returns. Check absent/default and present/malformed paths separately. An early
+return does not imply that independent later work in another handler is skipped.
+Use source-to-text and text-to-source checks for these facts in prose and arrows.
+
+Keep each HTTP method/path, operation identity and completion-order fact identical
+across its entry page, process arrows and catalog declaration. Compare exact
+source identifiers rather than renaming copied operations. A synchronous response
+and subsequent asynchronous projection are distinct completion boundaries.
+
+Give the reader a compact overview thread with links to readable phases and
+technical details. Keep detailed conditions, side effects and failure paths in
+those source-backed phases rather than one giant all-steps diagram. The overview
+must still make the actual end-to-end progression and completion boundary clear;
+links are not permission to drop consequential work or mark unread code unknown.
+Existing put/sequence/page-info/route commands suffice for this organization.
+
+Preserve every independent known local start in the catalog, even if starts share
+explanation or detailed diagrams. One route's origin must not stand for another
+trigger. The existing registry requires a distinct canonical narrative page per
+route: use concise per-start landing explanations linked to shared phases rather
+than duplicating their details or silently merging starts. Keep unknown activation
+explicit; do not create a runtime start from an unbound source declaration.
+
 ## Sequence representation
 
 Use ordinary `clew-sequence` JSON semantic rows, without writing the fence:
@@ -108,7 +147,7 @@ On non-entry process pages choose actual participants/targets yourself. Conditio
 and valid structure do not prove semantic truth. Targets use flat page.md#anchor.
 The helper binds both the diagram and text trace to your supplied source handles.
 
-For multiple services, `./docs route --input FILE` merges one `{route: ROW, externalActors?: [...], catalog?: "processes.html"}` update. Supply catalog on the first call. The helper owns top-level schema, revision, local docset (`docs`/`v1`), service inventory and serialization; it preserves other routes. In ROW, route id defaults to its narrative filename and version to `v1`; destinations may omit the local docset and use `.md` pages. Service actors may omit local docset. Supply actual semantic actor/occurrence/branch/outcome/coverage values using this existing route representation:
+For multiple services, `./docs route --input FILE` merges one `{route: ROW, externalActors?: [...], catalog?: "processes.html"}` update. Supply catalog on the first call, after creating its real source-backed page with put. Missing catalog targets are explicit prerequisites, not implied scaffolds. Both `.md` and `.html` catalog inputs are stored canonically as `.html`. The helper owns top-level schema, revision, local docset (`docs`/`v1`), service inventory and serialization; it preserves other routes. In ROW, route id defaults to its narrative filename and version to `v1`; destinations may omit the local docset and use `.md` pages. Service actors may omit local docset. Supply actual semantic actor/occurrence/branch/outcome/coverage values using this existing route representation:
 
 The normal input contains no top-level schema, revision, docsets, service inventory
 or baseURL: the helper constructs them. Do not copy a full routes.json envelope
@@ -123,7 +162,11 @@ call; it is not a request to assemble catalog metadata. A destination is
   Each route has a unique canonical unowned narrative page.
 - Occurrence: `{id,actor,role,target:DEST}`. A known origin is
   `{status:"known",occurrence,kind,title,summary}` naming a service occurrence
-  whose target and kind match an actual navigation start. Otherwise use
+  whose target and kind match an actual navigation start. Trigger kind is
+  `http,kafka,scheduled,background,manual,other`, not inventory names such as
+  HTTP_ENDPOINT. Local structure is checked before route persistence and final
+  rendering; failures name stable route/outcome IDs and exact fields. Repair
+  metadata with `./docs route --input FILE`, not by rewriting narrative pages. Otherwise use
   `{status:"unknown",reason}`; unknown participation does not mean no match.
 - Branch: `{id,title,condition,target:DEST}`. Outcome:
   `{id,branch,kind,title,target:DEST,internal,end}`. Outcome kinds:

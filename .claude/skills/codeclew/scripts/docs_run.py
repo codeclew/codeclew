@@ -29,6 +29,7 @@ M = E['M']
 T = runpy.run_path(str(HERE / 'work_transport.py'))
 U = runpy.run_path(str(HERE / 'source_union.py'))
 W = runpy.run_path(str(HERE / 'docs_workspace.py'))
+S = runpy.run_path(str(HERE / 'docs_successor.py'))
 SCHEMA = 'codeclew-docs-run-job/1.0'
 REVIEW = 'codeclew-docs-run-review/1.0'
 COMPACT_REVIEW = 'codeclew-docs-run-review/1.1'
@@ -156,6 +157,13 @@ def token_accounting(attempts):
 
 def budget_tokens(accounting):
     return accounting['budgetTokens'] if accounting['budgetTokens'] is not None else accounting['knownBudgetTokensLowerBound']
+
+
+def scoped_budget_tokens(state, accounting):
+    baseline = state.get('successor', {}).get('inheritedModelTokens', 0)
+    used = budget_tokens(accounting)
+    need(used >= baseline, 'SUCCESSOR_ACCOUNTING_REGRESSION')
+    return used - baseline
 
 
 def load(path, maximum=32 * 1024 * 1024):
@@ -622,7 +630,7 @@ def prepare(job_path, run):
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
 
 
-def frozen_inputs(run, *, skill=SKILL):
+def frozen_inputs(run, *, skill=SKILL, prepared_origin=None):
     """Read immutable input pins without native commands or receipt writes."""
     job = validate_job(load(run / 'inputs/job.json')); pins = load(run / 'pins.json')
     need(digest(job) == pins['jobDigest'] and digest(load(run / 'inputs/inventory.json')) == pins['inventoryDigest']
@@ -637,7 +645,7 @@ def frozen_inputs(run, *, skill=SKILL):
         need(path.is_file() and not path.is_symlink() and sha(path.read_bytes()) == expected,
              'PREPARED_AUTHOR_ENTRY_CHANGED', file=name)
     if 'authorSkillsConfig' in pins:
-        need(pins['authorSkillsConfig'] == W['author_skill_config'](run),
+        need(pins['authorSkillsConfig'] == W['author_skill_config'](prepared_origin or run),
              'PREPARED_AUTHOR_ENTRY_CHANGED', file='authorSkillsConfig')
     if 'components' in job:
         need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
@@ -937,6 +945,7 @@ def review_accounts(review, inventory, pages, entries, original):
     need(isinstance(accounts, list) and len(accounts) == len(inventory['requirements'])
          and {a.get('requirement') for a in accounts} == {r['id'] for r in inventory['requirements']}, 'REQUIREMENT_ACCOUNTING_MISMATCH')
     by_id = {a['requirement']: a for a in accounts}
+    W['validate_discovery_review'](inventory, accounts, globals())
     effective, additional, discovery_proofs = list(inventory['requirements']), [], {}
     for requirement in inventory['requirements']:
         account = by_id[requirement['id']]
@@ -949,8 +958,6 @@ def review_accounts(review, inventory, pages, entries, original):
             evidence = [entries[h]['source'] for h in account['evidence']]
             discovery_proofs[requirement['id']] = full_file_proof(requirement, account['evidence'], entries, inventory['snapshot'])
             found = account.get('discoveredEntries')
-            need(isinstance(found, list) and account.get('discoveryDisposition') in ('ADDITIONAL_STARTS', 'NO_ADDITIONAL_STARTS')
-                 and bool(found) == (account['discoveryDisposition'] == 'ADDITIONAL_STARTS'), 'DISCOVERY_DISPOSITION_REQUIRED')
             local_ids = set()
             for candidate in found:
                 local = candidate.get('id')
@@ -1007,15 +1014,21 @@ def verify(run, *, debug=False):
         checks[stage] = {'status': 'PASS'}
         stage = 'author'; draft = run / 'workspace/draft'
         tokens = token_accounting(accounting.get('attempts', []))
+        need(('successor' in accounting) == (run / 'inputs/successor.json').exists(), 'SUCCESSOR_STATE_MISMATCH')
+        base = S['validate'](run, accounting, globals()) if (run / 'inputs/successor.json').exists() else 0
         need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
         limit = job['budget']['maxModelTokens']
-        need(limit is None or budget_tokens(tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+        need(limit is None or scoped_budget_tokens(accounting, tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
         need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
         last = accounting.get('attempts', [])[-1:]
-        need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
+        need(accounting.get('status') == 'AUTHOR_COMPLETED' and len(accounting['attempts']) > base
+             and (not base or accounting['attempts'][base].get('kind') == 'successor-review')
+             and last and last[0].get('status') == 'COMPLETED'
              and last[0].get('exitCode') == 0 and last[0].get('draftFiles') == tree(draft), 'AUTHOR_COMPLETION_REQUIRED')
         checks[stage] = {'status': 'PASS', 'usageAvailable': tokens['status'] == 'MEASURED',
                          'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens}
+        if base:checks[stage].update(budgetScope='NEW_ATTEMPTS_ONLY', inheritedModelTokens=accounting['successor']['inheritedModelTokens'],
+                                    continuationModelTokens=scoped_budget_tokens(accounting, tokens), totalModelTokens=tokens['budgetTokens'])
         stage = 'output'; before = tree(draft)
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
@@ -1024,6 +1037,7 @@ def verify(run, *, debug=False):
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, _, _ = M['compose_pages'](original)
         need(all(r['page'] in pages and pages[r['page']].strip() for r in inventory['requirements']), 'MISSING_REQUIRED_PAGE')
+        W['route_preflight'](run, job, globals())
         checks[stage] = {'status': 'PASS', 'pages': len(pages)}
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
@@ -1141,22 +1155,43 @@ def promote(run, destination=None):
     return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output), 'publicationPerformed': False}
 
 
+def repair_facts(report):
+    """Keep complete receipts on disk; send only actionable failed checks."""
+    failed = {name: row for name, row in report.get('checks', {}).items()
+              if isinstance(row, dict) and row.get('status') in ('FAIL', 'FAILED', 'BLOCKED')}
+    return {'checks': failed, 'status': report.get('status'),
+            **({'code': report['code']} if report.get('code') else {}),
+            'fullReport': 'report.json', 'usageAndAttemptHistory': 'state.json'}
+
+
 def author(run, *, unit=None, repair=False):
     run = Path(run).absolute(); job, inventory, pins = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
+    need(('successor' in state) == (run / 'inputs/successor.json').exists(), 'SUCCESSOR_STATE_MISMATCH')
+    base = S['validate'](run, state, globals()) if (run / 'inputs/successor.json').exists() else 0
     tokens = token_accounting(attempts)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
     limit = job['budget']['maxModelTokens']
-    need(limit is None or budget_tokens(tokens) < limit, 'AUTHOR_TOKEN_BUDGET_EXHAUSTED')
+    need(limit is None or scoped_budget_tokens(state, tokens) < limit, 'AUTHOR_TOKEN_BUDGET_EXHAUSTED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
-    kind = 'repair' if repair or attempts and unit is None else 'unit' if unit else 'full'
-    repair_count = sum(a.get('kind', 'full' if i == 0 else 'repair') == 'repair' for i, a in enumerate(attempts))
+    first_successor = bool(base and len(attempts) == base)
+    kind = 'successor-review' if first_successor else 'repair' if repair or attempts and unit is None else 'unit' if unit else 'full'
+    repair_count = sum(a.get('kind', 'full' if i == 0 else 'repair') == 'repair' for i, a in enumerate(attempts[base:]))
     need(remaining > 0 and (kind != 'repair' or repair_count < job['budget']['maxRepairs']), 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
-    if not attempts:
+    if first_successor:
+        prompt = encode({'instruction': 'Perform one standalone full-docset review of the full original question under the updated generic prepared-author contract. This is not a service-unit replay or an enum-only repair. Independently compare consequential source to text and diagrams, then every visible claim back to source; reconcile operation/path/completion facts, skipped/failure/default/malformed paths, readable overview/linked phases and all independent known starts. Preserve unchanged pages and valid assessments where justified by your review. No evaluator answers or second author are supplied. Run the supported checks, record explicit review judgments, finish-review, then end this turn; the caller runs the mandatory full final gate.',
+                         'request': job['request'], 'contract': str(SKILL / 'references/docs-run-author.md'),
+                         'workspace': str(run / 'workspace'), 'inventory': str(run / 'workspace/inventory.json'),
+                         'sourceIndex': str(run / 'inputs/author-source/index.md'),
+                         'predecessorMachineFailure': repair_facts(load(run / 'history/report.json')),
+                         'inheritedModelTokens': state['successor']['inheritedModelTokens'],
+                         'continuationAllowance': job['budget'], 'budgetScope': 'NEW_ATTEMPTS_ONLY',
+                         'historyReceipt': 'inputs/successor.json', 'sameAuthorThread': state['threadId']})
+    elif not attempts:
         prompt = (run / 'prompt.txt').read_bytes()
     elif unit and not repair:
         prompt = encode({'instruction': 'Continue the same frozen request and source scope. Complete only this related-page unit, save local page files, run the supported early check and repair them, then end this turn. Do not rebuild previous units. Record local semantic assessments with review-page before leaving each unit. The complete-docset unit finishes shared full-process diagrams and necessary cross-service semantic reconciliation, not a rewrite or rereview of unchanged accepted unit content. No scope may be dropped.',
@@ -1164,7 +1199,7 @@ def author(run, *, unit=None, repair=False):
     else:
         failures = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
         prompt = encode({'instruction': 'Repair only the affected fragments named below and repeat semantic self-review for changed content and its consequential dependencies. Preserve unchanged pages, valid local review and source reads; do not replay the whole docset. Acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
-                         'failures': failures.get('checks', failures),
+                         'failures': repair_facts(failures),
                          'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - repair_count})
     if unit:
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
@@ -1192,7 +1227,8 @@ def author(run, *, unit=None, repair=False):
     attempt = {'argv': argv, 'kind': kind, 'unit': unit['id'] if unit else None,
                'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
-    usage = None; interrupted = False
+    usage = None; interrupted = False; thread_changed = False
+    expected_thread = state.get('threadId')
     with (folder / 'stdout.jsonl').open('wb') as stdout, (folder / 'stderr.log').open('wb') as stderr:
         process = subprocess.Popen(argv, cwd=run / 'workspace', stdin=subprocess.PIPE,
                                    stdout=stdout, stderr=stderr, start_new_session=True)
@@ -1212,6 +1248,7 @@ def author(run, *, unit=None, repair=False):
             except ValueError:
                 continue
             if event.get('type') == 'thread.started':
+                if expected_thread and event['thread_id'] != expected_thread:thread_changed = True
                 state['threadId'] = event['thread_id']
                 attempt['threadId'] = event['thread_id']
             if event.get('type') == 'turn.completed':
@@ -1224,14 +1261,15 @@ def author(run, *, unit=None, repair=False):
     state['tokenAccounting'] = tokens
     state['usageAvailable'] = tokens['status'] == 'MEASURED'
     state['modelTokens'] = tokens['budgetTokens']
-    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 else
+    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 or thread_changed else
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
-                       'AUTHOR_BUDGET_EXCEEDED' if limit is not None and budget_tokens(tokens) > limit else
+                       'AUTHOR_BUDGET_EXCEEDED' if limit is not None and scoped_budget_tokens(state, tokens) > limit else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
+    need(not thread_changed, 'AUTHOR_THREAD_CHANGED')
     need(not interrupted and process.returncode == 0, 'AUTHOR_NOT_COMPLETED')
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(limit is None or budget_tokens(tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+    need(limit is None or scoped_budget_tokens(state, tokens) <= limit, 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
     # This is reported turn accounting, available after a turn, not a provider
     # billing guarantee or a continuously enforceable in-turn token ceiling.
@@ -1240,6 +1278,8 @@ def author(run, *, unit=None, repair=False):
 
 def execute(run, *, debug=False):
     run = Path(run).absolute(); state = load(run / 'state.json')
+    need(state.get('status') != 'SUCCESSOR_ADMISSION_PENDING', 'SUCCESSOR_NOT_ADMITTED')
+    if (run / 'inputs/successor.json').exists():return S['execute'](run, globals(), debug)
     if (run / 'inputs/scaffold.json').exists():return W['run_units'](run, globals(), debug)
     while True:
         if state['status'] != 'AUTHOR_COMPLETED':
@@ -1254,8 +1294,14 @@ def execute(run, *, debug=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
+    parser = argparse.ArgumentParser(description=__doc__, epilog=(
+        'Normal author commands: put, sequence, register-entry, page-info, route, review-page, finish-review, check. '
+        'review-page records explicit per-page judgments; finish-review validates the assembled review. '
+        'Requirement disposition: EXPLAINED or EXPLICIT_UNKNOWN. Discovery discoveryDisposition: '
+        'ADDITIONAL_STARTS for a nonempty declared finding list, or NO_ADDITIONAL_STARTS for an explicitly reviewed empty list. '
+        'These are separate fields; an empty registry does not prove no additions. '
+        'Use route --input FILE for route metadata repair; keep prose and other routes unchanged.'))
+    parser.add_argument('command', choices=('prepare', 'prepare-successor', 'run', 'verify', 'promote', 'review-template', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
@@ -1264,6 +1310,7 @@ def main():
     parser.add_argument('--page', action='append', default=[])
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
+    parser.add_argument('--previous-run', type=Path, help='Terminal failed predecessor for caller-owned prepare-successor; --job budget is its explicit new-attempt allowance.')
     parser.add_argument('--full', action='store_true', help='Print complete local save/check receipt instead of its compact summary.')
     parser.add_argument('--text-file', type=Path)
     parser.add_argument('--fragment')
@@ -1283,14 +1330,18 @@ def main():
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / 'workspace/.edit.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-        elif args.command not in ('prepare', 'review-template'):
+        elif args.command not in ('prepare', 'prepare-successor', 'review-template'):
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / '.runner.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
-        if args.command == 'recover-accounting':
+        if args.command == 'prepare-successor':
+            need(args.job is not None and args.previous_run is not None and args.previous_skill is not None,
+                 'SUCCESSOR_JOB_AND_PREDECESSOR_REQUIRED')
+            result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals())
+        elif args.command == 'recover-accounting':
             need(args.previous_skill is not None, 'PREVIOUS_ADMITTED_SKILL_REQUIRED')
             result = recover_accounting(args.run_dir, args.previous_skill)
         elif args.command in ('put', 'sequence', 'register-entry', 'page-info', 'review-page'):
@@ -1350,7 +1401,7 @@ def main():
     if args.command in ('save-pages', 'check', 'put', 'sequence') and not args.full:
         result = W['summary'](result)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED') else 2
+    return 0 if result['status'] in ('PREPARED', 'SUCCESSOR_PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED') else 2
 
 
 if __name__ == '__main__':

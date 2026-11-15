@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {validateDocsetRoutes,filterRoutes} from '../skills/codeclew/examples/markdown-renderer/docset-routes.mjs';
+import {validateRouteStructure} from '../skills/codeclew/examples/markdown-renderer/route-structure.mjs';
 import {validateNavigation,navigationView} from '../skills/codeclew/examples/markdown-renderer/navigation.mjs';
 const registry=JSON.parse(await readFile(new URL('../fixtures/docs-cross-docset-routes/registry.json',import.meta.url),'utf8'));
 const cases=JSON.parse(await readFile(new URL('../fixtures/docs-cross-docset-routes/filter-cases.json',import.meta.url),'utf8'));
@@ -97,4 +98,20 @@ test('registry service actors reject non-string namespace IDs before key constru
   assert.equal(actor.kind,'service');actor[property]=value;
   assert.throws(()=>validateDocsetRoutes(v,nav('portal'),'portal',version('portal')),undefined,position+'/'+property);
  }
+});
+
+test('recording and final renderer share stable actionable route structural failures',()=>{
+ const value=clone(),route=value.routes.find(r=>r.outcomes.length);
+ route.origin.kind='HTTP_ENDPOINT';
+ const outcome=route.outcomes.find(o=>o.end.status==='known');
+ outcome.end.ownerOccurrence='not-declared';
+ let early,final;
+ try{validateRouteStructure(value.routes)}catch(e){early=e}
+ try{validateDocsetRoutes(value,nav('portal'),'portal',version('portal'))}catch(e){final=e}
+ assert.equal(early.code,'ROUTE_DECLARATION_INVALID');assert.deepEqual(final.details,early.details);
+ assert(early.details.issues.some(e=>e.routeId===route.id&&e.field.endsWith('/origin/kind')&&e.actual==='HTTP_ENDPOINT'&&e.expected.includes('http')));
+ assert(early.details.issues.some(e=>e.routeId===route.id&&e.outcomeId===outcome.id&&e.code==='ROUTE_TERMINAL_UNKNOWN'));
+ outcome.end.ownerOccurrence=route.occurrences[0].id;
+ outcome.internal.occurrences=[outcome.end.ownerOccurrence];
+ assert.throws(()=>validateRouteStructure(value.routes),e=>e.details.issues.some(i=>i.code==='ROUTE_TERMINAL_INTERNAL'&&i.outcomeId===outcome.id));
 });

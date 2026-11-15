@@ -46,7 +46,9 @@ references. Do not rewrite or blanket reread unchanged, already reviewed pages.
 Use finish-review for explicit unresolved/visual global decisions. Review dispositions
 remain author judgments: EXPLAINED/EXPLICIT_UNKNOWN for requirements and discovered
 entries; SUPPORTED/EXPLICIT_UNKNOWN for claims. Discovery requires the full retained
-file and actual additional starts or an evidenced no-additions judgment. No answers
+file: discoveryDisposition is ADDITIONAL_STARTS for a nonempty declared finding
+list or NO_ADDITIONAL_STARTS for an explicitly reviewed empty list. EXPLAINED
+is a different requirement disposition; never use it as a discovery outcome. No answers
 are prefilled. Record visual REVIEWED only after real observed browser inspection.
 
 The caller performs complete native source, coverage, link, renderer and export

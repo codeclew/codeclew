@@ -22,7 +22,7 @@
     }},
     "budget": {"type": "object", "additionalProperties": false, "required": ["wallSeconds", "maxModelTokens", "maxRepairs"], "properties": {
       "wallSeconds": {"type": "integer", "minimum": 1, "maximum": 7200, "description": "Operational anti-hang guard, not a quality or efficiency acceptance threshold."},
-      "maxModelTokens": {"type": ["integer", "null"], "minimum": 1, "description": "Optional operational token cutoff across author and repairs; null disables this cutoff without disabling exact usage or quality gates. Metric: input_tokens minus cached_input_tokens plus output_tokens. Raw/cached input and reasoning-output subsets remain separately reported; unavailable cache counters do not become zero."},
+      "maxModelTokens": {"type": ["integer", "null"], "minimum": 1, "description": "Optional operational token cutoff across author and repairs (NEW_ATTEMPTS_ONLY for explicit prepare-successor; inherited and total usage stay reported); null disables this cutoff without disabling exact usage or quality gates. Metric: input_tokens minus cached_input_tokens plus output_tokens. Raw/cached input and reasoning-output subsets remain separately reported; unavailable cache counters do not become zero."},
       "maxRepairs": {"type": "integer", "minimum": 0, "maximum": 2}
     }},
     "components": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {

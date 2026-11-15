@@ -61,6 +61,32 @@ def review_requirements(run, api):
     return [{'requirement': key, **value} for key, value in rows.items()] if isinstance(rows, dict) else rows
 
 
+def validate_discovery_review(inventory, accounts, api, *, pages=None, recorded_only=False):
+    """Structural assessment contract shared by recording, local and final gates.
+
+    The finding list remains the author's declaration, not proof of source reading.
+    An empty registry never supplies a no-additions assessment automatically.
+    """
+    rows = ({key: value for key, value in accounts.items()} if isinstance(accounts, dict)
+            else {row['requirement']: row for row in accounts})
+    allowed = ['ADDITIONAL_STARTS', 'NO_ADDITIONAL_STARTS']
+    issues = []
+    for requirement in inventory['requirements']:
+        if requirement['kind'] != 'DISCOVERY' or pages is not None and requirement['page'] not in pages:continue
+        row = rows.get(requirement['id'], {})
+        if recorded_only and row.get('disposition') is None and row.get('discoveryDisposition') is None:continue
+        found, actual = row.get('discoveredEntries'), row.get('discoveryDisposition')
+        if isinstance(found, list) and actual in allowed and bool(found) == (actual == 'ADDITIONAL_STARTS'):continue
+        key = requirement['id'].replace('~', '~0').replace('/', '~1')
+        issues.append({'requirement': requirement['id'], 'page': requirement['page'],
+                       'file': 'draft/self-review.json', 'field': '/requirements/' + key + '/discoveryDisposition',
+                       'expected': {'allowed': allowed, 'consistency': 'ADDITIONAL_STARTS needs a nonempty declared finding list; NO_ADDITIONAL_STARTS needs an explicitly reviewed empty list.'},
+                       'actual': actual, 'discoveredEntriesCount': len(found) if isinstance(found, list) else None,
+                       'recovery': './docs review-page --page ' + requirement['page'] + ' (then --input FILE with explicit source-reviewed discovery judgment)'})
+    api['need'](not issues, 'DISCOVERY_DISPOSITION_REQUIRED', issues=issues,
+                recovery='Repair only the named discovery assessments with review-page, then finish-review. Preserve other page assessments and content; do not infer no-additions from an empty registry.')
+
+
 def validate_discovered_sources(inventory, accounts, entries, api):
     parents = {r['id']: r for r in inventory['requirements'] if r['kind'] == 'DISCOVERY'}
     for account in accounts:
@@ -247,8 +273,8 @@ def install_author_entry(run, skill, python):
         'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
     helper = workspace / 'docs'
     helper.write_text('#!/bin/sh\ncase "${1-}" in\n'
-        ' save-pages|check|review-template|register-entry|put|sequence|page-info|route|review-page|finish-review) ;;\n'
-        ' *) printf "%s\\n" "Use: ./docs save-pages --input pages/PAGE.md.json | check --page PAGE.md | review-template" >&2; exit 2 ;;\n'
+        ' save-pages|check|review-template|register-entry|put|sequence|page-info|route|review-page|finish-review|--help|-h) ;;\n'
+        ' *) printf "%s\\n" "Use ./docs --help for put, sequence, register-entry, page-info, route, review-page, finish-review, check and advanced commands." >&2; exit 2 ;;\n'
         'esac\nexec ' + shlex.quote(python) + ' -I -S ' + shlex.quote(str(skill / 'scripts/docs_run.py')) +
         ' "$@" --run-dir ' + shlex.quote(str(run)) + '\n', encoding='utf-8');helper.chmod(0o700)
     return ['AGENTS.md', '.agents/skills/codeclew/SKILL.md', 'docs']
@@ -331,6 +357,10 @@ def locations(original, details):
                 found = find(item, key)
                 if found is not None:return found
         return None
+    issues = find(details, 'issues')
+    if isinstance(issues, list):
+        return [{k: row[k] for k in ('file', 'page', 'requirement', 'routeId', 'outcomeId', 'field') if k in row}
+                for row in issues if isinstance(row, dict) and 'field' in row]
     owner = find(details, 'page')
     if isinstance(owner, str):owner = owner.replace('.html', '.md')
     component = re.search(r'Invalid sequence (/[^:]*):', message)
@@ -408,6 +438,43 @@ def page_info(run, name, service, title, data, api):
     return {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
 
 
+def route_preflight(run, job, api, registry=None):
+    path = run / 'workspace/draft/routes.json'
+    if registry is None:
+        if not path.exists():return None
+        registry = api['load'](path)
+    directory = run / 'workspace/checks' / uuid.uuid4().hex
+    api['save'](directory / 'routes.json', registry)
+    issues = []
+    try:
+        api['command']([job['node'], str(Path(__file__).with_name('docs_run_routes.mjs')),
+                        str(directory / 'routes.json')], directory, 'route-preflight')
+    except api['Stop'] as error:
+        if error.code != 'ROUTE_DECLARATION_INVALID':raise
+        issues = error.details['response']['details']['issues']
+    for issue in issues:
+        issue['file'] = 'draft/routes.json'
+        issue['inputField'] = re.sub(r'^/routes/[0-9]+', '/route', issue['field'])
+    catalog = registry.get('catalog')
+    if catalog:
+        page = catalog.get('page')
+        original = api['load'](run / 'workspace/draft/original.json')
+        names = {p['page'] for p in original['pages']}
+        markdown = page.removesuffix('.html') + '.md' if isinstance(page, str) and page.endswith('.html') else None
+        if markdown is None or markdown not in names:
+            issues.append({'code': 'ROUTE_CATALOG_TARGET_REQUIRED', 'file': 'draft/routes.json', 'field': '/catalog',
+                           'page': markdown, 'expected': {'stored': 'flat.html', 'authoredPage': markdown},
+                           'actual': {'target': page, 'authoredPageExists': markdown in names},
+                           'recovery': ('Create the named source-backed catalog page with ./docs put --page ' + markdown +
+                                        ' --fragment CLAIM --text-file FILE --evidence HANDLE, then repeat route/check.') if markdown else
+                                       'Use a flat catalog .md or .html filename in ./docs route --input FILE; it is stored canonically as .html.'})
+    result = {'status': 'FAILED' if issues else 'ROUTE_CHECKED', 'issues': issues, 'directory': str(directory), 'ready': False}
+    api['save'](run / 'workspace/last-route-check.json', result)
+    api['need'](not issues, 'ROUTE_DECLARATION_INVALID', issues=issues, receipt='last-route-check.json',
+                recovery=issues[0]['recovery'] if issues else '')
+    return result
+
+
 def route(run, value, api):
     job, inventory, _ = api['frozen_inputs'](run)
     path = run / 'workspace/draft/routes.json'
@@ -422,6 +489,11 @@ def route(run, value, api):
                          {'id': service, 'title': service, 'overview': {'docset': 'docs', 'page': next(
                              r['page'].removesuffix('.md') + '.html' for r in inventory['requirements'] if r['service'] == service and r['kind'] == 'SERVICE')}}
                          for service in job['services']]}], 'externalActors': [], 'routes': []}
+    if 'catalog' in value:
+        catalog = value['catalog']
+        api['need'](isinstance(catalog, str), 'ROUTE_CATALOG_INVALID', field='/catalog', actual=catalog)
+        markdown = api['M']['page_name'](catalog.removesuffix('.html') + '.md' if catalog.endswith('.html') else catalog)
+        registry['catalog'] = {'docset': 'docs', 'page': markdown.removesuffix('.md') + '.html'}
     for actor in value.get('externalActors', []):
         old = next((a for a in registry['externalActors'] if a['id'] == actor['id']), None)
         api['need'](old is None or old == actor, 'EXTERNAL_ACTOR_CONFLICT', actor=actor['id'])
@@ -439,7 +511,10 @@ def route(run, value, api):
     local_addresses(row)
     row.setdefault('id', row['narrative']['page'].removesuffix('.html'))
     row.setdefault('version', 'v1')
-    registry['routes'] = [r for r in registry['routes'] if r['id'] != row['id']] + [row]
+    index = next((i for i, r in enumerate(registry['routes']) if r['id'] == row['id']), None)
+    if index is None:registry['routes'].append(row)
+    else:registry['routes'][index] = row
+    route_preflight(run, job, api, registry)
     api['save'](path, registry)
     return {'status': 'ROUTE_SAVED', 'route': row['id'], 'ready': False}
 
@@ -462,6 +537,7 @@ def review_page(run, page, value, api):
                 'CLAIM_ASSESSMENT_REQUIRED', page=name)
     api['need'](all(v.get('disposition') in ('EXPLAINED', 'EXPLICIT_UNKNOWN') for v in value['requirements'].values()),
                 'REQUIREMENT_ASSESSMENT_REQUIRED', page=name)
+    validate_discovery_review(inventory, value['requirements'], api, pages=[name])
     template['requirements'].update(value['requirements'])
     if name in template['claims']:template['claims'][name] = value['claims']
     api['save'](run / 'workspace/draft/self-review.json', template)
@@ -482,10 +558,11 @@ def process_pages(run, api):
 
 
 def finish_review(run, value, api):
-    api['frozen_inputs'](run)
+    _, inventory, _ = api['frozen_inputs'](run)
     api['closed'](value, ('unresolved', 'visual'))
     review = api['review_for_run'](run)
     api['need'](isinstance(value['unresolved'], list) and isinstance(value['visual'], dict), 'GLOBAL_REVIEW_REQUIRED')
+    validate_discovery_review(inventory, review['requirements'], api)
     review.update(value)
     api['save'](run / 'workspace/draft/self-review.json', review)
     return {'status': 'GLOBAL_REVIEW_RECORDED', 'ready': False, 'semanticTruthAssessed': False}
@@ -509,6 +586,11 @@ def check(run, pages, scaffold_only, api):
         api['need'](scaffold_only or selected, 'NO_COMPLETE_PAGES')
         api['need'](set(selected) <= set(names), 'UNKNOWN_CHECK_PAGE', pages=sorted(set(selected) - set(names)))
         api['need'](scaffold_only or not set(selected) & set(pending), 'UNFINISHED_SCAFFOLD', pages=sorted(set(selected) & set(pending)))
+        if not scaffold_only:
+            stage = 'route-preflight'
+            route_preflight(run, job, api)
+            stage = 'self-review'
+            validate_discovery_review(inventory, review_requirements(run, api), api, pages=selected, recorded_only=True)
         stage = 'source-bindings'
         if not scaffold_only:
             chosen = {'pages': [p for p in original['pages'] if p['page'] in selected]}
@@ -575,7 +657,7 @@ def check(run, pages, scaffold_only, api):
         result['locations'] = locations(original, result['details'])
         result['pendingTargets'] = sorted({target for target in re.findall(r'[A-Za-z0-9._-]+\.md(?:#[A-Za-z0-9._-]+)?', str(result['details']).replace('.html','.md'))
                                           if target.split('#')[0] in pending})
-        result['recovery'] = ('Use the named page/fragment/field with ./docs put for prose or ./docs sequence for diagram rows; '
+        result['recovery'] = (result['details'].get('recovery') if isinstance(result['details'], dict) else None) or ('Use the named page/fragment/field with ./docs put for prose or ./docs sequence for diagram rows; '
                               'repair registration evidence by repeating ./docs register-entry --requirement ID --page PAGE --evidence HANDLE. '
                               'Then repeat check only for affected pages. Preserve other pages and reviews. Unfinished targets are provisional; this is not READY.')
         api['save'](run / 'workspace/last-local-check.json', result)

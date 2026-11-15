@@ -167,3 +167,32 @@ outputs from the author, and invoke the fixed promotion consumer. An agent that 
 rewrite trusted code/state or deploy around the consumer can bypass this boundary;
 no forged-report impossibility is claimed. Debug saves observable inputs, commands,
 results and decisions only, never hidden model reasoning.
+
+
+## Caller-owned successor after a terminal failed gate
+
+To reuse the same author and unchanged retained work with newly admitted tooling,
+prepare a separate successor. This command never launches the author:
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" prepare-successor --job /absolute/successor-job.json --previous-run /absolute/terminal-failed-run --previous-skill /absolute/previous-pinned-skill --run-dir /absolute/new-successor
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" run --run-dir /absolute/new-successor --debug
+```
+
+The second command is a separate, explicitly authorized caller action. Preparation
+rejects a live/nonterminal predecessor, changed request/inventory/source content or
+native bindings, changed runtime, and unverifiable historical counters. It admits
+the new helper/profile/renderer through ordinary prepare, copies rather than aliases
+authored work, and preserves prior attempts and the failed report. Do not edit old
+pins or use accounting recovery for a different failure.
+
+For prepare-successor, the job budget is the explicit NEW_ATTEMPTS_ONLY allowance:
+one standalone same-author full-docset review, followed by at most its declared
+machine-repair rounds. Original exhausted limits and all raw counters remain in
+inputs/successor.json and history; reports show inherited, continuation and total
+usage. Thread-cumulative counters are not summed twice. Preparation imports no
+READY state or semantic approval. The new review must compare source and text in
+both directions, reconcile the full question and reader layout under the generic
+updated contract, and pass the complete final gate before promotion. Unchanged
+content and valid recorded assessments can be retained; available unread evidence
+and evaluator answers must not replace the author's independent review.

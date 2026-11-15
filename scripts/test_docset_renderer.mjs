@@ -67,3 +67,25 @@ test('Russian filter chrome keeps author labels and explicit uncertainty',async(
   const html=await readFile(join(out,'index.html'),'utf8');assert.match(html,/\u0424\u0438\u043b\u044c\u0442\u0440\u044b \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432/);assert.match(html,/\u041f\u0440\u043e\u0446\u0435\u0441\u0441\u044b \u0441 \u043f\u0440\u043e\u0431\u0435\u043b\u0430\u043c\u0438 \u043a\u043b\u0430\u0441\u0441\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u0438/);assert.match(html,/Incoming stock query/);
  }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test('external resource links do not claim owned service participation on a data page',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-resource-ownership-'));
+ try{
+  const source=join(root,'input');await mkdir(source);
+  for(const [file,text] of Object.entries({'overview.md':'# Service\n','entry.md':'# Apply\n\n## Handler\n','data.md':'# Stored values\n\n| Field | Meaning |\n| --- | --- |\n| balance | Stored balance |\n','process.md':'# Apply process\n','catalog.md':'# Processes\n'}))await writeFile(join(source,file),text);
+  const dest=page=>({docset:'local',page});
+  const service={kind:'service',docset:'local',service:'s'};
+  const value={schema:'codeclew-cross-docset-routes/1.1',revision:'r1',catalog:dest('catalog.html'),docsets:[{id:'local',title:'Fixture',version:'v1',baseURL:'https://docs.invalid/',services:[{id:'s',title:'Application',overview:dest('overview.html')}]}],externalActors:[{id:'db',title:'External store'}],routes:[{id:'apply',version:'v1',title:'Apply a change',narrative:dest('process.html'),origin:{status:'known',occurrence:'start',kind:'http',title:'Apply',summary:'Apply a change'},occurrences:[{id:'start',actor:service,role:'Handle the request',target:{...dest('entry.html'),anchor:'handler'}},{id:'db',actor:{kind:'external',id:'db'},role:'External storage operation',target:dest('data.html')}],branches:[{id:'normal',title:'Normal',condition:'Declared branch',target:dest('process.html')}],outcomes:[{id:'done',branch:'normal',kind:'normal',title:'Return',target:dest('process.html'),internal:{coverage:'partial',occurrences:['db']},end:{status:'known',ownerOccurrence:'start',boundary:'return',recipient:{kind:'none'}}}],coverage:{outcomeInventory:'partial',scope:'Owned renderer fixture',reference:dest('process.html')}}]};
+  const navigation={schema:'codeclew-markdown-navigation/1',home:{title:'Service',target:'overview.md'},services:[{id:'s',title:'Application',overview:'overview.md',pages:['overview.md','entry.md','data.md'],starts:[{title:'Apply',target:'entry.md#handler',kind:'http',summary:'Apply a change'}],data:[{title:'Stored values',target:'data.md'}]}],routes:[]};
+  const opts={theme:'codeclew',docset:'local',docsetVersion:'v1',docsetRoutes:value,navigation};
+  await renderDirectory(source,join(root,'external-only'),opts);
+  const data=await readFile(join(root,'external-only/data.html'),'utf8');
+  assert.equal(/This service’s part/.test(data),false,'External resource must not claim service ownership');assert.doesNotMatch(data,/External storage operation/);assert.match(data,/<td>balance<\/td>/);
+  const narrative=await readFile(join(root,'external-only/process.html'),'utf8');assert.match(narrative,/External store/);assert.match(narrative,/External storage operation/);
+  value.routes[0].occurrences.push({id:'app-data',actor:service,role:'Apply application data change',target:dest('data.html')});
+  value.routes[0].outcomes[0].internal.occurrences.push('app-data');
+  await renderDirectory(source,join(root,'genuine-service'),opts);
+  const own=await readFile(join(root,'genuine-service/data.html'),'utf8');
+  assert.match(own,/This service’s part/);assert.match(own,/Apply application data change/);assert.doesNotMatch(own,/External storage operation/);assert.match(own,/<td>balance<\/td>/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});

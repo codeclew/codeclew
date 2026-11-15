@@ -33,7 +33,7 @@ import json,shutil,sys,time
 from pathlib import Path
 seed=Path({str(self.seed)!r});mode=Path({str(self.mode)!r}).read_text()
 sys.stdin.read()
-print(json.dumps({{'type':'thread.started','thread_id':'owned-test-session'}}),flush=True)
+print(json.dumps({{'type':'thread.started','thread_id':'different-test-session' if mode=='successor-thread-switch' else 'owned-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
 if mode!='empty':
@@ -50,12 +50,15 @@ if mode=='repair-on-resume' and 'resume' in sys.argv:
 usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
 if mode=='uneven-units':usage={{'input_tokens':2000 if 'resume' in sys.argv else 130000,'cached_input_tokens':0,'output_tokens':0}}
 counter=Path.cwd()/'backend-usage.json'
+if mode in ('successor-accounting','successor-decreasing'):
+ counter=seed.parent/'session-usage.json'
+ usage={{'input_tokens':5 if mode=='successor-decreasing' else 3 if 'resume' in sys.argv else 8,'cached_input_tokens':0,'output_tokens':0}}
 if mode=='recorded-weather':
  prior=json.loads(counter.read_text()) if 'resume' in sys.argv and counter.exists() else None
  if prior is None:usage={{'input_tokens':1771674,'cached_input_tokens':1688320,'output_tokens':36956,'reasoning_output_tokens':24378}}
  elif prior['input_tokens']==1771674:usage={{'input_tokens':1021621,'cached_input_tokens':982656,'output_tokens':25588,'reasoning_output_tokens':18720}}
  else:usage={{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10,'reasoning_output_tokens':0}}
-if 'resume' in sys.argv and counter.exists():
+if mode!='successor-decreasing' and 'resume' in sys.argv and counter.exists():
  previous=json.loads(counter.read_text())
  usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
 counter.write_text(json.dumps(usage))
@@ -93,6 +96,7 @@ else:
             output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs else [coverage])
             return {'status': 'COMPLETE', 'omittedRecords': 0,
                     'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+        self.collect = collect
         with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
                 'prepare_sources': lambda job, inventory, directory: directory.mkdir()}):
             prepared = D['prepare'](self.job_path, self.run)
@@ -328,16 +332,23 @@ else:
         self.assertEqual(repaired['discoveredEntries'][0]['evidence'],[self.handle])
 
     def test_small_route_and_navigation_updates_keep_unrelated_declarations(self):
+        self.save_local({'page':'processes.md','fragments':[{'id':'catalog','text':'# Processes\nSource-backed reservation work.','evidence':[self.handle]}]})
         first = {'catalog': 'processes.html', 'route': {'title': 'First process', 'narrative': {'page': 'first.md'},
-                 'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {}}}
+                 'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {'outcomeInventory':'partial'}}}
         second = {'route': {'title': 'Second process', 'narrative': {'page': 'second.md'},
-                  'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {}}}
+                  'origin': {'status': 'unknown', 'reason': 'Not bound'}, 'occurrences': [], 'branches': [], 'outcomes': [], 'coverage': {'outcomeInventory':'partial'}}}
         D['W']['route'](self.run, first, D)
         before = D['load'](self.run / 'workspace/draft/routes.json')['routes'][0]
         D['W']['route'](self.run, second, D)
         registry = D['load'](self.run / 'workspace/draft/routes.json')
         self.assertEqual(registry['routes'][0], before)
         self.assertEqual(registry['routes'][1]['narrative'], {'docset': 'docs', 'page': 'second.html'})
+        first['catalog']='processes.md';first['route']['title']='Updated first process'
+        D['W']['route'](self.run,first,D)
+        updated_routes=D['load'](self.run / 'workspace/draft/routes.json')
+        self.assertEqual([r['id'] for r in updated_routes['routes']],['first','second'])
+        self.assertEqual(updated_routes['catalog']['page'],'processes.html')
+        self.assertEqual(updated_routes['routes'][1],registry['routes'][1])
         self.assertEqual(D['W']['process_pages'](self.run, D), ['first.md', 'second.md'])
         navigation = D['load'](self.run / 'workspace/draft/navigation.json')
         starts = navigation['services'][0]['starts']
@@ -345,6 +356,215 @@ else:
         updated = D['load'](self.run / 'workspace/draft/navigation.json')['services'][0]
         self.assertEqual(updated['starts'], starts)
         self.assertIn({'title': 'Reservation data', 'target': 'data.md'}, updated['data'])
+
+    def test_route_preflight_rejects_bad_metadata_before_persisting_and_names_catalog(self):
+        value={'catalog':'processes.html','route':{'id':'reserve-route','title':'Reserve','narrative':{'page':'thread.md'},
+            'origin':{'status':'known','occurrence':'start','kind':'HTTP_ENDPOINT','title':'Reserve','summary':'Owned fixture'},
+            'occurrences':[{'id':'start','actor':{'kind':'service','service':self.service},'role':'start','target':{'page':self.entry['page']}},
+                           {'id':'finish','actor':{'kind':'service','service':self.service},'role':'finish','target':{'page':self.entry['page']}}],
+            'branches':[{'id':'normal','title':'Normal','condition':'Owned branch','target':{'page':'thread.md'}}],'outcomes':[{'id':'done','branch':'normal','kind':'normal','title':'Done','target':{'page':'thread.md'},
+                'internal':{'coverage':'partial','occurrences':['finish']},'end':{'status':'known','ownerOccurrence':'missing','boundary':'return','recipient':{'kind':'none'}}}],
+            'coverage':{'outcomeInventory':'partial'}}}
+        before=D['tree'](self.run / 'workspace/draft')
+        with self.assertRaises(D['Stop']) as error:D['W']['route'](self.run,value,D)
+        issues=error.exception.details['issues'];codes={i['code'] for i in issues}
+        self.assertTrue({'ROUTE_TRIGGER_KIND_INVALID','ROUTE_TERMINAL_UNKNOWN','ROUTE_CATALOG_TARGET_REQUIRED'}<=codes)
+        self.assertEqual(before,D['tree'](self.run / 'workspace/draft'))
+        trigger=next(i for i in issues if i['code']=='ROUTE_TRIGGER_KIND_INVALID')
+        self.assertEqual(trigger['routeId'],'reserve-route');self.assertEqual(trigger['inputField'],'/route/origin/kind')
+        self.assertIn('./docs route',trigger['recovery'])
+        self.save_local({'page':'processes.md','fragments':[{'id':'catalog','text':'Source-backed catalog.','evidence':[self.handle]}]})
+        value['route']['origin']['kind']='http';value['route']['outcomes'][0]['end']['ownerOccurrence']='finish'
+        with self.assertRaises(D['Stop']) as error:D['W']['route'](self.run,value,D)
+        self.assertIn('ROUTE_TERMINAL_INTERNAL',{i['code'] for i in error.exception.details['issues']})
+        value['route']['outcomes'][0]['internal']['occurrences']=[]
+        self.assertEqual(D['W']['route'](self.run,value,D)['status'],'ROUTE_SAVED')
+        registry=D['load'](self.run / 'workspace/draft/routes.json');registry['routes'][0]['origin']['kind']='HTTP_ENDPOINT'
+        D['save'](self.run / 'workspace/draft/routes.json',registry)
+        self.local_reads();self.save_local(self.local_page())
+        local=self.local_check(self.entry['page'])
+        self.assertEqual(local['code'],'ROUTE_DECLARATION_INVALID');self.assertTrue(local['locations'])
+        self.assertIn('./docs route',local['recovery'])
+
+    def test_discovery_contract_is_shared_at_page_local_finish_and_final(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        for page in [self.entry['page'],self.service+'.md']:
+            shell=D['W']['review_page'](self.run,page,None,D)
+            for row in shell['requirements'].values():
+                row['disposition']='EXPLAINED'
+                if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+            shell['claims']={key:'SUPPORTED' for key in shell['claims']}
+            D['W']['review_page'](self.run,page,shell,D)
+        parent=next(r for r in self.inventory['requirements'] if r['kind']=='DISCOVERY')
+        correct=D['load'](self.run / 'workspace/draft/self-review.json')
+        original=D['load'](self.run / 'workspace/draft/original.json')
+        job,inventory,_=D['frozen_inputs'](self.run)
+        _,entries=D['cite_entries'](job,inventory,self.run / 'workspace/draft',self.root / 'review-source-check')
+        global_values={'unresolved':[],'visual':{'status':'UNAVAILABLE','reason':'Owned metadata control'}}
+        correct.update(global_values);D['save'](self.run / 'workspace/draft/self-review.json',correct)
+        for tag,found in [('EXPLAINED',[]),('ADDITIONAL_STARTS',[]),('NO_ADDITIONAL_STARTS',[{'id':'new'}]),(None,[])]:
+            shell=D['W']['review_page'](self.run,parent['page'],None,D)
+            shell['requirements'][parent['id']].update(discoveryDisposition=tag,discoveredEntries=found)
+            before=D['tree'](self.run / 'workspace/draft')
+            with self.assertRaises(D['Stop']) as error:D['W']['review_page'](self.run,parent['page'],shell,D)
+            self.assertEqual(error.exception.code,'DISCOVERY_DISPOSITION_REQUIRED')
+            issue=error.exception.details['issues'][0];self.assertEqual(issue['requirement'],parent['id']);self.assertEqual(issue['actual'],tag)
+            self.assertEqual(before,D['tree'](self.run / 'workspace/draft'))
+            corrupt=json.loads(json.dumps(correct));corrupt['requirements'][parent['id']].update(discoveryDisposition=tag,discoveredEntries=found)
+            # Legacy/corrupt saved metadata: finish/local/final must reject it too.
+            D['save'](self.run / 'workspace/draft/self-review.json',corrupt)
+            with self.assertRaises(D['Stop']):D['W']['finish_review'](self.run,global_values,D)
+            local=self.local_check(parent['page']);self.assertEqual(local['code'],'DISCOVERY_DISPOSITION_REQUIRED',local)
+            resolved=D['resolve_review'](corrupt,self.inventory,entries,original)
+            with self.assertRaises(D['Stop']) as error:D['review_accounts'](resolved,self.inventory,{p['page']:b'content' for p in original['pages']},entries,original)
+            self.assertEqual(error.exception.details['issues'][0]['actual'],tag)
+            D['save'](self.run / 'workspace/draft/self-review.json',correct)
+        before=D['tree'](self.run / 'workspace/draft');self.assertEqual(D['W']['finish_review'](self.run,global_values,D)['status'],'GLOBAL_REVIEW_RECORDED')
+        self.assertEqual(D['load'](self.run / 'workspace/draft/self-review.json')['claims'],correct['claims'])
+        resolved=D['resolve_review'](D['load'](self.run / 'workspace/draft/self-review.json'),self.inventory,entries,original)
+        D['review_accounts'](resolved,self.inventory,{p['page']:b'content' for p in original['pages']},entries,original)
+        inv=json.loads(json.dumps(self.inventory));extra={**parent,'id':parent['id']+':another'};inv['requirements'].append(extra)
+        with self.assertRaises(D['Stop']) as error:D['W']['validate_discovery_review'](inv,{},D)
+        self.assertEqual({i['requirement'] for i in error.exception.details['issues']},{parent['id'],extra['id']})
+
+    def test_repair_context_keeps_only_failed_checks_and_help_is_current(self):
+        report={'status':'FAILED','checks':{'author':{'status':'PASS','tokenAccounting':{'rawTotals':'large preserved ledger'}},
+            'selfReview':{'status':'FAIL','code':'DISCOVERY_DISPOSITION_REQUIRED','details':{'issues':[{'field':'/requirements/r/discoveryDisposition','actual':'EXPLAINED','expected':['NO_ADDITIONAL_STARTS'],'recovery':'./docs review-page --page service.md'}]}},
+            'entrySequences':{'status':'NOT_RUN'},'provenance':{'status':'PASS','handles':785}}}
+        before=json.loads(json.dumps(report));facts=D['repair_facts'](report)
+        self.assertEqual(set(facts['checks']),{'selfReview'});self.assertEqual(report,before)
+        self.assertNotIn('tokenAccounting',json.dumps(facts));self.assertEqual(facts['usageAndAttemptHistory'],'state.json')
+        wrapper=self.run / 'workspace/docs'
+        help_result=subprocess.run([str(wrapper),'--help'],capture_output=True,text=True)
+        self.assertEqual(help_result.returncode,0,help_result.stdout+help_result.stderr)
+        for term in ['route','review-page','finish-review','ADDITIONAL_STARTS','NO_ADDITIONAL_STARTS']:
+            self.assertIn(term,help_result.stdout)
+        self.readmit_budget(1000,1);self.generated()
+        D['save'](self.run / 'report.json',report);D['author'](self.run,repair=True)
+        prompt=(self.run / 'attempts/1/prompt.txt').read_text()
+        sent,_=json.JSONDecoder().raw_decode(prompt)
+        self.assertEqual(sent['failures'],facts)
+        self.assertNotIn('large preserved ledger',prompt)
+        self.assertEqual(D['load'](self.run / 'report.json'),report)
+        self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']),2)
+
+    def successor_parent(self):
+        self.readmit_budget(8,0);self.mode.write_text('successor-accounting')
+        prepared=self.run / 'inputs/author-source' / self.service / 'read'
+        shutil.copytree(self.seed / 'reads',prepared)
+        (prepared.parent / 'view.md').write_text(self.source['text'])
+        shutil.rmtree(self.seed / 'reads')  # Prepared carrier is authoritative; do not duplicate its cite handle.
+        pins=D['load'](self.run / 'pins.json');pins['inputFiles']=D['tree'](self.run / 'inputs');D['save'](self.run / 'pins.json',pins)
+        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.md)\n'
+        self.seed_files();self.generated();failed=D['verify'](self.run)
+        self.assertEqual(failed['status'],'FAILED');self.assertEqual(failed['checks']['provenance']['status'],'PASS')
+        self.assertEqual(failed['checks']['finalize']['status'],'FAIL');self.assertEqual(D['load'](self.run / 'state.json')['modelTokens'],8)
+        (self.run / '.runner.lock').touch()
+        job=json.loads(json.dumps(self.job));job['budget']={'maxModelTokens':3,'maxRepairs':0,'wallSeconds':30}
+        path=self.root / 'successor-job.json';D['save'](path,job)
+        return path
+
+    def prepare_owned_successor(self,job_path,child,mutate=None,previous=None):
+        def sources(job,inventory,directory):
+            shutil.copytree(self.run / 'inputs/author-source',directory)
+            if mutate:mutate(directory)
+        with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}):
+            return D['S']['prepare'](job_path,previous or self.run,D['SKILL'],child,D)
+
+    def test_successor_prepare_inherits_history_without_alias_or_model_and_requires_new_full_review(self):
+        job_path=self.successor_parent();child=self.root / 'successor'
+        (self.run / 'critic').mkdir();(self.run / 'critic/answers.txt').write_text('Must not enter successor workspace')
+        before={name:D['sha']((self.run / name).read_bytes()) for name in ['state.json','pins.json','report.json']}
+        parent_draft=D['tree'](self.run / 'workspace/draft')
+        frozen=self.root / 'frozen-parent';shutil.copytree(self.run,frozen)
+        with patch.dict(D,{'author':lambda *a,**k:self.fail('prepare must not invoke an author')}):
+            prepared=self.prepare_owned_successor(job_path,child,previous=frozen)
+        self.assertEqual(prepared['status'],'SUCCESSOR_PREPARED');self.assertEqual(prepared['modelCalls'],0)
+        self.assertFalse((child / 'critic').exists());self.assertFalse((child / 'workspace/critic').exists())
+        state=D['load'](child / 'state.json');self.assertEqual(state['modelTokens'],8);self.assertEqual(len(state['attempts']),1)
+        self.assertEqual(state['threadId'],D['load'](self.run / 'state.json')['threadId'])
+        self.assertEqual(parent_draft,D['tree'](child / 'workspace/draft'))
+        self.assertNotEqual((child / 'workspace/draft/original.json').stat().st_ino,(self.run / 'workspace/draft/original.json').stat().st_ino)
+        # Copying AUTHOR_COMPLETED cannot import qualification from the predecessor.
+        state['status']='AUTHOR_COMPLETED';D['save'](child / 'state.json',state)
+        checked=D['verify'](child);self.assertEqual(checked['checks']['author']['code'],'AUTHOR_COMPLETION_REQUIRED')
+        state['status']='SUCCESSOR_PREPARED';D['save'](child / 'state.json',state)
+        result=D['execute'](child)
+        self.assertEqual(result['status'],'FAILED',result)  # Broken link remains; full final gate is mandatory.
+        state=D['load'](child / 'state.json');self.assertEqual(state['modelTokens'],11)
+        self.assertEqual(state['attempts'][1]['kind'],'successor-review')
+        self.assertEqual(state['attempts'][1]['threadId'],state['attempts'][0]['threadId'])
+        self.assertIn('resume',state['attempts'][1]['argv'])
+        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),3)
+        self.assertEqual(result['checks']['author']['reportedModelTokens'],11)
+        self.assertEqual(result['checks']['author']['inheritedModelTokens'],8)
+        self.assertEqual(result['checks']['author']['continuationModelTokens'],3)
+        prompt=json.loads((child / 'attempts/1/prompt.txt').read_text())
+        self.assertEqual(prompt['request'],self.job['request']);self.assertIn('standalone full-docset review',prompt['instruction'])
+        self.assertEqual(D['load'](child / 'history/report.json')['status'],'FAILED')
+        self.assertEqual(parent_draft,D['tree'](self.run / 'workspace/draft'))
+        for name,value in before.items():
+            self.assertEqual(D['sha']((self.run / name).read_bytes()),value)
+            self.assertEqual(D['sha']((frozen / name).read_bytes()),value)
+
+    def test_successor_valid_same_context_review_can_reach_full_gate_without_hiding_inherited_cost(self):
+        job_path=self.successor_parent();child=self.root / 'successor'
+        self.prepare_owned_successor(job_path,child)
+        self.original['pages'][0]['fragments'][1]['text']=self.original['pages'][0]['fragments'][1]['text'].replace('\n[Missing](absent.md)\n','')
+        self.seed_files()
+        result=D['execute'](child)
+        self.assertEqual(result['status'],'READY_PROMOTED',result)
+        report=D['load'](child / 'report.json');self.assertTrue(all(row['status']=='PASS' for row in report['checks'].values()))
+        self.assertEqual(report['checks']['author']['reportedModelTokens'],11)
+        self.assertEqual(report['checks']['author']['continuationModelTokens'],3)
+        self.assertEqual(D['load'](self.run / 'report.json')['status'],'FAILED')
+
+    def test_successor_rejects_changed_request_source_nonterminal_and_unverifiable_history(self):
+        job_path=self.successor_parent()
+        with (self.run / '.runner.lock').open('rb') as lock:
+            D['fcntl'].flock(lock,D['fcntl'].LOCK_EX|D['fcntl'].LOCK_NB)
+            with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root / 'busy-parent')
+            self.assertEqual(error.exception.code,'SUCCESSOR_PREDECESSOR_BUSY')
+        job=D['load'](job_path);job['request']='Different scope';D['save'](job_path,job)
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root / 'changed-request')
+        self.assertEqual(error.exception.code,'SUCCESSOR_REQUEST_OR_SCOPE_CHANGED')
+        job['request']=self.job['request'];D['save'](job_path,job)
+        state=D['load'](self.run / 'state.json');saved=json.loads(json.dumps(state));state['status']='AUTHOR_RUNNING';D['save'](self.run / 'state.json',state)
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root / 'nonterminal')
+        self.assertEqual(error.exception.code,'SUCCESSOR_TERMINAL_FAILED_REQUIRED');D['save'](self.run / 'state.json',saved)
+        raw=self.run / 'attempts/0/stdout.jsonl';original=raw.read_bytes();raw.write_bytes(original.replace(b'"input_tokens": 8',b'"input_tokens": 7'))
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root / 'bad-accounting')
+        self.assertEqual(error.exception.code,'SUCCESSOR_HISTORY_UNVERIFIABLE');raw.write_bytes(original)
+        def changed(directory):
+            path=directory / self.service / 'view.md';path.write_text(path.read_text()+'changed source')
+        child=self.root / 'changed-source'
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,child,changed)
+        self.assertEqual(error.exception.code,'SUCCESSOR_SOURCE_CHANGED')
+        with self.assertRaises(D['Stop']) as error:D['execute'](child)
+        self.assertEqual(error.exception.code,'SUCCESSOR_NOT_ADMITTED')
+        self.assertFalse((child / 'attempts').exists())
+
+    def test_successor_decreasing_cumulative_usage_is_preserved_and_rejected(self):
+        job_path=self.successor_parent();child=self.root / 'successor';self.prepare_owned_successor(job_path,child)
+        self.mode.write_text('successor-decreasing')
+        with self.assertRaises(D['Stop']) as error:D['execute'](child)
+        self.assertEqual(error.exception.code,'AUTHOR_USAGE_INVALID')
+        state=D['load'](child / 'state.json')
+        self.assertEqual(len(state['attempts']),2);self.assertEqual(state['attempts'][0]['usage']['input_tokens'],8)
+        self.assertEqual(state['attempts'][1]['usage']['input_tokens'],5)
+        self.assertEqual(state['tokenAccounting']['status'],'INVALID')
+        self.assertFalse((child / 'ready').exists())
+
+    def test_successor_rejects_thread_switch_and_preserves_the_failed_attempt_cost(self):
+        job_path=self.successor_parent();child=self.root / 'successor';self.prepare_owned_successor(job_path,child)
+        self.mode.write_text('successor-thread-switch')
+        with self.assertRaises(D['Stop']) as error:D['execute'](child)
+        self.assertEqual(error.exception.code,'AUTHOR_THREAD_CHANGED')
+        state=D['load'](child / 'state.json')
+        self.assertEqual(len(state['attempts']),2);self.assertEqual(state['modelTokens'],28)
+        self.assertEqual(state['attempts'][0]['threadId'],'owned-test-session')
+        self.assertEqual(state['attempts'][1]['threadId'],'different-test-session')
+        self.assertFalse((child / 'ready').exists())
 
     def test_process_page_without_full_sequence_is_explicitly_rejected(self):
         request = self.root / 'sequences.json'

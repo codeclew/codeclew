@@ -51,7 +51,8 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
  }
  for(const r of model.routes){
   const own=r.to.kind==='LOCAL_DOCSET'&&r.to.file===file;
-  const participation=r.occurrences.filter(o=>o.to.kind==='LOCAL_DOCSET'&&o.to.file===file||o.actor.kind==='service'&&o.actor.docset===model.docset&&services.get(serviceKey(o.actor)).to.file===file);
+  const participation=r.occurrences.filter(o=>o.actor.kind==='service'&&o.actor.docset===model.docset&&
+   (o.to.kind==='LOCAL_DOCSET'&&o.to.file===file||services.get(serviceKey(o.actor)).to.file===file));
   if(!own&&!participation.length)continue;
   hub+=`<section class="route-context"><h2>${link(r.to,r.title)}</h2><p>${esc(words.origin)}: ${origin(r)}</p>${own?`<ul>${roles(r)}</ul><h3>${esc(words.outcomes)}</h3><ul>${ends(r)}</ul>`:`<p>${link(r.to,words.whole)}</p><ul>${participation.map(o=>`<li>${link(o.to,words.ownPart)} — ${esc(o.role)}</li>`).join('')}</ul>`}${model.catalog?`<p>${link(model.catalog,words.catalog)}</p>`:''}</section>`;
  }
