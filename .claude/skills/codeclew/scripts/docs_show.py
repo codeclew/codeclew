@@ -76,6 +76,13 @@ def show(run, args, api):
                  for service, records in requirements.items() for row in records.values()
                  if row.get('page') == page for path in row.get('views', [])] if args.fragment is None else []
         text = format_page(rows[page], args.fragment, links, paths)
+        if args.fragment:
+            target = api['W']['fragment_target'](page, args.fragment)
+            tag = '<a id="' + target.split('#', 1)[1] + '"></a>'
+            if any(set(f) == {'text'} and f['text'].strip() == tag for f in rows[page]['fragments']):
+                text += '\nReader target: ' + target + '\n'
+            else:
+                text += '\nPrepare reader target: ./docs page-info --page ' + shlex.quote(page) + ' --fragment ' + shlex.quote(args.fragment) + '\n'
         arguments = ['--page', page] + (['--fragment', args.fragment] if args.fragment else [])
     elif args.routes or args.route:
         path = run / 'workspace/draft/routes.json'

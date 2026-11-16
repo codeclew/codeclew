@@ -30,6 +30,15 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
 2. Write ordinary Markdown in a text file; save with `./docs put --page PAGE.md
    --fragment CLAIM --text-file FILE --evidence HANDLE` (repeat genuine evidence).
    Quotes/backslashes stay literal; the helper merges, serializes and anchors.
+   `put`/`sequence` return `fragmentTarget`, a stable reader URL independent of
+   heading text. Copy this URL for prose, participant and step destinations.
+   `show --page PAGE.md --fragment CLAIM` also prints the prepared reader target.
+   To address a preserved claim, use `./docs page-info --page PAGE.md --fragment
+   CLAIM`; it adds only managed structure, keeping claim text/evidence intact.
+   Existing heading links remain valid. A bare `#CLAIM` remains a heading/HTML
+   anchor reference, not a guessed citation ID. Do not write managed anchor HTML.
+   Addressed fragments must be complete Markdown blocks; inline legacy claims
+   are kept intact and require a deliberate block edit rather than guessed layout.
    For a semantic sequence JSON file use `./docs sequence --page PAGE.md --fragment
    FLOW --input FILE --evidence HANDLE`; the helper owns the fence. On an entry
    page, participant `handler` receives its registered ID, target and initial HTTP

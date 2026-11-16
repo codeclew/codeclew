@@ -1044,6 +1044,7 @@ def verify(run, *, debug=False):
         original = load(draft / 'original.json')
         need(not W['unfinished'](original), 'UNFINISHED_SCAFFOLD', pages=W['unfinished'](original))
         W['validate_start_labels'](run, globals())
+        W['validate_fragment_addresses'](original, globals())
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, _, _ = M['compose_pages'](original)
@@ -1389,8 +1390,12 @@ def main():
                     if args.kind == 'HTTP':declaration.update(method=args.method, path=args.path)
                 result = W['register_entry'](args.run_dir.absolute(), args.requirement, declaration, globals())
             elif args.command == 'page-info':
-                need(args.title, 'PAGE_TITLE_REQUIRED')
-                result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals(), summary=args.summary)
+                if args.fragment:
+                    need(not (args.title or args.service or args.data or args.summary), 'SEPARATE_FRAGMENT_ADDRESS_AND_PAGE_METADATA')
+                    result = W['address_fragment'](args.run_dir.absolute(), args.page[0], args.fragment, globals())
+                else:
+                    need(args.title, 'PAGE_TITLE_REQUIRED')
+                    result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals(), summary=args.summary)
             elif args.command == 'review-page':
                 need(not (args.input and args.text_file), 'SEPARATE_SOURCE_NOTES_AND_ASSESSMENT')
                 if args.text_file:

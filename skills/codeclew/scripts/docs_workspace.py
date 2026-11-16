@@ -317,7 +317,7 @@ def summary(result):
     elif 'selectedPages' in result:
         small.update(selectedCount=len(result['selectedPages']), unfinishedCount=len(result['unfinishedPages']),
                      sourceBindingsChecked=result['sourceBindingsChecked'], receipt='last-local-check.json')
-    for key in ('code', 'stage', 'details', 'locations', 'pendingTargets', 'recovery'):
+    for key in ('code', 'stage', 'details', 'locations', 'pendingTargets', 'recovery', 'fragmentTarget'):
         if key in result:small[key] = result[key]
     return small
 
@@ -354,6 +354,7 @@ def save_pages(run, input_path, api):
         candidate = {'page': name, 'fragments': [anchors(info), *fragments]}
         if any('id' in f or 'evidence' in f for f in fragments):
             api['M']['compose_pages']({'pages': [candidate]})
+        validate_fragment_addresses({'pages': [candidate]}, api)
         by_name[name] = candidate
         changed.append(name)
     before = {p['page']: api['digest'](p) for p in original['pages']}
@@ -404,6 +405,71 @@ def locations(original, details):
     return candidates
 
 
+def fragment_target(page, identity):
+    return page + '#clew-fragment-' + identity
+
+
+def validate_fragment_addresses(original, api):
+    issues = []
+    for page in original['pages']:
+        seen = set()
+        for index, fragment in enumerate(page['fragments']):
+            if set(fragment) != {'text'}:continue
+            match = re.fullmatch(r'\s*<a id="clew-fragment-([A-Za-z0-9._-]+)"></a>\s*', fragment['text'])
+            if not match:continue
+            identity = match[1]
+            claims = [f for f in page['fragments'] if f.get('id') == identity and f.get('evidence')]
+            if len(claims) != 1 or identity in seen:
+                issues.append({'code': 'FRAGMENT_ADDRESS_ORPHANED' if len(claims) != 1 else 'DUPLICATE_FRAGMENT_ADDRESS',
+                    'page': page['page'], 'fragment': identity, 'field': '/fragments/' + str(index) + '/text',
+                    'actual': fragment_target(page['page'], identity), 'expected': 'one managed address for one existing source-backed fragment',
+                    'recovery': 'Restore the named fragment with ./docs put, or remove its obsolete address and links with ./docs save-pages --input FILE. Preserve other fragments and evidence.'})
+            seen.add(identity)
+    api['need'](not issues, 'INVALID_FRAGMENT_ADDRESS', issues=issues, recovery=issues[0]['recovery'] if issues else '')
+
+
+def address_body(fragments, page, identity, api):
+    api['need'](isinstance(identity, str) and re.fullmatch(r'[A-Za-z0-9._-]+', identity), 'INVALID_FRAGMENT_ID')
+    matches = [f for f in fragments if f.get('id') == identity]
+    api['need'](len(matches) == 1, 'FRAGMENT_ADDRESS_NOT_FOUND' if not matches else 'FRAGMENT_ADDRESS_AMBIGUOUS', page=page, fragment=identity,
+                available=[f['id'] for f in fragments if 'id' in f])
+    tag = '<a id="clew-fragment-' + identity + '"></a>'
+    is_address = lambda f: set(f) == {'text'} and f['text'].strip() == tag
+    api['need'](sum(is_address(f) for f in fragments) <= 1, 'DUPLICATE_FRAGMENT_ADDRESS', page=page, fragment=identity)
+    body = [f for f in fragments if not is_address(f)]
+    index = next(i for i, f in enumerate(body) if f.get('id') == identity)
+    before = ''.join(f['text'] for f in body[:index]);after = ''.join(f['text'] for f in body[index + 1:])
+    text = body[index]['text']
+    start = not before or re.search(r'\r?\n[ \t]*\r?\n$', before) or re.match(r'^\r?\n[ \t]*\r?\n', text)
+    end = not after or re.search(r'\r?\n[ \t]*\r?\n$', text) or re.match(r'^\r?\n[ \t]*\r?\n', after)
+    api['need'](start and end, 'FRAGMENT_ADDRESS_REQUIRES_BLOCK', page=page, fragment=identity, field='text',
+                recovery='Keep inline claims intact. Use ./docs put to author a complete source-backed Markdown block, then use its returned fragmentTarget.')
+    return [*body[:index], {'text': '\n\n' + tag + '\n\n'}, *body[index:]]
+
+
+def address_fragment(run, page, identity, api):
+    api['frozen_inputs'](run)
+    name = api['M']['page_name'](page)
+    original = api['load'](run / 'workspace/draft/original.json')
+    selected = next((p for p in original['pages'] if p['page'] == name), None)
+    api['need'](selected is not None, 'FRAGMENT_PAGE_NOT_FOUND', page=name)
+    managed = {'handler', 'clew-scope'}
+    body = [f for f in selected['fragments'] if not (set(f) == {'text'} and
+        all(not line.strip() or any(line.strip() == '<a id="' + a + '"></a>' for a in managed)
+            for line in f['text'].splitlines()))]
+    candidate = {'page': name, 'fragments': address_body(body, name, identity, api)}
+    api['M']['compose_pages']({'pages': [candidate]})
+    if candidate['fragments'] == body:
+        return {'status': 'PAGES_SAVED', 'changed': [], 'unchanged': [p['page'] for p in original['pages']],
+                'unfinishedPages': unfinished(original), 'ready': False, 'semanticTruthAssessed': False,
+                'fragmentTarget': fragment_target(name, identity)}
+    path = run / 'workspace/pages' / (name + '.json')
+    api['save'](path, {'pages': [candidate]})
+    result = save_pages(run, path, api)
+    result['fragmentTarget'] = fragment_target(name, identity)
+    return result
+
+
 def put(run, page, fragment, text, evidence, sequence, api):
     """Replace one meaningful fragment, serializing envelopes/fences ourselves."""
     _, inventory, _ = api['frozen_inputs'](run)
@@ -440,9 +506,12 @@ def put(run, page, fragment, text, evidence, sequence, api):
     index = next((i for i, f in enumerate(body) if f.get('id') == fragment), None)
     if index is None:body.append(update)
     else:body[index] = update
+    body = address_body(body, name, fragment, api)
     path = run / 'workspace/pages' / (name + '.json')
     api['save'](path, {'pages': [{'page': name, 'fragments': body}]})
-    return save_pages(run, path, api)
+    result = save_pages(run, path, api)
+    result['fragmentTarget'] = fragment_target(name, fragment)
+    return result
 
 
 def page_info(run, name, service, title, data, api, *, summary=None):
@@ -640,6 +709,7 @@ def check(run, pages, scaffold_only, api):
         api['need'](len(names) == len(set(names)), 'DUPLICATE_PAGE_SELECTION')
         api['need'](scaffold_only or selected, 'NO_COMPLETE_PAGES')
         api['need'](set(selected) <= set(names), 'UNKNOWN_CHECK_PAGE', pages=sorted(set(selected) - set(names)))
+        validate_fragment_addresses(original, api)
         api['need'](scaffold_only or not set(selected) & set(pending), 'UNFINISHED_SCAFFOLD', pages=sorted(set(selected) & set(pending)))
         if not scaffold_only:
             validate_start_labels(run, api, pages=selected)

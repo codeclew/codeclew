@@ -61,6 +61,14 @@ export function checkSequenceTargets(sequences,pages){
   if(split<0)continue;
   const tags=byFile.get(file).match(/<[a-z][^>]*>/gi)||[];
   const ids=tags.flatMap(tag=>[...tag.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].map(m=>m[1]??m[2]??m[3]));
-  need(ids.filter(id=>id===anchor).length===1,item.target,'anchor missing or ambiguous');
+  const count=ids.filter(id=>id===anchor).length;
+  if(count!==1&&anchor.startsWith('clew-fragment-'))throw Object.assign(
+   Error(`Invalid sequence ${item.target}: anchor missing or ambiguous`),
+   {code:'FRAGMENT_TARGET_INVALID',details:{page:file,fragment:anchor.slice('clew-fragment-'.length),field:'readerTarget',
+    target:item.target,expected:1,actual:count,
+    recovery:'Use ./docs show --page '+file+' --fragment '+anchor.slice('clew-fragment-'.length)+
+     ' for the canonical target. Prepare a missing address with ./docs page-info --page '+file+' --fragment '+anchor.slice('clew-fragment-'.length)+
+     '; remove a duplicate/manual address or conflicting heading. Preserve claim text, evidence and unrelated links.'}});
+  need(count===1,item.target,'anchor missing or ambiguous');
  }
 }

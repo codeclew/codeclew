@@ -220,6 +220,109 @@ else:
         D['save'](self.run/'workspace/draft/navigation.json',after);D['W']['validate_start_labels'](self.run,D)
         with self.assertRaises(D['Stop']):D['W']['page_info'](self.run,self.entry['page'],self.service,'HTTP_ENDPOINT',False,D,summary='Action')
 
+    def test_fragment_targets_are_stable_idempotent_and_preserve_text_handles_and_legacy_headings(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        original=D['load'](self.run/'workspace/draft/original.json')
+        untouched={p['page']:D['digest'](p) for p in original['pages']}
+        target=None
+        for heading in ['Database and broker effects','Persistence consequences']:
+            text='## '+heading+'\n\nStore the result.\n\n## Stable heading\n\nRead the result.'
+            result=D['W']['put'](self.run,'details.md','effects',text,[self.handle],False,D)
+            self.assertEqual(result['fragmentTarget'],'details.md#clew-fragment-effects')
+            self.assertEqual(D['W']['summary'](result)['fragmentTarget'],result['fragmentTarget'])
+            target=result['fragmentTarget']
+            pages=D['load'](self.run/'workspace/draft/original.json')
+            page=next(p for p in pages['pages'] if p['page']=='details.md')
+            fragment=next(f for f in page['fragments'] if f.get('id')=='effects')
+            self.assertEqual(fragment['text'].strip(),text);self.assertEqual(fragment['evidence'],[self.handle])
+            self.assertEqual(sum('id="clew-fragment-effects"' in f['text'] for f in page['fragments']),1)
+            raw,request,_=D['M']['compose_pages']({'pages':[page]})
+            claim=request['pages'][0]['claims'][0]
+            self.assertEqual(raw['details.md'][claim['startByte']:claim['endByte']],fragment['text'].encode())
+            self.assertEqual({p['page']:D['digest'](p) for p in pages['pages'] if p['page'] in untouched},untouched)
+            body=self.local_page()
+            sequence=json.loads(body['fragments'][1]['text'].split('```clew-sequence\n')[1].split('```')[0])
+            sequence['steps']+=[{'from':self.entry['handlerId'],'to':self.entry['handlerId'],'kind':'note','label':'Effects','target':target},
+                               {'from':self.entry['handlerId'],'to':self.entry['handlerId'],'kind':'note','label':'Stable section','target':'details.md#stable-heading'}]
+            D['W']['put'](self.run,self.entry['page'],'entry',json.dumps(sequence),[self.handle],True,D)
+            checked=self.local_check(self.entry['page']);self.assertEqual(checked['status'],'UNIT_CHECKED',checked)
+            untouched={p['page']:D['digest'](p) for p in D['load'](self.run/'workspace/draft/original.json')['pages'] if p['page']!='details.md'}
+        shown=self.show_cli('--page','details.md','--fragment','effects','--limit','0')
+        self.assertIn('Reader target: '+target,shown)
+
+    def test_preserved_fragment_address_cli_is_readable_and_rejects_orphan_duplicate_and_missing(self):
+        self.readmit_budget(100,1);self.generated()
+        name=self.service+'.md';before=D['load'](self.run/'workspace/draft/original.json')
+        claim=next(f for p in before['pages'] if p['page']==name for f in p['fragments'] if f.get('id')=='overview')
+        for attempt in range(2):
+            snapshot=D['tree'](self.run) if attempt else None
+            done=subprocess.run([sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+                'page-info','--run-dir',str(self.run),'--page',name,'--fragment','overview'],capture_output=True,text=True)
+            self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+            self.assertEqual(json.loads(done.stdout)['fragmentTarget'],name+'#clew-fragment-overview')
+            if attempt:self.assertEqual(snapshot,D['tree'](self.run))
+        after=D['load'](self.run/'workspace/draft/original.json')
+        selected=next(p for p in after['pages'] if p['page']==name)
+        self.assertEqual(next(f for f in selected['fragments'] if f.get('id')=='overview'),claim)
+        self.assertEqual(sum(f['text'].strip()=='<a id="clew-fragment-overview"></a>' for f in selected['fragments']),1)
+        self.assertEqual(next(p for p in before['pages'] if p['page']==self.entry['page']),next(p for p in after['pages'] if p['page']==self.entry['page']))
+        with self.assertRaises(D['Stop']) as error:D['W']['address_fragment'](self.run,name,'missing',D)
+        self.assertEqual(error.exception.code,'FRAGMENT_ADDRESS_NOT_FOUND')
+        inline=[{'text':'Prefix '},{'id':'inline','text':'phrase','evidence':[self.handle]},{'text':' suffix'}]
+        with self.assertRaises(D['Stop']) as error:D['W']['address_body'](inline,name,'inline',D)
+        self.assertEqual(error.exception.code,'FRAGMENT_ADDRESS_REQUIRES_BLOCK')
+        self.assertEqual(inline[1]['text'],'phrase')
+        broken=json.loads(json.dumps(after));page=next(p for p in broken['pages'] if p['page']==name)
+        page['fragments']=[f for f in page['fragments'] if f.get('id')!='overview']
+        page['fragments'].append({'id':'retained','text':'Retained explanation.','evidence':[self.handle]})
+        before_tree=D['tree'](self.run/'workspace/draft')
+        path=self.root/'orphan.json';D['save'](path,{'pages':[page]})
+        with self.assertRaises(D['Stop']) as error:D['W']['validate_fragment_addresses'](broken,D)
+        self.assertEqual(error.exception.details['issues'][0]['code'],'FRAGMENT_ADDRESS_ORPHANED')
+        page['fragments']=[f for f in page['fragments'] if not (set(f)=={'text'} and f['text'].strip()=='<a id="clew-scope"></a>')]
+        D['save'](path,{'pages':[page]})
+        with self.assertRaises(D['Stop']) as error:D['W']['save_pages'](self.run,path,D)
+        self.assertEqual(error.exception.code,'INVALID_FRAGMENT_ADDRESS')
+        self.assertEqual(before_tree,D['tree'](self.run/'workspace/draft'))
+        duplicate=json.loads(json.dumps(after));page=next(p for p in duplicate['pages'] if p['page']==name)
+        page['fragments'].append({'text':'<a id="clew-fragment-overview"></a>'})
+        with self.assertRaises(D['Stop']) as error:D['W']['validate_fragment_addresses'](duplicate,D)
+        self.assertEqual(error.exception.details['issues'][0]['code'],'DUPLICATE_FRAGMENT_ADDRESS')
+        self.original=broken;self.seed_files();self.generated()
+        local=self.local_check(self.entry['page']);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'INVALID_FRAGMENT_ADDRESS')
+        self.assertEqual(final['checks']['output']['code'],local['code'])
+
+    def test_fragment_target_collision_and_missing_keep_actual_local_and_final_renderer_gates(self):
+        self.readmit_budget(100,2);self.generated();self.save_local(self.local_page());name=self.service+'.md'
+        result=D['W']['address_fragment'](self.run,name,'overview',D);target=result['fragmentTarget']
+        diagram=json.loads(self.original['pages'][0]['fragments'][1]['text'].split('```clew-sequence\n')[1].split('```')[0])
+        diagram['steps'].append({'from':self.entry['handlerId'],'to':self.entry['handlerId'],'kind':'note','label':'Details','target':target})
+        D['W']['put'](self.run,self.entry['page'],'entry',json.dumps(diagram),[self.handle],True,D)
+        self.original=D['load'](self.run/'workspace/draft/original.json');self.seed_files();self.generated()
+        self.assertEqual(self.local_check(self.entry['page'])['status'],'UNIT_CHECKED')
+        self.assertEqual(D['verify'](self.run)['status'],'READY')
+        D['W']['put'](self.run,name,'extra','## Clew fragment overview\n\nAdditional explanation.',[self.handle],False,D)
+        self.original=D['load'](self.run/'workspace/draft/original.json')
+        self.review['claims'].append({'page':name,'claim':'extra','evidence':[self.handle],'disposition':'SUPPORTED'})
+        self.seed_files();self.generated()
+        local=self.local_check(self.entry['page']);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'FRAGMENT_TARGET_INVALID',local)
+        self.assertEqual(local['details']['response']['details']['actual'],2)
+        self.assertIn('./docs show',local['recovery'])
+        self.assertEqual(final['checks']['finalize']['status'],'FAIL',final)
+        # Removing an address also leaves the canonical reference invalid; it is
+        # never silently reinterpreted as a differently named heading or claim.
+        current=D['load'](self.run/'workspace/draft/original.json')
+        for page in current['pages']:
+            if page['page']==name:
+                page['fragments']=[f for f in page['fragments'] if not (set(f)=={'text'} and 'id="clew-fragment-overview"' in f['text'])]
+                next(f for f in page['fragments'] if f.get('id')=='extra')['text']='## Other heading\n\nAdditional explanation.'
+        D['save'](self.run/'workspace/draft/original.json',current)
+        missing=self.local_check(self.entry['page'])
+        self.assertEqual(missing['code'],'FRAGMENT_TARGET_INVALID',missing)
+        self.assertEqual(missing['details']['response']['details']['actual'],0)
+
     def test_service_topic_closure_references_absence_evidence_and_staleness_are_structural_only(self):
         entries={self.handle:{'source':self.source}}
         requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
