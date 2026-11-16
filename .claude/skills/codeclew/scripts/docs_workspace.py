@@ -469,7 +469,7 @@ def address_body(fragments, page, identity, api):
     return [*body[:index], {'text': '\n\n' + tag + '\n\n'}, *body[index:]]
 
 
-def address_fragment(run, page, identity, api):
+def prepare_fragment_address(run, page, identity, api):
     job, _, _ = api['frozen_inputs'](run)
     name = api['M']['page_name'](page)
     original = api['load'](run / 'workspace/draft/original.json')
@@ -482,6 +482,11 @@ def address_fragment(run, page, identity, api):
     candidate = {'page': name, 'fragments': address_body(body, name, identity, api)}
     api['M']['compose_pages']({'pages': [candidate]})
     validate_fragment_addresses({'pages': [candidate]}, api, job=job)
+    return original, body, candidate
+
+
+def save_fragment_address(run, original, body, candidate, identity, api):
+    name = candidate['page']
     if candidate['fragments'] == body:
         return {'status': 'PAGES_SAVED', 'changed': [], 'unchanged': [p['page'] for p in original['pages']],
                 'unfinishedPages': unfinished(original), 'ready': False, 'semanticTruthAssessed': False,
@@ -492,6 +497,10 @@ def address_fragment(run, page, identity, api):
     result['fragmentTarget'] = fragment_target(name, identity)
     result['routeTarget'] = fragment_route_target(run, name, identity, api)
     return result
+
+
+def address_fragment(run, page, identity, api):
+    return save_fragment_address(run, *prepare_fragment_address(run, page, identity, api), identity, api)
 
 
 def put(run, page, fragment, text, evidence, sequence, api):
@@ -540,13 +549,26 @@ def put(run, page, fragment, text, evidence, sequence, api):
     return result
 
 
-def page_info(run, name, service, title, data, api, *, summary=None):
+def page_info(run, name, service, title, data, api, *, summary=None, fragment=None):
+    api['need'](fragment is None or (data and title and service and summary is None), 'DATA_FRAGMENT_METADATA_REQUIRED')
     _, inventory, _ = api['frozen_inputs'](run)
     name = api['M']['page_name'](name)
     api['need'](service in inventory['services'], 'UNKNOWN_PAGE_OWNER', actual=service)
     navigation = api['load'](run / 'workspace/draft/navigation.json')
     api['need'](not any(name in s['pages'] and s['id'] != service for s in navigation['services']), 'PAGE_ALREADY_OWNED', page=name)
     owner = next(s for s in navigation['services'] if s['id'] == service)
+    target = name
+    prepared = None
+    if fragment is not None:
+        api['need'](name in owner['pages'], 'FRAGMENT_PAGE_NOT_OWNED', page=name, service=service)
+        prepared = prepare_fragment_address(run, name, fragment, api)
+        claim = next(f for f in prepared[2]['fragments'] if f.get('id') == fragment)
+        entries = api['P']['sources'](run, api)
+        handles = claim.get('evidence', [])
+        api['need'](handles and all(h in entries for h in handles)
+                    and any(entries[h]['source']['service'] == service for h in handles),
+                    'DATA_FRAGMENT_EVIDENCE_REQUIRED', page=name, fragment=fragment, service=service)
+        target = fragment_target(name, fragment)
     changed = False
     if summary is not None:
         entries, _ = local_registry(run, inventory, api)
@@ -561,12 +583,25 @@ def page_info(run, name, service, title, data, api, *, summary=None):
         starts[0].update(title=title, summary=summary)
     if name not in owner['pages']:owner['pages'].append(name)
     if data:
-        owner['data'] = [d for d in owner['data'] if d['target'] != name] + [{'title': title, 'target': name}]
-    api['save'](run / 'workspace/draft/navigation.json', navigation)
+        item = {'title': title, 'target': target}
+        replaced = False
+        items = []
+        for current in owner['data']:
+            if current['target'] in (name, target):
+                if not replaced:items.append(item);replaced = True
+            else:items.append(current)
+        if not replaced:items.append(item)
+        owner['data'] = items
+    if prepared is not None:save_fragment_address(run, *prepared, fragment, api)
+    path = run / 'workspace/draft/navigation.json'
+    if api['load'](path) != navigation:api['save'](path, navigation)
     hashes_path = run / 'workspace/draft/reviewed-pages.json'
     if changed and hashes_path.exists():
         hashes = api['load'](hashes_path);hashes.pop(name, None);api['save'](hashes_path, hashes)
-    return {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
+    result = {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
+    if fragment is not None:
+        result.update(fragmentTarget=target, routeTarget=fragment_route_target(run, name, fragment, api))
+    return result
 
 
 def route_preflight(run, job, api, registry=None, *, complete_missing_anchor=False):

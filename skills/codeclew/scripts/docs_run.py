@@ -1338,7 +1338,7 @@ def main():
     parser.add_argument('--method')
     parser.add_argument('--path')
     parser.add_argument('--service')
-    parser.add_argument('--data', action='store_true')
+    parser.add_argument('--data', action='store_true', help='Register a Data page; add --fragment ID to target an existing source-backed section.')
     parser.add_argument('--entries', action='store_true', help='Show the compact entry registry; select one with --entry ID.')
     parser.add_argument('--entry')
     parser.add_argument('--routes', action='store_true', help='Show the compact route registry; select one with --route ID.')
@@ -1391,12 +1391,13 @@ def main():
                     if args.kind == 'HTTP':declaration.update(method=args.method, path=args.path)
                 result = W['register_entry'](args.run_dir.absolute(), args.requirement, declaration, globals())
             elif args.command == 'page-info':
-                if args.fragment:
-                    need(not (args.title or args.service or args.data or args.summary), 'SEPARATE_FRAGMENT_ADDRESS_AND_PAGE_METADATA')
+                if args.fragment and not args.data:
+                    need(not (args.title or args.service or args.summary), 'SEPARATE_FRAGMENT_ADDRESS_AND_PAGE_METADATA')
                     result = W['address_fragment'](args.run_dir.absolute(), args.page[0], args.fragment, globals())
                 else:
+                    need(not args.fragment or (args.title and args.service and args.summary is None), 'DATA_FRAGMENT_METADATA_REQUIRED')
                     need(args.title, 'PAGE_TITLE_REQUIRED')
-                    result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals(), summary=args.summary)
+                    result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals(), summary=args.summary, fragment=args.fragment)
             elif args.command == 'review-page':
                 need(not (args.input and args.text_file), 'SEPARATE_SOURCE_NOTES_AND_ASSESSMENT')
                 if args.text_file:

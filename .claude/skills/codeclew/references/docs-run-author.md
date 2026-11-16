@@ -76,8 +76,12 @@ an authored syntax finding, not compiler/runtime binding or semantic approval.
 Review the parent discovery requirement and each discovered disposition explicitly.
 
 For owned data pages use `./docs page-info --page PAGE.md --service SERVICE
---title "Reader title" --data`; the helper merges ownership/navigation. Shared
-process narratives/catalog remain unowned. Save reader titles/contents yourself.
+--title "Reader title" --data`; the helper merges ownership/navigation.
+For a data section inside an existing service overview, add `--fragment ID` to
+that command. It preserves the source-backed fragment and targets its canonical
+address. Data-topic review must reference that same section; page top does not
+close an in-overview data topic. A dedicated data page may use its page target.
+Shared process narratives/catalog remain unowned. Save reader titles/contents yourself.
 For an existing start use `./docs page-info --page ENTRY.md --service SERVICE
 --title "Reader action" --summary "Source-backed consequence"`. Identity, kind and
 target stay fixed; literal starter instructions and kind-only titles block check.

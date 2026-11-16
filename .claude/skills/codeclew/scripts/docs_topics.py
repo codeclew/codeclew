@@ -42,8 +42,14 @@ def validate(inventory, accounts, original, navigation, entries, api, *, pages=N
                 issue(topic, 'SERVICE_TOPIC_ABSENCE_BOUND_REQUIRED', 'source-bounded reason and a reader-facing explanation in the referenced fragment', row.get('reason'));continue
             if topic == 'data fields and domain distinctions' and row['disposition'] == 'EXPLAINED':
                 service = next(s for s in navigation['services'] if s['id'] == requirement['service'])
-                if not any(d['target'].split('#')[0] == page for d in service['data']):
-                    issue(topic, 'SERVICE_DATA_NAVIGATION_REQUIRED', './docs page-info --page ' + page + ' --service ' + requirement['service'] + ' --title "Reader data title" --data', page);continue
+                target = api['W']['fragment_target'](page, claim)
+                targets = [target] if page == requirement['page'] else [page, target]
+                if not any(d['target'] in targets for d in service['data']):
+                    repair = './docs page-info --page ' + page + ' --service ' + requirement['service'] + ' --title "Reader data title" --data --fragment ' + claim
+                    issue(topic, 'SERVICE_DATA_NAVIGATION_REQUIRED', repair,
+                          {'page': page, 'fragment': claim, 'targets': [d['target'] for d in service['data']], 'expectedTargets': targets})
+                    issues[-1]['recovery'] = repair
+                    continue
             if record:
                 row['fragmentDigest'] = api['digest'](fragment)
                 row['evidence'] = handles

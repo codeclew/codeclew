@@ -113,6 +113,7 @@ else:
         self.original = {'pages': [{'page': self.entry['page'], 'fragments': [{'text': '# Reserve\n\n<a id="handler"></a>\n\n'},
                          {'id': 'entry', 'text': 'Accept a reservation.\n\n```clew-sequence\n' + json.dumps(diagram) + '\n```\n', 'evidence': [self.handle]}]},
                          {'page': self.service + '.md', 'fragments': [{'text': '# Reservations\n\n'},
+                          {'text': '\n\n<a id="clew-fragment-overview"></a>\n\n'},
                           {'id': 'overview', 'text': 'Retained reservation data and effects.\n', 'evidence': [self.handle]}]}]}
         self.navigation = {'schema': 'codeclew-markdown-navigation/1', 'home': {'title': 'Reservations', 'target': self.service + '.md'},
                            'services': [{'id': self.service, 'title': 'Reservations', 'overview': self.service + '.md',
@@ -126,7 +127,7 @@ else:
             self.review['requirements'].append(account)
         self.review['claims'] = [{'page': p['page'], 'claim': f['id'], 'evidence': f['evidence'], 'disposition': 'SUPPORTED'}
                                  for p in self.original['pages'] for f in p['fragments'] if 'id' in f]
-        overview = self.original['pages'][1]['fragments'][1]
+        overview = next(f for f in self.original['pages'][1]['fragments'] if f.get('id') == 'overview')
         for row in self.review['requirements']:
             requirement = next(r for r in self.inventory['requirements'] if r['id'] == row['requirement'])
             if requirement['kind'] == 'SERVICE':
@@ -134,16 +135,142 @@ else:
                     'claim':'overview','evidence':[self.handle],'fragmentDigest':D['digest'](overview)}
                     for topic in requirement['topics']}
                 row['sourceNotes'] = {'id':'source-notes','text':'Source block: ' + self.source['text'],'evidence':[self.handle]}
-        self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':self.service + '.md'}]
+        self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':self.service + '.md#clew-fragment-overview'}]
         self.seed_files()
         # These controls start from authored labels; scaffold rejection has its
         # own positive/negative controls below and is never bypassed in product.
         D['W']['page_info'](self.run,self.entry['page'],self.service,'Reserve an item',False,D,summary='Accept a reservation')
-        D['W']['page_info'](self.run,self.service+'.md',self.service,'Reservation data',True,D)
+        self.save_local(self.original['pages'][1])
+        navigation = D['load'](self.run / 'workspace/draft/navigation.json')
+        navigation['services'][0]['data'] = self.navigation['services'][0]['data']
+        D['save'](self.run / 'workspace/draft/navigation.json', navigation)
 
     def seed_files(self):
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
             D['save'](self.seed / name, value)
+
+    def test_data_section_cli_exact_target_local_final_parity_and_idempotence(self):
+        self.readmit_budget(1000,2)
+        name = self.service + '.md'
+        fields = {'id':'fields', 'text':'\n\n## Reservation fields\n\nThe retained identifier names the reservation.\n', 'evidence':[self.handle]}
+        self.original['pages'][1]['fragments'].append(fields)
+        requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        row = next(r for r in self.review['requirements'] if r['requirement']==requirement['id'])
+        row['topics']['data fields and domain distinctions'].update(claim='fields',fragmentDigest=D['digest'](fields))
+        self.review['claims'].append({'page':name,'claim':'fields','evidence':[self.handle],'disposition':'SUPPORTED'})
+        self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':name}]
+        for target in (name, name+'#clew-fragment-overview'):
+            self.navigation['services'][0]['data'][0]['target'] = target
+            self.seed_files();self.generated()
+            local = self.local_check(name);final = D['verify'](self.run)
+            self.assertEqual(local['code'],'SERVICE_TOPIC_CLOSURE_REQUIRED',local)
+            self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+            local_issue = next(i for i in local['details']['issues'] if i['code']=='SERVICE_DATA_NAVIGATION_REQUIRED')
+            final_issue = next(i for i in final['checks']['selfReview']['details']['issues'] if i['code']=='SERVICE_DATA_NAVIGATION_REQUIRED')
+            self.assertEqual(local_issue,final_issue)
+            self.assertEqual(local_issue['actual']['fragment'],'fields')
+            self.assertIn('--data --fragment fields',local_issue['recovery'])
+        before = D['load'](self.run/'workspace/draft/original.json')
+        review = (self.run/'workspace/draft/self-review.json').read_bytes()
+        navigation = D['load'](self.run/'workspace/draft/navigation.json')
+        starts = navigation['services'][0]['starts']
+        # Retain a different Data section; registration only replaces page top
+        # and the exact section, never unrelated fragment destinations.
+        navigation['services'][0]['data'].append({'title':'Old page target','target':name})
+        D['save'](self.run/'workspace/draft/navigation.json',navigation)
+        command = [sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+            'page-info','--run-dir',str(self.run),'--page',name,'--service',self.service,
+            '--title','Reservation fields','--data','--fragment','fields']
+        done = subprocess.run(command,capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+        result = json.loads(done.stdout);target = name+'#clew-fragment-fields'
+        self.assertEqual(result['fragmentTarget'],target)
+        self.assertEqual(result['routeTarget']['anchor'],'clew-fragment-fields')
+        after = D['load'](self.run/'workspace/draft/original.json')
+        self.assertEqual([f for p in before['pages'] for f in p['fragments'] if 'id' in f],
+                         [f for p in after['pages'] for f in p['fragments'] if 'id' in f])
+        self.assertEqual(before['pages'][0],after['pages'][0])
+        updated = D['load'](self.run/'workspace/draft/navigation.json')
+        self.assertEqual(updated['services'][0]['starts'],starts)
+        self.assertEqual(updated['services'][0]['data'],[
+            {'title':'Reservation data','target':name+'#clew-fragment-overview'},
+            {'title':'Reservation fields','target':target}])
+        self.assertEqual(review,(self.run/'workspace/draft/self-review.json').read_bytes())
+        stable = {path:D['tree'](self.run/path) for path in ('workspace/draft','workspace/pages')}
+        repeated = subprocess.run(command,capture_output=True,text=True)
+        self.assertEqual(repeated.returncode,0,repeated.stdout+repeated.stderr)
+        self.assertEqual(json.loads(repeated.stdout),result)
+        self.assertEqual(stable,{path:D['tree'](self.run/path) for path in stable})
+        local = self.local_check(name);self.assertEqual(local['status'],'UNIT_CHECKED',local)
+        html = (Path(local['directory'])/'html'/name.replace('.md','.html')).read_text()
+        self.assertEqual(html.count('id="clew-fragment-fields"'),1)
+        # The owned backend completes with this output; verification must still
+        # require its real completion hash rather than accepting post-run edits.
+        self.original = after;self.navigation = updated;self.seed_files();self.generated()
+        final = D['verify'](self.run);self.assertEqual(final['status'],'READY',final)
+
+    def test_data_section_invalid_flags_missing_foreign_and_unsafe_refuse_before_mutation(self):
+        self.generated();name = self.service+'.md'
+        (self.run/'workspace/.edit.lock').touch()
+        command = [sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+            'page-info','--run-dir',str(self.run),'--page',name,'--fragment','overview']
+        for flags,code in ((['--data'],'DATA_FRAGMENT_METADATA_REQUIRED'),
+                           (['--data','--service',self.service],'DATA_FRAGMENT_METADATA_REQUIRED'),
+                           (['--data','--service',self.service,'--title','Fields','--summary','Summary'],'DATA_FRAGMENT_METADATA_REQUIRED'),
+                           (['--title','Fields'],'SEPARATE_FRAGMENT_ADDRESS_AND_PAGE_METADATA')):
+            before = D['tree'](self.run)
+            failed = subprocess.run(command+flags,capture_output=True,text=True)
+            self.assertEqual(json.loads(failed.stdout)['code'],code,failed.stdout)
+            self.assertEqual(before,D['tree'](self.run))
+        for fragment,owner,code in (('missing',self.service,'FRAGMENT_ADDRESS_NOT_FOUND'),
+                                    ('overview','unknown','UNKNOWN_PAGE_OWNER')):
+            before = D['tree'](self.run)
+            with self.assertRaises(D['Stop']) as error:
+                D['W']['page_info'](self.run,name,owner,'Fields',True,D,fragment=fragment)
+            self.assertEqual(error.exception.code,code);self.assertEqual(before,D['tree'](self.run))
+        for evidence in ({}, {self.handle:{'source':{**self.source,'service':'foreign'}}}):
+            before = D['tree'](self.run)
+            with patch.dict(D['P'],{'sources':lambda *a:evidence}):
+                with self.assertRaises(D['Stop']) as error:
+                    D['W']['page_info'](self.run,name,self.service,'Fields',True,D,fragment='overview')
+            self.assertEqual(error.exception.code,'DATA_FRAGMENT_EVIDENCE_REQUIRED')
+            self.assertEqual(before,D['tree'](self.run))
+        navigation = D['load'](self.run/'workspace/draft/navigation.json')
+        navigation['services'][0]['pages'].remove(name)
+        navigation['services'].append({'id':'other','pages':[name]})
+        D['save'](self.run/'workspace/draft/navigation.json',navigation)
+        before = D['tree'](self.run)
+        with self.assertRaises(D['Stop']) as error:
+            D['W']['page_info'](self.run,name,self.service,'Fields',True,D,fragment='overview')
+        self.assertEqual(error.exception.code,'PAGE_ALREADY_OWNED');self.assertEqual(before,D['tree'](self.run))
+        D['save'](self.run/'workspace/draft/navigation.json',self.navigation)
+        current = D['load'](self.run/'workspace/draft/original.json')
+        page = next(p for p in current['pages'] if p['page']==name)
+        page['fragments'] = [{'text':'```text\n\n'}, {'id':'unsafe','text':'literal source\n\n','evidence':[self.handle]}, {'text':'```\n'}]
+        D['save'](self.run/'workspace/draft/original.json',current)
+        before = D['tree'](self.run)
+        with self.assertRaises(D['Stop']) as error:
+            D['W']['page_info'](self.run,name,self.service,'Fields',True,D,fragment='unsafe')
+        self.assertEqual(error.exception.code,'INVALID_FRAGMENT_ADDRESS');self.assertEqual(before,D['tree'](self.run))
+
+    def test_dedicated_data_page_keeps_page_target_and_rejects_wrong_section(self):
+        requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        fields = {'id':'fields','text':'# Reservation fields\n\nThe retained identifier names the reservation.','evidence':[self.handle]}
+        self.original['pages'].append({'page':'data.md','fragments':[fields]})
+        self.navigation['services'][0]['pages'].append('data.md')
+        self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':'data.md'}]
+        row = next(r for r in self.review['requirements'] if r['requirement']==requirement['id'])
+        row['topics']['data fields and domain distinctions'].update(page='data.md',claim='fields',fragmentDigest=D['digest'](fields))
+        self.review['claims'].append({'page':'data.md','claim':'fields','evidence':[self.handle],'disposition':'SUPPORTED'})
+        self.seed_files();self.generated()
+        before = D['tree'](self.run/'workspace/draft')
+        D['W']['page_info'](self.run,'data.md',self.service,'Reservation data',True,D)
+        self.assertEqual(before,D['tree'](self.run/'workspace/draft'))
+        final = D['verify'](self.run);self.assertEqual(final['status'],'READY',final)
+        self.navigation['services'][0]['data'][0]['target']='data.md#wrong'
+        with self.assertRaises(D['Stop']) as error:
+            D['P']['validate'](self.inventory,self.review['requirements'],self.original,self.navigation,{self.handle:{'source':self.source}},D)
+        self.assertIn('SERVICE_DATA_NAVIGATION_REQUIRED',{i['code'] for i in error.exception.details['issues']})
 
     def test_author_projection_preserves_scope_and_addresses_without_proof_metadata(self):
         before = D['digest'](self.inventory)
@@ -402,7 +529,7 @@ else:
         nav=json.loads(json.dumps(self.navigation));nav['services'][0]['data']=[]
         with self.assertRaises(D['Stop']) as error:validate(navigation=nav)
         self.assertIn('SERVICE_DATA_NAVIGATION_REQUIRED',{i['code'] for i in error.exception.details['issues']})
-        stale=json.loads(json.dumps(self.original));stale['pages'][1]['fragments'][1]['text']+='Changed meaning.'
+        stale=json.loads(json.dumps(self.original));next(f for f in stale['pages'][1]['fragments'] if f.get('id')=='overview')['text']+='Changed meaning.'
         with self.assertRaises(D['Stop']) as error:validate(original=stale)
         self.assertIn('SERVICE_TOPIC_REVIEW_STALE',{i['code'] for i in error.exception.details['issues']})
         validate(original=stale,record=True);validate(original=stale)
@@ -434,7 +561,7 @@ else:
         self.assertFalse(recorded['semanticTruthAssessed'])
         stored=D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]
         self.assertEqual(stored['topics']['contracts']['evidence'],[self.handle])
-        self.assertEqual(stored['topics']['contracts']['fragmentDigest'],D['digest'](self.original['pages'][1]['fragments'][1]))
+        self.assertEqual(stored['topics']['contracts']['fragmentDigest'],D['digest'](next(f for f in self.original['pages'][1]['fragments'] if f.get('id')=='overview')))
 
     def test_minimal_review_decisions_reuse_saved_own_notes_and_refuse_absent_invalid_or_unjudged(self):
         self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
@@ -1146,6 +1273,8 @@ else:
         self.assertEqual(error.exception.details['response']['details']['actual'], 0)
 
     def test_inventory_scaffold_renders_but_is_explicitly_unfinished(self):
+        D['W']['install'](self.inventory, self.run, D)
+        D['save'](self.run / 'workspace/draft/navigation.json', D['navigation_starter'](self.inventory))
         result = D['W']['check'](self.run, [], True, D)
         self.assertEqual(result['status'], 'SCAFFOLD_CHECKED', result)
         self.assertEqual(set(result['unfinishedPages']), {r['page'] for r in self.inventory['requirements']})
@@ -1161,6 +1290,10 @@ else:
             self.assertEqual(error.exception.details['requirement'], self.entry['id'])
 
     def test_local_repair_keeps_other_pages_reads_and_last_valid_preview(self):
+        D['W']['install'](self.inventory, self.run, D)
+        navigation = json.loads(json.dumps(self.navigation))
+        navigation['services'][0]['data'][0]['target'] = self.service + '.md'
+        D['save'](self.run / 'workspace/draft/navigation.json', navigation)
         self.local_reads();page = self.local_page()
         other = self.run / 'workspace/pages' / (self.service + '.md.json')
         other_bytes = other.read_bytes();reads = D['tree'](self.run / 'workspace/draft/reads')
