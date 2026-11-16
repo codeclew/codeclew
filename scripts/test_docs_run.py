@@ -29,30 +29,53 @@ class DocsRunTests(unittest.TestCase):
         self.source['occurrence'] = {'snapshot': 'owned-blob-snapshot', 'blob': hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest(), 'startByte': 0, 'endByte': len(raw)}
         self.backend = self.root / 'author'
         self.backend.write_text('#!' + sys.executable + '\n' + f'''
-import json,shutil,sys,time
+import json,shutil,sys,time,subprocess
 from pathlib import Path
 seed=Path({str(self.seed)!r});mode=Path({str(self.mode)!r}).read_text()
-sys.stdin.read()
-print(json.dumps({{'type':'thread.started','thread_id':'different-test-session' if mode=='successor-thread-switch' else 'owned-test-session'}}),flush=True)
+raw=sys.stdin.read()
+try:packet=json.loads(raw)
+except ValueError:packet={{}}
+fresh=packet.get('schema')=='codeclew-author-handoff/1'
+number=packet.get('accounting',{{}}).get('historicalAttempts',0)
+thread='owned-test-session' if mode=='context-reused' or not fresh else 'owned-fresh-'+str(number)
+print(json.dumps({{'type':'thread.started','thread_id':thread}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
 if mode!='empty':
  for source in seed.iterdir():
+  if source.name in ('review-current','finish-current'):continue
   target=draft/source.name
   if target.is_dir():shutil.rmtree(target)
   elif target.exists():target.unlink()
   if source.is_dir():shutil.copytree(source,target)
   else:shutil.copyfile(source,target)
-(draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
-if mode=='repair-on-resume' and 'resume' in sys.argv:
+if mode=='repair-on-handoff' and fresh and number:
  path=draft/'original.json'
  path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
+if fresh and (seed/'review-current').exists():
+ page=packet['currentPage']['page']
+ shell=json.loads(subprocess.check_output(['./docs','review-page','--page',page],text=True))
+ for row in shell['requirements'].values():
+  row['disposition']='EXPLAINED'
+  row['section']='handler' if 'diagram' in row else Path(page).stem
+  if 'topics' in row:
+   row['sourceNotes']={{'references':[{{'page':page,'claim':'overview'}}]}}
+   row['topics']={{k:{{'disposition':'EXPLAINED','page':page,'claim':'overview'}} for k in row['topics']}}
+  if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+ shell['claims']={{k:'SUPPORTED' for k in shell['claims']}}
+ assessment=Path.cwd()/'fixture-review.json';assessment.write_text(json.dumps(shell))
+ subprocess.run(['./docs','review-page','--page',page,'--input',str(assessment)],check=True,stdout=subprocess.DEVNULL)
+ if (seed/'finish-current').exists():
+  assessment.write_text(json.dumps({{'unresolved':[],'visual':{{'status':'UNAVAILABLE','reason':'Owned deterministic backend'}}}}))
+  subprocess.run(['./docs','finish-review','--input',str(assessment)],check=True,stdout=subprocess.DEVNULL)
+ for name in ('self-review.json','reviewed-pages.json'):shutil.copyfile(draft/name,seed/name)
+(draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
 usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
-if mode=='uneven-units':usage={{'input_tokens':2000 if 'resume' in sys.argv else 130000,'cached_input_tokens':0,'output_tokens':0}}
+if mode=='uneven-units':usage={{'input_tokens':2000 if number else 130000,'cached_input_tokens':0,'output_tokens':0}}
 counter=Path.cwd()/'backend-usage.json'
 if mode in ('successor-accounting','successor-decreasing'):
  counter=seed.parent/'session-usage.json'
- usage={{'input_tokens':5 if mode=='successor-decreasing' else 3 if 'resume' in sys.argv else 8,'cached_input_tokens':0,'output_tokens':0}}
+ usage={{'input_tokens':5 if mode=='successor-decreasing' else 3 if fresh else 8,'cached_input_tokens':0,'output_tokens':0}}
 if mode=='recorded-weather':
  prior=json.loads(counter.read_text()) if 'resume' in sys.argv and counter.exists() else None
  if prior is None:usage={{'input_tokens':1771674,'cached_input_tokens':1688320,'output_tokens':36956,'reasoning_output_tokens':24378}}
@@ -1018,7 +1041,65 @@ else:
             self.assertFalse((self.run / 'ready').exists())
 
     def generated(self):
+        # Initial authored-output fixtures also exercise malformed author output.
+        # Further turns must use the supported explicit context, never resume.
+        if D['load'](self.run/'state.json')['attempts']:
+            self.run_page(self.service+'.md')
+            return D['load'](self.run/'state.json')
         return D['author'](self.run)
+
+    def handoff(self, page, run=None):
+        run=run or self.run
+        if not (self.run/'inputs/source-proof'/self.service/'read/citations.json').exists():
+            self.prepare_review_context()
+        # Move the fixture's single proof carrier into frozen inputs. Keeping
+        # another copy in the authored draft would duplicate its cite ID.
+        for path in (self.seed/'reads',self.run/'workspace/draft/reads'):
+            if path.exists():shutil.rmtree(path)
+        views=D['load'](run/'inputs/author-source'/self.service/'views.json')
+        D['DH']['prepare'](run,page,[self.service+'/'+v for v in views],D,renew=True)
+        return D['load'](run/'workspace/author-context.json')
+
+    def run_page(self, page, run=None):
+        run=run or self.run
+        self.handoff(page,run)
+        return D['execute'](run)
+
+    def author_page(self, page, run=None):
+        run=run or self.run
+        self.run_page(page,run)
+        return D['load'](run/'state.json')
+
+    def final_gate(self, run=None):
+        run=run or self.run
+        report=D['verify'](run)
+        return D['promote'](run) if report['status']=='READY' else report
+
+    def page_fixture(self):
+        # The deterministic backend writes these owned authored outputs. Start
+        # with reader addresses available so either page can be selected first.
+        for name in ('original.json','navigation.json','self-review.json'):
+            shutil.copyfile(self.seed/name,self.run/'workspace/draft'/name)
+        (self.seed/'review-current').touch()
+
+    def record_historical_attempt(self, run, usage, thread, *, kind='unit', unit=None):
+        """Materialize an owned saved report, not the removed resume execution."""
+        state=D['load'](run/'state.json');number=len(state['attempts'])
+        folder=run/'attempts'/str(number);folder.mkdir()
+        shutil.copytree(run/'workspace/draft',folder/'draft')
+        attempt={'argv':['owned-historical-fixture','resume',thread], 'kind':kind,'unit':unit,
+            'status':'COMPLETED','exitCode':0,'threadId':thread,'usage':usage,
+            'draftFiles':D['tree'](run/'workspace/draft')}
+        events=[{'type':'thread.started','thread_id':thread},{'type':'turn.completed','usage':usage}]
+        (folder/'stdout.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+        (folder/'prompt.txt').write_text('Owned historical cumulative-counter fixture.\n')
+        (folder/'stderr.log').write_text('');D['save'](folder/'result.json',attempt)
+        state['attempts'].append(attempt)
+        tokens=D['token_accounting'](state['attempts'])
+        state.update(threadId=thread,status='AUTHOR_COMPLETED',modelTokens=tokens['budgetTokens'],
+                     tokenAccounting=tokens,usageAvailable=tokens['status']=='MEASURED',completedUnit=unit)
+        D['save'](run/'state.json',state)
+        return state
 
     def local_page(self):
         page = json.loads(json.dumps(self.original['pages'][0]))
@@ -1488,19 +1569,18 @@ else:
         for term in ['route','review-page','finish-review','ADDITIONAL_STARTS','NO_ADDITIONAL_STARTS']:
             self.assertIn(term,help_result.stdout)
         self.readmit_budget(1000,1);self.generated()
-        D['save'](self.run / 'report.json',report);D['author'](self.run,repair=True)
-        prompt=(self.run / 'attempts/1/prompt.txt').read_text()
-        sent,_=json.JSONDecoder().raw_decode(prompt)
-        self.assertEqual(sent['failures'],facts)
+        D['save'](self.run / 'report.json',report)
+        result=self.run_page(self.service+'.md');self.assertEqual(result['status'],'FAILED')
+        sent=self.handoff(self.service+'.md');prompt=D['encode'](sent).decode()
+        self.assertEqual(sent['localFailure']['code'],'PAGE_REVIEW_REQUIRED')
         self.assertNotIn('large preserved ledger',prompt)
         self.assertEqual(D['load'](self.run / 'report.json'),report)
         self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']),2)
 
     def successor_parent(self, *, ready=False):
         self.readmit_budget(8,0);self.mode.write_text('successor-accounting')
-        prepared=self.run / 'inputs/author-source' / self.service / 'read'
-        shutil.copytree(self.seed / 'reads',prepared)
-        (prepared.parent / 'view.md').write_text(self.source['text'])
+        self.prepare_review_context()
+        (self.run/'inputs/author-source'/self.service/'view.md').write_text(self.source['text'])
         shutil.rmtree(self.seed / 'reads')  # Prepared carrier is authoritative; do not duplicate its cite handle.
         pins=D['load'](self.run / 'pins.json');pins['inputFiles']=D['tree'](self.run / 'inputs');D['save'](self.run / 'pins.json',pins)
         if not ready:self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.md)\n'
@@ -1516,6 +1596,8 @@ else:
     def prepare_owned_successor(self,job_path,child,mutate=None,previous=None,**options):
         def sources(job,inventory,directory):
             shutil.copytree(self.run / 'inputs/author-source',directory)
+            proof=self.run/'inputs/source-proof'
+            if proof.exists():shutil.copytree(proof,directory.parent/'source-proof')
             if mutate:mutate(directory)
         with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}):
             return D['S']['prepare'](job_path,previous or self.run,D['SKILL'],child,D,**options)
@@ -1572,7 +1654,7 @@ else:
         pending=error.exception.details
         local=D['W']['check'](child,[],False,D)
         self.assertEqual(local['pendingReview']['pages'],pending['pages'])
-        D['author'](child)  # Deterministic copy-only backend restores old reviews.
+        self.author_page(self.service+'.md',child)  # Copy-only backend restores old reviews, not their validity.
         final=D['verify'](child)
         self.assertEqual(final['checks']['selfReview']['code'],'QUALITY_REJECTED_REVIEW_PENDING',final)
         self.assertEqual(final['checks']['selfReview']['details']['claims'],pending['claims'])
@@ -1600,79 +1682,58 @@ else:
         self.assertEqual(D['S']['pending_review'](frozen,D),D['S']['pending_review'](child,D))
         self.assertEqual(D['W']['finish_review'](child,global_decision,D)['status'],'GLOBAL_REVIEW_RECORDED')
         for name in old:shutil.copyfile(child/'workspace/draft'/name,self.seed/name)
-        D['author'](child)  # A completed turn must pin the newly submitted decisions.
+        self.author_page(self.service+'.md',child)  # Fresh turn pins the newly submitted decisions.
         final=D['verify'](child);self.assertEqual(final['status'],'READY',final)
         self.assertEqual(D['load'](child/'state.json')['modelTokens'],14)
         self.assertEqual(before,D['tree'](self.run))
 
-    def test_rejected_review_unit_omitted_decisions_stop_before_next_unit_without_repairs(self):
+    def test_rejected_page_omitted_decisions_stop_without_dispatching_another_page(self):
         job_path=self.compact_successor_parent()
         job=D['load'](job_path);job['budget'].update(maxModelTokens=6,maxRepairs=0);D['save'](job_path,job)
-        child=self.root/'unit-omitted';self.prepare_owned_successor(job_path,child,revise_ready=True)
-        result=D['execute'](child)
-        self.assertEqual(result['status'],'FAILED');self.assertEqual(result['unit'],self.service)
-        local=result['checks']['local']
-        self.assertEqual(local['code'],'QUALITY_REJECTED_REVIEW_PENDING')
-        self.assertEqual(local['stage'],'unit-review');self.assertEqual(local['structuralCheckStatus'],'UNIT_CHECKED')
-        self.assertEqual(local['details']['pages'],[p['page'] for p in self.original['pages']])
-        self.assertEqual(local['details']['claims'],[{'page':p['page'],'claim':f['id']} for p in self.original['pages'] for f in p['fragments'] if 'id' in f])
-        state=D['load'](child/'state.json');self.assertEqual(state['unitCursor'],0)
-        self.assertEqual([a['unit'] for a in state['attempts'][1:]],[self.service])
+        child=self.root/'page-omitted';self.prepare_owned_successor(job_path,child,revise_ready=True)
+        page=self.service+'.md';result=self.run_page(page,child)
+        self.assertEqual(result['status'],'FAILED');self.assertEqual(result['page'],page)
+        local=result['checks']['local'];self.assertEqual(local['code'],'PAGE_REVIEW_REQUIRED')
+        self.assertEqual(local['selectedPages'],[page]);self.assertIn(page,local['pendingReview']['pages'])
+        state=D['load'](child/'state.json')
+        self.assertEqual([a['unit'] for a in state['attempts'][1:]],['page:'+page])
+        pending=D['S']['pending_review'](child,D)
+        self.assertEqual(pending['pages'],[p['page'] for p in self.original['pages']])
+        self.assertEqual(pending['claims'],[{'page':p['page'],'claim':f['id']}
+            for p in self.original['pages'] for f in p['fragments'] if 'id' in f])
+        self.assertEqual(D['verify'](child)['checks']['selfReview']['code'],'QUALITY_REJECTED_REVIEW_PENDING')
         self.assertFalse((child/'ready').exists());self.assertFalse(local['semanticTruthAssessed'])
 
-    def test_rejected_review_reuses_units_and_new_attempt_accounting_with_full_gate(self):
+    def test_rejected_pages_preserve_unchanged_text_accounting_and_explicit_full_gate(self):
         job_path=self.compact_successor_parent()
-        job=D['load'](job_path);job['budget'].update(maxModelTokens=9,maxRepairs=1);D['save'](job_path,job)
-        child=self.root/'unit-rejected';self.prepare_owned_successor(job_path,child,revise_ready=True)
-        self.assertEqual(D['load'](child/'state.json')['unitCursor'],0)
-        receipt=D['load'](child/'inputs/successor.json')
-        self.assertFalse(receipt['standaloneFullDocsetReviewRequired']);self.assertTrue(receipt['fullFinalGateRequired'])
+        job=D['load'](job_path);job['budget'].update(maxModelTokens=15,maxRepairs=1);D['save'](job_path,job)
+        child=self.root/'page-rejected';self.prepare_owned_successor(job_path,child,revise_ready=True)
+        receipt=D['load'](child/'inputs/successor.json');self.assertTrue(receipt['fullFinalGateRequired'])
         D['W']['put'](child,'dynamic.md','details','## Retained details\n\nAdditional retained declaration details.',[self.handle],False,D)
         D['W']['page_info'](child,'dynamic.md',self.service,'Retained details',False,D)
         D['W']['put'](child,'later.md','shared','## Shared result\n\nShared retained result.',[self.handle],False,D)
-        shutil.copyfile(child/'workspace/draft/original.json',self.seed/'original.json')
-        shutil.copyfile(child/'workspace/draft/navigation.json',self.seed/'navigation.json')
-        real_author=D['author'];calls=[];plans=[];local_failures=[]
-        def author(run,*,unit=None,repair=False):
-            self.assertIsNotNone(unit);calls.append((unit['id'],repair))
-            plans.append(D['load'](run/'state.json')['budgetPlan'])
-            if repair:
-                local=D['load'](run/'report.json')['checks']['local'];local_failures.append(local)
-                self.assertEqual(local['details']['pages'],['dynamic.md'])
-                self.assertEqual(local['details']['claims'],[{'page':'dynamic.md','claim':'details'}])
-                self.assertEqual(local['pendingReview']['pages'],['dynamic.md'])
-            pages=unit['pages'] if unit['id']!='complete-docset' else ['later.md']
-            if repair:pages=[*pages,'dynamic.md']
-            for name in pages:
-                if name in ('dynamic.md','later.md'):
-                    approved=D['W']['review_page'](run,name,None,D)
-                    approved['claims']={key:'SUPPORTED' for key in approved['claims']}
-                else:
-                    approved={'requirements':{key:row for key,row in self.review['requirements'].items()
-                        if any(r['id']==key and r['page']==name for r in self.inventory['requirements'])},
-                        'claims':self.review['claims'].get(name,{})}
-                D['W']['review_page'](run,name,json.loads(json.dumps(approved)),D)
-            if unit['id']=='complete-docset':
-                self.assertEqual(D['S']['pending_review'](run,D)['pages'],[])
-                D['W']['finish_review'](run,{k:self.review[k] for k in ('unresolved','visual')},D)
-            elif repair:self.assertEqual(D['S']['pending_review'](run,D)['pages'],['later.md'])
-            for name in ('self-review.json','reviewed-pages.json'):shutil.copyfile(run/'workspace/draft'/name,self.seed/name)
-            pending=D['S']['pending_review'](run,D)
-            result=real_author(run,unit=unit,repair=repair)
-            self.assertEqual(D['S']['pending_review'](run,D),pending,
-                {'beforeReader':self.original,'afterReader':D['load'](run/'workspace/draft/original.json'),
-                 'reviewed':D['load'](run/'workspace/draft/reviewed-pages.json')})
-            return result
-        with patch.dict(D['execute'].__globals__,{'author':author}):result=D['execute'](child)
-        self.assertEqual(result['status'],'READY_PROMOTED',result)
-        self.assertEqual(len(local_failures),1)
-        self.assertEqual(calls,[(self.service,False),(self.service,True),('complete-docset',False)])
-        self.assertEqual([p['remainingTokens'] for p in plans],[9,6,3])
-        self.assertEqual([p['repairReserveEstimate'] for p in plans],[0,3,3])
+        for name in ('original.json','navigation.json'):shutil.copyfile(child/'workspace/draft'/name,self.seed/name)
+        (self.seed/'review-current').touch()
+        for page in (self.entry['page'],self.service+'.md'):
+            self.assertEqual(self.run_page(page,child)['status'],'PAGE_COMPLETED')
+        stable={p['page']:D['digest'](p) for p in D['load'](child/'workspace/draft/original.json')['pages'] if p['page']!='dynamic.md'}
+        (self.seed/'review-current').unlink()
+        failed=self.run_page('dynamic.md',child);self.assertEqual(failed['status'],'FAILED')
+        self.assertEqual(failed['checks']['local']['selectedPages'],['dynamic.md'])
+        self.assertIn('dynamic.md',failed['checks']['local']['pendingReview']['pages'])
+        self.assertEqual(D['S']['pending_review'](child,D)['pages'],['dynamic.md','later.md'])
+        (self.seed/'review-current').touch()
+        self.assertEqual(self.run_page('dynamic.md',child)['status'],'PAGE_COMPLETED')
+        self.assertEqual(D['S']['pending_review'](child,D)['pages'],['later.md'])
+        for page in D['load'](child/'workspace/draft/original.json')['pages']:
+            if page['page'] in stable:self.assertEqual(D['digest'](page),stable[page['page']])
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page('later.md',child)['status'],'PAGE_COMPLETED')
+        self.assertEqual(self.final_gate(child)['status'],'READY_PROMOTED')
         state=D['load'](child/'state.json')
-        self.assertEqual([a['kind'] for a in state['attempts']],['full','successor-review','repair','unit'])
-        self.assertEqual(state['unitCursor'],2);self.assertEqual(state['modelTokens'],17)
-        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),9)
+        self.assertEqual([a['kind'] for a in state['attempts']],['full','successor-review','unit','unit','repair','unit'])
+        self.assertEqual(state['modelTokens'],23)
+        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),15)
         self.assertEqual(D['load'](child/'report.json')['checks']['author']['inheritedModelTokens'],8)
 
     def test_ready_successor_requires_caller_revision_and_preserves_parent_ready_and_cost(self):
@@ -1715,7 +1776,7 @@ else:
         job_path=self.compact_successor_parent()
         job=D['load'](job_path);job['budget']['maxModelTokens']=2;D['save'](job_path,job)
         previous=self.root/'budget-stopped';self.prepare_owned_successor(job_path,previous,revise_ready=True)
-        with self.assertRaises(D['Stop']) as error:D['author'](previous)  # Existing deterministic backend, genuine 3 > 2 stop.
+        with self.assertRaises(D['Stop']) as error:self.author_page(self.service+'.md',previous)  # Fresh deterministic turn, genuine 3 > 2 stop.
         self.assertEqual(error.exception.code,'AUTHOR_TOKEN_BUDGET_EXCEEDED')
         state=D['load'](previous/'state.json');self.assertEqual(state['status'],'AUTHOR_BUDGET_EXCEEDED')
         self.assertEqual(state['modelTokens'],11);self.assertEqual(state['successor']['inheritedModelTokens'],8)
@@ -1759,7 +1820,9 @@ else:
         previous,job_path=self.budget_stopped_parent()
         immutable={name:(previous/name).read_bytes() for name in ('state.json','pins.json','inputs/job.json')}
         with self.assertRaises(D['Stop']) as error:D['recover_accounting'](previous,D['SKILL'])
-        self.assertEqual(error.exception.code,'FALSE_BUDGET_STOP_NOT_PROVEN')
+        # A fresh-context budget stop is not the historical same-thread false
+        # stop targeted by recover-accounting. Its truthful chain is retained.
+        self.assertEqual(error.exception.code,'AUTHOR_HISTORY_MISMATCH')
         self.assertEqual(immutable,{name:(previous/name).read_bytes() for name in immutable})
         before=D['tree'](previous)  # Recovery's ordinary native input probes may leave diagnostic receipts.
         with (previous/'.runner.lock').open('rb') as lock:
@@ -1819,39 +1882,41 @@ else:
         state['status']='AUTHOR_COMPLETED';D['save'](child / 'state.json',state)
         checked=D['verify'](child);self.assertEqual(checked['checks']['author']['code'],'AUTHOR_COMPLETION_REQUIRED')
         state['status']='SUCCESSOR_PREPARED';D['save'](child / 'state.json',state)
-        result=D['execute'](child)
+        self.author_page(self.service+'.md',child)
+        result=D['verify'](child)
         self.assertEqual(result['status'],'FAILED',result)  # Broken link remains; full final gate is mandatory.
         state=D['load'](child / 'state.json');self.assertEqual(state['modelTokens'],11)
         self.assertEqual(state['attempts'][1]['kind'],'successor-review')
-        self.assertEqual(state['attempts'][1]['threadId'],state['attempts'][0]['threadId'])
-        self.assertIn('resume',state['attempts'][1]['argv'])
+        self.assertNotEqual(state['attempts'][1]['threadId'],state['attempts'][0]['threadId'])
+        self.assertNotIn('resume',state['attempts'][1]['argv'])
         self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),3)
         self.assertEqual(result['checks']['author']['reportedModelTokens'],11)
         self.assertEqual(result['checks']['author']['inheritedModelTokens'],8)
         self.assertEqual(result['checks']['author']['continuationModelTokens'],3)
         prompt=json.loads((child / 'attempts/1/prompt.txt').read_text())
-        self.assertEqual(prompt['request'],self.job['request']);self.assertIn('standalone full-docset review',prompt['instruction'])
-        receipt=Path(prompt['historyReceipt'])
-        if not receipt.is_absolute():receipt=child / 'workspace' / receipt
-        self.assertTrue(receipt.is_file(), 'Receipt link must resolve from the author workspace')
-        self.assertEqual(D['load'](receipt)['threadId'],state['threadId'])
+        self.assertEqual(prompt['request'],self.job['request'])
+        self.assertEqual(prompt['previousThreadId'],state['attempts'][0]['threadId'])
+        self.assertEqual(prompt['scope']['pages'],[p['page'] for p in self.original['pages']])
         self.assertEqual(D['load'](child / 'history/report.json')['status'],'FAILED')
         self.assertEqual(parent_draft,D['tree'](self.run / 'workspace/draft'))
         for name,value in before.items():
             self.assertEqual(D['sha']((self.run / name).read_bytes()),value)
             self.assertEqual(D['sha']((frozen / name).read_bytes()),value)
 
-    def test_successor_valid_same_context_review_can_reach_full_gate_without_hiding_inherited_cost(self):
-        job_path=self.successor_parent();child=self.root / 'successor'
+    def test_successor_fresh_page_reviews_reach_full_gate_without_hiding_inherited_cost(self):
+        job_path=self.successor_parent();child=self.root/'successor'
+        job=D['load'](job_path);job['budget']['maxModelTokens']=6;D['save'](job_path,job)
         self.prepare_owned_successor(job_path,child)
         self.original['pages'][0]['fragments'][1]['text']=self.original['pages'][0]['fragments'][1]['text'].replace('\n[Missing](absent.md)\n','')
-        self.seed_files()
-        result=D['execute'](child)
-        self.assertEqual(result['status'],'READY_PROMOTED',result)
-        report=D['load'](child / 'report.json');self.assertTrue(all(row['status']=='PASS' for row in report['checks'].values()))
-        self.assertEqual(report['checks']['author']['reportedModelTokens'],11)
-        self.assertEqual(report['checks']['author']['continuationModelTokens'],3)
-        self.assertEqual(D['load'](self.run / 'report.json')['status'],'FAILED')
+        self.seed_files();(self.seed/'review-current').touch()
+        self.assertEqual(self.run_page(self.entry['page'],child)['status'],'PAGE_COMPLETED')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md',child)['status'],'PAGE_COMPLETED')
+        result=self.final_gate(child);self.assertEqual(result['status'],'READY_PROMOTED',result)
+        report=D['load'](child/'report.json');self.assertTrue(all(row['status']=='PASS' for row in report['checks'].values()))
+        self.assertEqual(report['checks']['author']['reportedModelTokens'],14)
+        self.assertEqual(report['checks']['author']['continuationModelTokens'],6)
+        self.assertEqual(D['load'](self.run/'report.json')['status'],'FAILED')
 
     def test_successor_rejects_changed_request_source_nonterminal_and_unverifiable_history(self):
         job_path=self.successor_parent()
@@ -1879,26 +1944,29 @@ else:
         self.assertFalse((child / 'attempts').exists())
 
     def test_successor_decreasing_cumulative_usage_is_preserved_and_rejected(self):
-        job_path=self.successor_parent();child=self.root / 'successor';self.prepare_owned_successor(job_path,child)
-        self.mode.write_text('successor-decreasing')
-        with self.assertRaises(D['Stop']) as error:D['execute'](child)
-        self.assertEqual(error.exception.code,'AUTHOR_USAGE_INVALID')
-        state=D['load'](child / 'state.json')
-        self.assertEqual(len(state['attempts']),2);self.assertEqual(state['attempts'][0]['usage']['input_tokens'],8)
-        self.assertEqual(state['attempts'][1]['usage']['input_tokens'],5)
-        self.assertEqual(state['tokenAccounting']['status'],'INVALID')
-        self.assertFalse((child / 'ready').exists())
+        job_path=self.successor_parent();child=self.root/'successor';self.prepare_owned_successor(job_path,child)
+        # Historical cumulative reports remain accepted inputs to accounting,
+        # without redispatching the removed same-thread continuation path.
+        usage={'input_tokens':5,'cached_input_tokens':0,'output_tokens':0}
+        self.record_historical_attempt(child,usage,'owned-test-session',kind='successor-review')
+        result=D['verify'](child);self.assertEqual(result['checks']['author']['code'],'AUTHOR_USAGE_INVALID')
+        state=D['load'](child/'state.json')
+        self.assertEqual(state['attempts'][0]['usage']['input_tokens'],8)
+        self.assertEqual(state['attempts'][1]['usage'],usage)
+        self.assertEqual(D['token_accounting'](state['attempts'])['status'],'INVALID')
+        self.assertFalse((child/'ready').exists())
 
-    def test_successor_rejects_thread_switch_and_preserves_the_failed_attempt_cost(self):
-        job_path=self.successor_parent();child=self.root / 'successor';self.prepare_owned_successor(job_path,child)
-        self.mode.write_text('successor-thread-switch')
-        with self.assertRaises(D['Stop']) as error:D['execute'](child)
-        self.assertEqual(error.exception.code,'AUTHOR_THREAD_CHANGED')
-        state=D['load'](child / 'state.json')
-        self.assertEqual(len(state['attempts']),2);self.assertEqual(state['modelTokens'],28)
+    def test_successor_rejects_reused_context_and_preserves_the_failed_attempt_usage(self):
+        job_path=self.successor_parent();child=self.root/'successor';self.prepare_owned_successor(job_path,child)
+        self.mode.write_text('context-reused')
+        with self.assertRaises(D['Stop']) as error:self.run_page(self.service+'.md',child)
+        self.assertEqual(error.exception.code,'AUTHOR_CONTEXT_NOT_FRESH')
+        state=D['load'](child/'state.json')
+        self.assertEqual(len(state['attempts']),2)
+        self.assertEqual(state['attempts'][1]['usage'],{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10})
         self.assertEqual(state['attempts'][0]['threadId'],'owned-test-session')
-        self.assertEqual(state['attempts'][1]['threadId'],'different-test-session')
-        self.assertFalse((child / 'ready').exists())
+        self.assertEqual(state['attempts'][1]['threadId'],'owned-test-session')
+        self.assertFalse((child/'ready').exists())
 
     def test_process_page_without_full_sequence_is_explicitly_rejected(self):
         request = self.root / 'sequences.json'
@@ -1989,63 +2057,81 @@ else:
         pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs')
         D['save'](self.run/'pins.json',pins)
 
-    def test_service_unit_gate_includes_new_owned_pages_before_global_stage(self):
+    def test_explicit_new_owned_page_is_checked_before_final_gate(self):
         self.original['pages'].append({'page':'data.md','fragments':[{'text':'# Data\n\n' + D['W']['MARKER'] + '\n'}]})
-        self.navigation['services'][0]['pages'].append('data.md')
-        self.seed_files()
-        result = D['execute'](self.run)
+        self.navigation['services'][0]['pages'].append('data.md');self.seed_files();self.page_fixture()
+        result=self.run_page('data.md')
         self.assertEqual(result['status'],'FAILED',result)
-        self.assertEqual(result['unit'],self.service)
+        self.assertEqual(result['page'],'data.md')
         self.assertEqual(result['checks']['local']['code'],'UNFINISHED_SCAFFOLD')
         self.assertIn('data.md',result['checks']['local']['selectedPages'])
-        self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']),1)
+        self.assertEqual(len(D['load'](self.run/'state.json')['attempts']),1)
+        self.assertNotEqual(self.final_gate()['status'],'READY_PROMOTED')
 
-    def test_related_units_share_one_author_context_and_aggregate_budget(self):
-        result=D['execute'](self.run)
-        self.assertEqual(result['status'],'READY_PROMOTED',result)
+    def test_explicit_pages_use_fresh_contexts_aggregate_budget_and_full_promotion(self):
+        self.page_fixture()
+        self.assertEqual(self.run_page(self.entry['page'])['status'],'PAGE_COMPLETED')
+        self.assertFalse((self.run/'ready').exists())
+        first=D['tree'](self.run/'workspace/draft')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md')['status'],'PAGE_COMPLETED')
+        self.assertFalse((self.run/'ready').exists())
+        self.assertEqual(self.final_gate()['status'],'READY_PROMOTED')
         state=D['load'](self.run/'state.json')
         self.assertEqual([a['kind'] for a in state['attempts']],['unit','unit'])
         self.assertEqual(state['modelTokens'],40)
-        self.assertTrue('resume' in state['attempts'][1]['argv'])
-        self.assertEqual(state['threadId'],'owned-test-session')
+        self.assertNotEqual(state['attempts'][0]['threadId'],state['attempts'][1]['threadId'])
+        self.assertTrue(all('resume' not in a['argv'] for a in state['attempts']))
+        self.assertEqual(state['attempts'][0]['draftFiles'],first)
+        report=D['load'](self.run/'report.json')
+        self.assertTrue(all(row['status']=='PASS' for row in report['checks'].values()),report)
 
-    def test_early_failure_repairs_same_unit_before_advancing(self):
-        self.readmit_budget(1000,1);self.mode.write_text('repair-on-resume')
-        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.html)\n';self.seed_files()
-        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
+    def test_early_page_failure_requires_explicit_local_repair_before_advancing(self):
+        self.readmit_budget(1000,1);self.mode.write_text('repair-on-handoff')
+        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.html)\n';self.seed_files();self.page_fixture()
+        first=self.run_page(self.entry['page']);self.assertEqual(first['status'],'FAILED',first)
+        self.assertEqual(len(D['load'](self.run/'state.json')['attempts']),1)
+        repaired=self.run_page(self.entry['page']);self.assertEqual(repaired['status'],'PAGE_COMPLETED',repaired)
+        # Carry the repaired output forward, preserving the other page.
+        shutil.copyfile(self.run/'workspace/draft/original.json',self.seed/'original.json')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md')['status'],'PAGE_COMPLETED')
+        self.assertEqual(self.final_gate()['status'],'READY_PROMOTED')
         state=D['load'](self.run/'state.json')
         self.assertEqual([a['kind'] for a in state['attempts']],['unit','repair','unit'])
         self.assertEqual(state['attempts'][0]['unit'],state['attempts'][1]['unit'])
         self.assertEqual(state['modelTokens'],60)
-        self.assertTrue((self.run/'attempts/0/draft/original.json').exists())
+        self.assertIn('[Missing]',(self.run/'attempts/0/draft/original.json').read_text())
 
     def test_advisory_reserve_does_not_replace_the_actual_aggregate_cap(self):
-        self.readmit_budget(35,0)
-        with self.assertRaises(D['Stop']) as error:D['execute'](self.run)
+        self.readmit_budget(35,0);self.page_fixture()
+        self.assertEqual(self.run_page(self.entry['page'])['status'],'PAGE_COMPLETED')
+        with self.assertRaises(D['Stop']) as error:self.run_page(self.service+'.md')
         self.assertEqual(error.exception.code,'AUTHOR_TOKEN_BUDGET_EXCEEDED')
         state=D['load'](self.run/'state.json');self.assertEqual(len(state['attempts']),2)
-        self.assertEqual(state['budgetPlan']['repairReserveEstimate'],20)
         self.assertEqual(state['modelTokens'],40)
+        self.assertNotEqual(self.final_gate()['status'],'READY_PROMOTED')
         self.assertFalse((self.run/'ready').exists())
 
-    def test_uneven_units_are_not_stopped_by_unproven_repair_proxy(self):
-        self.readmit_budget(250000,0);self.mode.write_text('uneven-units')
-        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
-        state=D['load'](self.run/'state.json')
-        self.assertEqual(state['modelTokens'],132000)
-        self.assertEqual(state['budgetPlan']['remainingTokens'],120000)
-        self.assertEqual(state['budgetPlan']['repairReserveEstimate'],130000)
-        self.assertTrue(state['budgetPlan']['advisoryOnly'])
+    def test_uneven_pages_are_not_stopped_by_unproven_repair_proxy(self):
+        self.readmit_budget(250000,0);self.mode.write_text('uneven-units');self.page_fixture()
+        self.assertEqual(self.run_page(self.entry['page'])['status'],'PAGE_COMPLETED')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md')['status'],'PAGE_COMPLETED')
+        self.assertEqual(self.final_gate()['status'],'READY_PROMOTED')
+        state=D['load'](self.run/'state.json');self.assertEqual(state['modelTokens'],132000)
+        self.assertEqual([a['usage']['input_tokens'] for a in state['attempts']],[130000,2000])
 
     def test_no_token_cutoff_still_requires_measured_usage_and_full_export(self):
-        self.readmit_budget(None,0);self.mode.write_text('budget')
-        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
-        state=D['load'](self.run/'state.json')
-        self.assertGreater(state['modelTokens'],250000)
-        self.assertIsNone(state['budgetPlan']['remainingTokens'])
+        self.readmit_budget(None,0);self.mode.write_text('budget');self.page_fixture()
+        self.assertEqual(self.run_page(self.entry['page'])['status'],'PAGE_COMPLETED')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md')['status'],'PAGE_COMPLETED')
+        self.assertEqual(self.final_gate()['status'],'READY_PROMOTED')
+        state=D['load'](self.run/'state.json');self.assertGreater(state['modelTokens'],250000)
         state['attempts'][-1]['usage'].pop('cached_input_tokens');D['save'](self.run/'state.json',state)
         failed=self.check();self.assertEqual(failed['checks']['author']['code'],'AUTHOR_USAGE_UNAVAILABLE')
-        with self.assertRaises(D['Stop']) as error:D['author'](self.run)
+        with self.assertRaises(D['Stop']) as error:self.author_page(self.service+'.md')
         self.assertEqual(error.exception.code,'AUTHOR_USAGE_UNAVAILABLE')
 
     def test_short_entry_compact_success_full_receipts_and_actionable_errors(self):
@@ -2376,7 +2462,10 @@ else:
         scaffold['units'] = [{'id':name,'pages':pages} for name in ('dashboard','places','forecasts','complete-docset')]
         D['save'](self.run / 'inputs/scaffold.json', scaffold)
         pins = D['load'](self.run / 'pins.json');pins['inputFiles'] = D['tree'](self.run / 'inputs');D['save'](self.run / 'pins.json',pins)
-        D['author'](self.run,unit=scaffold['units'][0]);state=D['author'](self.run,unit=scaffold['units'][1])
+        self.prepare_review_context();shutil.rmtree(self.seed/'reads')
+        D['author'](self.run,unit=scaffold['units'][0])
+        state=self.record_historical_attempt(self.run,{'input_tokens':2793295,'cached_input_tokens':2670976,
+            'output_tokens':62544,'reasoning_output_tokens':43098},'owned-test-session',unit='places')
         self.assertEqual(state['modelTokens'],184863)
         for attempt in state['attempts']:attempt.pop('threadId')
         state.update(status='AUTHOR_BUDGET_EXCEEDED',modelTokens=305173,unitCursor=1)
@@ -2384,7 +2473,7 @@ else:
         old = self.root / 'old-skill'
         shutil.copytree(ROOT / 'skills/codeclew',old,ignore=shutil.ignore_patterns('node_modules','__pycache__','.git'))
         with (old / 'scripts/docs_run.py').open('a') as stream:stream.write('\n# Owned previous-admission fixture.\n')
-        pins['skillFiles'] = D['tree'](old,skill=True);D['save'](self.run / 'pins.json',pins)
+        pins=D['load'](self.run/'pins.json');pins['skillFiles'] = D['tree'](old,skill=True);D['save'](self.run / 'pins.json',pins)
         return old
 
     def test_recorded_false_stop_recovers_same_run_without_duplicate_places_author(self):
@@ -2408,14 +2497,19 @@ else:
         self.assertEqual(D['tree'](self.run/'workspace/draft'),draft_before)
         self.assertEqual(D['tree'](self.run/'inputs'),input_before)
         self.assertEqual((self.run/'prompt.txt').read_bytes(),prompt_before)
-        final=D['execute'](self.run);self.assertEqual(final['status'],'READY_PROMOTED',final)
-        resumed=D['load'](self.run/'state.json')
-        self.assertEqual([a['unit'] for a in resumed['attempts']],['dashboard','places','forecasts','complete-docset'])
-        self.assertEqual(resumed['modelTokens'],184903)
-        self.assertEqual(resumed['authorStartedAt'],original['authorStartedAt'])
-        continuation=(self.run/'attempts/2/prompt.txt').read_text()
-        self.assertIn(str(ROOT/'skills/codeclew/scripts/docs_run.py'),continuation)
-        self.assertIn('original time/token/repair caps are unchanged',continuation)
+        self.mode.write_text('normal');(self.seed/'review-current').touch()
+        self.assertEqual(self.run_page(self.entry['page'])['status'],'PAGE_COMPLETED')
+        (self.seed/'finish-current').touch()
+        self.assertEqual(self.run_page(self.service+'.md')['status'],'PAGE_COMPLETED')
+        final=self.final_gate();self.assertEqual(final['status'],'READY_PROMOTED',final)
+        continued=D['load'](self.run/'state.json')
+        self.assertEqual([a['unit'] for a in continued['attempts'][:2]],['dashboard','places'])
+        self.assertEqual(continued['modelTokens'],184903)
+        self.assertEqual(continued['authorStartedAt'],original['authorStartedAt'])
+        self.assertTrue(all('resume' not in a['argv'] for a in continued['attempts'][2:]))
+        continuation=D['load'](self.run/'attempts/2/context.json')
+        self.assertEqual(continuation['previousThreadId'],'owned-test-session')
+        self.assertNotIn('OLD_TOOL_HISTORY',D['encode'](continuation).decode())
 
     def test_recovery_refuses_actual_over_cap_and_expired_original_wall_budget(self):
         old=self.recorded_false_stop();state=D['load'](self.run/'state.json');state['authorStartedAt']-=31
@@ -2480,7 +2574,7 @@ else:
         self.assertEqual(result['status'], 'BLOCKED', result)
         self.assertEqual(result['checks']['author']['code'], 'AUTHOR_USAGE_UNAVAILABLE')
         with self.assertRaises(D['Stop']) as raised:
-            D['author'](self.run)
+            self.author_page(self.service+'.md')
         self.assertEqual(raised.exception.code, 'AUTHOR_USAGE_UNAVAILABLE')
         self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']), 1)
         self.assertFalse((self.run / 'ready').exists())
@@ -2520,10 +2614,13 @@ else:
             self.assertEqual(result['status'], 'FAILED', result)
             self.assertEqual(result['checks']['entrySequences']['status'], 'FAIL', result)
 
-    def generated_for_test_reset(self):
-        state = D['load'](self.run / 'state.json'); state.update(attempts=[], authorStartedAt=None, status='PREPARED', modelTokens=0, usageAvailable=True)
+    def generated_for_test_reset(self, *, explicit_page=None):
+        state = D['load'](self.run / 'state.json'); state.update(attempts=[], authorStartedAt=None, status='PREPARED', modelTokens=0, usageAvailable=True, handoff=None, threadId=None)
         D['save'](self.run / 'state.json', state)
         shutil.rmtree(self.run / 'attempts', ignore_errors=True)
+        if explicit_page:
+            self.page_fixture()
+            return self.run_page(explicit_page)
         return self.generated()
 
     def test_exit_zero_with_missing_required_page_is_rejected(self):
@@ -2547,12 +2644,13 @@ else:
     def test_nonzero_exit_and_token_budget_cannot_be_resumed_as_completed(self):
         for mode in ['exit-failed', 'budget']:
             self.mode.write_text(mode)
-            with self.assertRaises(D['Stop']):self.generated_for_test_reset()
+            with self.assertRaises(D['Stop']):self.generated_for_test_reset(explicit_page=self.entry['page'])
             result = self.check(); self.assertNotEqual(result['status'], 'READY')
             self.assertNotEqual(D['load'](self.run / 'state.json')['status'], 'AUTHOR_COMPLETED')
             with self.assertRaises(D['Stop']):D['promote'](self.run)
             before = len(D['load'](self.run / 'state.json')['attempts'])
-            with self.assertRaises(D['Stop']):D['execute'](self.run)
+            with self.assertRaises(D['Stop']) as stopped:D['execute'](self.run)
+            self.assertEqual(stopped.exception.code,'AUTHOR_HANDOFF_ATTEMPT_EXISTS')
             self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']), before)
 
     def test_interruption_preserves_previous_ready_and_is_not_complete(self):
@@ -2560,10 +2658,15 @@ else:
         D['save'](self.run / 'inputs/job.json', job)
         pins = D['load'](self.run / 'pins.json'); pins['jobDigest'] = D['digest'](job); pins['inputFiles'] = D['tree'](self.run / 'inputs'); D['save'](self.run / 'pins.json', pins)
         self.mode.write_text('interrupt')
-        with self.assertRaises(D['Stop']):self.generated()
+        self.page_fixture()
+        with self.assertRaises(D['Stop']):self.run_page(self.entry['page'])
         self.assertEqual(D['load'](self.run / 'state.json')['status'], 'INTERRUPTED')
         self.assertNotEqual(self.check()['status'], 'READY')
         self.assertFalse((self.run / 'ready').exists())
+        attempts=D['load'](self.run/'state.json')['attempts']
+        with self.assertRaises(D['Stop']) as stopped:D['execute'](self.run)
+        self.assertEqual(stopped.exception.code,'AUTHOR_HANDOFF_ATTEMPT_EXISTS')
+        self.assertEqual(D['load'](self.run/'state.json')['attempts'],attempts)
 
     def test_source_backed_false_assertion_is_not_a_semantic_certificate(self):
         self.original['pages'][0]['fragments'][1]['text'] += '\nDelivery is guaranteed.\n'
@@ -2571,11 +2674,12 @@ else:
         self.assertEqual(result['status'], 'READY', result)
         self.assertFalse(result['semanticTruthAssessed'])
 
-    def test_verification_resume_does_not_launch_another_author(self):
+    def test_explicit_verification_and_promotion_do_not_launch_another_author(self):
         self.generated()
-        result = D['execute'](self.run)
-        self.assertEqual(result['status'], 'READY_PROMOTED', result)
-        self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']), 1)
+        with patch.dict(D['verify'].__globals__,{'author':lambda *a,**k:self.fail('verify/promote must not launch an author')}):
+            result=self.final_gate()
+        self.assertEqual(result['status'],'READY_PROMOTED',result)
+        self.assertEqual(len(D['load'](self.run/'state.json')['attempts']),1)
 
     def test_genuine_foreign_source_proof_is_rejected(self):
         shutil.rmtree(self.seed / 'reads'); (self.seed / 'reads').mkdir()
