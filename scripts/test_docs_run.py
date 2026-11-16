@@ -498,6 +498,43 @@ else:
         self.assertEqual(updated['starts'], starts)
         self.assertIn({'title': 'Reservation data', 'target': 'data.md'}, updated['data'])
 
+    def test_route_origin_uses_registered_anchor_and_rejects_wrong_addresses_before_save(self):
+        self.save_local({'page':'processes.md','fragments':[{'id':'catalog','text':'Source-backed catalog.','evidence':[self.handle]}]})
+        value={'catalog':'processes.html','route':{'id':'reserve-route','title':'Reserve','narrative':{'page':'thread.md'},
+            'origin':{'status':'known','occurrence':'start','kind':'http','title':'Reserve','summary':'Owned fixture'},
+            'occurrences':[{'id':'start','actor':{'kind':'service','service':self.service},'role':'start','target':{'page':self.entry['page']}}],
+            'branches':[],'outcomes':[],'coverage':{'outcomeInventory':'partial'}}}
+        original=json.loads(json.dumps(value))
+        D['W']['route'](self.run,value,D)
+        self.assertEqual(value,original)
+        path=self.run / 'workspace/draft/routes.json'
+        stored=D['load'](path)
+        self.assertEqual(stored['routes'][0]['occurrences'][0]['target'],
+                         {'docset':'docs','page':self.entry['page'].removesuffix('.md')+'.html','anchor':'handler'})
+        for change in ({'anchor':'wrong'}, {'anchor':''}, {'page':'missing.md'}, {'docset':'foreign'}):
+            bad=json.loads(json.dumps(original));bad['route']['occurrences'][0]['target'].update(change)
+            before=D['tree'](self.run / 'workspace/draft')
+            with self.assertRaises(D['Stop']) as error:D['W']['route'](self.run,bad,D)
+            issue=error.exception.details['issues'][0]
+            self.assertEqual(issue['code'],'ROUTE_ORIGIN_START_MISMATCH')
+            self.assertEqual(issue['routeId'],'reserve-route');self.assertEqual(issue['occurrenceId'],'start')
+            self.assertEqual(issue['inputField'],'/route/occurrences/0/target')
+            self.assertEqual(issue['expected'][0]['target']['anchor'],'handler')
+            self.assertIn('./docs route',issue['recovery'])
+            self.assertEqual(before,D['tree'](self.run / 'workspace/draft'))
+
+        # Legacy stored declarations must fail locally with route-specific repair,
+        # rather than reaching an opaque whole-site renderer error.
+        stored['routes'][0]['occurrences'][0]['target'].pop('anchor')
+        D['save'](path,stored)
+        self.local_reads();self.save_local(self.local_page())
+        before=D['tree'](self.run / 'workspace/draft')
+        local=self.local_check(self.entry['page'])
+        self.assertEqual(local['code'],'ROUTE_DECLARATION_INVALID')
+        self.assertTrue(any(x.get('routeId')=='reserve-route' for x in local['locations']))
+        self.assertIn('./docs route',local['recovery'])
+        self.assertEqual(before,D['tree'](self.run / 'workspace/draft'))
+
     def test_route_preflight_rejects_bad_metadata_before_persisting_and_names_catalog(self):
         value={'catalog':'processes.html','route':{'id':'reserve-route','title':'Reserve','narrative':{'page':'thread.md'},
             'origin':{'status':'known','occurrence':'start','kind':'HTTP_ENDPOINT','title':'Reserve','summary':'Owned fixture'},

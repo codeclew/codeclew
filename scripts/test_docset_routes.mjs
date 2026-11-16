@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {validateDocsetRoutes,filterRoutes} from '../skills/codeclew/examples/markdown-renderer/docset-routes.mjs';
-import {validateRouteStructure} from '../skills/codeclew/examples/markdown-renderer/route-structure.mjs';
+import {validateRouteStructure,validateLocalRouteOrigin} from '../skills/codeclew/examples/markdown-renderer/route-structure.mjs';
 import {validateNavigation,navigationView} from '../skills/codeclew/examples/markdown-renderer/navigation.mjs';
 const registry=JSON.parse(await readFile(new URL('../fixtures/docs-cross-docset-routes/registry.json',import.meta.url),'utf8'));
 const cases=JSON.parse(await readFile(new URL('../fixtures/docs-cross-docset-routes/filter-cases.json',import.meta.url),'utf8'));
@@ -15,6 +15,38 @@ function nav(docset){
  return validateNavigation({schema:'codeclew-markdown-navigation/1',home:{title:'Home',target:home},services,routes:[]},pages);
 }
 const version=id=>registry.docsets.find(d=>d.id===id).version;
+test('local origin recording completes only an unambiguous omitted anchor; final matching stays exact',()=>{
+ const value=clone(),r=value.routes[0],docset='orders-docs',navigation=nav(docset);
+ const starts=navigation.services.flatMap(s=>s.starts.map(v=>({service:s.id,kind:v.kind,
+  target:{docset,page:v.to.file.replace(/\.md$/,'.html'),anchor:v.to.fragment}})));
+ const origin=r.occurrences.find(o=>o.id===r.origin.occurrence),saved=structuredClone(origin.target);
+ delete origin.target.anchor;
+ const before=structuredClone(r),expected=starts.find(s=>s.target.page===origin.target.page&&s.kind===r.origin.kind);
+ assert.deepEqual(validateLocalRouteOrigin(r,0,docset,starts,true),{routeIndex:0,occurrenceIndex:r.occurrences.indexOf(origin),anchor:expected.target.anchor});
+ assert.deepEqual(r,before);
+ let early,final;
+ try{validateLocalRouteOrigin(r,0,docset,starts)}catch(e){early=e}
+ try{validateDocsetRoutes(value,navigation,docset,version(docset))}catch(e){final=e}
+ assert.equal(early.code,'ROUTE_DECLARATION_INVALID');assert.deepEqual(final.details,early.details);
+ assert.equal(early.details.issues[0].routeId,r.id);assert.equal(early.details.issues[0].occurrenceId,origin.id);
+ assert.deepEqual(early.details.issues[0].actual.target,origin.target);
+ origin.target=saved;
+ assert.equal(validateLocalRouteOrigin(r,0,docset,starts,true),undefined);
+ assert.doesNotThrow(()=>validateDocsetRoutes(value,navigation,docset,version(docset)));
+ for(const change of [{anchor:'absent'},{anchor:''},{page:'absent.html'},{docset:'other'}]){
+  origin.target={...saved,...change};
+  assert.throws(()=>validateLocalRouteOrigin(r,0,docset,starts,true),e=>e.details.issues[0].code==='ROUTE_ORIGIN_START_MISMATCH');
+ }
+ origin.target={...saved};delete origin.target.anchor;
+ assert.throws(()=>validateLocalRouteOrigin(r,0,docset,[...starts,{...expected,target:{...expected.target,anchor:'another-start'}}],true),/not a documented start/);
+ assert.throws(()=>validateLocalRouteOrigin(r,0,docset,[],true),/not a documented start/);
+ const kind=r.origin.kind;r.origin.kind='scheduled';
+ assert.throws(()=>validateLocalRouteOrigin(r,0,docset,starts,true),/not a documented start/);r.origin.kind=kind;
+ const service=origin.actor.service;origin.actor.service='unregistered';
+ assert.throws(()=>validateLocalRouteOrigin(r,0,docset,starts,true),/not a documented start/);origin.actor.service=service;
+ origin.actor.docset='remote';assert.equal(validateLocalRouteOrigin(r,0,docset,[],true),undefined);
+ r.origin={status:'unknown',reason:'Unbound'};assert.equal(validateLocalRouteOrigin(r,0,docset,[],true),undefined);
+});
 test('eleven exact query results use a single compatible outcome',()=>{
  for(const row of cases.cases)assert.deepEqual(Object.fromEntries(filterRoutes(registry,row.query).map(r=>[r.id,r.status])),row.expected,row.id);
  const result=filterRoutes(registry,cases.cases.find(r=>r.id==='return-via-b').query)[1];assert.deepEqual(result.matches,[{branch:'completed',outcome:'returned'}]);

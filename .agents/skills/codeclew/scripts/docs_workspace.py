@@ -360,7 +360,7 @@ def locations(original, details):
         return None
     issues = find(details, 'issues')
     if isinstance(issues, list):
-        return [{k: row[k] for k in ('file', 'page', 'requirement', 'routeId', 'outcomeId', 'field') if k in row}
+        return [{k: row[k] for k in ('file', 'page', 'requirement', 'routeId', 'occurrenceId', 'outcomeId', 'field') if k in row}
                 for row in issues if isinstance(row, dict) and 'field' in row]
     owner = find(details, 'page')
     if isinstance(owner, str):owner = owner.replace('.html', '.md')
@@ -439,17 +439,30 @@ def page_info(run, name, service, title, data, api):
     return {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
 
 
-def route_preflight(run, job, api, registry=None):
+def route_preflight(run, job, api, registry=None, *, complete_missing_anchor=False):
     path = run / 'workspace/draft/routes.json'
     if registry is None:
         if not path.exists():return None
         registry = api['load'](path)
     directory = run / 'workspace/checks' / uuid.uuid4().hex
     api['save'](directory / 'routes.json', registry)
+    _, inventory, _ = api['frozen_inputs'](run)
+    entries, _ = local_registry(run, inventory, api)
+    docset = registry.get('catalog', {}).get('docset', 'docs')
+    starts = []
+    for entry in entries:
+        page, _, anchor = entry['target'].partition('#')
+        starts.append({'service': entry['service'], 'kind': KINDS[entry['entryKind']],
+                       'target': {'docset': docset, 'page': page.removesuffix('.md') + '.html',
+                                  **({'anchor': anchor} if anchor else {})}})
+    api['save'](directory / 'starts.json', {'docset': docset, 'starts': starts,
+                'completeMissingAnchor': complete_missing_anchor})
     issues = []
     try:
-        api['command']([job['node'], str(Path(__file__).with_name('docs_run_routes.mjs')),
-                        str(directory / 'routes.json')], directory, 'route-preflight')
+        checked = api['command']([job['node'], str(Path(__file__).with_name('docs_run_routes.mjs')),
+                        str(directory / 'routes.json'), str(directory / 'starts.json')], directory, 'route-preflight')
+        for completion in checked.get('completions', []):
+            registry['routes'][completion['routeIndex']]['occurrences'][completion['occurrenceIndex']]['target']['anchor'] = completion['anchor']
     except api['Stop'] as error:
         if error.code != 'ROUTE_DECLARATION_INVALID':raise
         issues = error.details['response']['details']['issues']
@@ -515,7 +528,7 @@ def route(run, value, api):
     index = next((i for i, r in enumerate(registry['routes']) if r['id'] == row['id']), None)
     if index is None:registry['routes'].append(row)
     else:registry['routes'][index] = row
-    route_preflight(run, job, api, registry)
+    route_preflight(run, job, api, registry, complete_missing_anchor=True)
     api['save'](path, registry)
     return {'status': 'ROUTE_SAVED', 'route': row['id'], 'ready': False}
 
@@ -658,7 +671,10 @@ def check(run, pages, scaffold_only, api):
         result['locations'] = locations(original, result['details'])
         result['pendingTargets'] = sorted({target for target in re.findall(r'[A-Za-z0-9._-]+\.md(?:#[A-Za-z0-9._-]+)?', str(result['details']).replace('.html','.md'))
                                           if target.split('#')[0] in pending})
-        result['recovery'] = (result['details'].get('recovery') if isinstance(result['details'], dict) else None) or ('Use the named page/fragment/field with ./docs put for prose or ./docs sequence for diagram rows; '
+        details = result['details'] if isinstance(result['details'], dict) else {}
+        response = details.get('response')
+        nested = response.get('details') if isinstance(response, dict) else None
+        result['recovery'] = (details.get('recovery') or (nested.get('recovery') if isinstance(nested, dict) else None)) or ('Use the named page/fragment/field with ./docs put for prose or ./docs sequence for diagram rows; '
                               'repair registration evidence by repeating ./docs register-entry --requirement ID --page PAGE --evidence HANDLE. '
                               'Then repeat check only for affected pages. Preserve other pages and reviews. Unfinished targets are provisional; this is not READY.')
         api['save'](run / 'workspace/last-local-check.json', result)

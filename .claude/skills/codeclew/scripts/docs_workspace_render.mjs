@@ -9,6 +9,6 @@ try {
  const result=await renderDirectory(v.input,v.output,v.options);
  console.log(JSON.stringify({status:'LOCAL_RENDER_CHECKED',result}));
 } catch(error) {
- console.log(JSON.stringify({status:'FAILED',code:'LOCAL_RENDER_FAILED',details:{message:error.message}}));
+ console.log(JSON.stringify({status:'FAILED',code:error.code||'LOCAL_RENDER_FAILED',details:error.details||{message:error.message}}));
  process.exitCode=2;
 }

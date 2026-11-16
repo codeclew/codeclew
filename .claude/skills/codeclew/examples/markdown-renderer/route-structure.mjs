@@ -2,6 +2,24 @@
 // No source acquisition, semantic inference, target fabrication or mutation.
 export const triggerKinds=['http','kafka','scheduled','background','manual','other'];
 export const outcomeKinds=['normal','error','handoff','unknown'];
+// Both recording and rendering require the same exact registered start address.
+// Only recording may complete an omitted anchor from one unambiguous start.
+export function validateLocalRouteOrigin(route,index,docset,starts,completeMissingAnchor=false){
+ if(route.origin?.status!=='known')return;
+ const oi=route.occurrences.findIndex(o=>o.id===route.origin.occurrence),o=route.occurrences[oi];
+ if(o?.actor?.kind!=='service'||o.actor.docset!==docset)return;
+ const target=o.target,expected=starts.filter(s=>s.service===o.actor.service);
+ const matches=expected.filter(s=>s.kind===route.origin.kind&&s.target.docset===target?.docset&&s.target.page===target?.page);
+ if(matches.some(s=>(s.target.anchor??'')===(target?.anchor??'')))return;
+ if(completeMissingAnchor&&target&&!Object.hasOwn(target,'anchor')&&matches.length===1)
+  return {routeIndex:index,occurrenceIndex:oi,anchor:matches[0].target.anchor};
+ const issue={code:'ROUTE_ORIGIN_START_MISMATCH',routeId:route.id,occurrenceId:o.id,
+  field:`/routes/${index}/occurrences/${oi}/target`,actual:{kind:route.origin.kind,target},expected,
+  message:'local origin is not a documented start',
+  recovery:'Correct the named origin occurrence target/kind with ./docs route --input FILE using an exact registered start from ./docs show --entries. Preserve other routes and source-backed prose.'};
+ throw Object.assign(Error('Invalid docset routes '+issue.field+': '+issue.message),
+  {code:'ROUTE_DECLARATION_INVALID',details:{issues:[issue],recovery:issue.recovery}});
+}
 export function validateRouteStructure(routes){
  const issues=[];
  const problem=(ok,code,field,expected,actual,route,outcome,message)=>{

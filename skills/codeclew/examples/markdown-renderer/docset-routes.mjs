@@ -1,6 +1,6 @@
 // Navigation declarations only. No source acquisition, graph traversal or remote fetch.
 import {localTarget} from './navigation.mjs';
-import {validateRouteStructure} from './route-structure.mjs';
+import {validateRouteStructure,validateLocalRouteOrigin} from './route-structure.mjs';
 export const REGISTRY_BYTES=1024*1024;
 const fail=(ok,path,message)=>{if(!ok)throw Error(`Invalid docset routes ${path}: ${message}`)};
 function shape(v,keys,path,optional=[]){
@@ -74,7 +74,8 @@ export function validateDocsetRoutes(value,nav,docset,version){
   if(r.origin.status==='known'){
    shape(r.origin,['status','occurrence','kind','title','summary'],p+'/origin');const o=occurrences.get(r.origin.occurrence);fail(o&&o.actor.kind==='service',p,'origin must name a service occurrence');
    text(r.origin.title,p,160);text(r.origin.summary,p);
-   if(o.actor.docset===docset){const n=nav.services.find(x=>x.id===o.actor.service),target=occurrenceRows.find(x=>x.id===o.id).to;fail(n.starts.some(s=>s.kind===r.origin.kind&&s.to.file===target.file&&s.to.fragment===target.fragment),p,'local origin is not a documented start')}
+   validateLocalRouteOrigin(r,ri,docset,nav.services.flatMap(s=>s.starts.map(start=>({service:s.id,kind:start.kind,
+    target:{docset,page:start.to.file.replace(/\.md$/,'.html'),...(start.to.fragment?{anchor:start.to.fragment}:{})}}))));
   }else{shape(r.origin,['status','reason'],p+'/origin');text(r.origin.reason,p)}
   const branches=unique(list(r.branches,p+'/branches',0,64),p+'/branches');
   for(const b of branches.values()){shape(b,['id','title','condition','target'],p+'/branch');text(b.title,p,160);text(b.condition,p);destination(b.target,p+'/branch/target')}
