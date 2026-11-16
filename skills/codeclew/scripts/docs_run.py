@@ -1044,7 +1044,7 @@ def verify(run, *, debug=False):
         original = load(draft / 'original.json')
         need(not W['unfinished'](original), 'UNFINISHED_SCAFFOLD', pages=W['unfinished'](original))
         W['validate_start_labels'](run, globals())
-        W['validate_fragment_addresses'](original, globals())
+        W['validate_fragment_addresses'](original, globals(), job=job)
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, _, _ = M['compose_pages'](original)

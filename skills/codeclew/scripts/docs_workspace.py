@@ -323,7 +323,7 @@ def summary(result):
 
 
 def save_pages(run, input_path, api):
-    _, inventory, _ = api['frozen_inputs'](run)
+    job, inventory, _ = api['frozen_inputs'](run)
     patch = api['load'](input_path)
     api['need'](set(patch) == {'pages'} and isinstance(patch['pages'], list) and patch['pages'], 'INVALID_PAGE_UPDATE')
     original = api['load'](run / 'workspace/draft/original.json')
@@ -354,7 +354,7 @@ def save_pages(run, input_path, api):
         candidate = {'page': name, 'fragments': [anchors(info), *fragments]}
         if any('id' in f or 'evidence' in f for f in fragments):
             api['M']['compose_pages']({'pages': [candidate]})
-        validate_fragment_addresses({'pages': [candidate]}, api)
+        validate_fragment_addresses({'pages': [candidate]}, api, job=job)
         by_name[name] = candidate
         changed.append(name)
     before = {p['page']: api['digest'](p) for p in original['pages']}
@@ -409,8 +409,18 @@ def fragment_target(page, identity):
     return page + '#clew-fragment-' + identity
 
 
-def validate_fragment_addresses(original, api):
+def fragment_context(original, job, api):
+    process = api['subprocess'].run([job['node'], str(Path(__file__).with_name('docs_run_fragment_addresses.mjs')),
+        job['renderer']], input=api['encode'](original), capture_output=True, timeout=30)
+    response = json.loads(process.stdout)
+    api['need'](process.returncode == 0 and isinstance(response.get('issues'), list),
+                'FRAGMENT_ADDRESS_CONTEXT_CHECK_FAILED', response=response)
+    return response['issues']
+
+
+def validate_fragment_addresses(original, api, *, job=None):
     issues = []
+    addressed = []
     for page in original['pages']:
         seen = set()
         for index, fragment in enumerate(page['fragments']):
@@ -425,7 +435,12 @@ def validate_fragment_addresses(original, api):
                     'actual': fragment_target(page['page'], identity), 'expected': 'one managed address for one existing source-backed fragment',
                     'recovery': 'Restore the named fragment with ./docs put, or remove its obsolete address and links with ./docs save-pages --input FILE. Preserve other fragments and evidence.'})
             seen.add(identity)
+        if seen:addressed.append(page)
     api['need'](not issues, 'INVALID_FRAGMENT_ADDRESS', issues=issues, recovery=issues[0]['recovery'] if issues else '')
+    if addressed:
+        api['need'](job is not None, 'FRAGMENT_ADDRESS_RENDERER_REQUIRED')
+        issues = fragment_context({'pages': addressed}, job, api)
+        api['need'](not issues, 'INVALID_FRAGMENT_ADDRESS', issues=issues, recovery=issues[0]['recovery'] if issues else '')
 
 
 def address_body(fragments, page, identity, api):
@@ -448,7 +463,7 @@ def address_body(fragments, page, identity, api):
 
 
 def address_fragment(run, page, identity, api):
-    api['frozen_inputs'](run)
+    job, _, _ = api['frozen_inputs'](run)
     name = api['M']['page_name'](page)
     original = api['load'](run / 'workspace/draft/original.json')
     selected = next((p for p in original['pages'] if p['page'] == name), None)
@@ -459,6 +474,7 @@ def address_fragment(run, page, identity, api):
             for line in f['text'].splitlines()))]
     candidate = {'page': name, 'fragments': address_body(body, name, identity, api)}
     api['M']['compose_pages']({'pages': [candidate]})
+    validate_fragment_addresses({'pages': [candidate]}, api, job=job)
     if candidate['fragments'] == body:
         return {'status': 'PAGES_SAVED', 'changed': [], 'unchanged': [p['page'] for p in original['pages']],
                 'unfinishedPages': unfinished(original), 'ready': False, 'semanticTruthAssessed': False,
@@ -472,7 +488,7 @@ def address_fragment(run, page, identity, api):
 
 def put(run, page, fragment, text, evidence, sequence, api):
     """Replace one meaningful fragment, serializing envelopes/fences ourselves."""
-    _, inventory, _ = api['frozen_inputs'](run)
+    job, inventory, _ = api['frozen_inputs'](run)
     name = api['M']['page_name'](page)
     api['need'](isinstance(fragment, str) and re.fullmatch(r'[A-Za-z0-9._-]+', fragment), 'INVALID_FRAGMENT_ID')
     api['need'](evidence and all(isinstance(h, str) and h for h in evidence), 'CLAIM_EVIDENCE_REQUIRED')
@@ -507,6 +523,7 @@ def put(run, page, fragment, text, evidence, sequence, api):
     if index is None:body.append(update)
     else:body[index] = update
     body = address_body(body, name, fragment, api)
+    validate_fragment_addresses({'pages': [{'page': name, 'fragments': body}]}, api, job=job)
     path = run / 'workspace/pages' / (name + '.json')
     api['save'](path, {'pages': [{'page': name, 'fragments': body}]})
     result = save_pages(run, path, api)
@@ -716,7 +733,7 @@ def check(run, pages, scaffold_only, api):
         api['need'](len(names) == len(set(names)), 'DUPLICATE_PAGE_SELECTION')
         api['need'](scaffold_only or selected, 'NO_COMPLETE_PAGES')
         api['need'](set(selected) <= set(names), 'UNKNOWN_CHECK_PAGE', pages=sorted(set(selected) - set(names)))
-        validate_fragment_addresses(original, api)
+        validate_fragment_addresses(original, api, job=job)
         api['need'](scaffold_only or not set(selected) & set(pending), 'UNFINISHED_SCAFFOLD', pages=sorted(set(selected) & set(pending)))
         if not scaffold_only:
             validate_start_labels(run, api, pages=selected)

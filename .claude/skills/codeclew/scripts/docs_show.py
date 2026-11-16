@@ -53,7 +53,7 @@ def window(text, arguments, offset=0, limit=8000):
 
 
 def show(run, args, api):
-    _, inventory, _ = api['frozen_inputs'](run)  # Pure pin reads; no runtime/receipts/locks.
+    job, inventory, _ = api['frozen_inputs'](run)  # Pin reads; no native probes/receipts/locks.
     page = args.page[0] if len(args.page) == 1 else None
     families = bool(args.page) + bool(args.entries or args.entry) + bool(args.routes or args.route)
     api['need'](families == 1 and len(args.page) <= 1, 'SHOW_SELECTOR_REQUIRED',
@@ -80,7 +80,9 @@ def show(run, args, api):
             target = api['W']['fragment_target'](page, args.fragment)
             tag = '<a id="' + target.split('#', 1)[1] + '"></a>'
             if any(set(f) == {'text'} and f['text'].strip() == tag for f in rows[page]['fragments']):
-                text += '\nReader target: ' + target + '\n'
+                issues = api['W']['fragment_context']({'pages': [rows[page]]}, job, api)
+                if issues:text += '\nReader target unavailable: ' + issues[0]['actual']['reason'] + '\n' + issues[0]['recovery'] + '\n'
+                else:text += '\nReader target: ' + target + '\n'
             else:
                 text += '\nPrepare reader target: ./docs page-info --page ' + shlex.quote(page) + ' --fragment ' + shlex.quote(args.fragment) + '\n'
         arguments = ['--page', page] + (['--fragment', args.fragment] if args.fragment else [])

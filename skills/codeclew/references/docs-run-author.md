@@ -42,6 +42,9 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    anchor reference, not a guessed citation ID. Do not write managed anchor HTML.
    Addressed fragments must be complete Markdown blocks; inline legacy claims
    are kept intact and require a deliberate block edit rather than guessed layout.
+   The admitted renderer checks insertion context and the real HTML target before
+   saving. Literal/raw/container interiors are refused; `show` does not advertise
+   an address that fails this read-only check.
    For a semantic sequence JSON file use `./docs sequence --page PAGE.md --fragment
    FLOW --input FILE --evidence HANDLE`; the helper owns the fence. On an entry
    page, participant `handler` receives its registered ID, target and initial HTTP

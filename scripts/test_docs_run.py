@@ -250,6 +250,52 @@ else:
         shown=self.show_cli('--page','details.md','--fragment','effects','--limit','0')
         self.assertIn('Reader target: '+target,shown)
 
+    def test_fragment_address_actual_parser_refuses_literal_context_and_show_never_claims_false_target(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        cases=[('backtick','```text\n\n','alpha\n\n','```\n'),
+               ('tilde','~~~text\n\n','alpha\n\n','~~~\n'),
+               ('indent','    prefix\n\n','    alpha\n\n',''),
+               ('raw-pre','<pre>\n\n','alpha\n\n','</pre>\n'),
+               ('raw-comment','<!--\n\n','alpha\n\n','-->\n')]
+        for label,prefix,text,suffix in cases:
+            name='literal-'+label+'.md'
+            fragments=[{'text':prefix},{'id':'snippet','text':text,'evidence':[self.handle]},{'text':suffix}]
+            self.save_local({'page':name,'fragments':fragments})
+            before=D['tree'](self.run)
+            with self.assertRaises(D['Stop']) as error:D['W']['address_fragment'](self.run,name,'snippet',D)
+            self.assertEqual(error.exception.code,'INVALID_FRAGMENT_ADDRESS',label)
+            self.assertEqual(error.exception.details['issues'][0]['code'],'FRAGMENT_ADDRESS_CONTEXT_UNSAFE')
+            self.assertEqual(before,D['tree'](self.run))
+            # A legacy caller may already have stored the old unsafe assembly.
+            current=D['load'](self.run/'workspace/draft/original.json')
+            page=next(p for p in current['pages'] if p['page']==name)
+            page['fragments']=D['W']['address_body'](page['fragments'],name,'snippet',D)
+            D['save'](self.run/'workspace/draft/original.json',current)
+            before=D['tree'](self.run)
+            shown=self.show_cli('--page',name,'--fragment','snippet','--limit','0')
+            self.assertIn('Reader target unavailable:',shown,label)
+            self.assertNotIn('Reader target: '+name+'#clew-fragment-snippet',shown)
+            self.assertEqual(before,D['tree'](self.run))
+            local=self.local_check(self.entry['page'])
+            self.assertEqual(local['code'],'INVALID_FRAGMENT_ADDRESS',local)
+        self.original=D['load'](self.run/'workspace/draft/original.json');self.seed_files();self.generated()
+        final=D['verify'](self.run)
+        self.assertEqual(final['checks']['output']['code'],'INVALID_FRAGMENT_ADDRESS')
+
+    def test_fragment_address_actual_parser_preserves_complete_literal_blocks_unicode_and_crlf(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        cases=['```text\nalpha\n```','~~~text\nalpha\n~~~','    alpha','<pre>\nalpha\n</pre>','## Δ\r\n\r\nAlpha π.']
+        for index,text in enumerate(cases):
+            name='complete-'+str(index)+'.md'
+            self.save_local({'page':name,'fragments':[{'id':'complete','text':text,'evidence':[self.handle]}]})
+            result=D['W']['address_fragment'](self.run,name,'complete',D)
+            page=next(p for p in D['load'](self.run/'workspace/draft/original.json')['pages'] if p['page']==name)
+            claim=next(f for f in page['fragments'] if f.get('id')=='complete')
+            self.assertEqual(claim['text'],text);self.assertEqual(claim['evidence'],[self.handle])
+            D['W']['validate_fragment_addresses']({'pages':[page]},D,job=self.job)
+            self.assertEqual(self.local_check(name)['status'],'UNIT_CHECKED')
+            self.assertIn('Reader target: '+result['fragmentTarget'],self.show_cli('--page',name,'--fragment','complete','--limit','0'))
+
     def test_preserved_fragment_address_cli_is_readable_and_rejects_orphan_duplicate_and_missing(self):
         self.readmit_budget(100,1);self.generated()
         name=self.service+'.md';before=D['load'](self.run/'workspace/draft/original.json')
@@ -302,15 +348,22 @@ else:
         self.original=D['load'](self.run/'workspace/draft/original.json');self.seed_files();self.generated()
         self.assertEqual(self.local_check(self.entry['page'])['status'],'UNIT_CHECKED')
         self.assertEqual(D['verify'](self.run)['status'],'READY')
-        D['W']['put'](self.run,name,'extra','## Clew fragment overview\n\nAdditional explanation.',[self.handle],False,D)
+        before=D['tree'](self.run/'workspace/draft')
+        with self.assertRaises(D['Stop']) as error:
+            D['W']['put'](self.run,name,'extra','## Clew fragment overview\n\nAdditional explanation.',[self.handle],False,D)
+        self.assertEqual(error.exception.code,'INVALID_FRAGMENT_ADDRESS')
+        self.assertEqual(error.exception.details['issues'][0]['actual']['renderedTargets'],2)
+        self.assertEqual(before,D['tree'](self.run/'workspace/draft'))
         self.original=D['load'](self.run/'workspace/draft/original.json')
+        next(p for p in self.original['pages'] if p['page']==name)['fragments'].append(
+            {'id':'extra','text':'\n\n## Clew fragment overview\n\nAdditional explanation.\n\n','evidence':[self.handle]})
         self.review['claims'].append({'page':name,'claim':'extra','evidence':[self.handle],'disposition':'SUPPORTED'})
         self.seed_files();self.generated()
         local=self.local_check(self.entry['page']);final=D['verify'](self.run)
-        self.assertEqual(local['code'],'FRAGMENT_TARGET_INVALID',local)
-        self.assertEqual(local['details']['response']['details']['actual'],2)
-        self.assertIn('./docs show',local['recovery'])
-        self.assertEqual(final['checks']['finalize']['status'],'FAIL',final)
+        self.assertEqual(local['code'],'INVALID_FRAGMENT_ADDRESS',local)
+        self.assertEqual(local['details']['issues'][0]['actual']['renderedTargets'],2)
+        self.assertIn('./docs put',local['recovery'])
+        self.assertEqual(final['checks']['output']['code'],local['code'],final)
         # Removing an address also leaves the canonical reference invalid; it is
         # never silently reinterpreted as a differently named heading or claim.
         current=D['load'](self.run/'workspace/draft/original.json')

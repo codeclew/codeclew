@@ -30,6 +30,43 @@ function renderMarkdown(markdown,sequences,words){
  return html;
 }
 
+// Use the renderer's own lexer and HTML, not an independent Markdown parser.
+// Refuse uncertain positions and insertion inside an existing literal/container.
+export function checkFragmentAddresses(original){
+ const issues=[];
+ for(const page of original.pages){
+  const addresses=[],parts=[];let prefix='';
+  for(const [index,f] of page.fragments.entries()){
+   const match=Object.keys(f).length===1&&f.text.match(/^\s*<a id="clew-fragment-([A-Za-z0-9._-]+)"><\/a>\s*$/);
+   if(match){addresses.push({identity:match[1],index,offset:prefix.replace(/\r\n|\r/g,'\n').length});continue}
+   parts.push(f.text);prefix+=f.text;
+  }
+  if(!addresses.length)continue;
+  const source=parts.join('').replace(/\r\n|\r/g,'\n'),tokens=marked.lexer(source,{gfm:true});
+  const aligned=tokens.map(t=>t.raw).join('')===source;
+  const html=renderMarkdown(page.fragments.map(f=>f.text).join(''),[]);
+  const tags=html.match(/<[a-z][^>]*>/gi)||[];
+  const ids=tags.flatMap(tag=>[...tag.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].map(m=>m[1]??m[2]??m[3]));
+  for(const a of addresses){
+   let reason=!aligned?'Parser source positions are not exact.':null,cursor=0;
+   if(page.fragments[a.index+1]?.id!==a.identity)reason='Managed address must immediately precede its fragment.';
+   if(!reason)for(const t of tokens){
+    const end=cursor+t.raw.length;
+    if(cursor<a.offset&&a.offset<end&&t.type!=='space'&&!/^\s*$/.test(t.raw.slice(a.offset-cursor))){
+     reason='Insertion is inside an existing '+t.type+' block.';break;
+    }
+    cursor=end;
+   }
+   const count=ids.filter(id=>id==='clew-fragment-'+a.identity).length;
+   if(count!==1)reason=reason||'Rendered address is missing or ambiguous.';
+   if(reason)issues.push({code:'FRAGMENT_ADDRESS_CONTEXT_UNSAFE',page:page.page,fragment:a.identity,
+    field:'/fragments/'+a.index+'/text',actual:{reason,renderedTargets:count},expected:'one real target outside an existing literal/container block',
+    recovery:'Keep the original fragment bytes and evidence. Use ./docs put for a complete top-level Markdown block, or keep its existing heading link; do not insert managed HTML inside code/raw/container content.'});
+  }
+ }
+ return {status:issues.length?'FAILED':'FRAGMENT_ADDRESSES_CHECKED',issues};
+}
+
 // Retained byte-for-byte for callers comparing existing neutral publications.
 function neutralPage(html,files,label){
  const nav=files.map(f=>`<a href="${escape(f.replace(/\.md$/,'.html'))}">${escape(basename(f,'.md'))}</a>`).join(' · ');
