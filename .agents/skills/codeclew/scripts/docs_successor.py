@@ -1,4 +1,4 @@
-"""Caller-owned, prepare-only continuation of a terminal failed author run."""
+"""Caller-owned, prepare-only continuation of terminal work, without approval transfer."""
 import fcntl
 import json
 import re
@@ -42,7 +42,7 @@ def history(run, state, api):
     return files, accounting
 
 
-def prepare(job_path, previous, previous_skill, run, api):
+def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False):
     previous, run = Path(previous).absolute(), Path(run).absolute()
     api['need'](previous.is_dir() and not previous.is_symlink()
                 and not run.is_relative_to(previous) and not previous.is_relative_to(run), 'INVALID_SUCCESSOR_LOCATION')
@@ -64,13 +64,38 @@ def prepare(job_path, previous, previous_skill, run, api):
         origin = profile.parents[4]
         old_job, inventory, old_pins = api['frozen_inputs'](previous, skill=Path(previous_skill), prepared_origin=origin)
         state, report = api['load'](previous / 'state.json'), api['load'](previous / 'report.json')
-        api['need'](state.get('status') == 'AUTHOR_COMPLETED' and report.get('status') == 'FAILED',
+        api['need'](state.get('status') == 'AUTHOR_COMPLETED' and
+                    report.get('status') == ('READY' if revise_ready else 'FAILED'),
                     'SUCCESSOR_TERMINAL_FAILED_REQUIRED')
+        ready_files = {}
+        if revise_ready:
+            api['need'](all(report.get('checks', {}).get(c, {}).get('status') == 'PASS' for c in api['CHECKS']),
+                        'SUCCESSOR_READY_UNVERIFIABLE')
+            output = Path(report.get('output', ''))
+            api['need'](not output.is_absolute() and output.parts and '..' not in output.parts
+                        and api['tree'](previous / output) == report.get('outputFiles')
+                        and report.get('outputDigest') == api['digest'](report['outputFiles']),
+                        'SUCCESSOR_READY_UNVERIFIABLE')
+            ready = api['load'](previous / 'ready/current.json')
+            key = ready.get('output')
+            api['need'](isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key),
+                        'SUCCESSOR_READY_UNVERIFIABLE')
+            # promote preserves the initially accepted package, then records its
+            # recheck report. Receipt paths can differ; reader bytes must not.
+            api['need'](ready.get('outputDigest') == api['digest'](api['tree'](previous / 'ready' / key))
+                        and ready['outputDigest'] == 'sha256:' + key
+                        and ready.get('reportDigest') == api['digest'](report)
+                        and api['tree'](previous / 'ready' / key / 'html') == report.get('deliverableFiles'),
+                        'SUCCESSOR_READY_UNVERIFIABLE')
+            ready_files = api['tree'](previous / 'ready')
         files, accounting = history(previous, state, api)
         before = {name: api['sha']((previous / name).read_bytes()) for name in ('state.json', 'pins.json', 'report.json')}
         draft = api['tree'](previous / 'workspace/draft')
         pages = api['tree'](previous / 'workspace/pages')
         api['need'](draft == state['attempts'][-1]['draftFiles'], 'SUCCESSOR_PARENT_DRAFT_CHANGED')
+        if revise_ready:
+            api['need'](draft == report.get('draftFiles') and api['digest'](draft) == report.get('draftDigest'),
+                        'SUCCESSOR_READY_UNVERIFIABLE')
         job = api['validate_job'](api['load'](job_path))
         stable = lambda value: {k: v for k, v in value.items() if k not in ('renderer', 'budget')}
         api['need'](stable(job) == stable(old_job), 'SUCCESSOR_REQUEST_OR_SCOPE_CHANGED')
@@ -87,11 +112,14 @@ def prepare(job_path, previous, previous_skill, run, api):
             api['need'](new_pins[key] == old_pins[key], 'SUCCESSOR_RUNTIME_CHANGED', field=key)
         shutil.copytree(previous / 'workspace/draft', run / 'workspace/draft', dirs_exist_ok=True)
         shutil.copytree(previous / 'workspace/pages', run / 'workspace/pages', dirs_exist_ok=True)
+        if (previous / 'workspace/notes').exists():
+            shutil.copytree(previous / 'workspace/notes', run / 'workspace/notes')
         (run / 'attempts').mkdir()
         for number in files:shutil.copytree(previous / 'attempts' / number, run / 'attempts' / number)
         archive = run / 'history';archive.mkdir()
         if (previous / 'history').exists():shutil.copytree(previous / 'history', archive / 'earlier')
         for name in ('state.json', 'pins.json', 'report.json'):shutil.copyfile(previous / name, archive / name)
+        if revise_ready:shutil.copytree(previous / 'ready', archive / 'ready')
         api['need'](api['tree'](run / 'workspace/draft') == draft
                     and api['tree'](run / 'workspace/pages') == pages, 'SUCCESSOR_DRAFT_COPY_CHANGED')
         receipt = {'schema': 'codeclew-docs-successor/1', 'predecessor': str(previous), 'predecessorPreparedOrigin': str(origin),
@@ -103,6 +131,10 @@ def prepare(job_path, previous, previous_skill, run, api):
                    'budgetScope': 'NEW_ATTEMPTS_ONLY', 'draftDigest': api['digest'](draft),
                    'sourceBindingsDigest': api['digest'](old_bindings), 'modelCallsOnPrepare': 0,
                    'standaloneFullDocsetReviewRequired': True, 'fullFinalGateRequired': True}
+        if revise_ready:
+            receipt.update(callerDecision={'status': 'REVISION_REQUESTED',
+                'reason': 'INDEPENDENT_QUALITY_REJECTED', 'parentNativeStatus': 'READY'},
+                predecessorReadyFiles=ready_files)
         api['save'](run / 'inputs/successor.json', receipt)
         new_pins['inputFiles'] = api['tree'](run / 'inputs');api['save'](run / 'pins.json', new_pins)
         inherited = {'inheritedAttemptCount': len(state['attempts']), 'inheritedModelTokens': accounting['budgetTokens'],
@@ -110,7 +142,8 @@ def prepare(job_path, previous, previous_skill, run, api):
         api['save'](run / 'state.json', {**state, 'status': 'SUCCESSOR_PREPARED', 'authorStartedAt': None,
                    'successor': inherited, 'unitCursor': None})
         api['need'](all(api['sha']((previous / name).read_bytes()) == value for name, value in before.items())
-                    and api['tree'](previous / 'workspace/draft') == draft, 'SUCCESSOR_PARENT_CHANGED')
+                    and api['tree'](previous / 'workspace/draft') == draft
+                    and (not revise_ready or api['tree'](previous / 'ready') == ready_files), 'SUCCESSOR_PARENT_CHANGED')
         return {'status': 'SUCCESSOR_PREPARED', 'run': str(run), 'modelCalls': 0, 'ready': False,
                 'inheritedModelTokens': accounting['budgetTokens'], 'continuationAllowance': job['budget'],
                 'continuationModelTokens': 0, 'totalModelTokens': accounting['budgetTokens'],

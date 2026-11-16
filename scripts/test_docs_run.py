@@ -126,7 +126,20 @@ else:
             self.review['requirements'].append(account)
         self.review['claims'] = [{'page': p['page'], 'claim': f['id'], 'evidence': f['evidence'], 'disposition': 'SUPPORTED'}
                                  for p in self.original['pages'] for f in p['fragments'] if 'id' in f]
+        overview = self.original['pages'][1]['fragments'][1]
+        for row in self.review['requirements']:
+            requirement = next(r for r in self.inventory['requirements'] if r['id'] == row['requirement'])
+            if requirement['kind'] == 'SERVICE':
+                row['topics'] = {topic: {'disposition':'EXPLAINED','page':requirement['page'],
+                    'claim':'overview','evidence':[self.handle],'fragmentDigest':D['digest'](overview)}
+                    for topic in requirement['topics']}
+                row['sourceNotes'] = {'id':'source-notes','text':'Source block: ' + self.source['text'],'evidence':[self.handle]}
+        self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':self.service + '.md'}]
         self.seed_files()
+        # These controls start from authored labels; scaffold rejection has its
+        # own positive/negative controls below and is never bypassed in product.
+        D['W']['page_info'](self.run,self.entry['page'],self.service,'Reserve an item',False,D,summary='Accept a reservation')
+        D['W']['page_info'](self.run,self.service+'.md',self.service,'Reservation data',True,D)
 
     def seed_files(self):
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
@@ -183,6 +196,89 @@ else:
         with self.assertRaises(D['Stop']) as error:D['review_for_run'](self.run)
         self.assertEqual(error.exception.code, 'FROZEN_INPUTS_CHANGED')
 
+    def test_start_scaffold_local_final_parity_and_supported_label_update_preserves_identity(self):
+        self.navigation=D['navigation_starter'](self.inventory);self.seed_files();self.generated()
+        local=self.local_check(self.entry['page']);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'NAVIGATION_SCAFFOLD_UNFINISHED')
+        self.assertEqual(final['checks']['output']['code'],local['code'])
+        self.assertIn('--summary',local['recovery'])
+        before=D['load'](self.run/'workspace/draft/navigation.json')
+        hashes={self.entry['page']:'old',self.service+'.md':'preserved'}
+        D['save'](self.run/'workspace/draft/reviewed-pages.json',hashes)
+        result=subprocess.run([sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+            'page-info','--run-dir',str(self.run),'--page',self.entry['page'],'--service',self.service,
+            '--title','Reserve an item','--summary','Validate the reservation and return the stored result.'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        after=D['load'](self.run/'workspace/draft/navigation.json')
+        expected=json.loads(json.dumps(before));expected['services'][0]['starts'][0].update(
+            title='Reserve an item',summary='Validate the reservation and return the stored result.')
+        self.assertEqual(after,expected)
+        self.assertEqual(D['load'](self.run/'workspace/draft/reviewed-pages.json'),{self.service+'.md':'preserved'})
+        D['W']['validate_start_labels'](self.run,D)
+        # Only exact starter fields are rejected, not an ordinary mention.
+        after['services'][0]['starts'][0]['summary']='The old message "Describe this entry from its retained source." is returned only in the documented compatibility case.'
+        D['save'](self.run/'workspace/draft/navigation.json',after);D['W']['validate_start_labels'](self.run,D)
+        with self.assertRaises(D['Stop']):D['W']['page_info'](self.run,self.entry['page'],self.service,'HTTP_ENDPOINT',False,D,summary='Action')
+
+    def test_service_topic_closure_references_absence_evidence_and_staleness_are_structural_only(self):
+        entries={self.handle:{'source':self.source}}
+        requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        accounts=json.loads(json.dumps(self.review['requirements']))
+        row=next(r for r in accounts if r['requirement']==requirement['id'])
+        def validate(rows=accounts,original=None,navigation=None,record=False):
+            return D['P']['validate'](self.inventory,rows,original or self.original,navigation or self.navigation,entries,D,record=record)
+        self.assertIsNone(validate())  # No semantic PASS is produced.
+        topic='configuration';row['topics'][topic].update(disposition='EXPLICIT_UNKNOWN',reason='The retained block contains no configuration declaration; deployment configuration is outside this source.')
+        self.assertIsNone(validate())
+        cases=[('SERVICE_TOPICS_REQUIRED',lambda r:r['topics'].pop('contracts')),
+            ('SERVICE_TOPIC_REFERENCE_REQUIRED',lambda r:r['topics']['contracts'].update(claim='missing')),
+            ('SERVICE_TOPIC_REFERENCE_REQUIRED',lambda r:r['topics']['contracts'].update(claim='clew-scope')),
+            ('SERVICE_TOPIC_ABSENCE_BOUND_REQUIRED',lambda r:r['topics']['configuration'].pop('reason')),
+            ('SERVICE_SOURCE_NOTES_REQUIRED',lambda r:r.pop('sourceNotes')),
+            ('SERVICE_TOPIC_REVIEW_STALE',lambda r:r['topics']['contracts'].update(fragmentDigest='old'))]
+        for code,change in cases:
+            bad=json.loads(json.dumps(accounts));change(next(r for r in bad if r['requirement']==requirement['id']))
+            with self.assertRaises(D['Stop']) as error:validate(bad)
+            self.assertIn(code,{i['code'] for i in error.exception.details['issues']})
+        foreign=json.loads(json.dumps(self.navigation));foreign['services'][0]['id']='another-service'
+        with self.assertRaises(D['Stop']) as error:validate(navigation=foreign)
+        self.assertIn('SERVICE_TOPIC_REFERENCE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        nav=json.loads(json.dumps(self.navigation));nav['services'][0]['data']=[]
+        with self.assertRaises(D['Stop']) as error:validate(navigation=nav)
+        self.assertIn('SERVICE_DATA_NAVIGATION_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        stale=json.loads(json.dumps(self.original));stale['pages'][1]['fragments'][1]['text']+='Changed meaning.'
+        with self.assertRaises(D['Stop']) as error:validate(original=stale)
+        self.assertIn('SERVICE_TOPIC_REVIEW_STALE',{i['code'] for i in error.exception.details['issues']})
+        validate(original=stale,record=True);validate(original=stale)
+
+    def test_missing_service_topic_local_final_parity_and_source_notes_supported_path(self):
+        requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        bad=json.loads(json.dumps(self.review));row=next(r for r in bad['requirements'] if r['requirement']==requirement['id'])
+        row.pop('topics');D['save'](self.seed/'self-review.json',bad);self.generated()
+        local=self.local_check(requirement['page']);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'SERVICE_TOPIC_CLOSURE_REQUIRED',local)
+        self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+        notes=self.root/'source-notes.md';notes.write_text('Source reservation block: '+self.source['text'])
+        done=subprocess.run([sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+            'review-page','--run-dir',str(self.run),'--page',requirement['page'],'--text-file',str(notes),'--evidence',self.handle],capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+        self.assertEqual(json.loads(done.stdout)['status'],'SOURCE_NOTES_SAVED')
+        shell=D['W']['review_page'](self.run,requirement['page'],None,D)
+        self.assertEqual(shell['requirements'][requirement['id']]['sourceNotes']['text'],notes.read_text())
+        self.assertTrue(all(v['disposition'] is None for v in shell['requirements'][requirement['id']]['topics'].values()))
+        for identity,account in shell['requirements'].items():
+            account.update(disposition='EXPLAINED',section='reservations')
+            kind=next(r['kind'] for r in self.inventory['requirements'] if r['id']==identity)
+            if kind=='DISCOVERY':account.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+            if kind=='SERVICE':
+                for topic in account['topics']:
+                    account['topics'][topic]={'disposition':'EXPLAINED','page':requirement['page'],'claim':'overview'}
+        shell['claims']={key:'SUPPORTED' for key in shell['claims']}
+        recorded=D['W']['review_page'](self.run,requirement['page'],shell,D)
+        self.assertFalse(recorded['semanticTruthAssessed'])
+        stored=D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]
+        self.assertEqual(stored['topics']['contracts']['evidence'],[self.handle])
+        self.assertEqual(stored['topics']['contracts']['fragmentDigest'],D['digest'](self.original['pages'][1]['fragments'][1]))
     def test_verify_and_promotion_still_refuse_a_runtime_version_change(self):
         self.generated();accepted = self.check()
         self.assertEqual(accepted['status'], 'READY')
@@ -272,6 +368,9 @@ else:
             for row in shell['requirements'].values():
                 row['disposition'] = 'EXPLAINED'
                 if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS', discoveredEntries=[])
+                if 'topics' in row:
+                    fixture=next(a for a in self.review['requirements'] if 'topics' in a)
+                    row.update(topics=json.loads(json.dumps(fixture['topics'])),sourceNotes=fixture['sourceNotes'])
             shell['claims'] = {key: 'SUPPORTED' for key in shell['claims']}
             D['W']['review_page'](self.run, page, shell, D)
         before = D['review_for_run'](self.run)
@@ -571,6 +670,9 @@ else:
             for row in shell['requirements'].values():
                 row['disposition']='EXPLAINED'
                 if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+                if 'topics' in row:
+                    fixture=next(a for a in self.review['requirements'] if 'topics' in a)
+                    row.update(topics=json.loads(json.dumps(fixture['topics'])),sourceNotes=fixture['sourceNotes'])
             shell['claims']={key:'SUPPORTED' for key in shell['claims']}
             D['W']['review_page'](self.run,page,shell,D)
         parent=next(r for r in self.inventory['requirements'] if r['kind']=='DISCOVERY')
@@ -626,28 +728,65 @@ else:
         self.assertEqual(D['load'](self.run / 'report.json'),report)
         self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']),2)
 
-    def successor_parent(self):
+    def successor_parent(self, *, ready=False):
         self.readmit_budget(8,0);self.mode.write_text('successor-accounting')
         prepared=self.run / 'inputs/author-source' / self.service / 'read'
         shutil.copytree(self.seed / 'reads',prepared)
         (prepared.parent / 'view.md').write_text(self.source['text'])
         shutil.rmtree(self.seed / 'reads')  # Prepared carrier is authoritative; do not duplicate its cite handle.
         pins=D['load'](self.run / 'pins.json');pins['inputFiles']=D['tree'](self.run / 'inputs');D['save'](self.run / 'pins.json',pins)
-        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.md)\n'
+        if not ready:self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.md)\n'
         self.seed_files();self.generated();failed=D['verify'](self.run)
-        self.assertEqual(failed['status'],'FAILED');self.assertEqual(failed['checks']['provenance']['status'],'PASS')
-        self.assertEqual(failed['checks']['finalize']['status'],'FAIL');self.assertEqual(D['load'](self.run / 'state.json')['modelTokens'],8)
+        self.assertEqual(failed['status'],'READY' if ready else 'FAILED');self.assertEqual(failed['checks']['provenance']['status'],'PASS')
+        self.assertEqual(failed['checks']['finalize']['status'],'PASS' if ready else 'FAIL');self.assertEqual(D['load'](self.run / 'state.json')['modelTokens'],8)
+        if ready:self.assertEqual(D['promote'](self.run)['status'],'READY_PROMOTED')
         (self.run / '.runner.lock').touch()
         job=json.loads(json.dumps(self.job));job['budget']={'maxModelTokens':3,'maxRepairs':0,'wallSeconds':30}
         path=self.root / 'successor-job.json';D['save'](path,job)
         return path
 
-    def prepare_owned_successor(self,job_path,child,mutate=None,previous=None):
+    def prepare_owned_successor(self,job_path,child,mutate=None,previous=None,**options):
         def sources(job,inventory,directory):
             shutil.copytree(self.run / 'inputs/author-source',directory)
             if mutate:mutate(directory)
         with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}):
-            return D['S']['prepare'](job_path,previous or self.run,D['SKILL'],child,D)
+            return D['S']['prepare'](job_path,previous or self.run,D['SKILL'],child,D,**options)
+
+    def test_ready_successor_requires_caller_revision_and_preserves_parent_ready_and_cost(self):
+        job_path=self.successor_parent(ready=True)
+        frozen=self.root / 'ready-freeze';shutil.copytree(self.run,frozen)
+        before=D['tree'](frozen)
+        with self.assertRaises(D['Stop']):self.prepare_owned_successor(job_path,self.root/'not-requested',previous=frozen)
+        with (frozen / '.runner.lock').open('rb') as lock:
+            D['fcntl'].flock(lock,D['fcntl'].LOCK_EX|D['fcntl'].LOCK_NB)
+            with self.assertRaises(D['Stop']) as error:
+                self.prepare_owned_successor(job_path,self.root/'live-ready',previous=frozen,revise_ready=True)
+            self.assertEqual(error.exception.code,'SUCCESSOR_PREDECESSOR_BUSY')
+        current=frozen/'ready/current.json';saved=current.read_bytes();changed=D['load'](current)
+        changed['reportDigest']='changed';D['save'](current,changed)
+        with self.assertRaises(D['Stop']) as error:
+            self.prepare_owned_successor(job_path,self.root/'bad-ready',previous=frozen,revise_ready=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_READY_UNVERIFIABLE');current.write_bytes(saved)
+        raw=frozen/'attempts/0/stdout.jsonl';saved=raw.read_bytes()
+        raw.write_bytes(saved.replace(b'"input_tokens": 8',b'"input_tokens": 7'))
+        with self.assertRaises(D['Stop']) as error:
+            self.prepare_owned_successor(job_path,self.root/'bad-ready-history',previous=frozen,revise_ready=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_HISTORY_UNVERIFIABLE');raw.write_bytes(saved)
+        child=self.root/'ready-successor'
+        with patch.dict(D,{'author':lambda *a,**k:self.fail('prepare must not launch any author')}):
+            result=self.prepare_owned_successor(job_path,child,previous=frozen,revise_ready=True)
+        self.assertEqual(result['modelCalls'],0);self.assertEqual(result['inheritedModelTokens'],8)
+        self.assertEqual(before,D['tree'](frozen))
+        self.assertEqual(D['load'](frozen/'report.json')['status'],'READY')
+        self.assertEqual(D['load'](child/'history/report.json')['status'],'READY')
+        receipt=D['load'](child/'inputs/successor.json')
+        self.assertEqual(receipt['callerDecision'],{'status':'REVISION_REQUESTED','reason':'INDEPENDENT_QUALITY_REJECTED','parentNativeStatus':'READY'})
+        self.assertEqual(D['tree'](child/'history/ready'),D['tree'](frozen/'ready'))
+        self.assertFalse((child/'ready').exists())
+        self.assertEqual(D['load'](child/'state.json')['threadId'],D['load'](frozen/'state.json')['threadId'])
+        self.assertNotEqual((child/'workspace/draft/original.json').stat().st_ino,(frozen/'workspace/draft/original.json').stat().st_ino)
+        state=D['load'](child/'state.json');state['status']='AUTHOR_COMPLETED';D['save'](child/'state.json',state)
+        self.assertEqual(D['verify'](child)['checks']['author']['code'],'AUTHOR_COMPLETION_REQUIRED')
 
     def test_successor_prepare_inherits_history_without_alias_or_model_and_requires_new_full_review(self):
         job_path=self.successor_parent();child=self.root / 'successor'
@@ -1088,6 +1227,8 @@ else:
             row['section'] = '#' + account['section']
             if account.get('discoveryDisposition'):
                 row.update(discoveryDisposition=account['discoveryDisposition'], discoveredEntries=account['discoveredEntries'])
+            for field in ('topics','sourceNotes'):
+                if field in account:row[field]=json.loads(json.dumps(account[field]))
         for account in self.review['claims']:
             compact['claims'][account['page']][account['claim']] = account['disposition']
         compact['unresolved'] = self.review['unresolved']

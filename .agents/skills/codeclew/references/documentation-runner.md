@@ -169,7 +169,7 @@ no forged-report impossibility is claimed. Debug saves observable inputs, comman
 results and decisions only, never hidden model reasoning.
 
 
-## Caller-owned successor after a terminal failed gate
+## Caller-owned successor after terminal work
 
 To reuse the same author and unchanged retained work with newly admitted tooling,
 prepare a separate successor. This command never launches the author:
@@ -185,6 +185,13 @@ native bindings, changed runtime, and unverifiable historical counters. It admit
 the new helper/profile/renderer through ordinary prepare, copies rather than aliases
 authored work, and preserves prior attempts and the failed report. Do not edit old
 pins or use accounting recovery for a different failure.
+
+For native READY that the caller rejects on independent quality review, add
+`--revise-ready` to prepare-successor. This explicit caller request validates and
+preserves the original READY report, output, pins, ready directory and exact cost;
+it records a separate quality-revision decision without marking the parent FAILED.
+The reason is a fixed generic decision, not evaluator findings for the author.
+Preparation still makes no model call. Launch requires separate caller admission.
 
 For prepare-successor, the job budget is the explicit NEW_ATTEMPTS_ONLY allowance:
 one standalone same-author full-docset review, followed by at most its declared

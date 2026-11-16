@@ -18,7 +18,15 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    --entries [--service SERVICE]` or `show --routes` for IDs, then `--entry ID` or
    `--route ID` for one object. Invalid IDs list choices; plain fragments need no
    ID. Follow the printed continuation for remaining characters, or use `--limit
-   0` for all. Available-but-unread source remains unfinished work.
+   0` for all. Available-but-unread source remains unfinished work. Before rereading
+   existing prose/arrows, make your own compact Markdown notes from consequential
+   source blocks: handle/block, guard/branch, state before call, success/failure/skip
+   state, parse/default variants, outputs and order. Save one reusable outline per
+   service with `./docs review-page --page SERVICE.md --text-file NOTES.md
+   --evidence HANDLE` (repeat handles). Notes stay private, outside reader output.
+   Then map each source consequence to existing prose/arrows or a local correction;
+   audit visible claims back to those same blocks. Do not use existing prose as
+   the checklist of what source behavior exists, or copy whole source files.
 2. Write ordinary Markdown in a text file; save with `./docs put --page PAGE.md
    --fragment CLAIM --text-file FILE --evidence HANDLE` (repeat genuine evidence).
    Quotes/backslashes stay literal; the helper merges, serializes and anchors.
@@ -53,6 +61,9 @@ Review the parent discovery requirement and each discovered disposition explicit
 For owned data pages use `./docs page-info --page PAGE.md --service SERVICE
 --title "Reader title" --data`; the helper merges ownership/navigation. Shared
 process narratives/catalog remain unowned. Save reader titles/contents yourself.
+For an existing start use `./docs page-info --page ENTRY.md --service SERVICE
+--title "Reader action" --summary "Source-backed consequence"`. Identity, kind and
+target stay fixed; literal starter instructions and kind-only titles block check.
 The old `save-pages --input FILE` representation remains supported for targeted
 advanced edits; no hand-written site generator is necessary in the normal path.
 
@@ -64,6 +75,16 @@ Preserve route scope and search ownership. Review new/changed pages; reuse the
 recorded semantic work on unchanged pages. Reopen dependencies when a changed
 claim affects their meaning; hashes cannot prove cross-service consistency.
 Do not repeat whole-site authoring or blanket reread all previous page JSON.
+Each SERVICE review has a `topics` map, with exactly the inventory topic names.
+For each, supply `{disposition: "EXPLAINED", page: "data.md", claim: "fields"}`
+(valid JSON uses quoted keys). Refer to an actual service-owned, evidence-backed
+reader fragment, not the aggregate clew-scope anchor. Register a grouped data page
+or section's page in Data navigation. If retained evidence bounds an absence,
+use EXPLICIT_UNKNOWN, the reader fragment explaining that boundary, and `reason`.
+Evidence and fragment digests are derived; changed references require explicit
+review again. A reference, table, note or recorded disposition does not prove
+semantic completeness. Notes and topic closure support your source-first audit;
+the caller still independently assesses meaning and reader usefulness.
 Use `./docs finish-review --input FILE` with the explicit global decisions
 `{unresolved: [...], visual: {status: "UNAVAILABLE", reason: "..."}}` (valid JSON).
 Only record REVIEWED after actual browser inspection. Requirement `disposition`

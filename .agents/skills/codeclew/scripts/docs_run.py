@@ -30,6 +30,7 @@ T = runpy.run_path(str(HERE / 'work_transport.py'))
 U = runpy.run_path(str(HERE / 'source_union.py'))
 W = runpy.run_path(str(HERE / 'docs_workspace.py'))
 S = runpy.run_path(str(HERE / 'docs_successor.py'))
+P = runpy.run_path(str(HERE / 'docs_topics.py'))
 H = runpy.run_path(str(HERE / 'docs_show.py'))
 SCHEMA = 'codeclew-docs-run-job/1.0'
 REVIEW = 'codeclew-docs-run-review/1.0'
@@ -555,7 +556,7 @@ def navigation_starter(inventory):
             label = (row['method'] + ' ' + row['path']) if row.get('method') else row['entryKind']
             kind = W['entry_kind'](row, need)
             starts.append({'title': label, 'target': row['page'] + '#handler', 'kind': kind,
-                           'summary': 'Describe this entry from its retained source.'})
+                           'summary': W['START_SUMMARY']})
         services.append({'id': service, 'title': service, 'overview': overview,
                          'pages': list(dict.fromkeys(r['page'] for r in rows)), 'starts': starts, 'data': []})
     return {'schema': 'codeclew-markdown-navigation/1',
@@ -742,7 +743,8 @@ def review_for_run(run):
                 if reviewed.get(page['page']) != digest(page):continue
                 for requirement in inventory['requirements']:
                     if requirement['page'] == page['page'] and requirement['id'] in previous['requirements']:
-                        result['requirements'][requirement['id']] = previous['requirements'][requirement['id']]
+                        result['requirements'][requirement['id']] = {**result['requirements'][requirement['id']],
+                                                                   **previous['requirements'][requirement['id']]}
                 if page['page'] in result['claims']:
                     result['claims'][page['page']] = previous['claims'].get(page['page'], result['claims'][page['page']])
             result['unresolved'], result['visual'] = previous['unresolved'], previous['visual']
@@ -750,6 +752,10 @@ def review_for_run(run):
         row = result['requirements'][account['requirement']]
         dispositions = {c['id']: c.get('disposition') for c in row.get('discoveredEntries') or []}
         row['discoveredEntries'] = [{**c, 'disposition': dispositions.get(c['id'])} for c in account['discoveredEntries']]
+    for requirement in inventory['requirements']:
+        path = run / 'workspace/notes' / (requirement['page'] + '.json')
+        if requirement['kind'] == 'SERVICE' and path.exists():
+            result['requirements'][requirement['id']]['sourceNotes'] = load(path)['fragments'][0]
     return result
 
 
@@ -869,6 +875,9 @@ def review_template(inventory, original):
             row['diagram'] = 0
         if requirement['kind'] == 'DISCOVERY':
             row.update(discoveryDisposition=None, discoveredEntries=None)
+        if requirement['kind'] == 'SERVICE':
+            row['topics'] = {topic: {'disposition': None, 'page': None, 'claim': None} for topic in requirement['topics']}
+            row['sourceNotes'] = None
         requirements[requirement['id']] = row
     claims = {}
     for page in original['pages']:
@@ -913,7 +922,7 @@ def resolve_review(review, inventory, entries, original, defaults=None):
         requirements = []
         for requirement in inventory['requirements']:
             row = review['requirements'][requirement['id']]
-            closed(row, ('disposition',), ('section', 'diagram', 'evidence', 'discoveryDisposition', 'discoveredEntries'))
+            closed(row, ('disposition',), ('section', 'diagram', 'evidence', 'discoveryDisposition', 'discoveredEntries', 'topics', 'sourceNotes'))
             need(row['disposition'] in ('EXPLAINED', 'EXPLICIT_UNKNOWN'), 'REQUIREMENT_ASSESSMENT_REQUIRED')
             page_handles = list(dict.fromkeys(h for (page, _), fragment in annotated.items()
                                              if page == requirement['page'] for h in fragment['evidence']))
@@ -1034,6 +1043,7 @@ def verify(run, *, debug=False):
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
         need(not W['unfinished'](original), 'UNFINISHED_SCAFFOLD', pages=W['unfinished'](original))
+        W['validate_start_labels'](run, globals())
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, _, _ = M['compose_pages'](original)
@@ -1061,6 +1071,7 @@ def verify(run, *, debug=False):
                  recovery='Review only the listed pages using ./docs review-page; unchanged page reviews remain valid.')
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
+        P['validate'](inventory, review['requirements'], original, load(draft / 'navigation.json'), entries, globals())
         checks[stage] = {'status': 'PASS', 'discoveryCoverage': discovery_proofs}; result['semanticReviewRecorded'] = True
         result['authorVisualReview'] = review['visual']
         stage = 'entrySequences'; request = directory / 'sequences.json'
@@ -1184,11 +1195,12 @@ def author(run, *, unit=None, repair=False):
     need(remaining > 0 and (kind != 'repair' or repair_count < job['budget']['maxRepairs']), 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
     if first_successor:
-        prompt = encode({'instruction': 'Perform one standalone full-docset review of the full original question under the updated generic prepared-author contract. This is not a service-unit replay or an enum-only repair. Independently compare consequential source to text and diagrams, then every visible claim back to source; reconcile operation/path/completion facts, skipped/failure/default/malformed paths, readable overview/linked phases and all independent known starts. Preserve unchanged pages and valid assessments where justified by your review. No evaluator answers or second author are supplied. Run the supported checks, record explicit review judgments, finish-review, then end this turn; the caller runs the mandatory full final gate.',
+        prompt = encode({'instruction': 'Perform one standalone full-docset review of the full original question under the updated generic prepared-author contract. This is not a service-unit replay or an enum-only repair. First save your own compact source-block consequence notes per service through review-page --text-file, before using existing prose/arrows as review cues. Compare that source-derived outline to existing text and diagrams, then every visible claim back to source; reconcile operation/path/completion facts, skipped/failure/default/malformed paths, readable overview/linked phases and all independent known starts. Close each SERVICE topic with a real reader fragment or evidence-bounded absence using review-page. Preserve unchanged pages and valid assessments where justified by your review. No evaluator answers or second author are supplied. Run the supported checks, record explicit review judgments, finish-review, then end this turn; the caller runs the mandatory full final gate.',
                          'request': job['request'], 'contract': str(SKILL / 'references/docs-run-author.md'),
                          'workspace': str(run / 'workspace'), 'inventory': str(run / 'workspace/inventory.json'),
                          'sourceIndex': str(run / 'inputs/author-source/index.md'),
                          'predecessorMachineFailure': repair_facts(load(run / 'history/report.json')),
+                         'callerRevisionRequest': load(run / 'inputs/successor.json').get('callerDecision'),
                          'inheritedModelTokens': state['successor']['inheritedModelTokens'],
                          'continuationAllowance': job['budget'], 'budgetScope': 'NEW_ATTEMPTS_ONLY',
                          'historyReceipt': str(run / 'inputs/successor.json'), 'sameAuthorThread': state['threadId']})
@@ -1311,7 +1323,8 @@ def main():
     parser.add_argument('--page', action='append', default=[])
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
-    parser.add_argument('--previous-run', type=Path, help='Terminal failed predecessor for caller-owned prepare-successor; --job budget is its explicit new-attempt allowance.')
+    parser.add_argument('--previous-run', type=Path, help='Terminal predecessor for caller-owned prepare-successor; --job budget is its explicit new-attempt allowance.')
+    parser.add_argument('--revise-ready', action='store_true', help='Caller requests an isolated revision of native READY after independent quality rejection; preserve the parent status and deliverable.')
     parser.add_argument('--full', action='store_true', help='Print complete local save/check receipt instead of its compact summary.')
     parser.add_argument('--text-file', type=Path)
     parser.add_argument('--fragment')
@@ -1319,6 +1332,7 @@ def main():
     parser.add_argument('--requirement')
     parser.add_argument('--kind', choices=('HTTP', 'KAFKA', 'SCHEDULED', 'OTHER'))
     parser.add_argument('--title')
+    parser.add_argument('--summary', help='page-info: replace the existing start reader summary/title without changing its identity.')
     parser.add_argument('--method')
     parser.add_argument('--path')
     parser.add_argument('--service')
@@ -1354,7 +1368,7 @@ def main():
         elif args.command == 'prepare-successor':
             need(args.job is not None and args.previous_run is not None and args.previous_skill is not None,
                  'SUCCESSOR_JOB_AND_PREDECESSOR_REQUIRED')
-            result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals())
+            result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals(), revise_ready=args.revise_ready)
         elif args.command == 'recover-accounting':
             need(args.previous_skill is not None, 'PREVIOUS_ADMITTED_SKILL_REQUIRED')
             result = recover_accounting(args.run_dir, args.previous_skill)
@@ -1376,10 +1390,13 @@ def main():
                 result = W['register_entry'](args.run_dir.absolute(), args.requirement, declaration, globals())
             elif args.command == 'page-info':
                 need(args.title, 'PAGE_TITLE_REQUIRED')
-                result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals())
+                result = W['page_info'](args.run_dir.absolute(), args.page[0], args.service, args.title, args.data, globals(), summary=args.summary)
             elif args.command == 'review-page':
-                result = W['review_page'](args.run_dir.absolute(), args.page[0], load(args.input) if args.input else None, globals())
-                if args.input is None:
+                need(not (args.input and args.text_file), 'SEPARATE_SOURCE_NOTES_AND_ASSESSMENT')
+                if args.text_file:
+                    result = P['save_notes'](args.run_dir.absolute(), args.page[0], args.text_file.read_text(), args.evidence, globals())
+                else:result = W['review_page'](args.run_dir.absolute(), args.page[0], load(args.input) if args.input else None, globals())
+                if args.input is None and args.text_file is None:
                     print(encode(result).decode(), end='');return 0
             else:
                 path = args.input if args.command == 'sequence' else args.text_file
@@ -1415,7 +1432,7 @@ def main():
     if args.command in ('save-pages', 'check', 'put', 'sequence') and not args.full:
         result = W['summary'](result)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'SUCCESSOR_PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED') else 2
+    return 0 if result['status'] in ('PREPARED', 'SUCCESSOR_PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED', 'SOURCE_NOTES_SAVED') else 2
 
 
 if __name__ == '__main__':

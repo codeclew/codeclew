@@ -12,6 +12,26 @@ from pathlib import Path
 KINDS = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
          'SCHEDULED_JOB': 'scheduled', 'OTHER': 'other'}
 MARKER = '<!-- codeclew:unfinished -->'
+START_SUMMARY = 'Describe this entry from its retained source.'
+
+
+def validate_start_labels(run, api, pages=None):
+    navigation = api['load'](run / 'workspace/draft/navigation.json')
+    issues = []
+    for si, service in enumerate(navigation['services']):
+        for i, start in enumerate(service['starts']):
+            page = start['target'].split('#')[0]
+            if pages is not None and page not in pages:continue
+            for field in ('title', 'summary'):
+                value = start.get(field)
+                if value == START_SUMMARY or field == 'title' and value in KINDS:
+                    issues.append({'code': 'NAVIGATION_SCAFFOLD_UNFINISHED', 'file': 'draft/navigation.json',
+                        'page': page, 'field': '/services/' + str(si) + '/starts/' + str(i) + '/' + field,
+                        'actual': value, 'expected': 'source-backed reader action and consequence',
+                        'recovery': './docs page-info --page ' + page + ' --service ' + service['id'] +
+                            ' --title "Reader action" --summary "Source-backed consequence"'})
+    api['need'](not issues, 'NAVIGATION_SCAFFOLD_UNFINISHED', issues=issues,
+                recovery=issues[0]['recovery'] if issues else '')
 
 
 def discovered_entry(parent, declaration, api):
@@ -425,17 +445,32 @@ def put(run, page, fragment, text, evidence, sequence, api):
     return save_pages(run, path, api)
 
 
-def page_info(run, name, service, title, data, api):
+def page_info(run, name, service, title, data, api, *, summary=None):
     _, inventory, _ = api['frozen_inputs'](run)
     name = api['M']['page_name'](name)
     api['need'](service in inventory['services'], 'UNKNOWN_PAGE_OWNER', actual=service)
     navigation = api['load'](run / 'workspace/draft/navigation.json')
     api['need'](not any(name in s['pages'] and s['id'] != service for s in navigation['services']), 'PAGE_ALREADY_OWNED', page=name)
     owner = next(s for s in navigation['services'] if s['id'] == service)
+    changed = False
+    if summary is not None:
+        entries, _ = local_registry(run, inventory, api)
+        entry = next((r for r in entries if r['page'] == name and r['service'] == service), None)
+        starts = [s for s in owner['starts'] if entry and s['target'] == entry['target']
+                  and s['kind'] == entry_kind(entry, api['need'])]
+        api['need'](len(starts) == 1, 'EXISTING_START_REQUIRED', page=name, service=service)
+        api['need'](isinstance(title, str) and title.strip() and isinstance(summary, str) and summary.strip()
+                    and title not in KINDS and summary != START_SUMMARY and title != START_SUMMARY,
+                    'READER_START_LABELS_REQUIRED', page=name, field='title/summary')
+        changed = starts[0]['title'] != title or starts[0]['summary'] != summary
+        starts[0].update(title=title, summary=summary)
     if name not in owner['pages']:owner['pages'].append(name)
     if data:
         owner['data'] = [d for d in owner['data'] if d['target'] != name] + [{'title': title, 'target': name}]
     api['save'](run / 'workspace/draft/navigation.json', navigation)
+    hashes_path = run / 'workspace/draft/reviewed-pages.json'
+    if changed and hashes_path.exists():
+        hashes = api['load'](hashes_path);hashes.pop(name, None);api['save'](hashes_path, hashes)
     return {'status': 'PAGE_REGISTERED', 'page': name, 'ready': False}
 
 
@@ -552,6 +587,10 @@ def review_page(run, page, value, api):
     api['need'](all(v.get('disposition') in ('EXPLAINED', 'EXPLICIT_UNKNOWN') for v in value['requirements'].values()),
                 'REQUIREMENT_ASSESSMENT_REQUIRED', page=name)
     validate_discovery_review(inventory, value['requirements'], api, pages=[name])
+    if any(r['kind'] == 'SERVICE' and r['id'] in value['requirements'] for r in inventory['requirements']):
+        api['P']['validate'](inventory, value['requirements'], original,
+            api['load'](run / 'workspace/draft/navigation.json'), api['P']['sources'](run, api), api,
+            pages=[name], record=True)
     template['requirements'].update(value['requirements'])
     if name in template['claims']:template['claims'][name] = value['claims']
     api['save'](run / 'workspace/draft/self-review.json', template)
@@ -577,6 +616,8 @@ def finish_review(run, value, api):
     review = api['review_for_run'](run)
     api['need'](isinstance(value['unresolved'], list) and isinstance(value['visual'], dict), 'GLOBAL_REVIEW_REQUIRED')
     validate_discovery_review(inventory, review['requirements'], api)
+    api['P']['validate'](inventory, review['requirements'], api['load'](run / 'workspace/draft/original.json'),
+        api['load'](run / 'workspace/draft/navigation.json'), api['P']['sources'](run, api), api)
     review.update(value)
     api['save'](run / 'workspace/draft/self-review.json', review)
     return {'status': 'GLOBAL_REVIEW_RECORDED', 'ready': False, 'semanticTruthAssessed': False}
@@ -601,6 +642,7 @@ def check(run, pages, scaffold_only, api):
         api['need'](set(selected) <= set(names), 'UNKNOWN_CHECK_PAGE', pages=sorted(set(selected) - set(names)))
         api['need'](scaffold_only or not set(selected) & set(pending), 'UNFINISHED_SCAFFOLD', pages=sorted(set(selected) & set(pending)))
         if not scaffold_only:
+            validate_start_labels(run, api, pages=selected)
             stage = 'route-preflight'
             route_preflight(run, job, api)
             stage = 'self-review'
@@ -626,6 +668,9 @@ def check(run, pages, scaffold_only, api):
                             job['renderer'], str(folder / 'sequences.json')], folder, 'sequences')
             stage = 'source-bindings'
             manifests, entries = api['cite_entries'](job, inventory, run / 'workspace/draft', folder / 'sources', run / 'inputs/author-source')
+            api['P']['validate'](inventory, review_requirements(run, api), original,
+                api['load'](run / 'workspace/draft/navigation.json'), entries, api,
+                pages=selected, recorded_only=True)
             validate_discovered_sources(inventory, [r for r in additional if r['page'] in selected], entries, api)
             for page in chosen['pages']:
                 for fi, fragment in enumerate(page['fragments']):
