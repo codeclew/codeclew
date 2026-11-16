@@ -142,10 +142,14 @@ trusted caller may use `recover-accounting --run-dir RUN --previous-skill OLD_SK
 It validates the old admission and saved CLI history, refuses genuine overspend,
 expired original time or changed drafts, and saves the original state/pins before
 admitting the reviewed successor skill. It performs no author call and preserves
-the same thread, source, prompt, raw history, start time and all original limits.
-Then `run --run-dir RUN` checks the completed unit before advancing, without
-regenerating it. The saved continuation prompt names the successor helper only;
-record the mixed helper lineage rather than claiming an unchanged treatment.
+the recorded historical thread, source, prompt, raw history, start time and all
+original limits. Prepare the current page with `handoff --run-dir RUN --page
+PAGE.md`, then explicitly invoke `run --run-dir RUN` for that page in a fresh
+inference context. The caller chooses each subsequent page; no automatic advance
+follows recovery. After all page decisions and finish-review are complete, invoke
+`verify --run-dir RUN` and `promote --run-dir RUN --output-dir NEW_LOCAL_DIRECTORY`.
+Record the mixed helper and context lineage rather than claiming an unchanged
+treatment.
 
 New prepared workspaces pin AGENTS.md, a project-local prepared codeclew skill
 profile and the short ./docs save-pages/check/review-template entry. This keeps
@@ -226,6 +230,7 @@ READY state or semantic approval. The new review must compare source and text in
 both directions, reconcile the full question and reader layout under the generic
 updated contract, and pass the complete final gate before promotion. Unchanged
 content can be retained. After explicit quality rejection, current page decisions
-are required even for unchanged text; a unit cannot advance with its own pending
-reviews. Ordinary valid recorded assessments remain reusable. Available unread evidence
-and evaluator answers must not replace the author's independent review.
+are required even for unchanged text; the current page cannot complete with its
+own pending decisions. Ordinary valid recorded assessments remain reusable.
+Available unread evidence and evaluator answers must not replace the author's
+independent review.
