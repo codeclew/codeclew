@@ -193,13 +193,27 @@ it records a separate quality-revision decision without marking the parent FAILE
 The reason is a fixed generic decision, not evaluator findings for the author.
 Preparation still makes no model call. Launch requires separate caller admission.
 
+For a genuine terminal `AUTHOR_BUDGET_EXCEEDED` without `report.json`, add
+`--revise-budget-stopped` instead. This explicitly accepts the preserved result as
+quality rejected and prepares a separate continuation; it does not recover or
+rewrite the exhausted run. All inherited turns must be completed with exit 0 and
+exact measured history. The runner verifies that use in the predecessor's own
+budget scope exceeds its original limit, subtracting an existing inherited
+baseline when present. It preserves the terminal status, old limit, authored
+text, source bindings and all cumulative costs. The receipt records native report
+absence; no READY/FAILED report is fabricated. Live, incomplete, unmeasured or
+unproven stops refuse. This mode and `--revise-ready` are mutually exclusive.
+
 For prepare-successor, the job budget is the explicit NEW_ATTEMPTS_ONLY allowance:
-one standalone same-author full-docset review, followed by at most its declared
-machine-repair rounds. Original exhausted limits and all raw counters remain in
+quality-rejected continuations use the existing related-page units when available;
+other continuations assign one standalone same-author full-docset review. At most
+the declared machine-repair rounds are allowed. Original exhausted limits and all raw counters remain in
 inputs/successor.json and history; reports show inherited, continuation and total
 usage. Thread-cumulative counters are not summed twice. Preparation imports no
 READY state or semantic approval. The new review must compare source and text in
 both directions, reconcile the full question and reader layout under the generic
 updated contract, and pass the complete final gate before promotion. Unchanged
-content and valid recorded assessments can be retained; available unread evidence
+content can be retained. After explicit quality rejection, current page decisions
+are required even for unchanged text; a unit cannot advance with its own pending
+reviews. Ordinary valid recorded assessments remain reusable. Available unread evidence
 and evaluator answers must not replace the author's independent review.

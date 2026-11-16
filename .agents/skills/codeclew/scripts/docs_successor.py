@@ -87,7 +87,9 @@ def history(run, state, api):
     return files, accounting
 
 
-def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False):
+def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False, revise_budget_stopped=False):
+    api['need'](not (revise_ready and revise_budget_stopped), 'SUCCESSOR_REVISION_MODE_CONFLICT')
+    rejected = revise_ready or revise_budget_stopped
     previous, run = Path(previous).absolute(), Path(run).absolute()
     api['need'](previous.is_dir() and not previous.is_symlink()
                 and not run.is_relative_to(previous) and not previous.is_relative_to(run), 'INVALID_SUCCESSOR_LOCATION')
@@ -108,10 +110,17 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
                     'SUCCESSOR_PREPARED_PROFILE_REQUIRED')
         origin = profile.parents[4]
         old_job, inventory, old_pins = api['frozen_inputs'](previous, skill=Path(previous_skill), prepared_origin=origin)
-        state, report = api['load'](previous / 'state.json'), api['load'](previous / 'report.json')
-        api['need'](state.get('status') == 'AUTHOR_COMPLETED' and
-                    report.get('status') == ('READY' if revise_ready else 'FAILED'),
-                    'SUCCESSOR_TERMINAL_FAILED_REQUIRED')
+        state = api['load'](previous / 'state.json')
+        report_path = previous / 'report.json'
+        if revise_budget_stopped:
+            api['need'](state.get('status') == 'AUTHOR_BUDGET_EXCEEDED' and not report_path.exists()
+                        and not report_path.is_symlink(), 'SUCCESSOR_BUDGET_STOP_REQUIRED')
+            report = None
+        else:
+            report = api['load'](report_path)
+            api['need'](state.get('status') == 'AUTHOR_COMPLETED' and
+                        report.get('status') == ('READY' if revise_ready else 'FAILED'),
+                        'SUCCESSOR_TERMINAL_FAILED_REQUIRED')
         ready_files = {}
         if revise_ready:
             api['need'](all(report.get('checks', {}).get(c, {}).get('status') == 'PASS' for c in api['CHECKS']),
@@ -134,7 +143,19 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
                         'SUCCESSOR_READY_UNVERIFIABLE')
             ready_files = api['tree'](previous / 'ready')
         files, accounting = history(previous, state, api)
-        before = {name: api['sha']((previous / name).read_bytes()) for name in ('state.json', 'pins.json', 'report.json')}
+        terminal = None
+        if revise_budget_stopped:
+            api['need'](('successor' in state) == (previous / 'inputs/successor.json').exists(), 'SUCCESSOR_STATE_MISMATCH')
+            base = validate(previous, state, api) if 'successor' in state else 0
+            used = api['scoped_budget_tokens'](state, accounting)
+            maximum = old_job['budget']['maxModelTokens']
+            api['need'](len(state['attempts']) > base and type(maximum) is int and used > maximum,
+                        'SUCCESSOR_GENUINE_BUDGET_STOP_REQUIRED', scopedModelTokens=used, originalLimit=maximum)
+            terminal = {'status': state['status'], 'nativeReportPresent': False,
+                        'budgetScope': 'NEW_ATTEMPTS_ONLY' if base else 'RUN',
+                        'scopedModelTokens': used, 'originalLimit': maximum}
+        before = {name: api['sha']((previous / name).read_bytes()) for name in
+                  ('state.json', 'pins.json', *(['report.json'] if report is not None else []))}
         draft = api['tree'](previous / 'workspace/draft')
         pages = api['tree'](previous / 'workspace/pages')
         api['need'](draft == state['attempts'][-1]['draftFiles'], 'SUCCESSOR_PARENT_DRAFT_CHANGED')
@@ -163,11 +184,11 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
         for number in files:shutil.copytree(previous / 'attempts' / number, run / 'attempts' / number)
         archive = run / 'history';archive.mkdir()
         if (previous / 'history').exists():shutil.copytree(previous / 'history', archive / 'earlier')
-        for name in ('state.json', 'pins.json', 'report.json'):shutil.copyfile(previous / name, archive / name)
+        for name in before:shutil.copyfile(previous / name, archive / name)
         if revise_ready:shutil.copytree(previous / 'ready', archive / 'ready')
         api['need'](api['tree'](run / 'workspace/draft') == draft
                     and api['tree'](run / 'workspace/pages') == pages, 'SUCCESSOR_DRAFT_COPY_CHANGED')
-        if revise_ready:
+        if rejected:
             # Preserve exact prior decisions alongside other inherited history.
             for name in ('self-review.json', 'reviewed-pages.json'):
                 path = run / 'workspace/draft' / name
@@ -180,24 +201,28 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
                    'originalAuthorStartedAt': state.get('authorStartedAt'), 'continuationAllowance': job['budget'],
                    'budgetScope': 'NEW_ATTEMPTS_ONLY', 'draftDigest': api['digest'](draft),
                    'sourceBindingsDigest': api['digest'](old_bindings), 'modelCallsOnPrepare': 0,
-                   'standaloneFullDocsetReviewRequired': not revise_ready or not (run / 'inputs/scaffold.json').exists(),
+                   'standaloneFullDocsetReviewRequired': not rejected or not (run / 'inputs/scaffold.json').exists(),
                    'fullFinalGateRequired': True}
         if revise_ready:
             receipt.update(callerDecision={'status': 'REVISION_REQUESTED',
                 'reason': 'INDEPENDENT_QUALITY_REJECTED', 'parentNativeStatus': 'READY'},
                 predecessorReadyFiles=ready_files)
+        if revise_budget_stopped:
+            receipt.update(predecessorTerminal=terminal, callerDecision={'status': 'REVISION_REQUESTED',
+                'reason': 'INDEPENDENT_QUALITY_REJECTED', 'parentNativeStatus': 'UNAVAILABLE'})
         api['save'](run / 'inputs/successor.json', receipt)
         new_pins['inputFiles'] = api['tree'](run / 'inputs');api['save'](run / 'pins.json', new_pins)
-        if revise_ready:
+        if rejected:
             api['save'](run / 'workspace/draft/reviewed-pages.json', {})
             api['save'](run / 'workspace/draft/self-review.json', api['review_for_run'](run))
         inherited = {'inheritedAttemptCount': len(state['attempts']), 'inheritedModelTokens': accounting['budgetTokens'],
                      'receiptDigest': api['digest'](receipt)}
         api['save'](run / 'state.json', {**state, 'status': 'SUCCESSOR_PREPARED', 'authorStartedAt': None,
-                   'successor': inherited, 'unitCursor': 0 if revise_ready else None,
+                   'successor': inherited, 'unitCursor': 0 if rejected else None,
                    'completedUnit': None})
         api['need'](all(api['sha']((previous / name).read_bytes()) == value for name, value in before.items())
                     and api['tree'](previous / 'workspace/draft') == draft
+                    and (not revise_budget_stopped or not report_path.exists() and not report_path.is_symlink())
                     and (not revise_ready or api['tree'](previous / 'ready') == ready_files), 'SUCCESSOR_PARENT_CHANGED')
         return {'status': 'SUCCESSOR_PREPARED', 'run': str(run), 'modelCalls': 0, 'ready': False,
                 'inheritedModelTokens': accounting['budgetTokens'], 'continuationAllowance': job['budget'],
@@ -218,6 +243,12 @@ def validate(run, state, api):
     api['need'](api['tree'](run / 'history') == receipt['archiveFiles'], 'SUCCESSOR_HISTORY_CHANGED')
     api['need'](state.get('threadId') == receipt['threadId'], 'AUTHOR_THREAD_CHANGED')
     return count
+
+
+def prompt_facts(run, api):
+    report = run / 'history/report.json'
+    return {'predecessorMachineFailure': api['repair_facts'](api['load'](report)) if report.is_file() else None,
+            'predecessorTerminal': api['load'](run / 'inputs/successor.json').get('predecessorTerminal')}
 
 
 def execute(run, api, debug=False):

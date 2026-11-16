@@ -1221,7 +1221,7 @@ def author(run, *, unit=None, repair=False):
                          'request': job['request'], 'contract': str(SKILL / 'references/docs-run-author.md'),
                          'workspace': str(run / 'workspace'), 'inventory': str(run / 'workspace/inventory.json'),
                          'sourceIndex': str(run / 'inputs/author-source/index.md'),
-                         'predecessorMachineFailure': repair_facts(load(run / 'history/report.json')),
+                         **S['prompt_facts'](run, globals()),
                          'callerRevisionRequest': load(run / 'inputs/successor.json').get('callerDecision'),
                          'inheritedModelTokens': state['successor']['inheritedModelTokens'],
                          'continuationAllowance': job['budget'], 'budgetScope': 'NEW_ATTEMPTS_ONLY',
@@ -1346,7 +1346,9 @@ def main():
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
     parser.add_argument('--previous-run', type=Path, help='Terminal predecessor for caller-owned prepare-successor; --job budget is its explicit new-attempt allowance.')
-    parser.add_argument('--revise-ready', action='store_true', help='Caller requests an isolated revision of native READY after independent quality rejection; preserve the parent status and deliverable.')
+    revision = parser.add_mutually_exclusive_group()
+    revision.add_argument('--revise-ready', action='store_true', help='Caller requests an isolated revision of native READY after independent quality rejection; preserve the parent status and deliverable.')
+    revision.add_argument('--revise-budget-stopped', action='store_true', help='Caller explicitly rejects the quality of a genuinely budget-exceeded completed predecessor without report.json; prepare only, preserve its status/history/old limit, and use --job budget only for new attempts.')
     parser.add_argument('--full', action='store_true', help='Print complete local save/check receipt instead of its compact summary.')
     parser.add_argument('--text-file', type=Path)
     parser.add_argument('--fragment')
@@ -1393,7 +1395,8 @@ def main():
         elif args.command == 'prepare-successor':
             need(args.job is not None and args.previous_run is not None and args.previous_skill is not None,
                  'SUCCESSOR_JOB_AND_PREDECESSOR_REQUIRED')
-            result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals(), revise_ready=args.revise_ready)
+            result = S['prepare'](args.job, args.previous_run, args.previous_skill, args.run_dir, globals(),
+                                  revise_ready=args.revise_ready, revise_budget_stopped=args.revise_budget_stopped)
         elif args.command == 'recover-accounting':
             need(args.previous_skill is not None, 'PREVIOUS_ADMITTED_SKILL_REQUIRED')
             result = recover_accounting(args.run_dir, args.previous_skill)

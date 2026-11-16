@@ -1711,6 +1711,96 @@ else:
         state=D['load'](child/'state.json');state['status']='AUTHOR_COMPLETED';D['save'](child/'state.json',state)
         self.assertEqual(D['verify'](child)['checks']['author']['code'],'AUTHOR_COMPLETION_REQUIRED')
 
+    def budget_stopped_parent(self):
+        job_path=self.compact_successor_parent()
+        job=D['load'](job_path);job['budget']['maxModelTokens']=2;D['save'](job_path,job)
+        previous=self.root/'budget-stopped';self.prepare_owned_successor(job_path,previous,revise_ready=True)
+        with self.assertRaises(D['Stop']) as error:D['author'](previous)  # Existing deterministic backend, genuine 3 > 2 stop.
+        self.assertEqual(error.exception.code,'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+        state=D['load'](previous/'state.json');self.assertEqual(state['status'],'AUTHOR_BUDGET_EXCEEDED')
+        self.assertEqual(state['modelTokens'],11);self.assertEqual(state['successor']['inheritedModelTokens'],8)
+        self.assertFalse((previous/'report.json').exists());(previous/'.runner.lock').touch()
+        job['budget']['maxModelTokens']=3;D['save'](job_path,job)
+        return previous,job_path
+
+    def test_budget_stopped_successor_prepare_preserves_absence_history_scope_and_pending_review(self):
+        previous,job_path=self.budget_stopped_parent()
+        frozen=self.root/'budget-freeze';shutil.copytree(previous,frozen)
+        before=D['tree'](frozen);child=self.root/'after-budget-stop'
+        with patch.dict(D,{'author':lambda *a,**k:self.fail('prepare must not launch author')}):
+            result=self.prepare_owned_successor(job_path,child,previous=frozen,revise_budget_stopped=True)
+        self.assertEqual(result['status'],'SUCCESSOR_PREPARED');self.assertEqual(result['modelCalls'],0)
+        self.assertEqual(result['inheritedModelTokens'],11);self.assertEqual(result['continuationModelTokens'],0)
+        self.assertEqual(before,D['tree'](frozen))
+        state=D['load'](child/'state.json');old=D['load'](frozen/'state.json')
+        self.assertEqual(state['attempts'],old['attempts']);self.assertEqual(state['threadId'],old['threadId'])
+        self.assertEqual(D['tree'](child/'attempts'),D['tree'](frozen/'attempts'))
+        self.assertEqual(state['successor']['inheritedAttemptCount'],2);self.assertEqual(state['unitCursor'],0)
+        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),0)
+        self.assertEqual(D['load'](child/'workspace/draft/original.json'),D['load'](frozen/'workspace/draft/original.json'))
+        self.assertEqual(D['S']['prepared_bindings'](child,D),D['S']['prepared_bindings'](frozen,D))
+        receipt=D['load'](child/'inputs/successor.json')
+        self.assertEqual(receipt['predecessorTerminal'],{'status':'AUTHOR_BUDGET_EXCEEDED','nativeReportPresent':False,
+            'budgetScope':'NEW_ATTEMPTS_ONLY','scopedModelTokens':3,'originalLimit':2})
+        self.assertEqual(receipt['callerDecision']['reason'],'INDEPENDENT_QUALITY_REJECTED')
+        self.assertEqual(receipt['callerDecision']['parentNativeStatus'],'UNAVAILABLE')
+        self.assertNotIn('report.json',receipt['predecessorFiles']);self.assertNotIn('report.json',receipt['archiveFiles'])
+        self.assertFalse((child/'history/report.json').exists());self.assertFalse((child/'report.json').exists())
+        self.assertEqual(D['load'](child/'history/state.json'),old)
+        self.assertEqual(receipt['originalLimits']['maxModelTokens'],2);self.assertEqual(receipt['continuationAllowance']['maxModelTokens'],3)
+        self.assertFalse(receipt['standaloneFullDocsetReviewRequired']);self.assertTrue(receipt['fullFinalGateRequired'])
+        self.assertTrue(D['S']['pending_review'](child,D)['pages'])
+        self.assertTrue(all(v is None for claims in D['review_for_run'](child)['claims'].values() for v in claims.values()))
+        self.assertEqual(D['S']['prompt_facts'](child,D),{'predecessorMachineFailure':None,'predecessorTerminal':receipt['predecessorTerminal']})
+        self.assertEqual(D['S']['validate'](child,state,D),2)
+        self.assertEqual(len(state['attempts']),2);self.assertFalse((child/'ready').exists())
+
+    def test_budget_stopped_successor_rejects_live_incomplete_unknown_or_unproven_stop(self):
+        previous,job_path=self.budget_stopped_parent()
+        immutable={name:(previous/name).read_bytes() for name in ('state.json','pins.json','inputs/job.json')}
+        with self.assertRaises(D['Stop']) as error:D['recover_accounting'](previous,D['SKILL'])
+        self.assertEqual(error.exception.code,'FALSE_BUDGET_STOP_NOT_PROVEN')
+        self.assertEqual(immutable,{name:(previous/name).read_bytes() for name in immutable})
+        before=D['tree'](previous)  # Recovery's ordinary native input probes may leave diagnostic receipts.
+        with (previous/'.runner.lock').open('rb') as lock:
+            D['fcntl'].flock(lock,D['fcntl'].LOCK_EX|D['fcntl'].LOCK_NB)
+            with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/'live-budget',previous=previous,revise_budget_stopped=True)
+            self.assertEqual(error.exception.code,'SUCCESSOR_PREDECESSOR_BUSY')
+        state_path=previous/'state.json';saved=state_path.read_bytes();state=D['load'](state_path)
+        for change,code in (({'status':'AUTHOR_RUNNING'},'SUCCESSOR_BUDGET_STOP_REQUIRED'),
+                            ({'attemptStatus':'RUNNING'},'SUCCESSOR_HISTORY_UNVERIFIABLE'),
+                            ({'exitCode':23},'SUCCESSOR_HISTORY_UNVERIFIABLE'),
+                            ({'modelTokens':12},'SUCCESSOR_ACCOUNTING_UNVERIFIABLE')):
+            value=json.loads(json.dumps(state))
+            if 'attemptStatus' in change:value['attempts'][-1]['status']=change['attemptStatus']
+            elif 'exitCode' in change:value['attempts'][-1]['exitCode']=change['exitCode']
+            else:value.update(change)
+            D['save'](state_path,value)
+            with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/('bad-'+code),previous=previous,revise_budget_stopped=True)
+            self.assertEqual(error.exception.code,code);state_path.write_bytes(saved)
+        raw=previous/'attempts/1/stdout.jsonl';original=raw.read_bytes();value=json.loads(json.dumps(state))
+        value['attempts'][-1]['usage'].pop('cached_input_tokens');D['save'](state_path,value)
+        events=[json.loads(line) for line in raw.read_text().splitlines()]
+        for event in events:
+            if event['type']=='turn.completed':event['usage']=value['attempts'][-1]['usage']
+        raw.write_text(''.join(json.dumps(e)+'\n' for e in events))
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/'unknown-budget',previous=previous,revise_budget_stopped=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_ACCOUNTING_UNVERIFIABLE');state_path.write_bytes(saved);raw.write_bytes(original)
+        D['save'](previous/'report.json',{'status':'FAILED'})
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/'has-report',previous=previous,revise_budget_stopped=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_BUDGET_STOP_REQUIRED');(previous/'report.json').unlink()
+        with self.assertRaises(D['Stop']):self.prepare_owned_successor(job_path,self.root/'implicit-budget',previous=previous)
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/'conflict-budget',previous=previous,revise_ready=True,revise_budget_stopped=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_REVISION_MODE_CONFLICT')
+        # Owned invalid fixture: its total is above 8, but its NEW_ATTEMPTS_ONLY use 3 is below a claimed limit 4.
+        job=D['load'](previous/'inputs/job.json');job['budget']['maxModelTokens']=4;D['save'](previous/'inputs/job.json',job)
+        pins_path=previous/'pins.json';pins_raw=pins_path.read_bytes();pins=D['load'](pins_path)
+        pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](previous/'inputs');D['save'](pins_path,pins)
+        with self.assertRaises(D['Stop']) as error:self.prepare_owned_successor(job_path,self.root/'false-budget',previous=previous,revise_budget_stopped=True)
+        self.assertEqual(error.exception.code,'SUCCESSOR_GENUINE_BUDGET_STOP_REQUIRED')
+        job['budget']['maxModelTokens']=2;D['save'](previous/'inputs/job.json',job);pins_path.write_bytes(pins_raw)
+        self.assertEqual(before,D['tree'](previous))
+
     def test_successor_prepare_inherits_history_without_alias_or_model_and_requires_new_full_review(self):
         job_path=self.successor_parent();child=self.root / 'successor'
         (self.run / 'critic').mkdir();(self.run / 'critic/answers.txt').write_text('Must not enter successor workspace')
