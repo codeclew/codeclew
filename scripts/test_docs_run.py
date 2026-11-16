@@ -114,7 +114,7 @@ else:
                          {'id': 'entry', 'text': 'Accept a reservation.\n\n```clew-sequence\n' + json.dumps(diagram) + '\n```\n', 'evidence': [self.handle]}]},
                          {'page': self.service + '.md', 'fragments': [{'text': '# Reservations\n\n'},
                           {'text': '\n\n<a id="clew-fragment-overview"></a>\n\n'},
-                          {'id': 'overview', 'text': 'Retained reservation data and effects.\n', 'evidence': [self.handle]}]}]}
+                          {'id': 'overview', 'text': 'Retained reservation data and effects.\n\n| Concept | Meaning |\n| --- | --- |\n| Retained declaration | Source-defined domain item |\n', 'evidence': [self.handle]}]}]}
         self.navigation = {'schema': 'codeclew-markdown-navigation/1', 'home': {'title': 'Reservations', 'target': self.service + '.md'},
                            'services': [{'id': self.service, 'title': 'Reservations', 'overview': self.service + '.md',
                                          'pages': [self.entry['page'], self.service + '.md'], 'starts': [{'title': 'Reserve', 'target': self.entry['page'] + '#handler', 'kind': 'http', 'summary': 'Accept a reservation'}], 'data': []}], 'routes': []}
@@ -148,6 +148,135 @@ else:
     def seed_files(self):
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
             D['save'](self.seed / name, value)
+
+    def prepare_review_context(self):
+        proof=self.run/'inputs/source-proof'/self.service
+        shutil.copytree(self.manifest.parent,proof/'read')
+        _,packet,_,entries=D['M']['C']['load'](proof/'read/citations.json')
+        regions,bindings,_=D['source_projection'](packet,entries)
+        home=self.run/'inputs/author-source'/self.service;home.mkdir(parents=True,exist_ok=True)
+        views={}
+        for key,region in regions.items():
+            path='views/'+key+'.md';(home/path).parent.mkdir(exist_ok=True)
+            (home/path).write_text(region['text'])
+            views[key]={'file':region['file'],'view':path,'codeBytes':len(region['text'].encode()),'coveringCitations':region['citations']}
+        D['save'](home/'views.json',views)
+        D['save'](home/'requirements.json',{self.entry['id']:{'kind':'ENTRY','page':self.entry['page'],'views':[r['view'] for r in views.values()],'evidenceCandidates':list(entries)}})
+        D['save'](proof/'citation-index.json',bindings)
+        pins=D['load'](self.run/'pins.json');pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
+        return self.service+'/'+next(iter(views))
+
+    def fixture_overview(self, text, *, unavailable=False):
+        fragment=next(f for f in self.original['pages'][1]['fragments'] if f.get('id')=='overview')
+        fragment['text']=text
+        for row in self.review['requirements']:
+            for topic,value in row.get('topics',{}).items():
+                if value.get('claim')=='overview':value['fragmentDigest']=D['digest'](fragment)
+                if topic=='data fields and domain distinctions' and unavailable:
+                    value.update(disposition='EXPLICIT_UNKNOWN',reason='The retained empty declaration contains no domain fields; runtime-only state is outside this source.')
+        self.seed_files();self.generated()
+
+    def test_raw_literal_loss_has_exact_local_final_diagnostic_while_code_and_intentional_html_pass(self):
+        self.readmit_budget(1000,1);name=self.service+'.md'
+        base=next(f['text'] for f in self.original['pages'][1]['fragments'] if f.get('id')=='overview')
+        self.fixture_overview(base+'\nHandle <record-key>:<stamp>; outcome OUTCOME_<category>.\n')
+        local=self.local_check(name);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'READER_PRESENTATION_REQUIRED',local)
+        self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+        self.assertEqual(local['details']['issues'],final['checks']['selfReview']['details']['issues'])
+        issues=local['details']['issues'];self.assertEqual({i['actual'] for i in issues},{'<record-key>','<stamp>','<category>'})
+        self.assertTrue(all(i['page']==name and i['fragment']=='overview' and './docs put' in i['recovery'] for i in issues))
+        fixed=base+'\nHandle `<record-key>:<stamp>`; outcome `OUTCOME_<category>`.\n\n'
+        fixed+='```text\n<literal-code>\n```\n\n<a id="intentional"></a>\n\n<details><summary>Details</summary>\n<p>Intentional disclosure.</p>\n</details>\n\n'
+        fixed+='<domain-marker>Intentional paired HTML</domain-marker>\n\n<span data-token="<attribute-value>">Visible</span>\n\n&lt;escaped-literal&gt;\n'
+        self.fixture_overview(fixed)
+        local=self.local_check(name);self.assertEqual(local['status'],'UNIT_CHECKED',local)
+        final=D['verify'](self.run);self.assertEqual(final['status'],'READY',final);self.assertFalse(final['semanticTruthAssessed'])
+        from html.parser import HTMLParser
+        class Visible(HTMLParser):
+            def __init__(self):super().__init__();self.text=[]
+            def handle_data(self,text):self.text.append(text)
+        parser=Visible();parser.feed((Path(local['directory'])/'html'/name.replace('.md','.html')).read_text())
+        visible=''.join(parser.text)
+        for literal in ('<record-key>:<stamp>','OUTCOME_<category>','<literal-code>','<escaped-literal>'):self.assertIn(literal,visible)
+
+    def test_data_topic_requires_rendered_table_but_bounded_absence_and_prose_topics_remain_valid(self):
+        self.readmit_budget(1000,2);name=self.service+'.md'
+        self.fixture_overview('## Retained domain\n\nA prose-only account of retained fields.\n')
+        local=self.local_check(name);final=D['verify'](self.run)
+        self.assertEqual(local['code'],'READER_PRESENTATION_REQUIRED',local)
+        self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+        self.assertEqual(local['details']['issues'],final['checks']['selfReview']['details']['issues'])
+        self.assertEqual(local['details']['issues'][0]['code'],'DATA_FIELDS_TABLE_REQUIRED')
+        self.assertEqual(local['details']['issues'][0]['fragment'],'overview')
+        table='## Retained domain\n\n| Concept | Meaning |\n| --- | --- |\n| Retained declaration | Source-defined domain item |\n'
+        self.fixture_overview(table);self.assertEqual(self.local_check(name)['status'],'UNIT_CHECKED')
+        final=D['verify'](self.run);self.assertEqual(final['status'],'READY',final);self.assertFalse(final['semanticTruthAssessed'])
+        self.fixture_overview('## Retained boundary\n\nNo domain fields are declared by this retained empty class; runtime-only state is outside this source.\n',unavailable=True)
+        local=self.local_check(name);self.assertEqual(local['status'],'UNIT_CHECKED',local)
+        final=D['verify'](self.run);self.assertEqual(final['status'],'READY',final)
+        # Intentional HTML tables are rendered tables too. Fenced examples and
+        # comments containing table markup are not actual reader field tables.
+        accounts=json.loads(json.dumps(self.review['requirements']))
+        for row in accounts:
+            if 'topics' in row:row['topics']['data fields and domain distinctions']['disposition']='EXPLAINED'
+        for text,valid in (('<table><tr><th>Concept</th><th>Meaning</th></tr><tr><td>Declaration</td><td>Retained item</td></tr></table>',True),
+                           ('```html\n<table><tr><td>Example</td></tr></table>\n```',False),
+                           ('<!-- <table><tr><td>Comment</td></tr></table> -->',False),
+                           ('<template><table><tr><td>Template</td></tr></table></template>',False)):
+            original=json.loads(json.dumps(self.original));next(f for f in original['pages'][1]['fragments'] if f.get('id')=='overview')['text']=text
+            if valid:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
+            else:
+                with self.assertRaises(D['Stop']) as error:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
+                self.assertIn('DATA_FIELDS_TABLE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+
+    def test_review_context_pairs_one_genuine_source_with_current_reader_and_own_notes_without_writes(self):
+        view=self.prepare_review_context();self.save_local(self.local_page())
+        D['P']['save_notes'](self.run,self.service+'.md','Previous own reading: inspect the retained declaration.',[self.handle],D)
+        before=D['tree'](self.run)
+        inventory=self.show_cli('--review-context','--page',self.entry['page'],'--limit','0')
+        self.assertIn(view,inventory);self.assertNotIn(self.source['text'],inventory)
+        context=self.show_cli('--review-context','--page',self.entry['page'],'--fragment','entry','--view',view,'--limit','0')
+        self.assertEqual(context.count(self.source['text']),1)
+        self.assertIn(self.local_page()['fragments'][1]['text'],context)
+        self.assertIn('Previous own reading',context);self.assertIn(self.handle,context)
+        self.assertIn('source to reader for omissions',context);self.assertIn('reader to source for unsupported',context)
+        self.assertIn('not complete dependencies',context);self.assertIn(self.source['revision'],context)
+        self.assertEqual(before,D['tree'](self.run))
+        oversized=json.loads(self.show_cli('--review-context','--page',self.entry['page'],'--view',view,'--limit','20',success=False))
+        self.assertEqual(oversized['code'],'REVIEW_CONTEXT_TOO_LARGE')
+        self.assertEqual(oversized['details']['sourceBytes'],len(self.source['text'].encode()))
+        self.assertNotIn(self.source['text'],json.dumps(oversized))
+        self.assertIn('--limit',oversized['details']['recovery']);self.assertEqual(before,D['tree'](self.run))
+        cropped=json.loads(self.show_cli('--review-context','--page',self.entry['page'],'--view',view,'--offset','1',success=False))
+        self.assertEqual(cropped['code'],'REVIEW_CONTEXT_REQUIRES_WHOLE_VIEW')
+
+    def test_review_context_inventory_includes_uncited_views_and_missing_foreign_or_stale_cannot_pair(self):
+        view=self.prepare_review_context();self.save_local(self.local_page())
+        home=self.run/'inputs/author-source'/self.service
+        rows=D['load'](home/'views.json');rows['uncited']={'file':'uncited.fixture','view':'views/uncited.md','codeBytes':42,'coveringCitations':[]}
+        D['save'](home/'views.json',rows)
+        pins=D['load'](self.run/'pins.json');pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
+        text=self.show_cli('--review-context','--page',self.entry['page'],'--limit','0')
+        self.assertIn(self.service+'/uncited',text)
+        for flags,code in ((['--view',self.service+'/uncited'],'REVIEW_SOURCE_VIEW_UNVERIFIED'),
+                           (['--view','foreign/'+view.split('/')[1]],'REVIEW_SOURCE_VIEW_NOT_FOUND'),
+                           (['--view',self.service+'/missing'],'REVIEW_SOURCE_VIEW_NOT_FOUND'),
+                           (['--service','foreign'],'REVIEW_CONTEXT_SERVICE_REQUIRED')):
+            failed=json.loads(self.show_cli('--review-context','--page',self.entry['page'],*flags,success=False))
+            self.assertEqual(failed['code'],code)
+        manifest=self.run/'inputs/source-proof'/self.service/'read/citations.json';manifest.unlink()
+        failed=json.loads(self.show_cli('--review-context','--page',self.entry['page'],'--view',view,success=False))
+        self.assertEqual(failed['code'],'FROZEN_INPUTS_CHANGED')
+
+    def test_review_context_projection_deduplicates_exact_bindings_but_never_files_or_revisions(self):
+        for change in ({'file':'Other.cs'},{'revision':'c'*40}):
+            packet,entries=self.projection_input([('abc',0,'a'*40),('abc',0,'a'*40)])
+            regions,bindings,_=D['source_projection'](packet,entries)
+            self.assertEqual(len(regions),1);self.assertEqual(len(bindings),2)
+            packet['outcomes'][1]['source'].update(change)
+            regions,bindings,_=D['source_projection'](packet,entries)
+            self.assertEqual(len(regions),2);self.assertEqual(len(bindings),2)
 
     def test_canonical_review_coexists_with_old_notes_without_stale_fallback_and_can_refresh_legacy(self):
         self.readmit_budget(200,1);self.local_reads();self.save_local(self.local_page())
@@ -290,7 +419,7 @@ else:
     def test_data_section_cli_exact_target_local_final_parity_and_idempotence(self):
         self.readmit_budget(1000,2)
         name = self.service + '.md'
-        fields = {'id':'fields', 'text':'\n\n## Reservation fields\n\nThe retained identifier names the reservation.\n', 'evidence':[self.handle]}
+        fields = {'id':'fields', 'text':'\n\n## Reservation fields\n\n| Field | Meaning |\n| --- | --- |\n| identifier | The reservation identifier |\n', 'evidence':[self.handle]}
         self.original['pages'][1]['fragments'].append(fields)
         requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
         row = next(r for r in self.review['requirements'] if r['requirement']==requirement['id'])
@@ -393,7 +522,7 @@ else:
 
     def test_dedicated_data_page_keeps_page_target_and_rejects_wrong_section(self):
         requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
-        fields = {'id':'fields','text':'# Reservation fields\n\nThe retained identifier names the reservation.','evidence':[self.handle]}
+        fields = {'id':'fields','text':'# Reservation fields\n\n| Field | Meaning |\n| --- | --- |\n| identifier | The reservation identifier |','evidence':[self.handle]}
         self.original['pages'].append({'page':'data.md','fragments':[fields]})
         self.navigation['services'][0]['pages'].append('data.md')
         self.navigation['services'][0]['data'] = [{'title':'Reservation data','target':'data.md'}]

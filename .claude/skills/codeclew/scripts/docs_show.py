@@ -1,6 +1,8 @@
 """Addressed, read-only views of existing authored objects. No proof-registry dump."""
 import json
 import shlex
+from pathlib import Path
+import runpy
 
 
 def source_links(views, requirements=None):
@@ -53,6 +55,8 @@ def window(text, arguments, offset=0, limit=8000):
 
 
 def show(run, args, api):
+    if args.review_context:return runpy.run_path(str(Path(__file__).with_name('docs_review_context.py')))['show'](run, args, api)
+    api['need'](args.view is None, 'SOURCE_VIEW_NEEDS_REVIEW_CONTEXT')
     job, inventory, _ = api['frozen_inputs'](run)  # Pin reads; no native probes/receipts/locks.
     page = args.page[0] if len(args.page) == 1 else None
     families = bool(args.page) + bool(args.entries or args.entry) + bool(args.routes or args.route)

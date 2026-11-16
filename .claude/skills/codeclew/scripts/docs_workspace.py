@@ -8,11 +8,72 @@ import re
 import shlex
 import uuid
 from pathlib import Path
+from html.parser import HTMLParser
 
 KINDS = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
          'SCHEDULED_JOB': 'scheduled', 'OTHER': 'other'}
 MARKER = '<!-- codeclew:unfinished -->'
 START_SUMMARY = 'Describe this entry from its retained source.'
+
+
+def validate_reader_presentation(original, accounts, job, api, *, pages=None):
+    rows = accounts.values() if isinstance(accounts, dict) else accounts
+    references = [r['topics']['data fields and domain distinctions'] for r in rows
+                  if isinstance(r.get('topics'), dict) and
+                  isinstance(r['topics'].get('data fields and domain distinctions'), dict) and
+                  r['topics'].get('data fields and domain distinctions', {}).get('disposition') == 'EXPLAINED']
+    selected = set(pages) if pages is not None else {p['page'] for p in original['pages']}
+    chosen = {'pages': [p for p in original['pages'] if p['page'] in selected]}
+    process = api['subprocess'].run([job['node'], str(Path(__file__).with_name('docs_run_presentation.mjs')), job['renderer']],
+                                  input=api['encode'](chosen), capture_output=True, timeout=30)
+    response = json.loads(process.stdout)
+    api['need'](process.returncode == 0 and isinstance(response.get('issues'), list), 'READER_PRESENTATION_CHECK_FAILED', response=response)
+    issues = response['issues']
+    facts = {(f['page'], f['fragment']): f for f in response['fragments']}
+    class HTMLTables(HTMLParser):
+        def __init__(self, raw=''):super().__init__();self.tables=0;self.hidden=[];self.raw=raw;self.bare=[];self.closed=set()
+        def handle_starttag(self, tag, attrs):
+            if tag in ('script', 'style', 'template'):self.hidden.append(tag)
+            if tag == 'table' and not self.hidden:self.tables += 1
+            if not attrs and not self.hidden and re.fullmatch(r'<[A-Za-z][\w:-]*\s*>', self.get_starttag_text()):
+                line, column = self.getpos()
+                self.bare.append((tag, len(''.join(self.raw.splitlines(keepends=True)[:line - 1])) + column, self.get_starttag_text()))
+        def handle_endtag(self, tag):
+            self.closed.add(tag)
+            if self.hidden and tag == self.hidden[-1]:self.hidden.pop()
+        def handle_startendtag(self, tag, attrs):pass  # Intentional self-closing custom elements are not placeholders.
+    standard = set('a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark math menu meta meter nav noscript object ol optgroup option output p param picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup svg table tbody td template textarea tfoot th thead time title tr track u ul var video wbr applet basefont bgsound big blink center content dir font frame frameset image keygen listing marquee menuitem multicol nextid nobr noembed noframes plaintext rb rtc shadow spacer strike tt xmp'.split())
+    for page in response['pages']:
+        parsed = []
+        for token in page['html']:
+            parser = HTMLTables(token['raw']);parser.feed(token['raw']);parser.close();parsed.append((token, parser))
+        closed = set().union(*(parser.closed for _, parser in parsed))
+        for token, parser in parsed:
+            for tag, relative, raw in parser.bare:
+                if tag in standard or tag in closed:continue
+                if token.get('ambiguous'):
+                    issues.append({'code':'READER_PRESENTATION_CONTEXT_UNAVAILABLE','page':page['page'],'fragment':None,'field':'/fragments',
+                        'actual':'The raw placeholder crosses a parser/fragment boundary with uncertain positions.',
+                        'expected':'An exact reader-fragment location for the literal.',
+                        'recovery':'Use ./docs put to keep the affected literal in a complete source-backed Markdown block, with code formatting or escaping.'})
+                    continue
+                offset = token['start'] + relative
+                owner = next((f for f in page['spans'] if f['start'] <= offset < f['end']), None)
+                fragment = owner['fragment'] if owner else None
+                issues.append({'code':'LITERAL_MARKUP_DISAPPEARS','page':page['page'],'fragment':fragment,
+                    'field':'/fragments/'+str(owner['index'] if owner else 0)+'/text','actual':raw,
+                    'expected':'A visible literal in inline/fenced code or escaped text, or intentional supported HTML.',
+                    'recovery':'Use ./docs put --page '+page['page']+' --fragment '+(fragment or 'CLAIM')+' --text-file FILE --evidence HANDLE; code-format or escape the literal placeholder. Preserve intentional HTML and source bindings.'})
+    for reference in references:
+        page, claim = reference.get('page'), reference.get('claim')
+        if page not in selected:continue
+        fact = facts.get((page, claim), {})
+        parser = HTMLTables();parser.feed(''.join(fact.get('html', [])));parser.close()
+        if not fact.get('markdownTables') and not parser.tables:
+            issues.append({'code':'DATA_FIELDS_TABLE_REQUIRED','page':page,'fragment':claim,'field':'/topics/data fields and domain distinctions',
+                'actual':'No rendered field table in the referenced fragment.','expected':'A readable field table; table structure alone does not prove field completeness.',
+                'recovery':'Use ./docs put --page '+page+' --fragment '+claim+' --text-file FILE --evidence HANDLE to author the source-backed field table. For genuinely unavailable data, record EXPLICIT_UNKNOWN with its reader explanation and source-bounded reason; do not invent fields.'})
+    api['need'](not issues, 'READER_PRESENTATION_REQUIRED', issues=issues, recovery=issues[0]['recovery'] if issues else '', semanticTruthAssessed=False)
 
 
 def validate_start_labels(run, api, pages=None):
@@ -282,6 +343,9 @@ def install_author_entry(run, skill, python):
         'phases by links; keep every start/diagram and its completion boundary.\n'
         'Source-review may reference those fragments instead of a second private\n'
         'outline. Compare source/canonical/changed excerpts locally before judgment.\n'
+        'Use ./docs show --review-context --page PAGE.md [--fragment ID], then\n'
+        'select one --view SERVICE/REGION for source/reader/own-note comparison.\n'
+        'It is a bounded read, not an approval or another required artifact.\n'
         'Finish the assigned unit with the required bidirectional semantic review.\n'
         'Successful checks print compact summaries. Full receipts remain on disk\n'
         'and --full is available for diagnostics; do not reread assembled checker\n'
@@ -706,7 +770,7 @@ def route(run, value, api):
 
 
 def review_page(run, page, value, api):
-    _, inventory, _ = api['frozen_inputs'](run)
+    job, inventory, _ = api['frozen_inputs'](run)
     original = api['load'](run / 'workspace/draft/original.json')
     template = api['review_for_run'](run)
     name = api['M']['page_name'](page)
@@ -736,6 +800,9 @@ def review_page(run, page, value, api):
         api['P']['validate'](inventory, value['requirements'], original,
             api['load'](run / 'workspace/draft/navigation.json'), api['P']['sources'](run, api), api,
             pages=[name], record=True)
+    reference_pages = {name} | {v['page'] for row in value['requirements'].values()
+        for v in (row.get('topics') or {}).values() if isinstance(v, dict) and isinstance(v.get('page'), str)}
+    validate_reader_presentation(original, value['requirements'], job, api, pages=reference_pages)
     template['requirements'].update(value['requirements'])
     if name in template['claims']:template['claims'][name] = value['claims']
     api['save'](run / 'workspace/draft/self-review.json', template)
@@ -756,13 +823,14 @@ def process_pages(run, api):
 
 
 def finish_review(run, value, api):
-    _, inventory, _ = api['frozen_inputs'](run)
+    job, inventory, _ = api['frozen_inputs'](run)
     api['closed'](value, ('unresolved', 'visual'))
     review = api['review_for_run'](run)
     api['need'](isinstance(value['unresolved'], list) and isinstance(value['visual'], dict), 'GLOBAL_REVIEW_REQUIRED')
     validate_discovery_review(inventory, review['requirements'], api)
     api['P']['validate'](inventory, review['requirements'], api['load'](run / 'workspace/draft/original.json'),
         api['load'](run / 'workspace/draft/navigation.json'), api['P']['sources'](run, api), api)
+    validate_reader_presentation(api['load'](run / 'workspace/draft/original.json'), review['requirements'], job, api)
     review.update(value)
     api['save'](run / 'workspace/draft/self-review.json', review)
     return {'status': 'GLOBAL_REVIEW_RECORDED', 'ready': False, 'semanticTruthAssessed': False}
@@ -817,6 +885,7 @@ def check(run, pages, scaffold_only, api):
             api['P']['validate'](inventory, review_requirements(run, api), original,
                 api['load'](run / 'workspace/draft/navigation.json'), entries, api,
                 pages=selected, recorded_only=True)
+            validate_reader_presentation(original, review_requirements(run, api), job, api, pages=selected)
             validate_discovered_sources(inventory, [r for r in additional if r['page'] in selected], entries, api)
             for page in chosen['pages']:
                 for fi, fragment in enumerate(page['fragments']):

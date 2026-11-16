@@ -1081,6 +1081,7 @@ def verify(run, *, debug=False):
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
         P['validate'](inventory, review['requirements'], original, load(draft / 'navigation.json'), entries, globals())
+        W['validate_reader_presentation'](original, review['requirements'], job, globals())
         checks[stage] = {'status': 'PASS', 'discoveryCoverage': discovery_proofs}; result['semanticReviewRecorded'] = True
         result['authorVisualReview'] = review['visual']
         stage = 'entrySequences'; request = directory / 'sequences.json'
@@ -1351,6 +1352,8 @@ def main():
     parser.add_argument('--entry')
     parser.add_argument('--routes', action='store_true', help='Show the compact route registry; select one with --route ID.')
     parser.add_argument('--route')
+    parser.add_argument('--review-context', action='store_true', help='show: list source views, or pair one --view SERVICE/REGION with current reader fragments and existing own notes; no judgments are recorded.')
+    parser.add_argument('--view', help='show --review-context: one exact SERVICE/REGION from the source inventory.')
     parser.add_argument('--offset', type=int, default=0, help='show: character offset (default 0).')
     parser.add_argument('--limit', type=int, default=8000, help='show: maximum characters; 0 returns the full remainder (default 8000).')
     args = parser.parse_args()

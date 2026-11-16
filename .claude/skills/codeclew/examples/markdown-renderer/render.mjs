@@ -67,6 +67,46 @@ export function checkFragmentAddresses(original){
  return {status:issues.length?'FAILED':'FRAGMENT_ADDRESSES_CHECKED',issues};
 }
 
+// Presentation facts from the same lexer used by renderMarkdown. Code remains
+// opaque; raw HTML is passed through by marked and is inspected as HTML by the
+// caller. A table/citation is never a semantic verdict.
+export function readerPresentation(original){
+ const issues=[],fragments=[],pages=[];
+ for(const page of original.pages){
+  let offset=0;
+  const spans=page.fragments.map((f,index)=>{const start=offset;offset+=f.text.replace(/\r\n|\r/g,'\n').length;return {f,index,start,end:offset,markdownTables:0,html:[]}});
+  const source=page.fragments.map(f=>f.text).join('').replace(/\r\n|\r/g,'\n');
+  const blocks=marked.lexer(source,{gfm:true}),html=[];
+  if(blocks.map(t=>t.raw).join('')!==source){
+   issues.push({code:'READER_PRESENTATION_CONTEXT_UNAVAILABLE',page:page.page,fragment:null,field:'/fragments',
+    actual:'Parser source positions are not exact.',expected:'Complete Markdown blocks with exact source positions.',
+    recovery:'Use ./docs put to keep each checked reader fragment a complete source-backed Markdown block; preserve source bindings.'});continue;
+  }
+  let cursor=0;
+  for(const block of blocks){
+   const start=cursor;cursor+=block.raw.length;
+   const end=start+block.raw.trimEnd().length;
+   const owner=spans.find(f=>f.start<=start&&end<=f.end);
+   let leafCursor=start,uncertain=false;
+   marked.walkTokens([block],token=>{
+    if(token.type==='table'&&owner)owner.markdownTables++;
+    if(token.tokens||token.items||token.type==='table')return;
+    if(typeof token.raw!=='string')return;
+    const found=source.indexOf(token.raw,leafCursor);
+    const position=found>=start&&found+token.raw.length<=cursor?found:start;
+    if(found<start||found+token.raw.length>cursor)uncertain=true;
+    if(position!==start||found===start)leafCursor=position+token.raw.length;
+    if(token.type!=='html')return;
+    const item={raw:token.raw,start:position,ambiguous:!owner&&uncertain};html.push(item);
+    if(owner)owner.html.push(token.raw);
+   });
+  }
+  pages.push({page:page.page,spans:spans.map(s=>({fragment:s.f.id??null,index:s.index,start:s.start,end:s.end})),html});
+  for(const span of spans)if(span.f.id)fragments.push({page:page.page,fragment:span.f.id,markdownTables:span.markdownTables,html:span.html});
+ }
+ return {issues,fragments,pages};
+}
+
 // Retained byte-for-byte for callers comparing existing neutral publications.
 function neutralPage(html,files,label){
  const nav=files.map(f=>`<a href="${escape(f.replace(/\.md$/,'.html'))}">${escape(basename(f,'.md'))}</a>`).join(' · ');

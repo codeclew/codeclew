@@ -64,6 +64,19 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    --input assessment.json`. Empty/null is not approval. Changed page hashes
    invalidate their reviews; unchanged reviews persist.
 
+For that local comparison, use `./docs show --review-context --page PAGE.md
+[--fragment ID]`. It lists the admitted source inventory, including uncited views.
+Select one with `--view SERVICE/REGION`. The result brings its complete retained
+source together with current reader fragments and applicable existing own notes;
+no notes need to be created. Derive consequences from source first, then check
+the reader for omissions and unsupported claims. Repair the actual prose/arrows
+before recording judgments. Related excerpt candidates share evidence/view only;
+they are not complete semantic dependencies. Remaining views stay explicit.
+`--limit` caps the complete context: an oversize result reports its size and a
+recovery command rather than cropping code. Select a smaller reader fragment or
+explicitly raise the single-view limit. This optional read has no saved packet,
+approval or semantic verdict; reuse unaffected work instead of another global pass.
+
 For a SERVICE review, set `sourceNotes` to `{"references": [{"page":
 "SERVICE.md", "claim": "phase"}]}` after explicitly comparing each referenced
 canonical reader fragment with its consequential source blocks. Choose existing
@@ -186,6 +199,11 @@ must still make the actual end-to-end progression and completion boundary clear;
 links are not permission to drop consequential work or mark unread code unknown.
 Existing put/sequence/page-info/route commands suffice for this organization.
 Use readable field tables with exact code names and code-formatted literal values.
+An EXPLAINED data-fields topic requires a rendered table in its referenced reader
+fragment; a table's presence does not establish completeness. Use the existing
+source-bounded EXPLICIT_UNKNOWN path for genuinely unavailable data. Raw unknown
+placeholder tags can disappear as HTML: put literal expressions in code or escape
+them. Intentional supported HTML, anchors and disclosures remain available.
 Explain consequential unavailable behavior once in reader-facing terms; keep
 capture/proof metadata in source details rather than repeating it in the narrative.
 
