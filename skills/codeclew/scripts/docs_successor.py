@@ -6,6 +6,50 @@ from pathlib import Path
 import shutil
 
 
+def quality_rejected(run, api):
+    path = run / 'inputs/successor.json'
+    return path.exists() and api['load'](path).get('callerDecision', {}).get('reason') == 'INDEPENDENT_QUALITY_REJECTED'
+
+
+def review_stamp(run, page, api):
+    if not quality_rejected(run, api):return api['digest'](page)
+    # Bind current decisions to this admitted continuation, not its relocatable
+    # filesystem path. Restoring a parent's opaque hashes is not a new decision.
+    return api['digest']({'page': page, 'reviewScope': {
+        'successor': api['digest'](api['load'](run / 'inputs/successor.json')),
+        'profile': api['load'](run / 'pins.json')['authorSkillsConfig']}})
+
+
+def pending_review(run, api):
+    if not quality_rejected(run, api):return {'pages': [], 'claims': [], 'requirements': []}
+    original = api['load'](run / 'workspace/draft/original.json')
+    path = run / 'workspace/draft/reviewed-pages.json'
+    reviewed = api['load'](path) if path.exists() else {}
+    pages = [p for p in original['pages'] if reviewed.get(p['page']) != review_stamp(run, p, api)]
+    names = [p['page'] for p in pages]
+    return {'pages': names, 'claims': [{'page': p['page'], 'claim': f['id']} for p in pages
+            for f in p['fragments'] if 'id' in f], 'requirements': [r['id'] for r in
+            api['load'](run / 'inputs/inventory.json')['requirements'] if r['page'] in names]}
+
+
+def require_current_reviews(run, api):
+    pending = pending_review(run, api)
+    api['need'](not pending['pages'], 'QUALITY_REJECTED_REVIEW_PENDING', **pending,
+        recovery='Compare the listed reader fragments with source and record fresh decisions using ./docs review-page. Preserve valid reader text; finish-review after all pending pages.')
+
+
+def pending_decisions(review):
+    """Keep locations and source references as hints, never inherited approval."""
+    for row in review['requirements'].values():
+        row['disposition'] = None
+        if 'discoveryDisposition' in row:row['discoveryDisposition'] = None
+        for discovered in row.get('discoveredEntries') or []:discovered['disposition'] = None
+        for topic in (row.get('topics') or {}).values():topic['disposition'] = None
+    review['claims'] = {p: {c: None for c in claims} for p, claims in review['claims'].items()}
+    review['unresolved'], review['visual'] = None, {'status': None}
+    return review
+
+
 def prepared_bindings(run, api):
     result = {}
     for folder in ('author-source', 'source-proof'):
@@ -122,6 +166,11 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
         if revise_ready:shutil.copytree(previous / 'ready', archive / 'ready')
         api['need'](api['tree'](run / 'workspace/draft') == draft
                     and api['tree'](run / 'workspace/pages') == pages, 'SUCCESSOR_DRAFT_COPY_CHANGED')
+        if revise_ready:
+            # Preserve exact prior decisions alongside other inherited history.
+            for name in ('self-review.json', 'reviewed-pages.json'):
+                path = run / 'workspace/draft' / name
+                if path.exists():shutil.copyfile(path, archive / name)
         receipt = {'schema': 'codeclew-docs-successor/1', 'predecessor': str(previous), 'predecessorPreparedOrigin': str(origin),
                    'predecessorFiles': before, 'predecessorChecks': str(previous / 'checks'),
                    'historyFiles': files, 'archiveFiles': api['tree'](archive), 'inheritedAttempts': len(state['attempts']),
@@ -130,17 +179,22 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False)
                    'originalAuthorStartedAt': state.get('authorStartedAt'), 'continuationAllowance': job['budget'],
                    'budgetScope': 'NEW_ATTEMPTS_ONLY', 'draftDigest': api['digest'](draft),
                    'sourceBindingsDigest': api['digest'](old_bindings), 'modelCallsOnPrepare': 0,
-                   'standaloneFullDocsetReviewRequired': True, 'fullFinalGateRequired': True}
+                   'standaloneFullDocsetReviewRequired': not revise_ready or not (run / 'inputs/scaffold.json').exists(),
+                   'fullFinalGateRequired': True}
         if revise_ready:
             receipt.update(callerDecision={'status': 'REVISION_REQUESTED',
                 'reason': 'INDEPENDENT_QUALITY_REJECTED', 'parentNativeStatus': 'READY'},
                 predecessorReadyFiles=ready_files)
         api['save'](run / 'inputs/successor.json', receipt)
         new_pins['inputFiles'] = api['tree'](run / 'inputs');api['save'](run / 'pins.json', new_pins)
+        if revise_ready:
+            api['save'](run / 'workspace/draft/reviewed-pages.json', {})
+            api['save'](run / 'workspace/draft/self-review.json', api['review_for_run'](run))
         inherited = {'inheritedAttemptCount': len(state['attempts']), 'inheritedModelTokens': accounting['budgetTokens'],
                      'receiptDigest': api['digest'](receipt)}
         api['save'](run / 'state.json', {**state, 'status': 'SUCCESSOR_PREPARED', 'authorStartedAt': None,
-                   'successor': inherited, 'unitCursor': None})
+                   'successor': inherited, 'unitCursor': 0 if revise_ready else None,
+                   'completedUnit': None})
         api['need'](all(api['sha']((previous / name).read_bytes()) == value for name, value in before.items())
                     and api['tree'](previous / 'workspace/draft') == draft
                     and (not revise_ready or api['tree'](previous / 'ready') == ready_files), 'SUCCESSOR_PARENT_CHANGED')
@@ -168,6 +222,8 @@ def validate(run, state, api):
 def execute(run, api, debug=False):
     job, _, _ = api['inputs_unchanged'](run)
     state = api['load'](run / 'state.json');base = validate(run, state, api)
+    if quality_rejected(run, api) and (run / 'inputs/scaffold.json').exists():
+        return api['W']['run_units'](run, api, debug)
     if len(state['attempts']) == base:
         api['author'](run)  # Mandatory standalone same-author review, not unit replay.
     elif state['status'] != 'AUTHOR_COMPLETED':

@@ -2,8 +2,11 @@
 
 The caller has admitted this runtime and retained scope. One author/context works
 through related-page units. Keep the complete request and all source requirements.
-A successor may instead assign one standalone full-docset review of preserved work;
-then follow that full assignment without replaying service-unit authoring.
+A successor after independent quality rejection reopens prior semantic judgments,
+while preserving reader text, sources, notes and history. Review the existing
+related-page units with fresh explicit decisions; a completed turn or restored
+old review files do not approve them. This is comparison and targeted repair,
+not wholesale rewriting. Other successors may assign one standalone review.
 Finish the assigned unit or standalone review and end the turn; do not start runners, other models,
 capture, refresh, publication, or source-repository/private-store exploration.
 The workspace profile survives compaction: use it rather than restarting the
@@ -62,22 +65,35 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    with `./docs review-page --page PAGE.md > assessment.json`, fill claim and
    requirement dispositions, then record with `./docs review-page --page PAGE.md
    --input assessment.json`. Empty/null is not approval. Changed page hashes
-   invalidate their reviews; unchanged reviews persist.
+   invalidate their reviews; unchanged reviews persist unless the caller explicitly
+   rejected their inherited quality. Then the getter exposes pending judgments
+   with prior locations/references as hints, not approvals. Fresh decisions close
+   only the selected page. `finish-review` and the full gate list remaining pages
+   and claims; a structural local check is not semantic approval.
 
 For that local comparison, use `./docs show --review-context --page PAGE.md
 [--fragment ID]`. It lists the admitted source inventory, including uncited views.
 Select one with `--view SERVICE/REGION`. The result brings its complete retained
-source together with current reader fragments and applicable existing own notes;
-no notes need to be created. Derive consequences from source first, then check
+source together with the selected current reader fragments. To compare a small
+explicit group across pages, use `--service SERVICE --input selection.json`
+instead of `--page/--fragment`. Reuse the compact review `claims` shape, e.g.
+`{"claims":{"service.md":{"phase":null},"process.md":{"flow":null}}}`.
+Values are not judgments here; only the existing page/claim IDs select text.
+At most eight fragments are selected; no related candidate is added automatically.
+For source-first inspection without reader text, omit page/input and select
+`--service SERVICE --view SERVICE/REGION`. Whole saved own notes are absent by
+default; add `--include-notes` to include applicable notes without changing them.
+No notes need to be created. Derive consequences from source first, then check
 the reader for omissions and unsupported claims. Repair the actual prose/arrows
 before recording judgments. Related excerpt candidates share evidence/view only;
-they are not complete semantic dependencies. Remaining views stay explicit.
+they are not complete semantic dependencies. Unselected candidates and remaining
+views stay explicit. Selected reader text and the source are each emitted once.
 `--limit` caps the complete context: an oversize result reports its size and a
 recovery command rather than cropping code. Select a smaller reader fragment or
 explicitly raise the single-view limit. This optional read has no saved packet,
 approval or semantic verdict; reuse unaffected work instead of another global pass.
 The source header displays verified covering citations, with a count and the
-existing binding-map path for other references. Related excerpts and own notes
+existing binding-map path for other references. Related excerpt IDs and optional own notes
 still use the full binding set.
 
 For a SERVICE review, set `sourceNotes` to `{"references": [{"page":
@@ -119,15 +135,19 @@ target stay fixed; literal starter instructions and kind-only titles block check
 The old `save-pages --input FILE` representation remains supported for targeted
 advanced edits; no hand-written site generator is necessary in the normal path.
 
-In the final related unit, finish shared data/process pages and necessary
+Finish only the assigned related-page unit and end the turn so the caller can
+check its result and reported accounting before continuing. In the final related
+unit, finish shared data/process pages and necessary
 cross-service reconciliation. Every canonical process narrative needs a meaningful
 diagram retaining its own start, causal progression, actual reply/completion
 boundary and consequential branches. Link detailed shared phases for external
 effects, broker handoffs and outcomes instead of copying their downstream steps
 into every narrative. A compact diagram plus those linked phases must cover the
 complete causal path; unrelated starts keep distinct landings and diagrams.
-Preserve route scope and search ownership. Review new/changed pages; reuse the
-recorded semantic work on unchanged pages. Reopen dependencies when a changed
+Preserve route scope and search ownership. Review new/changed pages; reuse current
+recorded semantic work on unchanged pages. After explicit quality rejection,
+record fresh judgments for pending pages even when preserving their text.
+Reopen dependencies when a changed
 claim affects their meaning; hashes cannot prove cross-service consistency.
 Do not repeat whole-site authoring or blanket reread all previous page JSON.
 Each SERVICE review has a `topics` map, with exactly the inventory topic names.

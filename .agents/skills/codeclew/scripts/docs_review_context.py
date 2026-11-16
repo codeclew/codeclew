@@ -1,4 +1,4 @@
-"""One selected retained source view beside current reader claims; no verdict."""
+"""One complete source view beside an explicit reader selection; no verdict."""
 import re
 import shlex
 import tempfile
@@ -34,26 +34,50 @@ def display_citations(key, region, bindings, covering, api):
 
 def show(run, args, api):
     job, inventory, pins = api['frozen_inputs'](run)
-    api['need'](len(args.page) == 1 and not (args.entries or args.entry or args.routes or args.route),
+    selection = getattr(args, 'input', None)
+    api['need'](len(args.page) <= 1 and not (args.entries or args.entry or args.routes or args.route)
+                and not (selection and (args.page or args.fragment)),
                 'REVIEW_CONTEXT_PAGE_REQUIRED')
     original = api['load'](run / 'workspace/draft/original.json')
-    page = next((p for p in original['pages'] if p['page'] == args.page[0]), None)
-    api['need'](page is not None, 'SHOW_PAGE_NOT_FOUND', actual=args.page[0])
-    fragments = [f for f in page['fragments'] if 'id' in f and (args.fragment is None or f['id'] == args.fragment)]
-    api['need'](fragments and (args.fragment is None or len(fragments) == 1), 'SHOW_FRAGMENT_NOT_FOUND', page=page['page'], actual=args.fragment)
+    pages = {p['page']: p for p in original['pages']}
+    requested = []
+    if selection:
+        value = api['load'](selection);api['closed'](value, ('claims',))
+        api['need'](isinstance(value['claims'], dict) and value['claims'], 'REVIEW_CONTEXT_SELECTION_REQUIRED')
+        for name, claims in value['claims'].items():
+            api['need'](isinstance(claims, dict) and claims and all(
+                v in (None, 'SUPPORTED', 'EXPLICIT_UNKNOWN') for v in claims.values()), 'REVIEW_CONTEXT_SELECTION_REQUIRED')
+            requested += [(name, identity) for identity in claims]
+        api['need'](len(requested) <= 8, 'REVIEW_CONTEXT_SELECTION_TOO_LARGE', maximumFragments=8)
+    elif args.page:
+        name = args.page[0];api['need'](name in pages, 'SHOW_PAGE_NOT_FOUND', actual=name)
+        requested = [(name, f['id']) for f in pages[name]['fragments'] if 'id' in f
+                     and (args.fragment is None or f['id'] == args.fragment)]
+        api['need'](requested, 'SHOW_FRAGMENT_NOT_FOUND', page=name, actual=args.fragment)
+    else:
+        api['need'](args.fragment is None, 'REVIEW_CONTEXT_PAGE_REQUIRED')
+    fragments = []
+    for name, identity in dict.fromkeys(requested):
+        api['need'](name in pages, 'SHOW_PAGE_NOT_FOUND', actual=name)
+        fragment = next((f for f in pages[name]['fragments'] if f.get('id') == identity), None)
+        api['need'](fragment is not None, 'SHOW_FRAGMENT_NOT_FOUND', page=name, actual=identity)
+        fragments.append((name, fragment))
     navigation = api['load'](run / 'workspace/draft/navigation.json')
-    owners = [s['id'] for s in navigation['services'] if page['page'] in s['pages']]
+    owners = [s['id'] for s in navigation['services'] if args.page and args.page[0] in s['pages']]
     service = args.service or (owners[0] if len(owners) == 1 else None)
     api['need'](service in inventory['services'] and (not owners or owners == [service]),
-                'REVIEW_CONTEXT_SERVICE_REQUIRED', page=page['page'], actual=service, owners=owners,
-                recovery='Use the page owner; for an unowned shared page select --service explicitly.')
+                'REVIEW_CONTEXT_SERVICE_REQUIRED', actual=service, owners=owners,
+                recovery='Use the page owner; for an explicit group, shared page or source-only read select --service.')
     home = run / 'inputs/author-source' / service
     api['need']((home / 'views.json').is_file() and (home / 'requirements.json').is_file(), 'REVIEW_SOURCE_INVENTORY_REQUIRED', service=service)
     views = api['load'](home / 'views.json')
     requirements = api['load'](home / 'requirements.json')
-    required = {view for r in requirements.values() if r.get('page') == page['page'] for view in r.get('views', [])}
-    base = ['--review-context', '--page', page['page'], '--service', service]
+    required = {view for r in requirements.values() if r.get('page') in {p for p, _ in fragments} for view in r.get('views', [])}
+    base = ['--review-context', '--service', service]
+    if args.page:base += ['--page', args.page[0]]
+    if selection:base += ['--input', str(selection)]
     if args.fragment is not None:base += ['--fragment', args.fragment]
+    if getattr(args, 'include_notes', False):base += ['--include-notes']
     def command(key, limit=None):
         return './docs show ' + shlex.join(base + ['--view', service + '/' + key] +
             (['--limit', str(limit)] if limit is not None else []))
@@ -97,9 +121,9 @@ def show(run, args, api):
                 api['check_source_membership'](job, inventory, entries[handle], Path(temporary), cache)
     known = set(entries)
     for path in (run / 'inputs/source-proof').glob('*/citation-index.json'):known.update(api['load'](path))
-    for fragment in fragments:
+    for name, fragment in fragments:
         api['need'](fragment.get('evidence') and all(h in known for h in fragment['evidence']),
-                    'REVIEW_READER_EVIDENCE_REQUIRED', page=page['page'], fragment=fragment['id'])
+                    'REVIEW_READER_EVIDENCE_REQUIRED', page=name, fragment=fragment['id'])
     parts = ['Review context: ' + args.view + '\nNo semantic verdict; compare source to reader for omissions, then reader to source for unsupported claims.\n',
         'Source: ' + service + '/' + region['file'] + ' @ ' + inventory['services'][service]['revision'] +
         '\nSource digest: ' + api['sha'](region['text'].encode()) + '\nCites: ' + ', '.join(displayed) + '\n']
@@ -108,18 +132,22 @@ def show(run, args, api):
                      '; full map: ../inputs/source-proof/' + service + '/citation-index.json\n')
     fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', region['text'])), default=3))
     parts += [fence + '\n', region['text'], '\n' + fence + '\n\nCurrent reader fragments:\n']
-    for fragment in fragments:
-        parts += [page['page'] + '#' + fragment['id'] + ' @ ' + api['digest'](fragment) +
+    for name, fragment in fragments:
+        parts += [name + '#' + fragment['id'] + ' @ ' + api['digest'](fragment) +
                   '\nCites: ' + ', '.join(fragment['evidence']) + '\n', fragment['text'], '\n']
     candidates = list(dict.fromkeys((p['page'], f['id']) for p in original['pages'] for f in p['fragments']
         if 'id' in f and handles.intersection(f.get('evidence', []))))
-    parts.append('\nCandidate related excerpts (shared evidence/view, not complete dependencies):\n' +
-                 ''.join(p + '#' + identity + '\n' for p, identity in candidates))
+    selected = {(name, f['id']) for name, f in fragments}
+    parts.append('\nUnselected candidate excerpts (shared evidence/view, not complete dependencies):\n' +
+                 (''.join(p + '#' + identity + '\n' for p, identity in candidates if (p, identity) not in selected) or '(none)\n'))
     notes = []
     for requirement in inventory['requirements']:
         if requirement['kind'] != 'SERVICE' or requirement['service'] != service:continue
         path = run / 'workspace/notes' / (requirement['page'] + '.json')
-        if path.exists():notes += api['load'](path)['fragments']
+        if path.exists():
+            if getattr(args, 'include_notes', False):notes += api['load'](path)['fragments']
+            else:parts.append('\nOwn notes available: ../notes/' + path.name + ' (' + str(path.stat().st_size) +
+                              ' bytes); add --include-notes to include applicable notes.\n')
     for note in notes:
         api['need'](isinstance(note.get('text'), str) and note['text'].strip() and note.get('evidence')
                     and all(h in known for h in note['evidence']), 'REVIEW_NOTES_EVIDENCE_REQUIRED', service=service)

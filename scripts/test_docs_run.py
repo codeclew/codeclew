@@ -281,7 +281,9 @@ else:
         context=self.show_cli('--review-context','--page',self.entry['page'],'--fragment','entry','--view',view,'--limit','0')
         self.assertEqual(context.count(self.source['text']),1)
         self.assertIn(self.local_page()['fragments'][1]['text'],context)
-        self.assertIn('Previous own reading',context);self.assertIn(self.handle,context)
+        self.assertNotIn('Previous own reading',context);self.assertIn(self.handle,context)
+        with_notes=self.show_cli('--review-context','--page',self.entry['page'],'--fragment','entry','--view',view,'--include-notes','--limit','0')
+        self.assertIn('Previous own reading',with_notes)
         self.assertIn('source to reader for omissions',context);self.assertIn('reader to source for unsupported',context)
         self.assertIn('not complete dependencies',context);self.assertIn(self.source['revision'],context)
         self.assertEqual(before,D['tree'](self.run))
@@ -310,6 +312,32 @@ else:
         manifest=self.run/'inputs/source-proof'/self.service/'read/citations.json';manifest.unlink()
         failed=json.loads(self.show_cli('--review-context','--page',self.entry['page'],'--view',view,success=False))
         self.assertEqual(failed['code'],'FROZEN_INPUTS_CHANGED')
+
+    def test_review_context_explicit_group_exact_text_remaining_ids_and_source_only(self):
+        view=self.prepare_review_context();self.save_local(self.local_page())
+        page=json.loads(json.dumps(self.original['pages'][1]))
+        page['fragments'] += [{'id':identity,'text':'\n\nUnique '+identity+' reader body.','evidence':[self.handle]}
+                              for identity in ('extra','unselected')]
+        self.save_local(page)
+        selection=self.run/'workspace/selection.json'
+        claims={self.entry['page']:{'entry':None},page['page']:{'extra':None}}
+        D['save'](selection,{'claims':claims});before=D['tree'](self.run)
+        text=self.show_cli('--review-context','--input',str(selection),'--service',self.service,'--view',view,'--limit','0')
+        self.assertEqual(text.count(self.source['text']),1)
+        for fragment in (self.local_page()['fragments'][1],page['fragments'][-2]):self.assertEqual(text.count(fragment['text']),1)
+        self.assertNotIn(page['fragments'][-1]['text'],text)
+        self.assertIn(page['page']+'#unselected',text)
+        self.assertEqual(text.count(page['page']+'#extra'),1)
+        self.assertEqual(before,D['tree'](self.run))
+        source=self.show_cli('--review-context','--service',self.service,'--view',view,'--limit','0')
+        self.assertEqual(source.count(self.source['text']),1)
+        self.assertNotIn(page['fragments'][-2]['text'],source)
+        for bad,code in (({'foreign.md':{'entry':None}},'SHOW_PAGE_NOT_FOUND'),
+                         ({page['page']:{'deleted':None}},'SHOW_FRAGMENT_NOT_FOUND'),
+                         ({page['page']:{str(i):None for i in range(9)}},'REVIEW_CONTEXT_SELECTION_TOO_LARGE')):
+            D['save'](selection,{'claims':bad})
+            result=json.loads(self.show_cli('--review-context','--input',str(selection),'--service',self.service,'--view',view,'--limit','0',success=False))
+            self.assertEqual(result['code'],code)
 
     def test_review_context_projection_deduplicates_exact_bindings_but_never_files_or_revisions(self):
         for change in ({'file':'Other.cs'},{'revision':'c'*40}):
@@ -360,7 +388,7 @@ else:
             D['P']['save_notes'](self.run,self.service+'.md','Own notes through a non-displayed binding.',[aliases[-1]],D)
             from argparse import Namespace
             args=Namespace(review_context=True,page=[self.entry['page']],fragment='entry',service=None,view=view,
-                           entries=False,entry=None,routes=False,route=None,offset=0,limit=0)
+                           entries=False,entry=None,routes=False,route=None,offset=0,limit=0,include_notes=True)
             checked.clear();before=D['tree'](self.run)
             result=D['H']['show'](self.run,args,D);text=result['text']
             self.assertEqual(next(line for line in text.splitlines() if line.startswith('Cites: ')),'Cites: '+handle)
@@ -1487,6 +1515,132 @@ else:
             if mutate:mutate(directory)
         with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}):
             return D['S']['prepare'](job_path,previous or self.run,D['SKILL'],child,D,**options)
+
+    def compact_successor_parent(self):
+        generated=self.generated
+        def generate():
+            self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+            for page in D['load'](self.run/'workspace/draft/original.json')['pages']:
+                shell=D['W']['review_page'](self.run,page['page'],None,D)
+                for identity,row in shell['requirements'].items():
+                    row['disposition']='EXPLAINED'
+                    kind=next(r['kind'] for r in self.inventory['requirements'] if r['id']==identity)
+                    if kind=='SERVICE':
+                        row['sourceNotes']={'references':[{'page':page['page'],'claim':'overview'}]}
+                        row['topics']={topic:{'disposition':'EXPLAINED','page':page['page'],'claim':'overview'} for topic in row['topics']}
+                    if kind=='DISCOVERY':row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+                shell['claims']={identity:'SUPPORTED' for identity in shell['claims']}
+                D['W']['review_page'](self.run,page['page'],shell,D)
+            D['W']['finish_review'](self.run,{'unresolved':[],'visual':{'status':'UNAVAILABLE','reason':'Owned protocol control'}},D)
+            self.original=D['load'](self.run/'workspace/draft/original.json')
+            self.navigation=D['load'](self.run/'workspace/draft/navigation.json')
+            self.review=D['load'](self.run/'workspace/draft/self-review.json');self.seed_files()
+            return generated()
+        self.generated=generate
+        try:return self.successor_parent(ready=True)
+        finally:self.generated=generated
+
+    def test_rejected_review_requires_current_page_decisions_even_after_old_files_and_completed_turn(self):
+        job_path=self.compact_successor_parent()
+        job=D['load'](job_path);job['budget'].update(maxModelTokens=6,maxRepairs=1);D['save'](job_path,job)
+        draft=self.run/'workspace/draft';before_draft=D['tree'](draft)
+        old={name:(draft/name).read_bytes() for name in ('self-review.json','reviewed-pages.json')}
+        global_decision={k:self.review[k] for k in ('unresolved','visual')}
+        self.assertEqual(D['review_for_run'](self.run),self.review)
+        self.assertEqual(D['W']['finish_review'](self.run,global_decision,D)['status'],'GLOBAL_REVIEW_RECORDED')
+        self.assertEqual(before_draft,D['tree'](draft));before=D['tree'](self.run)
+        child=self.root/'rejected';self.prepare_owned_successor(job_path,child,revise_ready=True)
+        for name,raw in old.items():self.assertEqual((child/'history'/name).read_bytes(),raw)
+        self.assertEqual(D['load'](child/'workspace/draft/reviewed-pages.json'),{})
+        self.assertEqual(D['load'](child/'workspace/draft/original.json'),self.original)
+        self.assertEqual(D['S']['prepared_bindings'](child,D),D['S']['prepared_bindings'](self.run,D))
+        for name,raw in old.items():
+            (child/'workspace/draft'/name).write_bytes(raw)
+            (self.seed/name).write_bytes(raw)
+        getter=D['review_for_run'](child)
+        self.assertTrue(all(v is None for claims in getter['claims'].values() for v in claims.values()))
+        service=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        row=getter['requirements'][service['id']]
+        self.assertEqual(row['sourceNotes'],self.review['requirements'][service['id']]['sourceNotes'])
+        self.assertTrue(all(t['disposition'] is None and t['claim']=='overview' for t in row['topics'].values()))
+        with self.assertRaises(D['Stop']) as error:D['W']['finish_review'](child,global_decision,D)
+        self.assertEqual(error.exception.code,'QUALITY_REJECTED_REVIEW_PENDING')
+        pending=error.exception.details
+        local=D['W']['check'](child,[],False,D)
+        self.assertEqual(local['pendingReview']['pages'],pending['pages'])
+        D['author'](child)  # Deterministic copy-only backend restores old reviews.
+        final=D['verify'](child)
+        self.assertEqual(final['checks']['selfReview']['code'],'QUALITY_REJECTED_REVIEW_PENDING',final)
+        self.assertEqual(final['checks']['selfReview']['details']['claims'],pending['claims'])
+        approved={'requirements':{key:json.loads(json.dumps(value)) for key,value in self.review['requirements'].items()
+            if any(r['id']==key and r['page']==service['page'] for r in self.inventory['requirements'])},
+            'claims':self.review['claims'][service['page']]}
+        for reference,code in (({'page':'foreign.md','claim':'overview'},'SERVICE_SOURCE_REVIEW_REFERENCE_REQUIRED'),
+                               ({'page':service['page'],'claim':'overview','fragmentDigest':'sha256:stale'},'SERVICE_SOURCE_REVIEW_STALE')):
+            value=json.loads(json.dumps(approved));value['requirements'][service['id']]['sourceNotes']={'references':[reference]}
+            with self.assertRaises(D['Stop']) as error:D['W']['review_page'](child,service['page'],value,D)
+            self.assertIn(code,[i['code'] for i in error.exception.details['issues']])
+            self.assertEqual(D['S']['pending_review'](child,D)['pages'],pending['pages'])
+        for page in self.original['pages']:
+            shell=D['W']['review_page'](child,page['page'],None,D)
+            for identity,row in shell['requirements'].items():
+                row['disposition']='EXPLAINED'
+                for topic in (row.get('topics') or {}).values():topic['disposition']='EXPLAINED'
+                if 'discoveryDisposition' in row:row['discoveryDisposition']='NO_ADDITIONAL_STARTS'
+            shell['claims']={identity:'SUPPORTED' for identity in shell['claims']}
+            D['W']['review_page'](child,page['page'],shell,D)
+            remaining=D['S']['pending_review'](child,D)
+            self.assertNotIn(page['page'],remaining['pages'])
+            if page==self.original['pages'][0]:self.assertEqual(len(remaining['pages']),1)
+        frozen=self.root/'reviewed-freeze';shutil.copytree(child,frozen)
+        self.assertEqual(D['S']['pending_review'](frozen,D),D['S']['pending_review'](child,D))
+        self.assertEqual(D['W']['finish_review'](child,global_decision,D)['status'],'GLOBAL_REVIEW_RECORDED')
+        for name in old:shutil.copyfile(child/'workspace/draft'/name,self.seed/name)
+        D['author'](child)  # A completed turn must pin the newly submitted decisions.
+        final=D['verify'](child);self.assertEqual(final['status'],'READY',final)
+        self.assertEqual(D['load'](child/'state.json')['modelTokens'],14)
+        self.assertEqual(before,D['tree'](self.run))
+
+    def test_rejected_review_reuses_units_and_new_attempt_accounting_with_full_gate(self):
+        job_path=self.compact_successor_parent()
+        job=D['load'](job_path);job['budget'].update(maxModelTokens=9,maxRepairs=1);D['save'](job_path,job)
+        child=self.root/'unit-rejected';self.prepare_owned_successor(job_path,child,revise_ready=True)
+        self.assertEqual(D['load'](child/'state.json')['unitCursor'],0)
+        receipt=D['load'](child/'inputs/successor.json')
+        self.assertFalse(receipt['standaloneFullDocsetReviewRequired']);self.assertTrue(receipt['fullFinalGateRequired'])
+        real_author=D['author'];local_check=D['W']['check'];calls=[];plans=[]
+        def author(run,*,unit=None,repair=False):
+            self.assertIsNotNone(unit);calls.append((unit['id'],repair))
+            plans.append(D['load'](run/'state.json')['budgetPlan'])
+            pages=unit['pages'] if unit['id']!='complete-docset' else []
+            for name in pages:
+                approved={'requirements':{key:row for key,row in self.review['requirements'].items()
+                    if any(r['id']==key and r['page']==name for r in self.inventory['requirements'])},
+                    'claims':self.review['claims'].get(name,{})}
+                D['W']['review_page'](run,name,json.loads(json.dumps(approved)),D)
+            if unit['id']=='complete-docset':
+                D['W']['finish_review'](run,{k:self.review[k] for k in ('unresolved','visual')},D)
+            for name in ('self-review.json','reviewed-pages.json'):shutil.copyfile(run/'workspace/draft'/name,self.seed/name)
+            pending=D['S']['pending_review'](run,D)
+            result=real_author(run,unit=unit,repair=repair)
+            self.assertEqual(D['S']['pending_review'](run,D),pending,
+                {'beforeReader':self.original,'afterReader':D['load'](run/'workspace/draft/original.json'),
+                 'reviewed':D['load'](run/'workspace/draft/reviewed-pages.json')})
+            return result
+        def check(run,pages,scaffold,api):
+            result=local_check(run,pages,scaffold,api)
+            if len(calls)==1:return {**result,'status':'FAILED','code':'OWNED_ONE_UNIT_REPAIR'}
+            return result
+        with patch.dict(D['execute'].__globals__,{'author':author}),patch.dict(D['W']['run_units'].__globals__,{'check':check}):result=D['execute'](child)
+        self.assertEqual(result['status'],'READY_PROMOTED',result)
+        self.assertEqual(calls,[(self.service,False),(self.service,True),('complete-docset',False)])
+        self.assertEqual([p['remainingTokens'] for p in plans],[9,6,3])
+        self.assertEqual([p['repairReserveEstimate'] for p in plans],[0,3,3])
+        state=D['load'](child/'state.json')
+        self.assertEqual([a['kind'] for a in state['attempts']],['full','successor-review','repair','unit'])
+        self.assertEqual(state['unitCursor'],2);self.assertEqual(state['modelTokens'],17)
+        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),9)
+        self.assertEqual(D['load'](child/'report.json')['checks']['author']['inheritedModelTokens'],8)
 
     def test_ready_successor_requires_caller_revision_and_preserves_parent_ready_and_cost(self):
         job_path=self.successor_parent(ready=True)

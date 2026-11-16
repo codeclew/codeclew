@@ -737,20 +737,30 @@ def review_for_run(run):
     reviewed_path = run / 'workspace/draft/reviewed-pages.json'
     previous_path = run / 'workspace/draft/self-review.json'
     canonical_choices = {}
+    rejected = S['quality_rejected'](run, globals())
+    if rejected and previous_path.exists():
+        previous = load(previous_path)
+        rows = previous['requirements'] if previous.get('schema') == COMPACT_REVIEW else {
+            r['requirement']: {k: v for k, v in r.items() if k not in ('requirement', 'page')}
+            for r in previous['requirements']}
+        for key, row in rows.items():
+            if key in result['requirements']:result['requirements'][key].update(row)
+        result = S['pending_decisions'](result)
     if reviewed_path.exists() and previous_path.exists():
         reviewed, previous = load(reviewed_path), load(previous_path)
         if previous.get('schema') == COMPACT_REVIEW:
             canonical_choices = {key: row['sourceNotes'] for key, row in previous['requirements'].items()
                                  if isinstance(row.get('sourceNotes'), dict) and 'references' in row['sourceNotes']}
             for page in original['pages']:
-                if reviewed.get(page['page']) != digest(page):continue
+                if reviewed.get(page['page']) != S['review_stamp'](run, page, globals()):continue
                 for requirement in inventory['requirements']:
                     if requirement['page'] == page['page'] and requirement['id'] in previous['requirements']:
                         result['requirements'][requirement['id']] = {**result['requirements'][requirement['id']],
                                                                    **previous['requirements'][requirement['id']]}
                 if page['page'] in result['claims']:
                     result['claims'][page['page']] = previous['claims'].get(page['page'], result['claims'][page['page']])
-            result['unresolved'], result['visual'] = previous['unresolved'], previous['visual']
+            if not rejected or not S['pending_review'](run, globals())['pages']:
+                result['unresolved'], result['visual'] = previous['unresolved'], previous['visual']
     for account in W['registered_accounts'](run, globals()):
         row = result['requirements'][account['requirement']]
         dispositions = {c['id']: c.get('disposition') for c in row.get('discoveredEntries') or []}
@@ -1062,6 +1072,7 @@ def verify(run, *, debug=False):
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
         stage = 'selfReview'; review = load(draft / 'self-review.json')
+        S['require_current_reviews'](run, globals())
         W['local_registry'](run, inventory, globals())
         defaults = {}
         for path in (run / 'inputs/author-source').glob('*/requirements.json'):
@@ -1075,8 +1086,8 @@ def verify(run, *, debug=False):
         reviewed = draft / 'reviewed-pages.json'
         if reviewed.exists():
             hashes = load(reviewed)
-            need(all(hashes.get(p['page']) == digest(p) for p in original['pages']), 'PAGE_REVIEW_STALE',
-                 pages=[p['page'] for p in original['pages'] if hashes.get(p['page']) != digest(p)],
+            need(all(hashes.get(p['page']) == S['review_stamp'](run, p, globals()) for p in original['pages']), 'PAGE_REVIEW_STALE',
+                 pages=[p['page'] for p in original['pages'] if hashes.get(p['page']) != S['review_stamp'](run, p, globals())],
                  recovery='Review only the listed pages using ./docs review-page; unchanged page reviews remain valid.')
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
@@ -1206,7 +1217,7 @@ def author(run, *, unit=None, repair=False):
     need(remaining > 0 and (kind != 'repair' or repair_count < job['budget']['maxRepairs']), 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
     if first_successor:
-        prompt = encode({'instruction': 'Continue the full original question under the updated generic prepared-author contract, preserving valid prior work. Extract consequences from source directly into source-backed canonical reader fragments; private scratch notes are optional, not a second required semantic body. Explicitly reconcile source/canonical/affected excerpts at changed summaries, branches and arrows; do not blanket reread or rewrite unchanged documentation. Keep all independent starts and meaningful diagrams with their own origins/completion boundaries; link shared detailed phases instead of copying downstream chains. Do not infer a total order between independent asynchronous work and a response. Close each SERVICE topic with a real reader fragment or evidence-bounded absence. Record sourceNotes.references to source-reviewed reader fragments, or retain valid legacy notes, with explicit claim/requirement/topic judgments. Preserve all source/discovery/sequence/final gates and reopen changed semantic dependencies. No evaluator answers or second author are supplied. Run supported focused checks, finish-review, then end this turn; the caller runs the mandatory full final gate.',
+        prompt = encode({'instruction': 'Continue the original question under the updated prepared-author contract, preserving valid prior work. If assignedUnit is present, compare and review only that bounded related-page unit, run its focused check and end the turn. The final complete-docset unit handles shared phases, consequential cross-service reconciliation and finish-review; the caller runs the full final gate. Without assignedUnit, perform a standalone full-docset review and finish-review. Explicit independent quality rejection reopens prior judgments: obtain pending decisions with review-page and record fresh source/reader comparisons, even when preserving reader text. Old review files or a completed turn do not close them. Extract source consequences into canonical reader fragments; private scratch notes are optional. Reconcile source/canonical/affected excerpts at changed summaries, branches and arrows. Keep independent starts and meaningful diagrams with their own completion boundaries; link shared detailed phases. Do not infer order between asynchronous work and a response. Record explicit claim/requirement/topic/discovery judgments and valid sourceNotes.references or legacy notes. Preserve all source/discovery/sequence/final gates. No evaluator answers or second author are supplied.',
                          'request': job['request'], 'contract': str(SKILL / 'references/docs-run-author.md'),
                          'workspace': str(run / 'workspace'), 'inventory': str(run / 'workspace/inventory.json'),
                          'sourceIndex': str(run / 'inputs/author-source/index.md'),
@@ -1352,7 +1363,8 @@ def main():
     parser.add_argument('--entry')
     parser.add_argument('--routes', action='store_true', help='Show the compact route registry; select one with --route ID.')
     parser.add_argument('--route')
-    parser.add_argument('--review-context', action='store_true', help='show: list source views, or pair one --view SERVICE/REGION with current reader fragments and existing own notes; no judgments are recorded.')
+    parser.add_argument('--review-context', action='store_true', help='show: pair one complete --view SERVICE/REGION with selected reader fragments; --input accepts existing claims map, --include-notes adds own notes. No judgments are recorded.')
+    parser.add_argument('--include-notes', action='store_true', help='show --review-context: explicitly include applicable saved own notes.')
     parser.add_argument('--view', help='show --review-context: one exact SERVICE/REGION from the source inventory.')
     parser.add_argument('--offset', type=int, default=0, help='show: character offset (default 0).')
     parser.add_argument('--limit', type=int, default=8000, help='show: maximum characters; 0 returns the full remainder (default 8000).')

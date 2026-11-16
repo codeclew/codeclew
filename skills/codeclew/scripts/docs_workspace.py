@@ -859,7 +859,7 @@ def review_page(run, page, value, api):
     api['save'](run / 'workspace/draft/self-review.json', template)
     path = run / 'workspace/draft/reviewed-pages.json'
     reviewed = api['load'](path) if path.exists() else {}
-    reviewed[name] = api['digest'](next(p for p in original['pages'] if p['page'] == name))
+    reviewed[name] = api['S']['review_stamp'](run, next(p for p in original['pages'] if p['page'] == name), api)
     api['save'](path, reviewed)
     return {'status': 'PAGE_REVIEW_RECORDED', 'page': name, 'ready': False, 'semanticTruthAssessed': False}
 
@@ -876,6 +876,7 @@ def process_pages(run, api):
 def finish_review(run, value, api):
     job, inventory, _ = api['frozen_inputs'](run)
     api['closed'](value, ('unresolved', 'visual'))
+    api['S']['require_current_reviews'](run, api)
     review = api['review_for_run'](run)
     api['need'](isinstance(value['unresolved'], list) and isinstance(value['visual'], dict), 'GLOBAL_REVIEW_REQUIRED')
     validate_discovery_review(inventory, review['requirements'], api)
@@ -898,6 +899,7 @@ def check(run, pages, scaffold_only, api):
     result = {'status': 'FAILED', 'ready': False, 'semanticTruthAssessed': False,
               'selectedPages': selected, 'unfinishedPages': pending, 'directory': str(folder),
               'sourceBindingsChecked': False, 'sourceBindingScope': selected, 'fullSiteReady': False}
+    if api['S']['quality_rejected'](run, api):result['pendingReview'] = api['S']['pending_review'](run, api)
     stage = 'selection'
     try:
         names = [p['page'] for p in original['pages']]
@@ -998,6 +1000,7 @@ def run_units(run, api, debug=False):
     job, _, _ = api['inputs_unchanged'](run)
     units = api['load'](run / 'inputs/scaffold.json')['units']
     state = api['load'](run / 'state.json')
+    base = api['S']['validate'](run, state, api) if (run / 'inputs/successor.json').exists() else 0
     api['need'](state['status'] not in {'INTERRUPTED', 'AUTHOR_FAILED', 'AUTHOR_BUDGET_EXCEEDED',
                 'AUTHOR_USAGE_UNAVAILABLE', 'AUTHOR_USAGE_INVALID'}, 'AUTHOR_NOT_RESUMABLE')
     if state['status'] == 'AUTHOR_COMPLETED' and state['attempts'][-1].get('kind', 'full') == 'full':
@@ -1011,9 +1014,9 @@ def run_units(run, api, debug=False):
         if not (state.get('status') == 'AUTHOR_COMPLETED' and state.get('completedUnit') == unit['id']):
             accounting = api['token_accounting'](state['attempts'])
             limit = job['budget']['maxModelTokens']
-            remaining = None if limit is None else limit - api['budget_tokens'](accounting)
-            repairs = [a for a in state['attempts'] if a.get('kind') == 'repair']
-            observed = repairs[-1:] or state['attempts'][-1:]
+            remaining = None if limit is None else limit - api['scoped_budget_tokens'](state, accounting)
+            repairs = [a for a in state['attempts'][base:] if a.get('kind') == 'repair']
+            observed = repairs[-1:] or state['attempts'][base:][-1:]
             deltas = accounting.get('attemptUsage', [])
             reserve = (deltas[state['attempts'].index(observed[-1])]['budgetTokens'] or 0) if observed else 0
             state['budgetPlan'] = {'remainingTokens': remaining, 'repairReserveEstimate': reserve,
@@ -1031,7 +1034,7 @@ def run_units(run, api, debug=False):
         if checked['status'] != 'UNIT_CHECKED':
             report = {'status': 'FAILED', 'ready': False, 'unit': unit['id'], 'checks': {'local': checked}}
             api['save'](run / 'report.json', report)
-            count = sum(a.get('kind') == 'repair' for a in state['attempts'])
+            count = sum(a.get('kind') == 'repair' for a in state['attempts'][base:])
             if count >= job['budget']['maxRepairs']:return report
             state['status'] = 'REPAIR_REQUIRED';api['save'](run / 'state.json', state)
             continue
@@ -1044,7 +1047,7 @@ def run_units(run, api, debug=False):
         result = api['verify'](run, debug=debug)
         if result['status'] == 'READY':return api['promote'](run)
         state = api['load'](run / 'state.json')
-        count = sum(a.get('kind') == 'repair' for a in state['attempts'])
+        count = sum(a.get('kind') == 'repair' for a in state['attempts'][base:])
         if result['status'] == 'BLOCKED' or result['checks']['inputs']['status'] != 'PASS' or count >= job['budget']['maxRepairs']:
             return result
         api['author'](run, unit=units[-1], repair=True)
