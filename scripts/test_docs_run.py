@@ -382,6 +382,54 @@ else:
         stored=D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]
         self.assertEqual(stored['topics']['contracts']['evidence'],[self.handle])
         self.assertEqual(stored['topics']['contracts']['fragmentDigest'],D['digest'](self.original['pages'][1]['fragments'][1]))
+
+    def test_minimal_review_decisions_reuse_saved_own_notes_and_refuse_absent_invalid_or_unjudged(self):
+        self.local_reads();self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        name=self.service+'.md';requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        def call(*args):
+            return subprocess.run([sys.executable,'-I','-S',str(ROOT/'skills/codeclew/scripts/docs_run.py'),
+                'review-page','--run-dir',str(self.run),'--page',name,*args],capture_output=True,text=True)
+        text=self.root/'outline.md';text.write_text('Source reservation block: '+self.source['text'])
+        saved=call('--text-file',str(text),'--evidence',self.handle);self.assertEqual(saved.returncode,0,saved.stdout)
+        shell=json.loads(call().stdout);payload={'claims':{key:'SUPPORTED' for key in shell['claims']},'requirements':{}}
+        for identity,row in shell['requirements'].items():
+            kind=next(r['kind'] for r in self.inventory['requirements'] if r['id']==identity)
+            if kind=='SERVICE':
+                payload['requirements'][identity]={'disposition':'EXPLAINED','topics':{
+                    topic:{'disposition':'EXPLAINED','page':name,'claim':'overview'} for topic in row['topics']}}
+            else:
+                payload['requirements'][identity]={'disposition':'EXPLAINED','section':row['section'],
+                    'discoveryDisposition':'NO_ADDITIONAL_STARTS','discoveredEntries':[]}
+        path=self.root/'decisions.json';D['save'](path,payload);before=path.read_bytes()
+        done=call('--input',str(path));self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+        recorded=D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]
+        self.assertEqual(recorded['sourceNotes'],shell['requirements'][requirement['id']]['sourceNotes'])
+        self.assertEqual(recorded['section'],shell['requirements'][requirement['id']]['section'])
+        self.assertEqual(before,path.read_bytes())
+        review_path=self.run/'workspace/draft/self-review.json';review_before=review_path.read_bytes()
+        note=self.run/'workspace/notes'/(name+'.json');raw=note.read_bytes()
+        note.unlink();failed=call('--input',str(path));self.assertNotEqual(failed.returncode,0)
+        self.assertIn('SERVICE_SOURCE_NOTES_REQUIRED',failed.stdout);note.write_bytes(raw)
+        invalid=D['load'](note);invalid['fragments'][0]['text']='';D['save'](note,invalid)
+        failed=call('--input',str(path));self.assertNotEqual(failed.returncode,0)
+        self.assertIn('SERVICE_SOURCE_NOTES_REQUIRED',failed.stdout);note.write_bytes(raw)
+        explicit=json.loads(json.dumps(payload));explicit['requirements'][requirement['id']]['sourceNotes']=None
+        D['save'](path,explicit);failed=call('--input',str(path));self.assertNotEqual(failed.returncode,0)
+        self.assertIn('SERVICE_SOURCE_NOTES_REQUIRED',failed.stdout)
+        unjudged=json.loads(json.dumps(payload));unjudged['requirements'][requirement['id']]['topics']['contracts']['disposition']=None
+        D['save'](path,unjudged);failed=call('--input',str(path));self.assertNotEqual(failed.returncode,0)
+        self.assertIn('SERVICE_TOPIC_ASSESSMENT_REQUIRED',failed.stdout)
+        self.assertEqual(review_before,review_path.read_bytes())
+        unjudged=json.loads(json.dumps(payload));unjudged['claims'][next(iter(unjudged['claims']))]=None
+        D['save'](path,unjudged);failed=call('--input',str(path));self.assertNotEqual(failed.returncode,0)
+        self.assertIn('CLAIM_ASSESSMENT_REQUIRED',failed.stdout)
+        manifest,view,_=F['fixture'](self.root,'foreign-note',service='another-service',work='other-work')
+        foreign_handle=view['records'][0]['cite'];foreign=D['M']['C']['load'](manifest)[3]
+        cached=D['load'](note);cached['fragments'][0]['evidence']=[foreign_handle];D['save'](note,cached)
+        with patch.dict(D['P'],{'sources':lambda *a:{self.handle:{'source':self.source},**foreign}}):
+            with self.assertRaises(D['Stop']) as error:D['W']['review_page'](self.run,name,json.loads(json.dumps(payload)),D)
+        self.assertIn('SERVICE_SOURCE_NOTES_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        self.assertEqual(review_before,review_path.read_bytes());note.write_bytes(raw)
     def test_verify_and_promotion_still_refuse_a_runtime_version_change(self):
         self.generated();accepted = self.check()
         self.assertEqual(accepted['status'], 'READY')

@@ -24,6 +24,9 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    state, parse/default variants, outputs and order. Save one reusable outline per
    service with `./docs review-page --page SERVICE.md --text-file NOTES.md
    --evidence HANDLE` (repeat handles). Notes stay private, outside reader output.
+   Decision-only `review-page --input` reuses saved own notes and the existing
+   section address when omitted; do not echo note text/evidence into the payload.
+   Topic and claim judgments remain explicit; missing or invalid notes still fail.
    Then map each source consequence to existing prose/arrows or a local correction;
    audit visible claims back to those same blocks. Do not use existing prose as
    the checklist of what source behavior exists, or copy whole source files.

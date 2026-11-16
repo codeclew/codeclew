@@ -655,6 +655,13 @@ def review_page(run, page, value, api):
                 'CLAIM_ASSESSMENT_REQUIRED', page=name)
     api['need'](all(v.get('disposition') in ('EXPLAINED', 'EXPLICIT_UNKNOWN') for v in value['requirements'].values()),
                 'REQUIREMENT_ASSESSMENT_REQUIRED', page=name)
+    for requirement in inventory['requirements']:
+        if requirement['kind'] != 'SERVICE' or requirement['id'] not in value['requirements']:continue
+        row = value['requirements'][requirement['id']]
+        retained = shell['requirements'][requirement['id']]
+        if 'sourceNotes' not in row and (run / 'workspace/notes' / (name + '.json')).is_file():
+            row['sourceNotes'] = retained.get('sourceNotes')
+        if 'section' not in row:row['section'] = retained.get('section')
     validate_discovery_review(inventory, value['requirements'], api, pages=[name])
     if any(r['kind'] == 'SERVICE' and r['id'] in value['requirements'] for r in inventory['requirements']):
         api['P']['validate'](inventory, value['requirements'], original,
