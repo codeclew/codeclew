@@ -146,7 +146,7 @@ def show(run, args, api):
         path = run / 'workspace/notes' / (requirement['page'] + '.json')
         if path.exists():
             if getattr(args, 'include_notes', False):notes += api['load'](path)['fragments']
-            else:parts.append('\nOwn notes available: ../notes/' + path.name + ' (' + str(path.stat().st_size) +
+            else:parts.append('\nOwn notes available: notes/' + path.name + ' (' + str(path.stat().st_size) +
                               ' bytes); add --include-notes to include applicable notes.\n')
     for note in notes:
         api['need'](isinstance(note.get('text'), str) and note['text'].strip() and note.get('evidence')

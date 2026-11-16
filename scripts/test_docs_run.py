@@ -284,6 +284,10 @@ else:
         self.assertNotIn('Previous own reading',context);self.assertIn(self.handle,context)
         with_notes=self.show_cli('--review-context','--page',self.entry['page'],'--fragment','entry','--view',view,'--include-notes','--limit','0')
         self.assertIn('Previous own reading',with_notes)
+        hint=next(line for line in context.splitlines() if line.startswith('Own notes available: '))
+        note_path=hint.removeprefix('Own notes available: ').split(' (',1)[0]
+        self.assertEqual((self.run/'workspace'/note_path).read_bytes(),
+                         (self.run/'workspace/notes'/(self.service+'.md.json')).read_bytes())
         self.assertIn('source to reader for omissions',context);self.assertIn('reader to source for unsupported',context)
         self.assertIn('not complete dependencies',context);self.assertIn(self.source['revision'],context)
         self.assertEqual(before,D['tree'](self.run))
@@ -1601,6 +1605,21 @@ else:
         self.assertEqual(D['load'](child/'state.json')['modelTokens'],14)
         self.assertEqual(before,D['tree'](self.run))
 
+    def test_rejected_review_unit_omitted_decisions_stop_before_next_unit_without_repairs(self):
+        job_path=self.compact_successor_parent()
+        job=D['load'](job_path);job['budget'].update(maxModelTokens=6,maxRepairs=0);D['save'](job_path,job)
+        child=self.root/'unit-omitted';self.prepare_owned_successor(job_path,child,revise_ready=True)
+        result=D['execute'](child)
+        self.assertEqual(result['status'],'FAILED');self.assertEqual(result['unit'],self.service)
+        local=result['checks']['local']
+        self.assertEqual(local['code'],'QUALITY_REJECTED_REVIEW_PENDING')
+        self.assertEqual(local['stage'],'unit-review');self.assertEqual(local['structuralCheckStatus'],'UNIT_CHECKED')
+        self.assertEqual(local['details']['pages'],[p['page'] for p in self.original['pages']])
+        self.assertEqual(local['details']['claims'],[{'page':p['page'],'claim':f['id']} for p in self.original['pages'] for f in p['fragments'] if 'id' in f])
+        state=D['load'](child/'state.json');self.assertEqual(state['unitCursor'],0)
+        self.assertEqual([a['unit'] for a in state['attempts'][1:]],[self.service])
+        self.assertFalse((child/'ready').exists());self.assertFalse(local['semanticTruthAssessed'])
+
     def test_rejected_review_reuses_units_and_new_attempt_accounting_with_full_gate(self):
         job_path=self.compact_successor_parent()
         job=D['load'](job_path);job['budget'].update(maxModelTokens=9,maxRepairs=1);D['save'](job_path,job)
@@ -1608,18 +1627,35 @@ else:
         self.assertEqual(D['load'](child/'state.json')['unitCursor'],0)
         receipt=D['load'](child/'inputs/successor.json')
         self.assertFalse(receipt['standaloneFullDocsetReviewRequired']);self.assertTrue(receipt['fullFinalGateRequired'])
-        real_author=D['author'];local_check=D['W']['check'];calls=[];plans=[]
+        D['W']['put'](child,'dynamic.md','details','## Retained details\n\nAdditional retained declaration details.',[self.handle],False,D)
+        D['W']['page_info'](child,'dynamic.md',self.service,'Retained details',False,D)
+        D['W']['put'](child,'later.md','shared','## Shared result\n\nShared retained result.',[self.handle],False,D)
+        shutil.copyfile(child/'workspace/draft/original.json',self.seed/'original.json')
+        shutil.copyfile(child/'workspace/draft/navigation.json',self.seed/'navigation.json')
+        real_author=D['author'];calls=[];plans=[];local_failures=[]
         def author(run,*,unit=None,repair=False):
             self.assertIsNotNone(unit);calls.append((unit['id'],repair))
             plans.append(D['load'](run/'state.json')['budgetPlan'])
-            pages=unit['pages'] if unit['id']!='complete-docset' else []
+            if repair:
+                local=D['load'](run/'report.json')['checks']['local'];local_failures.append(local)
+                self.assertEqual(local['details']['pages'],['dynamic.md'])
+                self.assertEqual(local['details']['claims'],[{'page':'dynamic.md','claim':'details'}])
+                self.assertEqual(local['pendingReview']['pages'],['dynamic.md'])
+            pages=unit['pages'] if unit['id']!='complete-docset' else ['later.md']
+            if repair:pages=[*pages,'dynamic.md']
             for name in pages:
-                approved={'requirements':{key:row for key,row in self.review['requirements'].items()
-                    if any(r['id']==key and r['page']==name for r in self.inventory['requirements'])},
-                    'claims':self.review['claims'].get(name,{})}
+                if name in ('dynamic.md','later.md'):
+                    approved=D['W']['review_page'](run,name,None,D)
+                    approved['claims']={key:'SUPPORTED' for key in approved['claims']}
+                else:
+                    approved={'requirements':{key:row for key,row in self.review['requirements'].items()
+                        if any(r['id']==key and r['page']==name for r in self.inventory['requirements'])},
+                        'claims':self.review['claims'].get(name,{})}
                 D['W']['review_page'](run,name,json.loads(json.dumps(approved)),D)
             if unit['id']=='complete-docset':
+                self.assertEqual(D['S']['pending_review'](run,D)['pages'],[])
                 D['W']['finish_review'](run,{k:self.review[k] for k in ('unresolved','visual')},D)
+            elif repair:self.assertEqual(D['S']['pending_review'](run,D)['pages'],['later.md'])
             for name in ('self-review.json','reviewed-pages.json'):shutil.copyfile(run/'workspace/draft'/name,self.seed/name)
             pending=D['S']['pending_review'](run,D)
             result=real_author(run,unit=unit,repair=repair)
@@ -1627,12 +1663,9 @@ else:
                 {'beforeReader':self.original,'afterReader':D['load'](run/'workspace/draft/original.json'),
                  'reviewed':D['load'](run/'workspace/draft/reviewed-pages.json')})
             return result
-        def check(run,pages,scaffold,api):
-            result=local_check(run,pages,scaffold,api)
-            if len(calls)==1:return {**result,'status':'FAILED','code':'OWNED_ONE_UNIT_REPAIR'}
-            return result
-        with patch.dict(D['execute'].__globals__,{'author':author}),patch.dict(D['W']['run_units'].__globals__,{'check':check}):result=D['execute'](child)
+        with patch.dict(D['execute'].__globals__,{'author':author}):result=D['execute'](child)
         self.assertEqual(result['status'],'READY_PROMOTED',result)
+        self.assertEqual(len(local_failures),1)
         self.assertEqual(calls,[(self.service,False),(self.service,True),('complete-docset',False)])
         self.assertEqual([p['remainingTokens'] for p in plans],[9,6,3])
         self.assertEqual([p['repairReserveEstimate'] for p in plans],[0,3,3])

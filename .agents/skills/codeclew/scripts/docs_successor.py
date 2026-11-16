@@ -20,20 +20,21 @@ def review_stamp(run, page, api):
         'profile': api['load'](run / 'pins.json')['authorSkillsConfig']}})
 
 
-def pending_review(run, api):
+def pending_review(run, api, pages=None):
     if not quality_rejected(run, api):return {'pages': [], 'claims': [], 'requirements': []}
     original = api['load'](run / 'workspace/draft/original.json')
     path = run / 'workspace/draft/reviewed-pages.json'
     reviewed = api['load'](path) if path.exists() else {}
-    pages = [p for p in original['pages'] if reviewed.get(p['page']) != review_stamp(run, p, api)]
-    names = [p['page'] for p in pages]
-    return {'pages': names, 'claims': [{'page': p['page'], 'claim': f['id']} for p in pages
+    unreviewed = [p for p in original['pages'] if (pages is None or p['page'] in pages)
+                  and reviewed.get(p['page']) != review_stamp(run, p, api)]
+    names = [p['page'] for p in unreviewed]
+    return {'pages': names, 'claims': [{'page': p['page'], 'claim': f['id']} for p in unreviewed
             for f in p['fragments'] if 'id' in f], 'requirements': [r['id'] for r in
             api['load'](run / 'inputs/inventory.json')['requirements'] if r['page'] in names]}
 
 
-def require_current_reviews(run, api):
-    pending = pending_review(run, api)
+def require_current_reviews(run, api, pages=None):
+    pending = pending_review(run, api, pages)
     api['need'](not pending['pages'], 'QUALITY_REJECTED_REVIEW_PENDING', **pending,
         recovery='Compare the listed reader fragments with source and record fresh decisions using ./docs review-page. Preserve valid reader text; finish-review after all pending pages.')
 

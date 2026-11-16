@@ -1030,6 +1030,13 @@ def run_units(run, api, debug=False):
             owned = next((s['pages'] for s in navigation['services'] if s['id'] == unit['id']), [])
             pages = list(dict.fromkeys([*pages, *owned]))
         checked = check(run, pages, False, api)
+        if checked['status'] == 'UNIT_CHECKED':
+            try:api['S']['require_current_reviews'](run, api, pages=checked['selectedPages'])
+            except api['Stop'] as error:
+                checked = {**checked, 'status': 'FAILED', 'stage': 'unit-review',
+                           'structuralCheckStatus': 'UNIT_CHECKED', 'code': error.code,
+                           'details': error.details, 'recovery': error.details['recovery'],
+                           'pendingReview': {key: error.details[key] for key in ('pages', 'claims', 'requirements')}}
         state = api['load'](run / 'state.json')
         if checked['status'] != 'UNIT_CHECKED':
             report = {'status': 'FAILED', 'ready': False, 'unit': unit['id'], 'checks': {'local': checked}}
