@@ -149,6 +149,63 @@ else:
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
             D['save'](self.seed / name, value)
 
+    def test_canonical_review_coexists_with_old_notes_without_stale_fallback_and_can_refresh_legacy(self):
+        self.readmit_budget(200,1);self.local_reads();self.save_local(self.local_page())
+        name=self.service+'.md';requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        D['P']['save_notes'](self.run,name,'Previous source outline: '+self.source['text'],[self.handle],D)
+        note=self.run/'workspace/notes'/(name+'.json');old_notes=note.read_bytes()
+        D['W']['put'](self.run,'phase.md','capacity','## Capacity\n\nInspect retained reservation capacity.',[self.handle],False,D)
+        D['W']['page_info'](self.run,'phase.md',self.service,'Capacity phase',False,D)
+        shell=D['W']['review_page'](self.run,name,None,D)
+        self.assertIn('text',shell['requirements'][requirement['id']]['sourceNotes'])
+        for identity,row in shell['requirements'].items():
+            row.update(disposition='EXPLAINED',section='reservations')
+            kind=next(r['kind'] for r in self.inventory['requirements'] if r['id']==identity)
+            if kind=='SERVICE':
+                row['sourceNotes']={'references':[{'page':'phase.md','claim':'capacity'}]}
+                for topic in row['topics']:row['topics'][topic]={'disposition':'EXPLAINED','page':name,'claim':'overview'}
+            if kind=='DISCOVERY':row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+        shell['claims']={key:'SUPPORTED' for key in shell['claims']}
+        D['W']['review_page'](self.run,name,shell,D)
+        selected=D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]['sourceNotes']
+        getter=D['W']['review_page'](self.run,name,None,D)
+        self.assertEqual(getter['requirements'][requirement['id']]['sourceNotes'],selected)
+        shell['requirements'][requirement['id']].pop('sourceNotes')
+        D['W']['review_page'](self.run,name,shell,D)
+        for page in (self.entry['page'],'phase.md'):
+            assessment=D['W']['review_page'](self.run,page,None,D)
+            for row in assessment['requirements'].values():row['disposition']='EXPLAINED'
+            assessment['claims']={key:'SUPPORTED' for key in assessment['claims']}
+            D['W']['review_page'](self.run,page,assessment,D)
+        D['W']['finish_review'](self.run,{'unresolved':[],'visual':{'status':'UNAVAILABLE','reason':'Owned non-browser coexistence control'}},D)
+        self.assertEqual(selected,D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]['sourceNotes'])
+        self.assertEqual(old_notes,note.read_bytes())
+        self.assertEqual(self.local_check(name)['status'],'UNIT_CHECKED')
+        def completed_owned_output():
+            self.original=D['load'](self.run/'workspace/draft/original.json')
+            self.navigation=D['load'](self.run/'workspace/draft/navigation.json')
+            self.review=D['load'](self.run/'workspace/draft/self-review.json')
+            self.seed_files();self.generated();return D['verify'](self.run)
+        final=completed_owned_output();self.assertEqual(final['status'],'READY',final)
+        D['W']['put'](self.run,'phase.md','capacity','## Capacity\n\nChanged retained capacity explanation.',[self.handle],False,D)
+        getter=D['W']['review_page'](self.run,name,None,D)
+        self.assertEqual(getter['requirements'][requirement['id']]['sourceNotes'],selected)
+        before=(self.run/'workspace/draft/self-review.json').read_bytes()
+        with self.assertRaises(D['Stop']) as error:D['W']['review_page'](self.run,name,shell,D)
+        self.assertIn('SERVICE_SOURCE_REVIEW_STALE',{i['code'] for i in error.exception.details['issues']})
+        self.assertEqual(before,(self.run/'workspace/draft/self-review.json').read_bytes())
+        phase_review=D['W']['review_page'](self.run,'phase.md',None,D);phase_review['claims']={'capacity':'SUPPORTED'}
+        D['W']['review_page'](self.run,'phase.md',phase_review,D)
+        local=self.local_check('phase.md');final=completed_owned_output()
+        self.assertEqual(local['code'],'SERVICE_TOPIC_CLOSURE_REQUIRED',local)
+        self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+        self.assertIn('SERVICE_SOURCE_REVIEW_STALE',{i['code'] for i in final['checks']['selfReview']['details']['issues']})
+        self.assertEqual(old_notes,note.read_bytes())
+        D['P']['save_notes'](self.run,name,'Explicitly refreshed source outline: '+self.source['text'],[self.handle],D)
+        refreshed=D['W']['review_page'](self.run,name,None,D)['requirements'][requirement['id']]
+        self.assertNotIn('references',refreshed['sourceNotes']);self.assertIsNone(refreshed['disposition'])
+        self.assertIn('Explicitly refreshed',refreshed['sourceNotes']['text']);self.assertTrue(note.exists())
+
     def test_canonical_source_review_records_references_without_second_body_and_reuses_them(self):
         self.local_reads();self.save_local(self.local_page())
         name = self.service+'.md';requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')

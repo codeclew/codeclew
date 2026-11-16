@@ -104,4 +104,16 @@ def save_notes(run, page, text, handles, api):
         recovery='Save your compact source-first Markdown outline for this service with genuine retained handles; this is not a semantic approval.')
     fragment = {'id': 'source-notes', 'text': text, 'evidence': list(dict.fromkeys(handles))}
     api['save'](run / 'workspace/notes' / (page + '.json'), {'page': page, 'fragments': [fragment]})
+    review_path = run / 'workspace/draft/self-review.json'
+    if review_path.exists():
+        review = api['load'](review_path)
+        row = review['requirements'].get(requirement['id']) if review.get('schema') == api['COMPACT_REVIEW'] else None
+        if row and isinstance(row.get('sourceNotes'), dict) and 'references' in row['sourceNotes']:
+            # Explicit --text-file selects a fresh legacy outline. Reopen that
+            # SERVICE review instead of silently approving a different basis.
+            row.update(sourceNotes=fragment, disposition=None)
+            api['save'](review_path, review)
+            reviewed_path = run / 'workspace/draft/reviewed-pages.json'
+            if reviewed_path.exists():
+                reviewed = api['load'](reviewed_path);reviewed.pop(page, None);api['save'](reviewed_path, reviewed)
     return {'status': 'SOURCE_NOTES_SAVED', 'page': page, 'ready': False, 'semanticTruthAssessed': False}

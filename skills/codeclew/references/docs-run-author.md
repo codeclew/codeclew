@@ -73,6 +73,9 @@ unbacked or stale references fail; recompare changed fragments and submit fresh
 page/claim references. Explicit null or malformed legacy notes are never replaced
 by inference. Valid legacy private notes remain supported. Decision-only updates
 reuse retained canonical references or saved own notes when `sourceNotes` is omitted.
+An explicit canonical choice takes precedence over old saved scratch notes, which
+stay intact. A new `review-page --text-file` explicitly selects a refreshed legacy
+outline and reopens the SERVICE assessment; record its judgments again.
 Claim, requirement and topic dispositions remain explicit. These structural checks
 record the author's review; they do not verify semantic truth.
 

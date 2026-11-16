@@ -736,9 +736,12 @@ def review_for_run(run):
     original = load(run / 'workspace/draft/original.json')
     reviewed_path = run / 'workspace/draft/reviewed-pages.json'
     previous_path = run / 'workspace/draft/self-review.json'
+    canonical_choices = {}
     if reviewed_path.exists() and previous_path.exists():
         reviewed, previous = load(reviewed_path), load(previous_path)
         if previous.get('schema') == COMPACT_REVIEW:
+            canonical_choices = {key: row['sourceNotes'] for key, row in previous['requirements'].items()
+                                 if isinstance(row.get('sourceNotes'), dict) and 'references' in row['sourceNotes']}
             for page in original['pages']:
                 if reviewed.get(page['page']) != digest(page):continue
                 for requirement in inventory['requirements']:
@@ -754,8 +757,13 @@ def review_for_run(run):
         row['discoveredEntries'] = [{**c, 'disposition': dispositions.get(c['id'])} for c in account['discoveredEntries']]
     for requirement in inventory['requirements']:
         path = run / 'workspace/notes' / (requirement['page'] + '.json')
-        if requirement['kind'] == 'SERVICE' and path.exists():
-            result['requirements'][requirement['id']]['sourceNotes'] = load(path)['fragments'][0]
+        if requirement['kind'] != 'SERVICE':continue
+        if requirement['id'] in canonical_choices:
+            # Preserve the explicit choice even when a referenced fragment or
+            # page changed. Validation must reject stale/invalid references;
+            # old scratch notes must never turn them into an accepted fallback.
+            result['requirements'][requirement['id']]['sourceNotes'] = canonical_choices[requirement['id']]
+        elif path.exists():result['requirements'][requirement['id']]['sourceNotes'] = load(path)['fragments'][0]
     return result
 
 
