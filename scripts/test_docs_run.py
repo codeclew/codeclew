@@ -2649,6 +2649,93 @@ class SourceMembershipTests(unittest.TestCase):
         output.mkdir();D['save'](output/'items.json',self.rows)
         return self.response
 
+    def native_page(self, **fields):
+        return {'schema':'codeclew-documentation-work-page/1.0','work':self.entry['work'],
+                'snapshot':self.job['snapshot'],'subject':'service:owned','contextDigest':'sha256:context',
+                'inputDigest':'sha256:input','membershipDigest':'sha256:members','receiptDigest':'sha256:receipt',
+                'influenceCoverage':'RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED',
+                'status':'READY_WITH_LIMITATIONS','items':self.rows,'omitted':[],'total':1,'nextCursor':None,**fields}
+
+    def native_driver(self, payload, exit_code=0, raw=None):
+        config=self.root/'native-response.json';D['save'](config,{'payload':payload,'exitCode':exit_code,'raw':raw})
+        engine=self.root/'native-clew';counter=self.root/'native-count'
+        engine.write_text('#!'+sys.executable+'\n'+
+            'import json,sys\nfrom pathlib import Path\n'+
+            f'config=Path({str(config)!r});counter=Path({str(counter)!r})\n'+
+            'counter.write_text(str(int(counter.read_text())+1 if counter.exists() else 1))\n'+
+            "args=sys.argv[1:];assert args[:3]==['docs','work','read']\n"+
+            "selection=json.loads(Path(args[args.index('--input')+1]).read_text())\n"+
+            "assert selection=={'query':{'kind':'SOURCE','projection':'NAVIGATION','file':'large.json'}}\n"+
+            "value=json.loads(config.read_text());print(value['raw'] if value['raw'] is not None else json.dumps(value['payload']))\n"+
+            "sys.stderr.write('DO_NOT_EMIT_PRIVATE_LOG_OR_SECRET')\n"+
+            "sys.exit(value['exitCode'])\n")
+        engine.chmod(0o700);self.job['clew']=str(engine)
+        return counter
+
+    def failure_after_cleanup(self):
+        cache={}
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            with self.assertRaises(D['Stop']) as error:
+                D['check_source_membership'](self.job,self.inventory,self.entry,Path(temporary),cache)
+            self.assertEqual(error.exception.code,'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE')
+            details=error.exception.details
+        self.assertFalse(Path(temporary).exists());self.assertEqual(cache,{})
+        self.assertEqual(details['service'],'owned');self.assertEqual(details['file'],'large.json')
+        self.assertEqual(details['work'],'immutable-work');self.assertEqual(details['expectedSnapshot'],'frozen')
+        self.assertLess(len(json.dumps(details)),1800)
+        self.assertNotIn('DO_NOT_EMIT',json.dumps(details))
+        self.assertNotIn('sourceRecordDigest',json.dumps(details))
+        return details
+
+    def test_native_process_failure_keeps_structured_cause_after_cleanup_without_payload_or_logs(self):
+        count=self.native_driver({'error':{'code':'CACHE_BUSY','status':'FAILED','message':'DO_NOT_EMIT_MESSAGE',
+                                          'source':'DO_NOT_EMIT_SOURCE','auth':'DO_NOT_EMIT_AUTH'}},23)
+        details=self.failure_after_cleanup();transport=details['transport']
+        self.assertEqual(transport['reason'],'NATIVE_PROCESS_FAILED');self.assertEqual(transport['status'],'INCOMPLETE')
+        self.assertEqual(transport['nativeProcess'],{'exitCode':23,'failure':None,'code':'CACHE_BUSY','status':'FAILED'})
+        self.assertIsNone(details['actualSnapshot']);self.assertEqual(count.read_text(),'1')
+
+    def test_native_start_failure_and_oversize_error_remain_bounded_without_retry(self):
+        self.job['clew']=str(self.root/'missing-engine')
+        details=self.failure_after_cleanup()
+        self.assertEqual(details['transport']['reason'],'PROCESS_START_FileNotFoundError')
+        self.assertEqual(details['transport']['nativeProcess']['failure'],'PROCESS_START_FileNotFoundError')
+        self.assertIsNone(details['transport']['nativeProcess']['exitCode'])
+        count=self.native_driver({'code':'CACHE_BUSY','message':'DO_NOT_EMIT_'*4000},23)
+        details=self.failure_after_cleanup();self.assertIsNone(details['transport']['nativeProcess']['code'])
+        self.assertEqual(details['transport']['nativeProcess']['exitCode'],23);self.assertEqual(count.read_text(),'1')
+        for raw in ('{invalid native response', '['*2000+'0'+']'*2000):
+            count=self.native_driver({},23,raw);before=int(count.read_text())
+            details=self.failure_after_cleanup()
+            self.assertEqual(details['transport']['reason'],'NATIVE_PROCESS_FAILED')
+            self.assertEqual(details['transport']['nativeProcess']['exitCode'],23)
+            self.assertIsNone(details['transport']['nativeProcess']['code'])
+            self.assertEqual(int(count.read_text())-before,1)
+
+    def test_native_incomplete_omissions_and_snapshot_mismatch_keep_exact_refusal_causes(self):
+        cases=[({'total':2},'INCOMPLETE','TOTAL_COUNT_MISMATCH',0,'frozen'),
+               ({'omitted':[{'reason':'DO_NOT_EMIT_OMITTED_BODY'}]},'INCOMPLETE','OMITTED_RECORDS_REQUIRE_NATIVE_INSPECTION',1,'frozen'),
+               ({'snapshot':'foreign'},'COMPLETE',None,0,'foreign')]
+        for fields,status,reason,omissions,snapshot in cases:
+            with self.subTest(fields=fields):
+                count=self.native_driver(self.native_page(**fields))
+                before=int(count.read_text()) if count.exists() else 0
+                details=self.failure_after_cleanup();transport=details['transport']
+                self.assertEqual((transport['status'],transport['reason'],transport['omittedRecords']),
+                                 (status,reason,omissions))
+                self.assertEqual(transport['nativeStatus'],'READY_WITH_LIMITATIONS')
+                self.assertEqual(details['actualSnapshot'],snapshot)
+                self.assertEqual(transport['nativeProcess']['exitCode'],0)
+                self.assertEqual(int(count.read_text())-before,1)
+
+    def test_native_success_keeps_membership_check_and_single_read_cache(self):
+        count=self.native_driver(self.native_page());cache={}
+        with patch.dict(D['check_source_membership'].__globals__,{
+                'source_membership_failure':lambda *a,**k:self.fail('Successful reads need no failure payload')}):
+            with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+                for _ in range(2):D['check_source_membership'](self.job,self.inventory,self.entry,Path(temporary),cache)
+        self.assertEqual(count.read_text(),'1');self.assertEqual(cache[(self.entry['work'],self.source['file'])][self.source['id']],self.rows[0]['record'])
+
     def test_large_saved_body_validates_by_native_record_identity_and_reuses_file_metadata(self):
         with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['check_source_membership'].__globals__,{
             'command':lambda *a,**k:self.fail('Source file scope must not request a stdout-sized body')}):

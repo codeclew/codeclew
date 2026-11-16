@@ -777,6 +777,38 @@ def review_for_run(run):
     return result
 
 
+def source_membership_failure(job, source, work, result, directory):
+    """Keep bounded causes before temporary collection cleanup, never bodies/logs."""
+    def code(value):
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Z][A-Za-z0-9_]{0,95}', value) else None
+    def identity(value, maximum=256):
+        return value[:maximum] if isinstance(value, str) else None
+    observed = result.get('identity') or {}
+    pages = result.get('artifacts', {}).get('pages', [])
+    page = pages[-1] if pages else {}
+    native = {}
+    name = page.get('stdout', '')
+    if isinstance(name, str) and re.fullmatch(r'page-\d{4}\.stdout', name):
+        path = Path(directory) / name
+        try:
+            if not path.is_symlink():
+                with path.open('rb') as stream:raw = stream.read(16385)
+                if len(raw) <= 16384:
+                    body = json.loads(raw)
+                    if isinstance(body, dict):
+                        error = body.get('error')
+                        native = error if isinstance(error, dict) else body
+        except (OSError, ValueError, RecursionError):pass
+    return {'service': identity(source['service'], 128), 'work': identity(work, 128),
+            'file': identity(source['file'], 512), 'expectedSnapshot': identity(job['snapshot']),
+            'actualSnapshot': identity(observed.get('snapshot')),
+            'transport': {'status': code(result.get('status')), 'reason': code(result.get('reason')),
+                          'nativeStatus': code(result.get('nativeStatus')),
+                          'omittedRecords': result.get('omittedRecords'),
+                          'nativeProcess': {'exitCode': page.get('exitCode'), 'failure': code(page.get('failure')),
+                                            'code': code(native.get('code')), 'status': code(native.get('status'))}}}
+
+
 def check_source_membership(job, inventory, entry, checks, cache):
     """Reload identity without requiring a large SOURCE body on stdout.
 
@@ -794,8 +826,10 @@ def check_source_membership(job, inventory, entry, checks, cache):
             directory=Path(checks)/('source-navigation-'+str(len(cache)))
             result=T['collect'](job['clew'],job['root'],work,directory,kind='work-selection',
                 selection={'query':{'kind':'SOURCE','projection':'NAVIGATION','file':source['file']}})
-            need(result['status']=='COMPLETE' and not result['omittedRecords']
-                 and result['identity']['snapshot']==job['snapshot'],'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE')
+            if not (result['status']=='COMPLETE' and not result['omittedRecords']
+                    and (result.get('identity') or {}).get('snapshot')==job['snapshot']):
+                need(False, 'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE',
+                     **source_membership_failure(job, source, work, result, directory))
             rows=load(directory/'items.json')
             need(all(r['kind']=='SOURCE_NAVIGATION' for r in rows),'SOURCE_MEMBERSHIP_NAVIGATION_CHANGED')
             need(len({r['id'] for r in rows})==len(rows),'SOURCE_MEMBERSHIP_NAVIGATION_AMBIGUOUS')
