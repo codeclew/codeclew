@@ -30,8 +30,8 @@ try {
   }
   const counts={};
   for(const page of value.processPages||[])need(sequences[page]?.length,
-   'PROCESS_SEQUENCE_MISSING',{page,field:'fragments',expected:'At least one full-process clew-sequence',actual:sequences[page]?.length||0,
-    recovery:'Describe the complete source-backed process with ./docs sequence on this narrative page. Local entry diagrams do not replace it; meaning still requires review.'});
+   'PROCESS_SEQUENCE_MISSING',{page,field:'fragments',expected:'At least one meaningful process clew-sequence with its own start and completion boundary',actual:sequences[page]?.length||0,
+    recovery:'Describe this process progression with ./docs sequence on its narrative page; link shared detailed phases while preserving consequential branches and completion boundaries. Each narrative still needs its own diagram; meaning requires review.'});
   for(const requirement of value.requirements) {
    if(requirement.kind!=='ENTRY')continue;
    const account=value.accounts.find(row=>row.requirement===requirement.id);

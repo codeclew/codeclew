@@ -149,6 +149,87 @@ else:
         for name, value in [('original.json', self.original), ('navigation.json', self.navigation), ('self-review.json', self.review)]:
             D['save'](self.seed / name, value)
 
+    def test_canonical_source_review_records_references_without_second_body_and_reuses_them(self):
+        self.local_reads();self.save_local(self.local_page())
+        name = self.service+'.md';requirement = next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        shell = D['W']['review_page'](self.run,name,None,D)
+        for identity,row in shell['requirements'].items():
+            row.update(disposition='EXPLAINED',section='reservations')
+            kind = next(r['kind'] for r in self.inventory['requirements'] if r['id']==identity)
+            if kind=='SERVICE':
+                row['sourceNotes'] = {'references':[{'page':name,'claim':'overview'}]}
+                for topic in row['topics']:row['topics'][topic]={'disposition':'EXPLAINED','page':name,'claim':'overview'}
+            if kind=='DISCOVERY':row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+        shell['claims'] = {key:'SUPPORTED' for key in shell['claims']}
+        original = D['load'](self.run/'workspace/draft/original.json')
+        recorded = D['W']['review_page'](self.run,name,shell,D)
+        self.assertFalse(recorded['semanticTruthAssessed'])
+        row = D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]
+        reference = row['sourceNotes']['references'][0]
+        fragment = next(f for p in original['pages'] if p['page']==name for f in p['fragments'] if f.get('id')=='overview')
+        self.assertEqual(reference,{'page':name,'claim':'overview','fragmentDigest':D['digest'](fragment),'evidence':[self.handle]})
+        self.assertNotIn('text',row['sourceNotes']);self.assertFalse((self.run/'workspace/notes').exists())
+        shell['requirements'][requirement['id']].pop('sourceNotes')
+        D['W']['review_page'](self.run,name,shell,D)
+        self.assertEqual(D['load'](self.run/'workspace/draft/self-review.json')['requirements'][requirement['id']]['sourceNotes'],row['sourceNotes'])
+        self.assertEqual(original,D['load'](self.run/'workspace/draft/original.json'))
+        entry_review=D['W']['review_page'](self.run,self.entry['page'],None,D)
+        for account in entry_review['requirements'].values():account['disposition']='EXPLAINED'
+        entry_review['claims']={key:'SUPPORTED' for key in entry_review['claims']}
+        D['W']['review_page'](self.run,self.entry['page'],entry_review,D)
+        self.original=original
+        next(r for r in self.review['requirements'] if r['requirement']==requirement['id'])['sourceNotes']=row['sourceNotes']
+        self.seed_files();self.generated();final=D['verify'](self.run)
+        self.assertEqual(final['status'],'READY',final);self.assertFalse(final['semanticTruthAssessed'])
+
+    def test_canonical_source_review_rejects_missing_foreign_stale_unbacked_and_explicit_bad_notes(self):
+        name=self.service+'.md';requirement=next(r for r in self.inventory['requirements'] if r['kind']=='SERVICE')
+        accounts=json.loads(json.dumps(self.review['requirements']));row=next(r for r in accounts if r['requirement']==requirement['id'])
+        fragment=next(f for f in self.original['pages'][1]['fragments'] if f.get('id')=='overview')
+        reference={'page':name,'claim':'overview','fragmentDigest':D['digest'](fragment),'evidence':[self.handle]}
+        row['sourceNotes']={'references':[reference]}
+        def validate(rows=accounts,original=None,navigation=None,record=False,pages=None):
+            return D['P']['validate'](self.inventory,rows,original or self.original,navigation or self.navigation,{self.handle:{'source':self.source}},D,record=record,pages=pages)
+        self.assertIsNone(validate())
+        bad_values=[(None,'SERVICE_SOURCE_NOTES_REQUIRED'),({},'SERVICE_SOURCE_NOTES_REQUIRED'),
+            ({'references':[]},'SERVICE_SOURCE_NOTES_REQUIRED'),
+            ({'text':'','evidence':[self.handle],'references':[reference]},'SERVICE_SOURCE_NOTES_REQUIRED'),
+            ({'references':[None]},'SERVICE_SOURCE_REVIEW_REFERENCE_REQUIRED'),
+            ({'references':[{'page':[],'claim':'overview'}]},'SERVICE_SOURCE_REVIEW_REFERENCE_REQUIRED'),
+            ({'references':[{**reference,'claim':'missing'}]},'SERVICE_SOURCE_REVIEW_REFERENCE_REQUIRED'),
+            ({'references':[{**reference,'fragmentDigest':'stale'}]},'SERVICE_SOURCE_REVIEW_STALE'),
+            ({'references':[{**reference,'evidence':[]}]},'SERVICE_SOURCE_REVIEW_STALE')]
+        for value,code in bad_values:
+            changed=json.loads(json.dumps(accounts));next(r for r in changed if r['requirement']==requirement['id'])['sourceNotes']=value
+            for record in (False,True):
+                with self.assertRaises(D['Stop']) as error:validate(changed,record=record)
+                self.assertIn(code,{i['code'] for i in error.exception.details['issues']})
+        foreign=json.loads(json.dumps(self.navigation));foreign['services'][0]['pages'].remove(name)
+        with self.assertRaises(D['Stop']) as error:validate(navigation=foreign)
+        self.assertIn('SERVICE_SOURCE_REVIEW_REFERENCE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        unbacked=json.loads(json.dumps(self.original));next(f for f in unbacked['pages'][1]['fragments'] if f.get('id')=='overview')['evidence']=[]
+        with self.assertRaises(D['Stop']) as error:validate(original=unbacked)
+        self.assertIn('SERVICE_SOURCE_REVIEW_EVIDENCE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        # Changed referenced pages are checked even if only their owning SERVICE
+        # overview was reviewed earlier. No matching overview hash can hide this.
+        shared={'id':'phase','text':'Capacity is checked before any hold.','evidence':[self.handle]}
+        self.original['pages'].append({'page':'phase.md','fragments':[shared]})
+        self.navigation['services'][0]['pages'].append('phase.md')
+        row['sourceNotes']={'references':[{'page':'phase.md','claim':'phase','fragmentDigest':D['digest'](shared),'evidence':[self.handle]}]}
+        shared['text']+=' Changed.'
+        with self.assertRaises(D['Stop']) as error:validate(pages=['phase.md'])
+        self.assertIn('SERVICE_SOURCE_REVIEW_STALE',{i['code'] for i in error.exception.details['issues']})
+        # Preserve the same stale review in a genuinely completed owned backend
+        # output to compare local/final diagnostics without bypassing completion.
+        self.review['requirements']=accounts
+        self.review['claims'].append({'page':'phase.md','claim':'phase','evidence':[self.handle],'disposition':'SUPPORTED'})
+        self.seed_files();self.generated();local=self.local_check('phase.md');final=D['verify'](self.run)
+        self.assertEqual(local['code'],'SERVICE_TOPIC_CLOSURE_REQUIRED',local)
+        self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+        local_issue=next(i for i in local['details']['issues'] if i['code']=='SERVICE_SOURCE_REVIEW_STALE')
+        final_issue=next(i for i in final['checks']['selfReview']['details']['issues'] if i['code']=='SERVICE_SOURCE_REVIEW_STALE')
+        self.assertEqual(local_issue,final_issue)
+
     def test_data_section_cli_exact_target_local_final_parity_and_idempotence(self):
         self.readmit_budget(1000,2)
         name = self.service + '.md'

@@ -18,18 +18,18 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    --entries [--service SERVICE]` or `show --routes` for IDs, then `--entry ID` or
    `--route ID` for one object. Invalid IDs list choices; plain fragments need no
    ID. Follow the printed continuation for remaining characters, or use `--limit
-   0` for all. Available-but-unread source remains unfinished work. Before rereading
-   existing prose/arrows, make your own compact Markdown notes from consequential
-   source blocks: handle/block, guard/branch, state before call, success/failure/skip
-   state, parse/default variants, outputs and order. Save one reusable outline per
-   service with `./docs review-page --page SERVICE.md --text-file NOTES.md
-   --evidence HANDLE` (repeat handles). Notes stay private, outside reader output.
-   Decision-only `review-page --input` reuses saved own notes and the existing
-   section address when omitted; do not echo note text/evidence into the payload.
-   Topic and claim judgments remain explicit; missing or invalid notes still fail.
-   Then map each source consequence to existing prose/arrows or a local correction;
-   audit visible claims back to those same blocks. Do not use existing prose as
-   the checklist of what source behavior exists, or copy whole source files.
+   0` for all. Available-but-unread source remains unfinished work. Extract meaning
+   from consequential source blocks directly into reader-ready canonical fragments:
+   guards/branches, state before calls, success/failure/skip state, parse/default
+   variants, outputs and proven order. Write each shared explanation once with
+   genuine source bindings. Compare source with the canonical fragment as you
+   extract it; existing prose is not the checklist of what behavior exists.
+   When changing a summary, branch or arrow, compare the source block, canonical
+   fragment and affected excerpt locally in both directions. Use `show --fragment`
+   and the printed source views; do not copy whole sources or reread unchanged pages.
+   Private scratch notes remain optional via `review-page --text-file NOTES.md
+   --evidence HANDLE`. Do not write a second full private semantic body merely
+   to restate reader-ready fragments. Never publish scratch or review metadata.
 2. Write ordinary Markdown in a text file; save with `./docs put --page PAGE.md
    --fragment CLAIM --text-file FILE --evidence HANDLE` (repeat genuine evidence).
    Quotes/backslashes stay literal; the helper merges, serializes and anchors.
@@ -56,13 +56,25 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    parser/renderer/source rules. Repair only named page/fragment/fields from the
    compact result; full receipts stay on disk and the last valid preview remains.
    After PASS, do not reread checker dumps or regenerate the docset.
-4. Compare source to every visible claim/step and each back to source, including
+4. Before recording each new/changed claim, compare source to its visible claim/step and each back to source, including
    predicates, helper calls, before/after effects, failures, response variants,
    defaults and completion boundaries. Check prose and diagrams. Get assessments
    with `./docs review-page --page PAGE.md > assessment.json`, fill claim and
    requirement dispositions, then record with `./docs review-page --page PAGE.md
    --input assessment.json`. Empty/null is not approval. Changed page hashes
    invalidate their reviews; unchanged reviews persist.
+
+For a SERVICE review, set `sourceNotes` to `{"references": [{"page":
+"SERVICE.md", "claim": "phase"}]}` after explicitly comparing each referenced
+canonical reader fragment with its consequential source blocks. Choose existing
+service-owned fragments with genuine evidence; this path needs no second text body.
+Evidence and fragment digests are recorded by the helper. Missing, foreign,
+unbacked or stale references fail; recompare changed fragments and submit fresh
+page/claim references. Explicit null or malformed legacy notes are never replaced
+by inference. Valid legacy private notes remain supported. Decision-only updates
+reuse retained canonical references or saved own notes when `sourceNotes` is omitted.
+Claim, requirement and topic dispositions remain explicit. These structural checks
+record the author's review; they do not verify semantic truth.
 
 Use `./docs register-entry --requirement DISCOVERY_ID --kind HTTP|KAFKA|SCHEDULED|OTHER
 --page ENTRY.md --title "Reader action" --evidence HANDLE` for a genuine discovered
@@ -89,9 +101,12 @@ The old `save-pages --input FILE` representation remains supported for targeted
 advanced edits; no hand-written site generator is necessary in the normal path.
 
 In the final related unit, finish shared data/process pages and necessary
-cross-service reconciliation. Every canonical process narrative needs its own
-full-chain diagram, including actual request replies, external effects, broker
-handoff and consequential outcomes; local entry diagrams do not replace it.
+cross-service reconciliation. Every canonical process narrative needs a meaningful
+diagram retaining its own start, causal progression, actual reply/completion
+boundary and consequential branches. Link detailed shared phases for external
+effects, broker handoffs and outcomes instead of copying their downstream steps
+into every narrative. A compact diagram plus those linked phases must cover the
+complete causal path; unrelated starts keep distinct landings and diagrams.
 Preserve route scope and search ownership. Review new/changed pages; reuse the
 recorded semantic work on unchanged pages. Reopen dependencies when a changed
 claim affects their meaning; hashes cannot prove cross-service consistency.
@@ -104,7 +119,7 @@ or section's page in Data navigation. If retained evidence bounds an absence,
 use EXPLICIT_UNKNOWN, the reader fragment explaining that boundary, and `reason`.
 Evidence and fragment digests are derived; changed references require explicit
 review again. A reference, table, note or recorded disposition does not prove
-semantic completeness. Notes and topic closure support your source-first audit;
+semantic completeness. Source-review references or notes and topic closure support your source-first audit;
 the caller still independently assesses meaning and reader usefulness.
 Use `./docs finish-review --input FILE` with the explicit global decisions
 `{unresolved: [...], visual: {status: "UNAVAILABLE", reason: "..."}}` (valid JSON).
@@ -158,7 +173,8 @@ Use source-to-text and text-to-source checks for these facts in prose and arrows
 Keep each HTTP method/path, operation identity and completion-order fact identical
 across its entry page, process arrows and catalog declaration. Compare exact
 source identifiers rather than renaming copied operations. A synchronous response
-and subsequent asynchronous projection are distinct completion boundaries.
+and independent asynchronous work have distinct completion boundaries. A response
+that does not wait for background work proves no response-before-background order.
 
 Give the reader a compact overview thread with links to readable phases and
 technical details. Keep detailed conditions, side effects and failure paths in
@@ -166,6 +182,9 @@ those source-backed phases rather than one giant all-steps diagram. The overview
 must still make the actual end-to-end progression and completion boundary clear;
 links are not permission to drop consequential work or mark unread code unknown.
 Existing put/sequence/page-info/route commands suffice for this organization.
+Use readable field tables with exact code names and code-formatted literal values.
+Explain consequential unavailable behavior once in reader-facing terms; keep
+capture/proof metadata in source details rather than repeating it in the narrative.
 
 Preserve every independent known local start in the catalog, even if starts share
 explanation or detailed diagrams. One route's origin must not stand for another

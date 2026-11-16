@@ -277,8 +277,12 @@ def install_author_entry(run, skill, python):
         'admission or export workflow. The caller already owns those operations.\n'
         'Use ./docs show --page PAGE.md [--fragment ID] for saved content,\n'
         './docs put/sequence for small semantic updates, ./docs check --page PAGE.md,\n'
-        'and ./docs review-page for explicit local judgments. Finish the assigned unit, retain source reads\n'
-        'and local page files, and perform the required bidirectional semantic review.\n'
+        'and ./docs review-page for explicit local judgments. Retain source reads\n'
+        'and local page files; write source-first reader-ready fragments once. Reuse canonical shared\n'
+        'phases by links; keep every start/diagram and its completion boundary.\n'
+        'Source-review may reference those fragments instead of a second private\n'
+        'outline. Compare source/canonical/changed excerpts locally before judgment.\n'
+        'Finish the assigned unit with the required bidirectional semantic review.\n'
         'Successful checks print compact summaries. Full receipts remain on disk\n'
         'and --full is available for diagnostics; do not reread assembled checker\n'
         'inputs after PASS. Review the actual source and relevant saved page instead.\n'
@@ -289,6 +293,9 @@ def install_author_entry(run, skill, python):
     profile.write_text('---\nname: codeclew\ndescription: Author documentation in this already prepared Codeclew run, using its admitted retained sources and fixed final gates.\n---\n\n'
         '# Prepared documentation author\n\nRead ' + contract + '.\n\n'
         'This project profile selects the prepared-author workflow for this run.\n'
+        'Use source-first canonical reader fragments and explicit reference-based\n'
+        'source-review; private scratch notes are optional. Link shared phase detail\n'
+        'from distinct start diagrams; compare changed claims locally with source.\n'
         'Use ./docs and the local AGENTS.md; keep the full request, source scope,\n'
         'semantic self-review and final source/route/export requirements unchanged.\n'
         'Do not restart acquisition/admission or substitute the global workflow.\n', encoding='utf-8')
@@ -720,7 +727,8 @@ def review_page(run, page, value, api):
         if requirement['kind'] != 'SERVICE' or requirement['id'] not in value['requirements']:continue
         row = value['requirements'][requirement['id']]
         retained = shell['requirements'][requirement['id']]
-        if 'sourceNotes' not in row and (run / 'workspace/notes' / (name + '.json')).is_file():
+        if 'sourceNotes' not in row and ((run / 'workspace/notes' / (name + '.json')).is_file()
+                or isinstance(retained.get('sourceNotes'), dict) and set(retained['sourceNotes']) == {'references'}):
             row['sourceNotes'] = retained.get('sourceNotes')
         if 'section' not in row:row['section'] = retained.get('section')
     validate_discovery_review(inventory, value['requirements'], api, pages=[name])
