@@ -82,7 +82,9 @@ def show(run, args, api):
             if any(set(f) == {'text'} and f['text'].strip() == tag for f in rows[page]['fragments']):
                 issues = api['W']['fragment_context']({'pages': [rows[page]]}, job, api)
                 if issues:text += '\nReader target unavailable: ' + issues[0]['actual']['reason'] + '\n' + issues[0]['recovery'] + '\n'
-                else:text += '\nReader target: ' + target + '\n'
+                else:
+                    text += '\nReader target: ' + target + '\n'
+                    text += 'Route target: ' + json.dumps(api['W']['fragment_route_target'](run, page, args.fragment, api), ensure_ascii=False, separators=(',', ':')) + '\n'
             else:
                 text += '\nPrepare reader target: ./docs page-info --page ' + shlex.quote(page) + ' --fragment ' + shlex.quote(args.fragment) + '\n'
         arguments = ['--page', page] + (['--fragment', args.fragment] if args.fragment else [])

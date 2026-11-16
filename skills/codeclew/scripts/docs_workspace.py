@@ -317,7 +317,7 @@ def summary(result):
     elif 'selectedPages' in result:
         small.update(selectedCount=len(result['selectedPages']), unfinishedCount=len(result['unfinishedPages']),
                      sourceBindingsChecked=result['sourceBindingsChecked'], receipt='last-local-check.json')
-    for key in ('code', 'stage', 'details', 'locations', 'pendingTargets', 'recovery', 'fragmentTarget'):
+    for key in ('code', 'stage', 'details', 'locations', 'pendingTargets', 'recovery', 'fragmentTarget', 'routeTarget'):
         if key in result:small[key] = result[key]
     return small
 
@@ -409,6 +409,13 @@ def fragment_target(page, identity):
     return page + '#clew-fragment-' + identity
 
 
+def fragment_route_target(run, page, identity, api):
+    path = run / 'workspace/draft/routes.json'
+    docset = api['load'](path).get('catalog', {}).get('docset', 'docs') if path.exists() else 'docs'
+    return {'docset': docset, 'page': page.removesuffix('.md') + '.html',
+            'anchor': fragment_target(page, identity).split('#', 1)[1]}
+
+
 def fragment_context(original, job, api):
     process = api['subprocess'].run([job['node'], str(Path(__file__).with_name('docs_run_fragment_addresses.mjs')),
         job['renderer']], input=api['encode'](original), capture_output=True, timeout=30)
@@ -478,11 +485,12 @@ def address_fragment(run, page, identity, api):
     if candidate['fragments'] == body:
         return {'status': 'PAGES_SAVED', 'changed': [], 'unchanged': [p['page'] for p in original['pages']],
                 'unfinishedPages': unfinished(original), 'ready': False, 'semanticTruthAssessed': False,
-                'fragmentTarget': fragment_target(name, identity)}
+                'fragmentTarget': fragment_target(name, identity), 'routeTarget': fragment_route_target(run, name, identity, api)}
     path = run / 'workspace/pages' / (name + '.json')
     api['save'](path, {'pages': [candidate]})
     result = save_pages(run, path, api)
     result['fragmentTarget'] = fragment_target(name, identity)
+    result['routeTarget'] = fragment_route_target(run, name, identity, api)
     return result
 
 
@@ -528,6 +536,7 @@ def put(run, page, fragment, text, evidence, sequence, api):
     api['save'](path, {'pages': [{'page': name, 'fragments': body}]})
     result = save_pages(run, path, api)
     result['fragmentTarget'] = fragment_target(name, fragment)
+    result['routeTarget'] = fragment_route_target(run, name, fragment, api)
     return result
 
 

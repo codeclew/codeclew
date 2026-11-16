@@ -36,6 +36,8 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
    `put`/`sequence` return `fragmentTarget`, a stable reader URL independent of
    heading text. Copy this URL for prose, participant and step destinations.
    `show --page PAGE.md --fragment CLAIM` also prints the prepared reader target.
+   Use the returned `routeTarget` object directly for a route occurrence target.
+   A known origin still uses its registered start from `show --entry ID`.
    To address a preserved claim, use `./docs page-info --page PAGE.md --fragment
    CLAIM`; it adds only managed structure, keeping claim text/evidence intact.
    Existing heading links remain valid. A bare `#CLAIM` remains a heading/HTML

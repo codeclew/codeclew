@@ -156,5 +156,9 @@ if(entry&&pathToFileURL(entry).href===import.meta.url){
  if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE] [--docset-routes FILE --docset ID --docset-version VERSION]');
  const options={};if(args.length&&!args[0].startsWith('--'))options.label=args.shift();
  while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else if(key==='--docset-routes')options.docsetRoutes=value;else if(key==='--docset')options.docset=value;else if(key==='--docset-version')options.docsetVersion=value;else throw new Error('Unknown renderer option: '+key)}
- console.log(JSON.stringify(await renderDirectory(input,output,options)));
+ try{console.log(JSON.stringify(await renderDirectory(input,output,options)))}
+ catch(error){
+  if(!error.code||!error.details)throw error;
+  console.log(JSON.stringify({status:'FAILED',code:error.code,details:error.details}));process.exitCode=2;
+ }
 }

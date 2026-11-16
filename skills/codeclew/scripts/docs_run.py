@@ -1096,7 +1096,8 @@ def verify(run, *, debug=False):
         renderer = directory / 'renderer.json'
         argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', 'Service documentation',
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
-        if len(job['services']) > 1:
+        routes_present = (draft / 'routes.json').exists()
+        if routes_present or len(job['services']) > 1:
             registry = load(draft / 'routes.json')
             local = registry.get('catalog', {}).get('docset')
             docsets = [d for d in registry['docsets'] if d['id'] == local]

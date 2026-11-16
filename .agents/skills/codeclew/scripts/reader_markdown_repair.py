@@ -43,7 +43,13 @@ def run_renderer(argv, source, destination, receipts, label):
     (receipts / (label + '.render.stderr')).write_bytes(result.stderr)
     receipt = {'command': command, 'exitCode': result.returncode}
     (receipts / (label + '.render.command.json')).write_text(encode(receipt))
-    require(result.returncode == 0, "RENDERER_FAILED", stage=label, exitCode=result.returncode)
+    details = {}
+    if result.returncode != 0:
+        try:response = json.loads(result.stdout)
+        except (ValueError, UnicodeDecodeError):response = None
+        if isinstance(response, dict) and response.get('status') == 'FAILED':
+            details['rendererResponse'] = response
+    require(result.returncode == 0, "RENDERER_FAILED", stage=label, exitCode=result.returncode, **details)
     return receipt
 
 

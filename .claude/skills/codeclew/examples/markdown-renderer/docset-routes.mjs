@@ -69,7 +69,19 @@ export function validateDocsetRoutes(value,nav,docset,version){
   fail(!canonicalKeys.has(key),p,'duplicate canonical narrative page');canonicalKeys.add(key);
   if(to.kind==='LOCAL_DOCSET'){fail(!nav.owners.has(to.file)&&!nav.routes.some(x=>x.to.file===to.file),p,'shared narrative ownership collision');canonical.add(to.file)}
   const occurrences=unique(list(r.occurrences,p+'/occurrences',0,128),p+'/occurrences');const occurrenceRows=[];
-  for(const o of occurrences.values()){shape(o,['id','actor','role','target'],p+'/occurrence');actor(o.actor,p);text(o.role,p);occurrenceRows.push({...o,to:destination(o.target,p+'/occurrence/target',o.actor.kind==='service'?o.actor:null)})}
+  for(const [oi,o] of [...occurrences.values()].entries()){
+   shape(o,['id','actor','role','target'],p+'/occurrence');actor(o.actor,p);text(o.role,p);
+   try{occurrenceRows.push({...o,to:destination(o.target,p+'/occurrence/target',o.actor.kind==='service'?o.actor:null)})}
+   catch(error){
+    const issue={code:'ROUTE_OCCURRENCE_TARGET_INVALID',routeId:r.id,occurrenceId:o.id,
+     field:`/routes/${ri}/occurrences/${oi}/target`,actual:o.target??null,
+     ...(typeof o.target?.page==='string'?{page:o.target.page.replace(/\.html$/,'.md')} : {}),
+     expected:'an existing destination with one matching anchor and the declared service ownership',cause:error.message,
+     recovery:'Inspect ./docs show --route '+r.id+'; repair this occurrence with ./docs route --input FILE. Copy a prepared routeTarget from ./docs page-info --page PAGE.md --fragment CLAIM. Preserve other routes.'};
+    throw Object.assign(Error('Invalid docset routes '+issue.field+': '+error.message),
+     {code:'ROUTE_DECLARATION_INVALID',details:{issues:[issue],recovery:issue.recovery}});
+   }
+  }
   fail(r.origin&&typeof r.origin==='object',p+'/origin','expected tagged origin');
   if(r.origin.status==='known'){
    shape(r.origin,['status','occurrence','kind','title','summary'],p+'/origin');const o=occurrences.get(r.origin.occurrence);fail(o&&o.actor.kind==='service',p,'origin must name a service occurrence');

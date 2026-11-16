@@ -801,6 +801,52 @@ else:
         self.assertEqual(updated['starts'], starts)
         self.assertIn({'title': 'Reservation data', 'target': 'data.md'}, updated['data'])
 
+    def test_route_occurrence_copies_prepared_target_and_reports_same_local_final_failure(self):
+        self.readmit_budget(100,1);self.local_reads()
+        self.save_local(self.local_page());self.save_local(self.original['pages'][1])
+        info=D['W']['put'](self.run,self.service+'.md','effects','## Storage effects\n\nStore the reservation result.',[self.handle],False,D)
+        self.assertEqual(info['routeTarget'],{'docset':'docs','page':self.service+'.html','anchor':'clew-fragment-effects'})
+        self.assertEqual(D['W']['summary'](info)['routeTarget'],info['routeTarget'])
+        self.assertIn('Route target: '+json.dumps(info['routeTarget'],separators=(',',':')),
+                      self.show_cli('--page',self.service+'.md','--fragment','effects','--limit','0'))
+        self.save_local({'page':'processes.md','fragments':[{'id':'catalog','text':'# Reservation processes\n','evidence':[self.handle]}]})
+        diagram={'title':'Reserve','participants':[{'id':'caller','title':'Caller'},
+            {'id':'reserve','title':'Reserve','target':self.entry['page']+'#handler'}],
+            'steps':[{'from':'caller','to':'reserve','kind':'call','label':'Reserve','target':self.entry['page']+'#handler'}]}
+        self.save_local({'page':'reserve-process.md','fragments':[{'id':'flow','text':'# Reserve\n\n```clew-sequence\n'+json.dumps(diagram)+'\n```\n','evidence':[self.handle]}]})
+        value={'catalog':'processes.md','route':{'id':'reserve-route','version':'v1','title':'Reserve',
+            'narrative':{'page':'reserve-process.md'},
+            'origin':{'status':'known','occurrence':'request','kind':'http','title':'Reserve','summary':'Accept input'},
+            'occurrences':[{'id':'request','actor':{'kind':'service','service':self.service},'role':'start','target':{'page':self.entry['page']}},
+                {'id':'storage','actor':{'kind':'service','service':self.service},'role':'store','target':info['routeTarget']}],
+            'branches':[],'outcomes':[],'coverage':{'outcomeInventory':'partial','scope':'Owned reservation','reference':{'page':'reserve-process.md'}}}}
+        D['W']['route'](self.run,value,D)
+        self.assertEqual(self.local_check(self.entry['page'])['status'],'UNIT_CHECKED')
+        self.original=D['load'](self.run/'workspace/draft/original.json')
+        self.review['claims']=[{'page':p['page'],'claim':f['id'],'evidence':f['evidence'],'disposition':'SUPPORTED'}
+            for p in self.original['pages'] for f in p['fragments'] if 'id' in f]
+        self.seed_files();self.generated();positive=D['verify'](self.run)
+        self.assertEqual(positive['status'],'READY',{k:v for k,v in positive['checks'].items() if v['status']!='PASS'})
+        value['route']['occurrences'][1]['target']={**info['routeTarget'],'anchor':'missing'}
+        D['W']['route'](self.run,value,D)
+        local=self.local_check(self.entry['page'])
+        self.assertEqual(local['code'],'ROUTE_DECLARATION_INVALID',local)
+        issue=local['details']['response']['details']['issues'][0]
+        self.assertEqual(issue['routeId'],'reserve-route');self.assertEqual(issue['occurrenceId'],'storage')
+        self.assertEqual(issue['page'],self.service+'.md')
+        self.assertEqual(issue['field'],'/routes/0/occurrences/1/target')
+        self.assertEqual(issue['actual']['anchor'],'missing')
+        self.assertIn('./docs route',local['recovery'])
+        self.assertTrue(any(x.get('routeId')=='reserve-route' and x.get('occurrenceId')=='storage' for x in local['locations']))
+        # Finalization uses the same renderer predicate and retains typed detail
+        # through the real CLI and checked-export failure receipts.
+        shutil.copyfile(self.run/'workspace/draft/routes.json',self.seed/'routes.json')
+        self.generated();final=D['verify'](self.run)
+        self.assertEqual(final['checks']['finalize']['status'],'FAIL',final)
+        failure=json.dumps(final['checks']['finalize'])
+        for expected in ['reserve-route','storage','ROUTE_OCCURRENCE_TARGET_INVALID','missing','./docs route']:
+            self.assertIn(expected,failure)
+
     def test_route_origin_uses_registered_anchor_and_rejects_wrong_addresses_before_save(self):
         self.save_local({'page':'processes.md','fragments':[{'id':'catalog','text':'Source-backed catalog.','evidence':[self.handle]}]})
         value={'catalog':'processes.html','route':{'id':'reserve-route','title':'Reserve','narrative':{'page':'thread.md'},

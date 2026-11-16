@@ -15,6 +15,19 @@ function nav(docset){
  return validateNavigation({schema:'codeclew-markdown-navigation/1',home:{title:'Home',target:home},services,routes:[]},pages);
 }
 const version=id=>registry.docsets.find(d=>d.id===id).version;
+test('occurrence target failures retain route occurrence target and repair without changing admission',()=>{
+ const v=clone(),docset='orders-docs';
+ const r=v.routes.find(r=>r.occurrences.some(o=>o.actor.docset===docset&&o.id!==r.origin.occurrence));
+ const o=r.occurrences.find(o=>o.actor.docset===docset&&o.id!==r.origin.occurrence),saved=structuredClone(o.target);
+ o.target.anchor='missing';let error;
+ try{validateDocsetRoutes(v,nav(docset),docset,version(docset))}catch(e){error=e}
+ assert.equal(error.code,'ROUTE_DECLARATION_INVALID');
+ const issue=error.details.issues[0];assert.equal(issue.code,'ROUTE_OCCURRENCE_TARGET_INVALID');
+ assert.equal(issue.routeId,r.id);assert.equal(issue.occurrenceId,o.id);assert.deepEqual(issue.actual,o.target);
+ assert.equal(issue.field,`/routes/${v.routes.indexOf(r)}/occurrences/${r.occurrences.indexOf(o)}/target`);
+ assert(issue.cause.includes('anchor missing or ambiguous'));assert(issue.recovery.includes('./docs route'));
+ o.target=saved;assert.doesNotThrow(()=>validateDocsetRoutes(v,nav(docset),docset,version(docset)));
+});
 test('local origin recording completes only an unambiguous omitted anchor; final matching stays exact',()=>{
  const value=clone(),r=value.routes[0],docset='orders-docs',navigation=nav(docset);
  const starts=navigation.services.flatMap(s=>s.starts.map(v=>({service:s.id,kind:v.kind,
