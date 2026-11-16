@@ -24,17 +24,17 @@ def validate_reader_presentation(original, accounts, job, api, *, pages=None):
                   r['topics'].get('data fields and domain distinctions', {}).get('disposition') == 'EXPLAINED']
     selected = set(pages) if pages is not None else {p['page'] for p in original['pages']}
     chosen = {'pages': [p for p in original['pages'] if p['page'] in selected]}
+    chosen['tableReferences'] = [{'page':r.get('page'),'fragment':r.get('claim')} for r in references if r.get('page') in selected]
     process = api['subprocess'].run([job['node'], str(Path(__file__).with_name('docs_run_presentation.mjs')), job['renderer']],
                                   input=api['encode'](chosen), capture_output=True, timeout=30)
     response = json.loads(process.stdout)
     api['need'](process.returncode == 0 and isinstance(response.get('issues'), list), 'READER_PRESENTATION_CHECK_FAILED', response=response)
     issues = response['issues']
     facts = {(f['page'], f['fragment']): f for f in response['fragments']}
-    class HTMLTables(HTMLParser):
-        def __init__(self, raw=''):super().__init__();self.tables=0;self.hidden=[];self.raw=raw;self.bare=[];self.closed=set()
+    class HTMLMarkup(HTMLParser):
+        def __init__(self, raw=''):super().__init__();self.hidden=[];self.raw=raw;self.bare=[];self.closed=set()
         def handle_starttag(self, tag, attrs):
             if tag in ('script', 'style', 'template'):self.hidden.append(tag)
-            if tag == 'table' and not self.hidden:self.tables += 1
             if not attrs and not self.hidden and re.fullmatch(r'<[A-Za-z][\w:-]*\s*>', self.get_starttag_text()):
                 line, column = self.getpos()
                 self.bare.append((tag, len(''.join(self.raw.splitlines(keepends=True)[:line - 1])) + column, self.get_starttag_text()))
@@ -42,11 +42,56 @@ def validate_reader_presentation(original, accounts, job, api, *, pages=None):
             self.closed.add(tag)
             if self.hidden and tag == self.hidden[-1]:self.hidden.pop()
         def handle_startendtag(self, tag, attrs):pass  # Intentional self-closing custom elements are not placeholders.
+    class FieldTables(HTMLParser):
+        """Count populated data rows, excluding explicit markup/inline hiding.
+
+        This is table structure, not computed CSS, layout or semantic coverage.
+        """
+        void = set('area base br col embed hr img input link meta param source track wbr'.split())
+        def __init__(self):super().__init__();self.elements=[];self.open_tables=[];self.tables=0;self.target=False
+        def pop_element(self, tags):
+            for index in range(len(self.elements)-1,-1,-1):
+                if self.elements[index][0] in tags:del self.elements[index:];break
+                if self.elements[index][0]=='table':break
+        def finish_cell(self, table):
+            cell=table['cell'];table['cell']=None
+            if cell and table['row'] is not None and cell['visible'] and ''.join(cell['text']).strip():
+                table['row'].append(cell['tag'])
+        def finish_row(self, table):
+            self.finish_cell(table)
+            if table['row'] and 'td' in table['row']:table['populated']=True
+            table['row']=None
+        def handle_starttag(self, tag, attrs):
+            table=self.open_tables[-1] if self.open_tables else None
+            if table and tag=='tr':self.finish_row(table);self.pop_element({'tr'})
+            if table and tag in ('td','th'):self.finish_cell(table);self.pop_element({'td','th'})
+            attributes=dict(attrs);style=attributes.get('style') or ''
+            hidden=bool(self.elements and self.elements[-1][1]) or 'hidden' in attributes or tag in ('script','style','template','noscript') or bool(
+                re.search(r'(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important)?\s*(?:;|$)',style,re.I))
+            if tag not in self.void:self.elements.append((tag,hidden))
+            if tag=='table':self.open_tables.append({'visible':not hidden and self.target,'row':None,'cell':None,'populated':False})
+            elif table and tag=='tr':table['row']=[]
+            elif table and tag in ('td','th'):
+                table['cell']={'tag':tag,'visible':not hidden,'text':[]}
+        def handle_data(self, text):
+            if self.open_tables and not (self.elements and self.elements[-1][1]):
+                cell=self.open_tables[-1]['cell']
+                if cell:cell['text'].append(text)
+        def handle_endtag(self, tag):
+            if self.open_tables:
+                table=self.open_tables[-1]
+                if tag in ('td','th'):self.finish_cell(table)
+                elif tag=='tr':self.finish_row(table)
+                elif tag=='table':
+                    self.finish_row(table);self.open_tables.pop()
+                    if table['visible'] and table['populated']:self.tables+=1
+            self.pop_element({tag})
+        def handle_startendtag(self, tag, attrs):self.handle_starttag(tag,attrs);self.handle_endtag(tag)
     standard = set('a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark math menu meta meter nav noscript object ol optgroup option output p param picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup svg table tbody td template textarea tfoot th thead time title tr track u ul var video wbr applet basefont bgsound big blink center content dir font frame frameset image keygen listing marquee menuitem multicol nextid nobr noembed noframes plaintext rb rtc shadow spacer strike tt xmp'.split())
     for page in response['pages']:
         parsed = []
         for token in page['html']:
-            parser = HTMLTables(token['raw']);parser.feed(token['raw']);parser.close();parsed.append((token, parser))
+            parser = HTMLMarkup(token['raw']);parser.feed(token['raw']);parser.close();parsed.append((token, parser))
         closed = set().union(*(parser.closed for _, parser in parsed))
         for token, parser in parsed:
             for tag, relative, raw in parser.bare:
@@ -68,10 +113,16 @@ def validate_reader_presentation(original, accounts, job, api, *, pages=None):
         page, claim = reference.get('page'), reference.get('claim')
         if page not in selected:continue
         fact = facts.get((page, claim), {})
-        parser = HTMLTables();parser.feed(''.join(fact.get('html', [])));parser.close()
-        if not fact.get('markdownTables') and not parser.tables:
+        blocks=fact.get('rendered', [])
+        context=next((p['html'] for p in response['pages'] if p['page']==page), [])
+        events=[(t['start'],t['raw'],False) for t in context if not any(b['start']<=t['start'] and t['start']+len(t['raw'])<=b['end'] for b in blocks)]
+        events += [(b['start'],b['html'],True) for b in blocks]
+        parser = FieldTables()
+        for _,html,target in sorted(events):parser.target=target;parser.feed(html)
+        parser.close()
+        if not parser.tables:
             issues.append({'code':'DATA_FIELDS_TABLE_REQUIRED','page':page,'fragment':claim,'field':'/topics/data fields and domain distinctions',
-                'actual':'No rendered field table in the referenced fragment.','expected':'A readable field table; table structure alone does not prove field completeness.',
+                'actual':'No nonempty field-table data rows outside explicitly hidden markup in the referenced fragment.','expected':'A table with visible nonempty data cells; structure alone does not prove field completeness.',
                 'recovery':'Use ./docs put --page '+page+' --fragment '+claim+' --text-file FILE --evidence HANDLE to author the source-backed field table. For genuinely unavailable data, record EXPLICIT_UNKNOWN with its reader explanation and source-bounded reason; do not invent fields.'})
     api['need'](not issues, 'READER_PRESENTATION_REQUIRED', issues=issues, recovery=issues[0]['recovery'] if issues else '', semanticTruthAssessed=False)
 

@@ -230,6 +230,48 @@ else:
                 with self.assertRaises(D['Stop']) as error:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
                 self.assertIn('DATA_FIELDS_TABLE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
 
+    def test_empty_and_explicitly_hidden_field_tables_fail_the_same_local_final_predicate(self):
+        self.readmit_budget(1000,1);name=self.service+'.md'
+        for text in ('<table></table>',
+                     '<table hidden><tr><td>Identifier</td><td>Retained identifier</td></tr></table>'):
+            self.fixture_overview(text)
+            local=self.local_check(name);final=D['verify'](self.run)
+            self.assertEqual(local.get('code'),'READER_PRESENTATION_REQUIRED',local)
+            self.assertEqual(final['checks']['selfReview']['code'],local['code'])
+            self.assertEqual(local['details']['issues'],final['checks']['selfReview']['details']['issues'])
+            issue=local['details']['issues'][0]
+            self.assertEqual(issue['code'],'DATA_FIELDS_TABLE_REQUIRED');self.assertEqual(issue['fragment'],'overview')
+            self.assertIn('./docs put',issue['recovery']);self.assertFalse(final['semanticTruthAssessed'])
+
+    def test_field_tables_need_nonempty_data_cells_outside_explicit_hidden_markup(self):
+        accounts=self.review['requirements']
+        def check(text, valid):
+            original=json.loads(json.dumps(self.original))
+            next(f for f in original['pages'][1]['fragments'] if f.get('id')=='overview')['text']=text
+            if valid:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
+            else:
+                with self.assertRaises(D['Stop']) as error:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
+                self.assertIn('DATA_FIELDS_TABLE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+        table='<table><tr><th>Field</th><th>Meaning</th></tr><tr><td>Key</td><td>Retained identifier</td></tr></table>'
+        for text in (table,'<details><summary>Fields</summary>'+table+'</details>',
+                     '| Field | Meaning |\n| --- | --- |\n| Key | Retained identifier |',
+                     '<table><tr><th scope="row">Key</th><td>Retained identifier</td></tr></table>'):
+            check(text,True)
+        for text in ('<table></table>','<table><tr><td> </td></tr></table>',
+                     '<table><tr><th>Field</th><th>Meaning</th></tr></table>',
+                     table.replace('<table>','<table hidden>'),'<div hidden>'+table+'</div>',
+                     table.replace('<tr><td>','<tr hidden><td>'),
+                     table.replace('Retained identifier','<span hidden>Retained identifier</span>').replace('>Key<','><span hidden>Key</span><'),
+                     '<div style="display: none">'+table+'</div>',
+                     '| Field | Meaning |\n| --- | --- |',
+                     '| Field | Meaning |\n| --- | --- |\n| <span hidden>Key</span> | <span hidden>Value</span> |'):
+            check(text,False)
+        original=json.loads(json.dumps(self.original));page=original['pages'][1]
+        page['fragments'].insert(0,{'text':'<div hidden>\n\n'})
+        page['fragments'].append({'text':'\n\n</div>\n'})
+        with self.assertRaises(D['Stop']) as error:D['W']['validate_reader_presentation'](original,accounts,self.job,D)
+        self.assertIn('DATA_FIELDS_TABLE_REQUIRED',{i['code'] for i in error.exception.details['issues']})
+
     def test_review_context_pairs_one_genuine_source_with_current_reader_and_own_notes_without_writes(self):
         view=self.prepare_review_context();self.save_local(self.local_page())
         D['P']['save_notes'](self.run,self.service+'.md','Previous own reading: inspect the retained declaration.',[self.handle],D)
@@ -277,6 +319,56 @@ else:
             packet['outcomes'][1]['source'].update(change)
             regions,bindings,_=D['source_projection'](packet,entries)
             self.assertEqual(len(regions),2);self.assertEqual(len(bindings),2)
+
+    def test_context_display_citations_verify_full_coverage_instead_of_truncating(self):
+        context=runpy.run_path(str(ROOT/'skills/codeclew/scripts/docs_review_context.py'))
+        packet,entries=self.projection_input([('cde',2,'a'*40),('abcdef',0,'a'*40)])
+        regions,bindings,_=D['source_projection'](packet,entries);key=next(iter(regions));region=regions[key]
+        partial,full=list(bindings)
+        self.assertEqual(context['display_citations'](key,region,bindings,[full],D),[full])
+        self.assertEqual(context['display_citations'](key,region,bindings,[],D),[full])
+        with self.assertRaises(D['Stop']) as error:context['display_citations'](key,region,bindings,[partial],D)
+        self.assertEqual(error.exception.code,'REVIEW_SOURCE_COVERING_REFERENCE_INVALID')
+        packet,entries=self.projection_input([('abc',0,'a'*40),('cde',2,'a'*40)])
+        regions,bindings,_=D['source_projection'](packet,entries);key=next(iter(regions));region=regions[key]
+        self.assertEqual(context['display_citations'](key,region,bindings,[],D),list(bindings))
+        incomplete={**region,'citations':region['citations'][:1]}
+        with self.assertRaises(D['Stop']) as error:context['display_citations'](key,incomplete,bindings,[],D)
+        self.assertEqual(error.exception.code,'REVIEW_SOURCE_COVERAGE_INCOMPLETE')
+
+    def test_compact_source_header_keeps_full_membership_candidates_and_alias_notes(self):
+        # Controlled decoder/projection aliases isolate display from proof I/O.
+        # The original retained source and real native-membership check remain.
+        view=self.prepare_review_context();self.save_local(self.local_page())
+        manifest=self.run/'inputs/source-proof'/self.service/'read/citations.json'
+        loaded=D['M']['C']['load'](manifest);packet=loaded[1];entries=loaded[3]
+        regions,bindings,_=D['source_projection'](packet,entries);key=view.split('/')[1]
+        region=regions[key];handle=self.handle
+        aliases=[handle.rsplit(':e',1)[0]+':e'+str(i) for i in range(2,25)]
+        for alias in aliases:
+            entries[alias]=json.loads(json.dumps(entries[handle]))
+            bindings[alias]=json.loads(json.dumps(bindings[handle]))
+        region['citations'] += aliases
+        D['save'](manifest.parent.parent/'citation-index.json',bindings)
+        pins=D['load'](self.run/'pins.json');pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
+        extra=json.loads(json.dumps(self.original['pages'][1]))
+        extra['fragments'].append({'id':'alias-reader','text':'\n\nAn existing reader claim through another source binding.','evidence':[aliases[-1]]})
+        self.save_local(extra)
+        member=D['check_source_membership'];checked=[]
+        def membership(*args):checked.append(args[2]);return member(*args)
+        with patch.dict(D['M']['C'],{'load':lambda *a:loaded}),patch.dict(D,{'source_projection':lambda *a:(regions,bindings,{}),'check_source_membership':membership}):
+            D['P']['save_notes'](self.run,self.service+'.md','Own notes through a non-displayed binding.',[aliases[-1]],D)
+            from argparse import Namespace
+            args=Namespace(review_context=True,page=[self.entry['page']],fragment='entry',service=None,view=view,
+                           entries=False,entry=None,routes=False,route=None,offset=0,limit=0)
+            checked.clear();before=D['tree'](self.run)
+            result=D['H']['show'](self.run,args,D);text=result['text']
+            self.assertEqual(next(line for line in text.splitlines() if line.startswith('Cites: ')),'Cites: '+handle)
+            self.assertIn('Other source bindings: 23',text)
+            self.assertIn('citation-index.json',text);self.assertIn(self.service+'.md#alias-reader',text)
+            self.assertIn('Own notes through a non-displayed binding.',text)
+            self.assertEqual(len(checked),24);self.assertEqual(len(region['citations']),24)
+            self.assertEqual(text.count(self.source['text']),1);self.assertEqual(before,D['tree'](self.run))
 
     def test_canonical_review_coexists_with_old_notes_without_stale_fallback_and_can_refresh_legacy(self):
         self.readmit_budget(200,1);self.local_reads();self.save_local(self.local_page())

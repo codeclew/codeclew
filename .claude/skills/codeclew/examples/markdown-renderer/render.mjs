@@ -72,9 +72,10 @@ export function checkFragmentAddresses(original){
 // caller. A table/citation is never a semantic verdict.
 export function readerPresentation(original){
  const issues=[],fragments=[],pages=[];
+ const tableReferences=new Set((original.tableReferences||[]).map(r=>r.page+'\0'+r.fragment));
  for(const page of original.pages){
   let offset=0;
-  const spans=page.fragments.map((f,index)=>{const start=offset;offset+=f.text.replace(/\r\n|\r/g,'\n').length;return {f,index,start,end:offset,markdownTables:0,html:[]}});
+  const spans=page.fragments.map((f,index)=>{const start=offset;offset+=f.text.replace(/\r\n|\r/g,'\n').length;return {f,index,start,end:offset,markdownTables:0,html:[],rendered:[]}});
   const source=page.fragments.map(f=>f.text).join('').replace(/\r\n|\r/g,'\n');
   const blocks=marked.lexer(source,{gfm:true}),html=[];
   if(blocks.map(t=>t.raw).join('')!==source){
@@ -87,6 +88,7 @@ export function readerPresentation(original){
    const start=cursor;cursor+=block.raw.length;
    const end=start+block.raw.trimEnd().length;
    const owner=spans.find(f=>f.start<=start&&end<=f.end);
+   if(owner&&tableReferences.has(page.page+'\0'+owner.f.id))owner.rendered.push({start,end:cursor,html:renderMarkdown(block.raw,[])});
    let leafCursor=start,uncertain=false;
    marked.walkTokens([block],token=>{
     if(token.type==='table'&&owner)owner.markdownTables++;
@@ -102,7 +104,7 @@ export function readerPresentation(original){
    });
   }
   pages.push({page:page.page,spans:spans.map(s=>({fragment:s.f.id??null,index:s.index,start:s.start,end:s.end})),html});
-  for(const span of spans)if(span.f.id)fragments.push({page:page.page,fragment:span.f.id,markdownTables:span.markdownTables,html:span.html});
+  for(const span of spans)if(span.f.id)fragments.push({page:page.page,fragment:span.f.id,markdownTables:span.markdownTables,html:span.html,rendered:span.rendered});
  }
  return {issues,fragments,pages};
 }

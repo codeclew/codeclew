@@ -76,6 +76,9 @@ they are not complete semantic dependencies. Remaining views stay explicit.
 recovery command rather than cropping code. Select a smaller reader fragment or
 explicitly raise the single-view limit. This optional read has no saved packet,
 approval or semantic verdict; reuse unaffected work instead of another global pass.
+The source header displays verified covering citations, with a count and the
+existing binding-map path for other references. Related excerpts and own notes
+still use the full binding set.
 
 For a SERVICE review, set `sourceNotes` to `{"references": [{"page":
 "SERVICE.md", "claim": "phase"}]}` after explicitly comparing each referenced
@@ -199,8 +202,9 @@ must still make the actual end-to-end progression and completion boundary clear;
 links are not permission to drop consequential work or mark unread code unknown.
 Existing put/sequence/page-info/route commands suffice for this organization.
 Use readable field tables with exact code names and code-formatted literal values.
-An EXPLAINED data-fields topic requires a rendered table in its referenced reader
-fragment; a table's presence does not establish completeness. Use the existing
+An EXPLAINED data-fields topic requires a table with nonempty data cells in its
+referenced reader fragment. Empty, header-only or explicitly hidden tables do not
+count; table structure does not establish completeness. Use the existing
 source-bounded EXPLICIT_UNKNOWN path for genuinely unavailable data. Raw unknown
 placeholder tags can disappear as HTML: put literal expressions in code or escape
 them. Intentional supported HTML, anchors and disclosures remain available.

@@ -5,6 +5,33 @@ import tempfile
 from pathlib import Path
 
 
+def display_citations(key, region, bindings, covering, api):
+    """Select verified byte coverage for display; never reduce the proof map."""
+    size = len(region['text'].encode())
+    spans = []
+    for index, handle in enumerate(region['citations']):
+        row = bindings.get(handle, {});span = row.get('byteSlice', {})
+        start, end = span.get('startByte'), span.get('endByte')
+        api['need'](row.get('region') == key and type(start) is int and type(end) is int and 0 <= start <= end <= size,
+                    'REVIEW_SOURCE_COVERAGE_INVALID', handle=handle)
+        spans.append((start, -end, index, handle))
+    full = {handle for start, end, _, handle in spans if start == 0 and -end == size}
+    api['need'](isinstance(covering, list) and all(h in full for h in covering),
+                'REVIEW_SOURCE_COVERING_REFERENCE_INVALID', view=key)
+    if covering:return covering[:1]
+    if full:return [next(handle for handle in region['citations'] if handle in full)]
+    spans.sort();result=[];cursor=0;index=0
+    while cursor < size:
+        best=None
+        while index < len(spans) and spans[index][0] <= cursor:
+            candidate=spans[index];index+=1
+            if best is None or candidate[1] < best[1]:best=candidate
+        api['need'](best is not None and -best[1] > cursor, 'REVIEW_SOURCE_COVERAGE_INCOMPLETE', view=key, offset=cursor)
+        result.append(best[3]);cursor=-best[1]
+    api['need'](result, 'REVIEW_SOURCE_COVERAGE_INCOMPLETE', view=key)
+    return result
+
+
 def show(run, args, api):
     job, inventory, pins = api['frozen_inputs'](run)
     api['need'](len(args.page) == 1 and not (args.entries or args.entry or args.routes or args.route),
@@ -62,6 +89,7 @@ def show(run, args, api):
                 and views[key].get('codeBytes') == len(regions[key]['text'].encode()),
                 'REVIEW_SOURCE_VIEW_UNVERIFIED', view=args.view)
     region = regions[key];handles = set(region['citations'])
+    displayed = display_citations(key, region, bindings, views[key].get('coveringCitations', []), api)
     with tempfile.TemporaryDirectory(prefix='clew-review-membership-') as temporary:
         cache = {}
         for handle in handles:
@@ -74,7 +102,10 @@ def show(run, args, api):
                     'REVIEW_READER_EVIDENCE_REQUIRED', page=page['page'], fragment=fragment['id'])
     parts = ['Review context: ' + args.view + '\nNo semantic verdict; compare source to reader for omissions, then reader to source for unsupported claims.\n',
         'Source: ' + service + '/' + region['file'] + ' @ ' + inventory['services'][service]['revision'] +
-        '\nSource digest: ' + api['sha'](region['text'].encode()) + '\nCites: ' + ', '.join(region['citations']) + '\n']
+        '\nSource digest: ' + api['sha'](region['text'].encode()) + '\nCites: ' + ', '.join(displayed) + '\n']
+    if len(handles) > len(displayed):
+        parts.append('Other source bindings: ' + str(len(handles) - len(displayed)) +
+                     '; full map: ../inputs/source-proof/' + service + '/citation-index.json\n')
     fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', region['text'])), default=3))
     parts += [fence + '\n', region['text'], '\n' + fence + '\n\nCurrent reader fragments:\n']
     for fragment in fragments:
