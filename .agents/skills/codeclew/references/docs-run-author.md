@@ -11,8 +11,9 @@ installed generic workflow. Proof receipts are for targeted diagnostics.
 
 ## Normal working loop
 
-1. Read consequential source views through service indexes. `views.json` maps real
-   cite handles to exact paths; never derive a view number from a cite. Inspect
+1. Read consequential source views through service indexes and the `Source views`
+   paths printed by `show`. `views.json` indexes covering handles, not every native
+   evidence candidate; never derive a view number from a cite. Inspect
    saved content with `./docs show --page PAGE.md [--fragment ID]`. Use `show
    --entries [--service SERVICE]` or `show --routes` for IDs, then `--entry ID` or
    `--route ID` for one object. Invalid IDs list choices; plain fragments need no

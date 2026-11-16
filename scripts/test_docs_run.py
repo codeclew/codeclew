@@ -289,12 +289,24 @@ else:
         page = next(p for p in D['load'](self.run / 'workspace/draft/original.json')['pages'] if p['page'] == self.entry['page'])
         self.assertEqual(next(f['text'].strip() for f in page['fragments'] if f.get('id') == 'entry'), body.read_text().strip())
 
-    def prepare_show(self):
+    def prepare_show(self, *, cover_matches_candidates=True, requirement_views=None):
+        cover_handle = self.handle
+        if not cover_matches_candidates:
+            (self.root / 'cover-reads').mkdir()
+            _, cover_view, _ = F['fixture'](self.root / 'cover-reads', service=self.service,
+                record={**self.source, 'id': self.source['id'] + '-union'})
+            cover_handle = cover_view['records'][0]['cite']
+            self.assertNotEqual(cover_handle, self.handle)
         def sources(job, inventory, directory):
             folder = directory / self.service;folder.mkdir(parents=True)
-            D['save'](folder / 'views.json', {'u16': {'coveringCitations': [self.handle], 'view': 'views/u16.md'}})
-            D['save'](folder / 'requirements.json', {self.entry['id']: {'evidenceCandidates': [self.handle]}})
-            (folder / 'views').mkdir();(folder / 'views/u16.md').write_text(self.source['text'])
+            paths = ['views/u16.md'] if requirement_views is None else requirement_views
+            D['save'](folder / 'views.json', {Path(path).stem: {'coveringCitations': [cover_handle] if index == 0 else [],
+                'view': path} for index, path in enumerate(paths)})
+            D['save'](folder / 'requirements.json', {self.entry['id']: {'kind': 'ENTRY', 'page': self.entry['page'],
+                'meaningReviewed': False, 'evidenceCandidates': [self.handle],
+                'views': paths}})
+            for path in paths:
+                (folder / path).parent.mkdir(exist_ok=True);(folder / path).write_text(self.source['text'])
         self.run = self.root / 'show-run'
         with patch.dict(D['T'], {'collect': self.collect}), patch.dict(D['prepare'].__globals__, {'prepare_sources': sources}):
             D['prepare'](self.job_path, self.run)
@@ -353,6 +365,37 @@ else:
         self.assertEqual(before, D['tree'](self.run))
         for flags in (('--offset', '-1'), ('--limit', '-1'), ('--offset', '999999')):
             self.show_cli('--page', self.entry['page'], *flags, success=False)
+
+    def test_show_native_candidates_use_explicit_requirement_views_not_union_handles(self):
+        self.prepare_show(cover_matches_candidates=False)
+        before = D['tree'](self.run)
+        requirements = D['load'](self.run / 'inputs/author-source/reservations/requirements.json')[self.entry['id']]
+        cover = D['load'](self.run / 'inputs/author-source/reservations/views.json')['u16']['coveringCitations']
+        self.assertTrue(set(requirements['evidenceCandidates']).isdisjoint(cover))
+        selected = self.show_cli('--entry', self.entry['id'], '--limit', '0')
+        item = json.loads(selected.split('\n', 1)[1].split('\nSource views:', 1)[0])
+        self.assertEqual(item['evidence'], [self.handle]);self.assertEqual(item['authority'], self.entry['authority'])
+        self.assertIn('../inputs/author-source/reservations/views/u16.md', selected)
+        for args in (('--page', self.entry['page']), ('--page', self.entry['page'], '--fragment', 'entry')):
+            output = self.show_cli(*args, '--limit', '0')
+            self.assertIn('../inputs/author-source/reservations/views/u16.md', output)
+            self.assertIn(self.original['pages'][0]['fragments'][1]['text'], output)
+            self.assertIn('Cites: ' + self.handle, output)
+        self.assertEqual(before, D['tree'](self.run))
+
+    def test_show_does_not_guess_fragment_view_from_multiview_requirement(self):
+        self.prepare_show(cover_matches_candidates=False, requirement_views=['views/u16.md', 'views/u20.md'])
+        before = D['tree'](self.run)
+        selected = self.show_cli('--entry', self.entry['id'], '--limit', '0')
+        whole = self.show_cli('--page', self.entry['page'], '--limit', '0')
+        for output in (selected, whole):
+            self.assertIn('../inputs/author-source/reservations/views/u16.md', output)
+            self.assertIn('../inputs/author-source/reservations/views/u20.md', output)
+        fragment = self.show_cli('--page', self.entry['page'], '--fragment', 'entry', '--limit', '0')
+        self.assertIn('no exact prepared link for these citations', fragment)
+        self.assertNotIn('views/u16.md', fragment);self.assertNotIn('views/u20.md', fragment)
+        self.assertIn('Cites: ' + self.handle, fragment)
+        self.assertEqual(before, D['tree'](self.run))
 
     def test_show_entries_list_shape_and_routes_use_real_ids_and_complete_rows(self):
         self.prepare_show()
