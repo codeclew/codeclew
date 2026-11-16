@@ -67,9 +67,13 @@ def history(run, state, api):
     thread = state.get('threadId'); attempts = state.get('attempts', [])
     api['need'](thread and attempts, 'SUCCESSOR_HISTORY_REQUIRED')
     files = {}
+    previous_thread = None
     for number, attempt in enumerate(attempts):
         api['need'](attempt.get('status') == 'COMPLETED' and attempt.get('exitCode') == 0
-                    and attempt.get('threadId') == thread, 'SUCCESSOR_HISTORY_UNVERIFIABLE', attempt=number)
+                    and attempt.get('threadId'), 'SUCCESSOR_HISTORY_UNVERIFIABLE', attempt=number)
+        if previous_thread is not None or attempt.get('contextMode') == 'FRESH':
+            previous_thread = api['DH']['transition'](run, attempt, previous_thread, api)
+        else:previous_thread = attempt['threadId']
         folder = run / 'attempts' / str(number)
         files[str(number)] = api['tree'](folder)
         starts, completed = [], []
@@ -79,8 +83,9 @@ def history(run, state, api):
             except ValueError:continue
             if event.get('type') == 'thread.started':starts.append(event.get('thread_id'))
             if event.get('type') == 'turn.completed':completed.append(event.get('usage'))
-        api['need'](starts == [thread] and completed == [attempt.get('usage')],
+        api['need'](starts == [attempt['threadId']] and completed == [attempt.get('usage')],
                     'SUCCESSOR_HISTORY_UNVERIFIABLE', attempt=number)
+    api['need'](previous_thread == thread, 'AUTHOR_THREAD_CHANGED')
     accounting = api['token_accounting'](attempts)
     api['need'](accounting['status'] == 'MEASURED' and accounting['budgetTokens'] == state.get('modelTokens'),
                 'SUCCESSOR_ACCOUNTING_UNVERIFIABLE')
@@ -219,7 +224,7 @@ def prepare(job_path, previous, previous_skill, run, api, *, revise_ready=False,
                      'receiptDigest': api['digest'](receipt)}
         api['save'](run / 'state.json', {**state, 'status': 'SUCCESSOR_PREPARED', 'authorStartedAt': None,
                    'successor': inherited, 'unitCursor': 0 if rejected else None,
-                   'completedUnit': None})
+                   'completedUnit': None, 'handoff': None})
         api['need'](all(api['sha']((previous / name).read_bytes()) == value for name, value in before.items())
                     and api['tree'](previous / 'workspace/draft') == draft
                     and (not revise_budget_stopped or not report_path.exists() and not report_path.is_symlink())
@@ -241,7 +246,10 @@ def validate(run, state, api):
     for number, expected in receipt['historyFiles'].items():
         api['need'](api['tree'](run / 'attempts' / number) == expected, 'SUCCESSOR_HISTORY_CHANGED', attempt=number)
     api['need'](api['tree'](run / 'history') == receipt['archiveFiles'], 'SUCCESSOR_HISTORY_CHANGED')
-    api['need'](state.get('threadId') == receipt['threadId'], 'AUTHOR_THREAD_CHANGED')
+    expected = receipt['threadId']
+    for attempt in state['attempts'][count:]:
+        if attempt.get('threadId'):expected = api['DH']['transition'](run, attempt, expected, api)
+    api['need'](state.get('threadId') == expected, 'AUTHOR_THREAD_CHANGED')
     return count
 
 
@@ -252,19 +260,4 @@ def prompt_facts(run, api):
 
 
 def execute(run, api, debug=False):
-    job, _, _ = api['inputs_unchanged'](run)
-    state = api['load'](run / 'state.json');base = validate(run, state, api)
-    if quality_rejected(run, api) and (run / 'inputs/scaffold.json').exists():
-        return api['W']['run_units'](run, api, debug)
-    if len(state['attempts']) == base:
-        api['author'](run)  # Mandatory standalone same-author review, not unit replay.
-    elif state['status'] != 'AUTHOR_COMPLETED':
-        api['need'](False, 'SUCCESSOR_AUTHOR_NOT_COMPLETED')
-    while True:
-        result = api['verify'](run, debug=debug)
-        if result['status'] == 'READY':return api['promote'](run)
-        state = api['load'](run / 'state.json')
-        repairs = sum(a.get('kind') == 'repair' for a in state['attempts'][base:])
-        if result['status'] == 'BLOCKED' or result['checks']['inputs']['status'] != 'PASS' or repairs >= job['budget']['maxRepairs']:
-            return result
-        api['author'](run, repair=True)
+    return api['DH']['execute'](run, api, debug=debug)

@@ -369,7 +369,7 @@ pub(super) fn read_record_part_loaded(
         .transpose()?
         .unwrap_or(0);
     let (response, receipt) = record.part(start)?;
-    let _lock = repo.lock()?;
+    let _lock = repo.read_receipt_lock()?;
     let mut state = work::read_state(repo, &work.id)?;
     if state.work != work.id {
         return Err(invalid("read ledger belongs to another Work"));

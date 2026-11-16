@@ -161,4 +161,9 @@ def show(run, args, api):
                 view=args.view, sourceBytes=len(region['text'].encode()), readerFragments=len(fragments),
                 contextCharacters=len(text), limit=args.limit,
                 recovery='Select a smaller --fragment, or explicitly request this complete single-view context: ' + command(key, len(text)))
-    return {'text': text, 'offset': 0, 'end': len(text), 'total': len(text), 'remaining': 0, 'next': None}
+    return {'text': text, 'offset': 0, 'end': len(text), 'total': len(text), 'remaining': 0, 'next': None,
+            'source': {'view': args.view, 'service': service, 'snapshot': job['snapshot'],
+                       'revision': inventory['services'][service]['revision'], 'file': region['file'],
+                       'text': region['text'], 'textDigest': api['sha'](region['text'].encode()),
+                       'citations': region['citations'],
+                       'sourceIds': list(dict.fromkeys(entries[h]['source']['id'] for h in region['citations']))}}

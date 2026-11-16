@@ -3653,7 +3653,7 @@ pub fn read_batch(
     // Pages stay internal until the complete response and its ledger fit their
     // bounds. One lock/load/atomic save avoids rewriting a growing ledger for
     // every page, while retaining the exact ordinary per-page receipts.
-    let _lock = super::progress::run("WAIT_READ_RECEIPT_LOCK", || repo.lock())?;
+    let _lock = super::progress::run("WAIT_READ_RECEIPT_LOCK", || repo.read_receipt_lock())?;
     let mut state = read_state(repo, id)?;
     if state.work != id {
         return Err(invalid("read ledger belongs to another work"));
@@ -3844,7 +3844,7 @@ fn read_loaded_with_state(
         None
     } else {
         Some(super::progress::run("WAIT_READ_RECEIPT_LOCK", || {
-            repo.lock()
+            repo.read_receipt_lock()
         })?)
     };
     let mut loaded_state;
@@ -4014,6 +4014,77 @@ mod section_context_tests {
             influence,
             obligations: vec![],
             review_reasons: vec![],
+        }
+    }
+
+    #[test]
+    fn concurrent_navigation_reads_wait_and_preserve_receipts() {
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Architecture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = source_inventory_fixture("fn retained() {}".into());
+        work.id = "a".repeat(64);
+        let navigation: Selection = serde_json::from_value(json!({
+            "query":{"kind":"SOURCE","projection":"NAVIGATION"}
+        }))
+        .unwrap();
+        let initial = read_loaded(&repo, &work, navigation.clone()).unwrap();
+        assert_eq!(initial["items"][0]["kind"], "SOURCE_NAVIGATION");
+        let before = read_state(&repo, &work.id).unwrap();
+        let held = repo.lock().unwrap();
+        // Authored writers still fail fast. Only receipt updates wait.
+        assert_eq!(repo.lock().err().unwrap().code, ErrorCode::WwConflict);
+        let barrier = Barrier::new(7);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                let sender = sender.clone();
+                let barrier = &barrier;
+                let work = &work;
+                let selection = navigation.clone();
+                let root = temporary.path();
+                scope.spawn(move || {
+                    let reader = Repository::open(root).unwrap();
+                    barrier.wait();
+                    sender.send(read_loaded(&reader, work, selection)).unwrap();
+                });
+            }
+            barrier.wait();
+            let waiting = receiver.recv_timeout(Duration::from_millis(50));
+            drop(held);
+            assert!(waiting.is_err());
+            for _ in 0..6 {
+                assert_eq!(
+                    receiver
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap(),
+                    initial
+                );
+            }
+        });
+        let after = read_state(&repo, &work.id).unwrap();
+        assert_eq!(
+            bytes(&after.receipts).unwrap(),
+            bytes(&before.receipts).unwrap()
+        );
+        // A subsequent different delivery merges with the existing receipt.
+        read_loaded(
+            &repo,
+            &work,
+            serde_json::from_value(json!({"references":["s1"]})).unwrap(),
+        )
+        .unwrap();
+        let merged = read_state(&repo, &work.id).unwrap();
+        assert!(merged.receipts.len() > before.receipts.len());
+        for (id, receipt) in before.receipts {
+            assert_eq!(
+                bytes(merged.receipts.get(&id).unwrap()).unwrap(),
+                bytes(&receipt).unwrap()
+            );
         }
     }
 

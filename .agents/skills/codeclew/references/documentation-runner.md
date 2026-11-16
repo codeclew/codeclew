@@ -16,6 +16,7 @@ This grants no permission to inspect/edit private cache objects directly. The la
 
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" prepare --job /absolute/job.json --run-dir /absolute/new-run
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" handoff --run-dir /absolute/new-run --page current.md
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" run --run-dir /absolute/new-run
 ```
 
@@ -57,10 +58,18 @@ binding metadata live under inputs/source-proof. Both are frozen together.
 
 Prepare creates unfinished pages, entry anchors and navigation from the inventory,
 using the existing original and sequence formats. This structure contains no
-semantic explanation. The runner gives one author a related service group at a
-time, then the complete docset, retaining the same context, sources and drafts.
-All stages and repairs share the original aggregate time/token budget. A reserve
-estimate is advisory; observed unit cost is not a proven repair-cost bound.
+semantic explanation. The caller prepares a handoff for the current page, then
+explicitly runs that one page in a fresh inference session with the same model.
+The handoff reuses complete admitted review-context source views and includes the
+draft, own notes, pending decisions and full multi-service scope/source index.
+Required uncited input stays discoverable; completed-page bodies and conversation
+logs are absent. Add --source-view SERVICE/VIEW for explicit complete selections;
+required views cannot be omitted. One run returns PAGE_COMPLETED or local failure,
+never launches the next page or final promotion. Repeat with the next page. A
+run without a handoff refuses before author launch; old history is never silently
+resumed. Repeating a consumed run returns its recorded outcome. Explicit
+--renew-context prepares another turn; it never launches one by itself. All
+contexts and repairs retain the original aggregate time/token budget and attempts.
 
 The author edits persisted workspace/pages/PAGE.md.json files and calls
 `save-pages --run-dir RUN --input FILE` to merge only those pages. Managed anchors
@@ -99,9 +108,10 @@ semantic dispositions, unknowns and discovered starts remain the author's work.
 The template leaves those answers null and cannot establish semantic completion.
 The full canonical 1.0 review remains supported, with the same evidence guards.
 
-At most two repairs receive exact machine failures and retain the same author
-session and unchanged source reads. Each attempt and failed draft stays in the run.
-An interrupted/nonzero/over-budget author cannot become complete through resume.
+Repairs receive the current page's machine failures and unchanged source reads in
+an explicit handoff, subject to the job's repair limit. Each attempt, actual
+thread identity and failed draft stays in the run. No interrupted, nonzero or
+over-budget attempt is silently retried or made complete through a context reset.
 The primary token budget is cumulative uncached input plus output:
 `input_tokens - cached_input_tokens + output_tokens`. Preserve raw input, cached
 input, output and available reasoning-output counters separately; reasoning is
@@ -171,15 +181,16 @@ results and decisions only, never hidden model reasoning.
 
 ## Caller-owned successor after terminal work
 
-To reuse the same author and unchanged retained work with newly admitted tooling,
+To continue the same model/task and unchanged retained work with newly admitted tooling,
 prepare a separate successor. This command never launches the author:
 
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" prepare-successor --job /absolute/successor-job.json --previous-run /absolute/terminal-failed-run --previous-skill /absolute/previous-pinned-skill --run-dir /absolute/new-successor
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" handoff --run-dir /absolute/new-successor --page current.md
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" run --run-dir /absolute/new-successor --debug
 ```
 
-The second command is a separate, explicitly authorized caller action. Preparation
+Only the run command launches the separately authorized author. Preparation
 rejects a live/nonterminal predecessor, changed request/inventory/source content or
 native bindings, changed runtime, and unverifiable historical counters. It admits
 the new helper/profile/renderer through ordinary prepare, copies rather than aliases
@@ -205,9 +216,10 @@ absence; no READY/FAILED report is fabricated. Live, incomplete, unmeasured or
 unproven stops refuse. This mode and `--revise-ready` are mutually exclusive.
 
 For prepare-successor, the job budget is the explicit NEW_ATTEMPTS_ONLY allowance:
-quality-rejected continuations use the existing related-page units when available;
-other continuations assign one standalone same-author full-docset review. At most
-the declared machine-repair rounds are allowed. Original exhausted limits and all raw counters remain in
+each explicit page handoff gets a fresh inference session with the same model.
+At most the declared machine-repair rounds are allowed. The immutable history
+keeps every context identity; existing per-thread counters are summed once, never
+reset. Original exhausted limits and all raw counters remain in
 inputs/successor.json and history; reports show inherited, continuation and total
 usage. Thread-cumulative counters are not summed twice. Preparation imports no
 READY state or semantic approval. The new review must compare source and text in

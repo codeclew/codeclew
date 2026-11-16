@@ -32,6 +32,7 @@ W = runpy.run_path(str(HERE / 'docs_workspace.py'))
 S = runpy.run_path(str(HERE / 'docs_successor.py'))
 P = runpy.run_path(str(HERE / 'docs_topics.py'))
 H = runpy.run_path(str(HERE / 'docs_show.py'))
+DH = runpy.run_path(str(HERE / 'docs_handoff.py'))
 SCHEMA = 'codeclew-docs-run-job/1.0'
 REVIEW = 'codeclew-docs-run-review/1.0'
 COMPACT_REVIEW = 'codeclew-docs-run-review/1.1'
@@ -1232,9 +1233,11 @@ def repair_facts(report):
             'fullReport': 'report.json', 'usageAndAttemptHistory': 'state.json'}
 
 
-def author(run, *, unit=None, repair=False):
+def author(run, *, unit=None, repair=False, context=None):
     run = Path(run).absolute(); job, inventory, pins = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
+    need(not attempts or context is not None, 'AUTHOR_HANDOFF_REQUIRED',
+         recovery='Prepare the current page with handoff --page PAGE.md before another author turn; history is retained, not resumed.')
     need(('successor' in state) == (run / 'inputs/successor.json').exists(), 'SUCCESSOR_STATE_MISMATCH')
     base = S['validate'](run, state, globals()) if (run / 'inputs/successor.json').exists() else 0
     tokens = token_accounting(attempts)
@@ -1250,7 +1253,13 @@ def author(run, *, unit=None, repair=False):
     repair_count = sum(a.get('kind', 'full' if i == 0 else 'repair') == 'repair' for i, a in enumerate(attempts[base:]))
     need(remaining > 0 and (kind != 'repair' or repair_count < job['budget']['maxRepairs']), 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
-    if first_successor:
+    if context is not None:
+        need(context['previousThreadId'] == state.get('threadId') and context['model'] == job['author']['model']
+             and context['reasoningEffort'] == job['author']['reasoningEffort'] and context['snapshot'] == job['snapshot']
+             and context['admissionDigest'] == digest(pins) and digest(context) == (state.get('handoff') or {}).get('digest'),
+             'AUTHOR_HANDOFF_STALE')
+        prompt = encode(context)
+    elif first_successor:
         prompt = encode({'instruction': 'Continue the original question under the updated prepared-author contract, preserving valid prior work. If assignedUnit is present, compare and review only that bounded related-page unit, run its focused check and end the turn. The final complete-docset unit handles shared phases, consequential cross-service reconciliation and finish-review; the caller runs the full final gate. Without assignedUnit, perform a standalone full-docset review and finish-review. Explicit independent quality rejection reopens prior judgments: obtain pending decisions with review-page and record fresh source/reader comparisons, even when preserving reader text. Old review files or a completed turn do not close them. Extract source consequences into canonical reader fragments; private scratch notes are optional. Reconcile source/canonical/affected excerpts at changed summaries, branches and arrows. Keep independent starts and meaningful diagrams with their own completion boundaries; link shared detailed phases. Do not infer order between asynchronous work and a response. Record explicit claim/requirement/topic/discovery judgments and valid sourceNotes.references or legacy notes. Preserve all source/discovery/sequence/final gates. No evaluator answers or second author are supplied.',
                          'request': job['request'], 'contract': str(SKILL / 'references/docs-run-author.md'),
                          'workspace': str(run / 'workspace'), 'inventory': str(run / 'workspace/inventory.json'),
@@ -1270,16 +1279,17 @@ def author(run, *, unit=None, repair=False):
         prompt = encode({'instruction': 'Repair only the affected fragments named below and repeat semantic self-review for changed content and its consequential dependencies. Preserve unchanged pages, valid local review and source reads; do not replay the whole docset. Acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
                          'failures': repair_facts(failures),
                          'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - repair_count})
-    if unit:
+    if unit and context is None:
         prompt += encode({'assignedUnit': unit, 'budgetPlan': state.get('budgetPlan'),
                           'stopAfterUnit': True, 'fullRequestStillRequired': True,
                           'preparedAuthorContract': str(SKILL / 'references/docs-run-author.md'),
                           'authorCommands': './docs show --page PAGE.md [--fragment ID]; ./docs put --page PAGE.md --fragment CLAIM --text-file FILE --evidence HANDLE; ./docs sequence --page PAGE.md --fragment FLOW --input FILE --evidence HANDLE; ./docs check --page PAGE.md; ./docs review-page --page PAGE.md',
                           'workflow': 'Continue the admitted prepared-author workflow. Do not rediscover the globally installed skill or restart generic source acquisition/export. Full semantic requirements and source reads remain required.'})
-    if state.get('accountingRecovery'):
+    if state.get('accountingRecovery') and context is None:
         prompt += encode({'instruction': 'This same logical run recovered a cumulative-counter accounting error. Use the successor helper below for save-pages, check and review-template; keep your existing source reads, pages and context. The request, source scope and original time/token/repair caps are unchanged.',
                           'helper': str(HERE / 'docs_run.py'), 'runDirectory': str(run)})
     (folder / 'prompt.txt').write_bytes(prompt)
+    if context is not None:save(folder / 'context.json', context)
     backend = job['author']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
@@ -1289,15 +1299,15 @@ def author(run, *, unit=None, repair=False):
         argv += ['-c', pins['authorSkillsConfig']]
     if backend.get('stateRoot'):
         argv += ['--add-dir', backend['stateRoot']]
-    if attempts:
-        need(state.get('threadId'), 'INTERRUPTED_AUTHOR_SESSION_UNAVAILABLE')
-        argv += ['resume', state['threadId']]
     argv += ['-']
     attempt = {'argv': argv, 'kind': kind, 'unit': unit['id'] if unit else None,
                'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
+    if context is not None:
+        attempt.update(contextMode='FRESH', contextHandoff=digest(context), contextAttempt=len(attempts))
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
-    usage = None; interrupted = False; thread_changed = False
-    expected_thread = state.get('threadId')
+    usage = None; interrupted = False; thread_changed = False; context_not_fresh = False
+    expected_thread = None if context is not None else state.get('threadId')
+    previous_threads = {a.get('threadId') for a in attempts[:-1]}
     with (folder / 'stdout.jsonl').open('wb') as stdout, (folder / 'stderr.log').open('wb') as stderr:
         process = subprocess.Popen(argv, cwd=run / 'workspace', stdin=subprocess.PIPE,
                                    stdout=stdout, stderr=stderr, start_new_session=True)
@@ -1318,6 +1328,7 @@ def author(run, *, unit=None, repair=False):
                 continue
             if event.get('type') == 'thread.started':
                 if expected_thread and event['thread_id'] != expected_thread:thread_changed = True
+                if context is not None and event['thread_id'] in previous_threads:context_not_fresh = True
                 state['threadId'] = event['thread_id']
                 attempt['threadId'] = event['thread_id']
             if event.get('type') == 'turn.completed':
@@ -1330,11 +1341,12 @@ def author(run, *, unit=None, repair=False):
     state['tokenAccounting'] = tokens
     state['usageAvailable'] = tokens['status'] == 'MEASURED'
     state['modelTokens'] = tokens['budgetTokens']
-    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 or thread_changed else
+    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 or thread_changed or context_not_fresh else
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
                        'AUTHOR_BUDGET_EXCEEDED' if limit is not None and scoped_budget_tokens(state, tokens) > limit else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
+    need(not context_not_fresh, 'AUTHOR_CONTEXT_NOT_FRESH')
     need(not thread_changed, 'AUTHOR_THREAD_CHANGED')
     need(not interrupted and process.returncode == 0, 'AUTHOR_NOT_COMPLETED')
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
@@ -1348,18 +1360,7 @@ def author(run, *, unit=None, repair=False):
 def execute(run, *, debug=False):
     run = Path(run).absolute(); state = load(run / 'state.json')
     need(state.get('status') != 'SUCCESSOR_ADMISSION_PENDING', 'SUCCESSOR_NOT_ADMITTED')
-    if (run / 'inputs/successor.json').exists():return S['execute'](run, globals(), debug)
-    if (run / 'inputs/scaffold.json').exists():return W['run_units'](run, globals(), debug)
-    while True:
-        if state['status'] != 'AUTHOR_COMPLETED':
-            state = author(run)
-        result = verify(run, debug=debug)
-        if result['status'] == 'READY':
-            return promote(run)
-        job = load(run / 'inputs/job.json')
-        if result['status'] == 'BLOCKED' or result['checks']['inputs']['status'] != 'PASS' or len(state['attempts']) > job['budget']['maxRepairs']:
-            return result
-        state['status'] = 'REPAIR_REQUIRED'; save(run / 'state.json', state)
+    return DH['execute'](run, globals(), debug=debug)
 
 
 def main():
@@ -1370,13 +1371,15 @@ def main():
         'ADDITIONAL_STARTS for a nonempty declared finding list, or NO_ADDITIONAL_STARTS for an explicitly reviewed empty list. '
         'These are separate fields; an empty registry does not prove no additions. '
         'Use route --input FILE for route metadata repair; keep prose and other routes unchanged.'))
-    parser.add_argument('command', choices=('prepare', 'prepare-successor', 'run', 'verify', 'promote', 'review-template', 'show', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
+    parser.add_argument('command', choices=('prepare', 'prepare-successor', 'handoff', 'run', 'verify', 'promote', 'review-template', 'show', 'save-pages', 'check', 'recover-accounting', 'register-entry', 'put', 'sequence', 'page-info', 'route', 'review-page', 'finish-review'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--input', type=Path)
     parser.add_argument('--page', action='append', default=[])
+    parser.add_argument('--source-view', action='append', default=[], help='handoff: complete SERVICE/VIEW; defaults include all current-page requirements, not just existing citations.')
+    parser.add_argument('--renew-context', action='store_true', help='handoff: explicitly prepare another page turn even if its completed output is unchanged; does not launch it.')
     parser.add_argument('--scaffold', action='store_true')
     parser.add_argument('--previous-skill', type=Path)
     parser.add_argument('--previous-run', type=Path, help='Terminal predecessor for caller-owned prepare-successor; --job budget is its explicit new-attempt allowance.')
@@ -1426,6 +1429,9 @@ def main():
                   ' of ' + str(result['total']) + '; remaining ' + str(result['remaining']) + ']')
             if result['next']:print('Continue: ' + result['next'])
             return 0
+        elif args.command == 'handoff':
+            need(len(args.page) == 1, 'HANDOFF_PAGE_REQUIRED')
+            result = DH['prepare'](args.run_dir.absolute(), args.page[0], args.source_view, globals(), renew=args.renew_context)
         elif args.command == 'prepare-successor':
             need(args.job is not None and args.previous_run is not None and args.previous_skill is not None,
                  'SUCCESSOR_JOB_AND_PREDECESSOR_REQUIRED')
@@ -1499,7 +1505,7 @@ def main():
     if args.command in ('save-pages', 'check', 'put', 'sequence') and not args.full:
         result = W['summary'](result)
     print(encode(result).decode(), end='')
-    return 0 if result['status'] in ('PREPARED', 'SUCCESSOR_PREPARED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED', 'SOURCE_NOTES_SAVED') else 2
+    return 0 if result['status'] in ('PREPARED', 'SUCCESSOR_PREPARED', 'HANDOFF_PREPARED', 'PAGE_COMPLETED', 'READY', 'READY_PROMOTED', 'PAGES_SAVED', 'UNIT_CHECKED', 'SCAFFOLD_CHECKED', 'ACCOUNTING_RECOVERED', 'ENTRY_REGISTERED', 'PAGE_REGISTERED', 'ROUTE_SAVED', 'PAGE_REVIEW_RECORDED', 'GLOBAL_REVIEW_RECORDED', 'SOURCE_NOTES_SAVED') else 2
 
 
 if __name__ == '__main__':

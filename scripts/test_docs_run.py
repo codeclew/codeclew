@@ -2628,6 +2628,165 @@ else:
         with self.assertRaises(D['Stop']):D['validate_job'](job)
 
 
+class HandoffTests(unittest.TestCase):
+    """Recording backend only: inputs, page loop, lineage and no implicit resume."""
+    def setUp(self):
+        record=F['source']()
+        record['text']='public class Ledger { string schema="SCHEMA_SENTINEL"; string Run(bool allowed) { if (!allowed) return "BRANCH_SENTINEL"; Publish("EFFECT_SENTINEL"); return "REPLY_SENTINEL"; } }'
+        record['textDigest']=D['sha'](record['text'].encode())
+        self.f=DocsRunTests()
+        with patch.dict(F,{'source':lambda:json.loads(json.dumps(record))}):self.f.setUp()
+        self.addCleanup(self.f.doCleanups);f=self.f
+        f.readmit_budget(1000,1)
+        f.prepare_review_context();shutil.rmtree(f.seed/'reads')
+        f.save_local(f.local_page());f.save_local(f.original['pages'][1])
+        f.original=D['load'](f.run/'workspace/draft/original.json')
+        f.original['pages'][0]['fragments'][1]['text']+='\nUNRELATED_COMPLETED_BODY_SENTINEL\n'
+        overview=next(x for x in f.original['pages'][1]['fragments'] if x.get('id')=='overview')
+        overview['text']+='\nCURRENT_DRAFT_SENTINEL\n'
+        for row in f.review['requirements']:
+            for topic in row.get('topics',{}).values():topic['fragmentDigest']=D['digest'](overview)
+        f.navigation=D['load'](f.run/'workspace/draft/navigation.json')
+        f.seed_files();f.generated()
+        history=f.run/'attempts/0/stdout.jsonl'
+        with history.open('a') as stream:stream.write(json.dumps({'type':'item.completed','item':{
+            'type':'command_execution','aggregated_output':'OLD_TOOL_HISTORY_SENTINEL'+'x'*500000}})+'\n')
+        D['P']['save_notes'](f.run,f.service+'.md','OWN_NOTE_SENTINEL',[f.handle],D)
+        path=f.run/'inputs/author-source'/f.service/'requirements.json';rows=D['load'](path)
+        rows['scope-fixture']={'page':f.service+'.md','views':[v['view'] for v in D['load'](path.parent/'views.json').values()]}
+        D['save'](path,rows)
+        f.backend.write_text('#!'+sys.executable+'\n'+'''
+import json,sys,subprocess
+from pathlib import Path
+raw=sys.stdin.read();packet=json.loads(raw);workspace=Path.cwd()
+n=packet['accounting']['historicalAttempts']
+(workspace/('recorded-'+str(n)+'.json')).write_text(json.dumps({'stdin':raw,'argv':sys.argv}))
+page=packet['currentPage']['page']
+shell=json.loads(subprocess.check_output(['./docs','review-page','--page',page],text=True))
+for row in shell['requirements'].values():
+ row['disposition']='EXPLAINED'
+ if 'topics' in row:
+  row['sourceNotes']={'references':[{'page':page,'claim':'overview'}]}
+  row['topics']={k:{'disposition':'EXPLAINED','page':page,'claim':'overview'} for k in row['topics']}
+ if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+shell['claims']={k:'SUPPORTED' for k in shell['claims']}
+assessment=workspace/'recording-review.json';assessment.write_text(json.dumps(shell))
+subprocess.run(['./docs','review-page','--page',page,'--input',str(assessment)],check=True,stdout=subprocess.DEVNULL)
+print(json.dumps({'type':'thread.started','thread_id':'recording-context-'+str(n)}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':20,'output_tokens':5}}))
+''')
+        pins=D['load'](f.run/'pins.json');pins['authorExecutableDigest']=D['sha'](f.backend.read_bytes())
+        pins['inputFiles']=D['tree'](f.run/'inputs');D['save'](f.run/'pins.json',pins)
+        self.page=f.service+'.md'
+
+    def test_fresh_page_request_preserves_materials_and_omits_history_with_idempotent_run(self):
+        f=self.f
+        prepared=D['DH']['prepare'](f.run,self.page,[],D)
+        packet=D['load'](f.run/'workspace/author-context.json');wire=D['encode'](packet)
+        self.assertEqual(D['DH']['prepare'](f.run,self.page,[],D)['context'],prepared['context'])
+        for marker in ('SCHEMA_SENTINEL','BRANCH_SENTINEL','EFFECT_SENTINEL','REPLY_SENTINEL',
+                       'CURRENT_DRAFT_SENTINEL','OWN_NOTE_SENTINEL',f.handle):self.assertIn(marker,wire.decode())
+        for marker in ('OLD_TOOL_HISTORY_SENTINEL','UNRELATED_COMPLETED_BODY_SENTINEL'):self.assertNotIn(marker,wire.decode())
+        self.assertIn(f.entry['page'],packet['scope']['pages'])
+        self.assertEqual(packet['snapshot'],f.job['snapshot']);self.assertEqual(packet['model'],f.job['author']['model'])
+        self.assertEqual(packet['sources'][0]['text'],f.source['text'])
+        self.assertIn(f.handle,packet['sources'][0]['citations'])
+        result=D['execute'](f.run);self.assertEqual(result['status'],'PAGE_COMPLETED',result)
+        recorded=D['load'](f.run/'workspace/recorded-1.json')
+        self.assertEqual(recorded['stdin'].encode(),wire);self.assertNotIn('resume',recorded['argv'])
+        state=D['load'](f.run/'state.json');self.assertEqual(len(state['attempts']),2)
+        self.assertEqual(state['attempts'][0]['threadId'],'owned-test-session')
+        self.assertEqual(state['attempts'][1]['threadId'],'recording-context-1')
+        self.assertEqual(state['modelTokens'],105)
+        self.assertEqual(D['S']['history'](f.run,state,D)[1]['budgetTokens'],105)
+        again=D['execute'](f.run,debug=True)
+        self.assertEqual(again['status'],result['status']);self.assertFalse(again['observability']['historyReplayed'])
+        self.assertEqual(D['load'](f.run/'state.json')['attempts'],state['attempts'])
+        self.assertEqual(D['DH']['prepare'](f.run,self.page,[],D)['context'],prepared['context'])
+        self.assertEqual(len(D['load'](f.run/'state.json')['attempts']),2)
+        renewed=D['DH']['prepare'](f.run,self.page,[],D,renew=True)
+        self.assertNotEqual(renewed['context'],prepared['context'])
+        self.assertEqual(D['execute'](f.run)['status'],'PAGE_COMPLETED')
+        state=D['load'](f.run/'state.json');self.assertEqual(state['modelTokens'],190)
+        self.assertEqual(state['threadId'],'recording-context-2')
+        self.assertEqual(D['S']['history'](f.run,state,D)[1]['budgetTokens'],190)
+
+    def test_restart_after_recorded_turn_checks_it_once_without_redispatch(self):
+        f=self.f;D['DH']['prepare'](f.run,self.page,[],D)
+        def interrupted_check(*a,**k):raise OSError('Owned caller interruption after recorded author completion')
+        with patch.dict(D['W'],{'check':interrupted_check}):
+            with self.assertRaises(OSError):D['execute'](f.run)
+        state=D['load'](f.run/'state.json')
+        self.assertEqual(len(state['attempts']),2);self.assertEqual(state['handoff']['status'],'PREPARED')
+        self.assertEqual(D['execute'](f.run)['status'],'PAGE_COMPLETED')
+        self.assertEqual(len(D['load'](f.run/'state.json')['attempts']),2)
+        self.assertFalse((f.run/'workspace/recorded-2.json').exists())
+
+    def test_successor_preserves_context_lineage_and_requires_its_own_handoff(self):
+        f=self.f;D['DH']['prepare'](f.run,self.page,[],D)
+        self.assertEqual(D['execute'](f.run)['status'],'PAGE_COMPLETED')
+        report=D['verify'](f.run);self.assertEqual(report['status'],'FAILED')
+        (f.run/'.runner.lock').touch();before=D['tree'](f.run)
+        job=f.root/'next-job.json';D['save'](job,f.job);child=f.root/'next-context'
+        def sources(job,inventory,directory):
+            shutil.copytree(f.run/'inputs/author-source',directory)
+            shutil.copytree(f.run/'inputs/source-proof',directory.parent/'source-proof')
+        with patch.dict(D['T'],{'collect':f.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}):
+            prepared=D['S']['prepare'](job,f.run,D['SKILL'],child,D)
+        self.assertEqual(prepared['inheritedModelTokens'],105)
+        self.assertIsNone(D['load'](child/'state.json')['handoff'])
+        self.assertEqual(before,D['tree'](f.run))
+        with self.assertRaises(D['Stop']) as error:D['execute'](child)
+        self.assertEqual(error.exception.code,'AUTHOR_HANDOFF_REQUIRED')
+        D['DH']['prepare'](child,self.page,[],D)
+        self.assertEqual(D['execute'](child)['status'],'PAGE_COMPLETED')
+        state=D['load'](child/'state.json');self.assertEqual(state['modelTokens'],190)
+        self.assertEqual(D['scoped_budget_tokens'](state,D['token_accounting'](state['attempts'])),85)
+        self.assertEqual(D['S']['validate'](child,state,D),2)
+        self.assertEqual(state['attempts'][-1]['kind'],'successor-review')
+
+    def test_inflight_handoff_is_not_rearmed_or_dispatched(self):
+        f=self.f;prepared=D['DH']['prepare'](f.run,self.page,[],D)
+        state=D['load'](f.run/'state.json')
+        state['attempts'].append({'contextHandoff':prepared['context'],'status':'RUNNING','usage':None})
+        state['status']='AUTHOR_RUNNING';D['save'](f.run/'state.json',state)
+        with self.assertRaises(D['Stop']) as error:D['execute'](f.run)
+        self.assertEqual(error.exception.code,'AUTHOR_HANDOFF_ATTEMPT_EXISTS')
+        with self.assertRaises(D['Stop']) as error:D['DH']['prepare'](f.run,self.page,[],D,renew=True)
+        self.assertEqual(error.exception.code,'AUTHOR_HANDOFF_BUSY')
+        self.assertFalse((f.run/'workspace/recorded-1.json').exists())
+
+    def test_legacy_continuation_refuses_before_backend_and_unknown_usage_is_not_erased(self):
+        f=self.f
+        with self.assertRaises(D['Stop']) as error:D['execute'](f.run)
+        self.assertEqual(error.exception.code,'AUTHOR_HANDOFF_REQUIRED')
+        self.assertFalse((f.run/'workspace/recorded-1.json').exists())
+        state=D['load'](f.run/'state.json');state['attempts'][0]['usage']=None
+        state['modelTokens']=None;D['save'](f.run/'state.json',state)
+        D['DH']['prepare'](f.run,self.page,[],D)
+        packet=D['load'](f.run/'workspace/author-context.json')
+        self.assertEqual(packet['accounting']['status'],'UNAVAILABLE')
+        with self.assertRaises(D['Stop']) as error:D['execute'](f.run)
+        self.assertEqual(error.exception.code,'AUTHOR_USAGE_UNAVAILABLE')
+        self.assertEqual(len(D['load'](f.run/'state.json')['attempts']),1)
+        self.assertFalse((f.run/'workspace/recorded-1.json').exists())
+
+    def test_required_uncited_source_survives_empty_draft_and_stale_handoff_does_not_launch(self):
+        f=self.f
+        original=D['load'](f.run/'workspace/draft/original.json')
+        next(p for p in original['pages'] if p['page']==self.page)['fragments']=[{'text':'# Unwritten current page'}]
+        D['save'](f.run/'workspace/draft/original.json',original)
+        D['DH']['prepare'](f.run,self.page,[],D)
+        packet=D['load'](f.run/'workspace/author-context.json')
+        self.assertIn('BRANCH_SENTINEL',packet['sources'][0]['text'])
+        self.assertTrue(packet['scope']['sourceViews']);self.assertTrue(packet['decisions']['requirements'])
+        original['pages'][1]['fragments'][0]['text']+='\nChanged after handoff.'
+        D['save'](f.run/'workspace/draft/original.json',original)
+        with self.assertRaises(D['Stop']) as error:D['execute'](f.run)
+        self.assertEqual(error.exception.code,'AUTHOR_HANDOFF_STALE')
+        self.assertFalse((f.run/'workspace/recorded-1.json').exists())
+
+
 class SourceMembershipTests(unittest.TestCase):
     """Identity metadata supplements complete body proof; never replaces it."""
     def setUp(self):

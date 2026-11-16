@@ -418,6 +418,16 @@ impl Repository {
     }
 
     pub fn lock(&self) -> Result<WriteLock, ClewError> {
+        self.lock_writer(false)
+    }
+
+    /// Concurrent reads merge delivery receipts under one short critical section.
+    /// Wait for its owner instead of failing an otherwise valid immutable read.
+    pub(super) fn read_receipt_lock(&self) -> Result<WriteLock, ClewError> {
+        self.lock_writer(true)
+    }
+
+    fn lock_writer(&self, wait: bool) -> Result<WriteLock, ClewError> {
         self.writable()?;
         fs::create_dir_all(self.path(".codeclew")?).map_err(io_error)?;
         let path = self.path(".codeclew/write.lock")?;
@@ -433,7 +443,8 @@ impl Repository {
         if !file.metadata().map_err(io_error)?.is_file() {
             return Err(invalid("documentation writer lock is not a regular file"));
         }
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let mode = libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB };
+        if unsafe { libc::flock(file.as_raw_fd(), mode) } != 0 {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
                 return Err(ClewError::new(
@@ -1839,6 +1850,44 @@ mod tests {
             assert!(r.path(path).is_err());
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn receipt_waiting_process_is_cancellable() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const ROOT: &str = "CODECLEW_RECEIPT_WAIT_TEST_ROOT";
+        if let Some(root) = std::env::var_os(ROOT) {
+            let repo = Repository::open(Path::new(&root)).unwrap();
+            fs::write(repo.root.join("wait-ready"), b"ready").unwrap();
+            let _lock = repo.read_receipt_lock().unwrap();
+            return;
+        }
+        let (_temporary, repo) = setup();
+        let held = repo.lock().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "documentation::store::tests::receipt_waiting_process_is_cancellable",
+            ])
+            .env(ROOT, &repo.root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !repo.root.join("wait-ready").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let ready = repo.root.join("wait-ready").exists();
+        let waiting = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        drop(held);
+        assert!(ready && waiting);
+        assert!(repo.read_receipt_lock().is_ok());
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_symlinked_output_and_writer_overlap() {
