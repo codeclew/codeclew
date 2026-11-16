@@ -68,10 +68,7 @@ pub fn put_batch(
         .iter()
         .map(|payload| {
             if payload.len() as u64 > check::PORTABLE_CACHE_MAX_BYTES {
-                return Err(ClewError::new(
-                    ErrorCode::SliceBudgetExceeded,
-                    "documentation object exceeds the portable record budget",
-                ));
+                return Err(budget_error(schema, "CACHE_PUT", payload.len() as u64));
             }
             Ok(ObjectRef::new(
                 schema.into(),
@@ -89,6 +86,62 @@ pub fn put_batch(
         store.put_many(&rows)?;
         Ok(references)
     })
+}
+
+fn budget_next_action(stage: &str) -> &'static str {
+    if stage == "SERIALIZE_CAPTURE_MAP_RECORD" {
+        "One atomic record, including its map key/envelope, exceeds 128 MiB; aggregate indexing cannot split it. Do not retry unchanged capture or remove modules. Preserve the failed run and collect existing metadata with clew support collect --root <docs-root> --output <new-bundle>. Share the objectBudget diagnostic for a bounded producer-record fix before recapture."
+    } else {
+        "One serialized object exceeds 128 MiB. Aggregate source/contract maps require a release with indexed capture storage; the atomic record limit remains. Do not retry unchanged capture or remove modules. Preserve the failed run and collect existing metadata with clew support collect --root <docs-root> --output <new-bundle>; share its objectBudget diagnostic if this persists."
+    }
+}
+
+/// Safe physical-object diagnostics: never include record IDs, paths or text.
+pub(super) fn budget_error(schema: &str, stage: &str, actual_bytes: u64) -> ClewError {
+    let limit = check::PORTABLE_CACHE_MAX_BYTES;
+    let action = budget_next_action(stage);
+    let mut error = ClewError::new(
+        ErrorCode::SliceBudgetExceeded,
+        format!(
+            "documentation object exceeds the portable record budget: schema={schema}, stage={stage}, actualBytes={actual_bytes}, limitBytes={limit}. {action}"
+        ),
+    );
+    error.details = Some(Box::new(serde_json::json!({
+        "schema": "codeclew-documentation-object-budget/1.0", "objectSchema": schema,
+        "stage": stage, "actualBytes": actual_bytes, "limitBytes": limit,
+        "nextAction": action
+    })));
+    error
+}
+
+/// Only fixed capture-storage fields may enter source-free public diagnostics.
+pub(super) fn budget_summary(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let schema = value["objectSchema"].as_str()?;
+    let stage = value["stage"].as_str()?;
+    let actual = value["actualBytes"].as_u64()?;
+    if value["schema"] != "codeclew-documentation-object-budget/1.0"
+        || !matches!(
+            schema,
+            SOURCES_OBJECT_SCHEMA | CONTRACTS_OBJECT_SCHEMA | super::capture_maps::INDEX_SCHEMA
+        )
+        || !matches!(stage, "CACHE_PUT" | "SERIALIZE_CAPTURE_MAP_RECORD")
+        || value["limitBytes"].as_u64()? != check::PORTABLE_CACHE_MAX_BYTES
+        || actual <= check::PORTABLE_CACHE_MAX_BYTES
+    {
+        return None;
+    }
+    Some(
+        serde_json::json!({"schema":"codeclew-documentation-object-budget/1.0",
+        "objectSchema":schema,"stage":stage,"actualBytes":actual,"limitBytes":check::PORTABLE_CACHE_MAX_BYTES,
+        "nextAction":budget_next_action(stage)}),
+    )
+}
+
+pub(super) fn budget_diagnostic(error: &ClewError) -> Option<serde_json::Value> {
+    if error.code != ErrorCode::SliceBudgetExceeded {
+        return None;
+    }
+    budget_summary(error.details.as_deref()?)
 }
 
 pub fn get(
@@ -274,9 +327,9 @@ pub(super) fn validate_capture(manifest: &CaptureManifest) -> Result<(), ClewErr
         _ => false,
     };
     if manifest.schema != CAPTURE_MANIFEST_SCHEMA
-        || manifest.sources.schema != SOURCES_OBJECT_SCHEMA
+        || !super::capture_maps::accepts(&manifest.sources, SOURCES_OBJECT_SCHEMA)
         || manifest.observations.schema != super::fact_index::FACT_INDEX_SCHEMA
-        || manifest.contracts.schema != CONTRACTS_OBJECT_SCHEMA
+        || !super::capture_maps::accepts(&manifest.contracts, CONTRACTS_OBJECT_SCHEMA)
         || !valid_cacheability
     {
         return Err(ClewError::new(
@@ -301,11 +354,11 @@ pub fn store_capture(
     repo: &super::store::Repository,
     evidence: &super::model::ServiceEvidence,
 ) -> Result<CaptureManifest, ClewError> {
-    let sources = put_json(repo, SOURCES_OBJECT_SCHEMA, &evidence.sources)?;
+    let sources = super::capture_maps::store(repo, SOURCES_OBJECT_SCHEMA, &evidence.sources)?;
     // Share canonical observation payloads with the Check dependency index.
     // The root is immutable and exact; removed whole-map references are rejected.
     let observations = super::fact_index::store_dependency_map(repo, &evidence.observations)?;
-    let contracts = put_json(repo, CONTRACTS_OBJECT_SCHEMA, &evidence.contracts)?;
+    let contracts = super::capture_maps::store(repo, CONTRACTS_OBJECT_SCHEMA, &evidence.contracts)?;
     let mut manifest = CaptureManifest {
         schema: CAPTURE_MANIFEST_SCHEMA.into(),
         service: evidence.service.clone(),
@@ -342,10 +395,7 @@ pub fn load_capture(
     manifest: &CaptureManifest,
 ) -> Result<super::model::ServiceEvidence, ClewError> {
     validate_capture(manifest)?;
-    let limit = check::PORTABLE_CACHE_MAX_BYTES;
-    let sources = get_json(repo, &manifest.sources, limit)?.ok_or_else(|| {
-        ClewError::new(ErrorCode::StateCorrupt, "capture sources object is missing")
-    })?;
+    let sources = load_capture_sources(repo, manifest)?;
     let observations = match manifest.observations.schema.as_str() {
         super::fact_index::FACT_INDEX_SCHEMA => super::fact_index::load_snapshot_observations(
             repo,
@@ -358,12 +408,7 @@ pub fn load_capture(
             ));
         }
     };
-    let contracts = get_json(repo, &manifest.contracts, limit)?.ok_or_else(|| {
-        ClewError::new(
-            ErrorCode::StateCorrupt,
-            "capture contracts object is missing",
-        )
-    })?;
+    let contracts = super::capture_maps::load(repo, &manifest.contracts, CONTRACTS_OBJECT_SCHEMA)?;
     Ok(super::model::ServiceEvidence {
         schema: "codeclew-documentation-service-evidence/1.0".into(),
         service: manifest.service.clone(),
@@ -378,6 +423,13 @@ pub fn load_capture(
         sources,
         contracts,
     })
+}
+
+pub(super) fn load_capture_sources(
+    repo: &super::store::Repository,
+    manifest: &CaptureManifest,
+) -> Result<std::collections::BTreeMap<String, super::model::Source>, ClewError> {
+    super::capture_maps::load(repo, &manifest.sources, SOURCES_OBJECT_SCHEMA)
 }
 
 /// Resolve the keyed capture-manifest path (matching the producer's keyed

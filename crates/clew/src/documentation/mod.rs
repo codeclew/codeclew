@@ -12,6 +12,7 @@ pub mod bindings;
 mod bindings_storage;
 pub mod cache;
 mod capture_export;
+mod capture_maps;
 mod capture_recovery;
 pub mod check;
 pub mod cli;

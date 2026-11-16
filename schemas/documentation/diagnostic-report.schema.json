@@ -108,6 +108,52 @@
       "items": {
         "type": "object"
       }
+    },
+    "objectBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-object-budget/1.0"
+        },
+        "objectSchema": {
+          "enum": [
+            "codeclew-documentation-sources/1.0",
+            "codeclew-documentation-contracts/1.0",
+            "codeclew-documentation-capture-map-index/1.0"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "CACHE_PUT",
+            "SERIALIZE_CAPTURE_MAP_RECORD"
+          ]
+        },
+        "actualBytes": {
+          "type": "integer",
+          "minimum": 134217729
+        },
+        "limitBytes": {
+          "const": 134217728
+        },
+        "nextAction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "objectSchema",
+        "stage",
+        "actualBytes",
+        "limitBytes",
+        "nextAction"
+      ]
+    },
+    "mavenFailure": {
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "required": [

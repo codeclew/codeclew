@@ -161,23 +161,27 @@ pub(super) fn validate(
     for (id, old) in &parent.service_manifests {
         let new = &derived.service_manifests[id];
         let Some(recorded_files) = receipt.services.get(id) else {
-            if digest(old)? != digest(new)? {
+            if digest(old)? != digest(new)?
+                && (old.cacheability != new.cacheability
+                    || old.reason != new.reason
+                    || cache::load_capture(repo, old)? != cache::load_capture(repo, new)?)
+            {
                 return Err(invalid(
                     "unselected service changed during contract refresh",
                 ));
             }
             continue;
         };
-        if old.sources != new.sources
-            || old.cacheability != new.cacheability
-            || old.reason != new.reason
-        {
+        if old.cacheability != new.cacheability || old.reason != new.reason {
             return Err(invalid(
                 "contract refresh changed source bindings or capture authority",
             ));
         }
         let mut before = cache::load_capture(repo, old)?;
         let mut after = cache::load_capture(repo, new)?;
+        if before.sources != after.sources {
+            return Err(invalid("contract refresh changed source bindings"));
+        }
         let declaration = declarations
             .get(id)
             .ok_or_else(|| invalid("contract-refresh declaration is missing"))?;
@@ -336,6 +340,81 @@ mod tests {
             retained_services: BTreeSet::from(["orders".into()]),
         });
         checked
+    }
+
+    #[test]
+    fn refresh_preserves_old_monolithic_source_maps_when_storage_encoding_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Old map compatibility").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let mut original = legacy(&repo);
+        let source = original.services["orders"]
+            .sources
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        for i in 0..5 {
+            let mut extra = source.clone();
+            extra.id = format!("owned-extra-{i}");
+            extra.file = format!("src/Extra{i}.java");
+            extra.text = format!("class Extra{i} {{ /*{}*/ }}", "x".repeat(1024 * 1024));
+            extra.start_line = 1;
+            extra.end_line = 1;
+            extra.text_digest = canonical::hash_bytes(extra.text.as_bytes());
+            extra.occurrence = None;
+            extra.text_origin = None;
+            original
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .insert(extra.id.clone(), extra);
+        }
+        let mut manifest = original.store_manifest(&repo).unwrap();
+        manifest
+            .service_manifests
+            .get_mut("orders")
+            .unwrap()
+            .sources = cache::put_json(
+            &repo,
+            cache::SOURCES_OBJECT_SCHEMA,
+            &original.services["orders"].sources,
+        )
+        .unwrap();
+        let reference = cache::put_json(&repo, check::CHECK_MANIFEST_SCHEMA, &manifest).unwrap();
+        let snapshot = format!("{}/{}", reference.digest, reference.size);
+        let (refreshed, refreshed_snapshot) = super::super::composition::refresh_contracts(
+            &repo,
+            &snapshot,
+            &BTreeSet::from(["orders".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            refreshed.services["orders"].sources,
+            original.services["orders"].sources
+        );
+        assert_eq!(
+            check::Check::load_snapshot(&repo, &refreshed_snapshot)
+                .unwrap()
+                .services["orders"]
+                .sources,
+            original.services["orders"].sources
+        );
+        let mut altered = refreshed;
+        let extra = altered
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("owned-extra-0")
+            .unwrap();
+        extra.text.push('x');
+        extra.text_digest = canonical::hash_bytes(extra.text.as_bytes());
+        assert!(
+            altered.save_snapshot(&repo).is_err(),
+            "storage encoding tolerance must not admit changed source bindings"
+        );
     }
 
     #[test]
