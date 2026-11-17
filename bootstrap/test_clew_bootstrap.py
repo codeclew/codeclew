@@ -1317,6 +1317,50 @@ class BootstrapAuthorityTest(unittest.TestCase):
         expected = {"cargo", "java", "rustc"} | ({"dotnet"} if shutil.which("dotnet") else set())
         self.assertEqual(set(authority["executables"]), expected)
 
+    def test_public_release_launcher_forwards_only_documented_progress_disable_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            source = parent / "source"
+            source.mkdir()
+            state = parent / "state"
+            state.mkdir(mode=0o700)
+            capsule = parent / "capsule"
+            capsule.mkdir()
+            for setting in (None, "off", "0", "on", "untrusted-value"):
+                with self.subTest(setting=setting), (parent / "lease").open("w+b") as lease:
+                    incoming = {"CODECLEW_RUNTIME_SEED": str(parent / "seed.json"),
+                                "CODECLEW_MODULE_OVERRIDE": "untrusted-capability",
+                                "CODECLEW_WORKER_JAVA_HOME": "/owned-worker-jdk"}
+                    if setting is not None:
+                        incoming["CODECLEW_DOCS_PROGRESS"] = setting
+                    state_descriptor = os.open(state, bootstrap._directory_flags())
+                    runtime_descriptor = None
+                    execute = mock.Mock()
+                    try:
+                        with (
+                            mock.patch.dict(os.environ, incoming, clear=True),
+                            mock.patch.object(bootstrap, "state_root", return_value=(state, state_descriptor)),
+                            mock.patch.object(bootstrap, "sealed_runtime_seed", return_value=("sha256:" + "a" * 64, capsule, lease)),
+                            mock.patch.object(sys, "argv", ["clew_bootstrap.py", "--source-root", str(source), "docs", "check", "--root", str(parent / "docs")]),
+                            mock.patch.object(os, "execve", execute),
+                        ):
+                            self.assertEqual(bootstrap.main(), 1)
+                        execute.assert_called_once()
+                        executable, arguments, environment = execute.call_args.args
+                        self.assertEqual(executable, capsule / "bin/clew")
+                        self.assertEqual(arguments[1:], ["docs", "check", "--root", str(parent / "docs")])
+                        runtime_descriptor = int(environment[bootstrap.RUNTIME_ROOT_FD_ENV])
+                        self.assertEqual(environment.get("CODECLEW_DOCS_PROGRESS"), setting if setting in {"off", "0"} else None)
+                        self.assertNotIn("CODECLEW_MODULE_OVERRIDE", environment)
+                        self.assertNotIn("CODECLEW_RUNTIME_SEED", environment)
+                        self.assertEqual(environment["CODECLEW_WORKER_JAVA_HOME"], "/owned-worker-jdk")
+                        self.assertEqual(int(environment[bootstrap.STATE_ROOT_FD_ENV]), state_descriptor)
+                        self.assertEqual(os.fstat(runtime_descriptor).st_ino, capsule.stat().st_ino)
+                    finally:
+                        os.close(state_descriptor)
+                        if runtime_descriptor is not None:
+                            os.close(runtime_descriptor)
+
     def test_sealed_runtime_seed_leases_external_capsule_without_copying_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

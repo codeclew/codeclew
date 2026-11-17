@@ -3638,6 +3638,10 @@ def main() -> int:
     # validates it and supplies it only to the trusted worker launcher.
     if "CODECLEW_WORKER_JAVA_HOME" in os.environ:
         environment["CODECLEW_WORKER_JAVA_HOME"] = os.environ["CODECLEW_WORKER_JAVA_HOME"]
+    # Documented diagnostic suppression is public configuration, not a runtime
+    # capability. Forward only the values the Rust progress sink recognizes.
+    if os.environ.get("CODECLEW_DOCS_PROGRESS") in {"off", "0"}:
+        environment["CODECLEW_DOCS_PROGRESS"] = os.environ["CODECLEW_DOCS_PROGRESS"]
     environment[STATE_ROOT_FD_ENV] = str(state_fd)
     environment[RUNTIME_ROOT_FD_ENV] = str(runtime_fd)
     environment[RUNTIME_LEASE_FD_ENV] = str(lease.fileno())
