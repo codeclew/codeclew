@@ -10,6 +10,14 @@ metadata:
 
 # Codeclew
 
+## Prepared documentation author
+
+If the runner supplied an inline documentation packet, it contains the request,
+complete selected retained bodies and permitted citations. Follow that prompt
+and respond directly in the supplied schema. The runner has already admitted the
+release and will assemble and verify the draft. Use the workspace workflow only
+when the runner supplies the workspace prompt.
+
 ## Choose the requested result
 
 Choose by the requested result, not the presence of a root/snapshot:

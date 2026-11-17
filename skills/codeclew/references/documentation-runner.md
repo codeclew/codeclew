@@ -62,6 +62,33 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
+## Author delivery
+
+Prepare returns the author mode and the reason it was selected. A single service
+with proven complete executable file bodies, at most four files and three native
+HTTP entries, no deferred resources or declaration components, at most 24 cite
+aliases, at most 12 KiB of source, and at most 20 KiB of inline prompt uses the
+structured inline mode. Discovered source starts can be added in the response,
+including for a service with zero native entries. Compiler-only or larger inputs
+and cases with resources to retrieve use the workspace authoring path.
+
+The inline author receives the request, verbatim file bytes, source-level entry
+inventory, real citation aliases and the [response contract](../schemas/docs-run-inline-author.schema.json).
+The user-selected Codex CLI, model, reasoning effort and reported counters remain
+the same. Shell, web and extension tooling are disabled for this turn. The runner
+builds the ordinary originals, navigation, sequences and self-review from the
+response. The author decides claim wording, citations, outcomes, effects, unknowns,
+discovery and the absence of a browser review. The same provenance, source and
+rendered export checks apply.
+
+The raw inline response is saved with its attempt. A machine rejection can be
+repaired in the same session and scope. If the author explicitly gives a reason
+for needing more retained evidence or a richer layout, the next permitted repair
+supplies the workspace prompt. It uses the same cumulative time, token and repair
+budgets.
+
+### Workspace authoring
+
 The runner provides a short author prompt and starter original/navigation files.
 The starter assigns required page names and anchors, links the overview to entry
 pages, and supplies each declared HTTP method/path and first call in its diagram.

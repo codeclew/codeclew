@@ -38,16 +38,21 @@ if mode!='missing-thread':
 if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
-if mode!='empty':
- for source in seed.iterdir():
-  target=draft/source.name
-  if target.is_dir():shutil.rmtree(target)
-  elif target.exists():target.unlink()
-  if source.is_dir():shutil.copytree(source,target)
-  else:shutil.copyfile(source,target)
-(draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
-if mode=='repair-on-resume' and 'resume' in sys.argv:
- path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
+if '--output-schema' in sys.argv:
+ source=seed/('inline-repair.json' if 'resume' in sys.argv and (seed/'inline-repair.json').exists() else 'inline-response.json')
+ Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(source.read_bytes())
+else:
+ if mode!='empty':
+  for source in seed.iterdir():
+   if source.name.startswith('inline-'):continue
+   target=draft/source.name
+   if target.is_dir():shutil.rmtree(target)
+   elif target.exists():target.unlink()
+   if source.is_dir():shutil.copytree(source,target)
+   else:shutil.copyfile(source,target)
+ (draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
+ if mode=='repair-on-resume' and 'resume' in sys.argv:
+  path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
 usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
 counter=Path.cwd()/'owned-cumulative-usage.json'
 if 'resume' in sys.argv and counter.exists():
@@ -83,6 +88,7 @@ else:
                  'entrypoint': {'id': 'reserve', 'kind': 'HTTP_ENDPOINT', 'sourceIds': [self.source['id']],
                  'trigger': {'authority': 'OWNED_TEST_DECLARATION', 'sourceRoutes': [{'method': 'POST', 'path': '/reservations'}]}}}}
         file = {'kind': 'THREAD_FILE', 'record': {'path': self.source['file'], 'input': {'coverage': 'SYNTAX', 'digest': 'sha256:owned-syntax-fingerprint-not-a-text-hash'}}}
+        self.native_entry = entry
         def collect(launcher, root, work, output, **kwargs):
             output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs.get('selection') else [coverage])
             return {'status': 'COMPLETE', 'omittedRecords': 0,
@@ -291,6 +297,190 @@ else:
         self.assertEqual(promoted['status'], 'READY_PROMOTED')
         self.assertFalse(normal['semanticTruthAssessed']); self.assertTrue(normal['semanticReviewRecorded'])
         self.assertEqual(normal['authorVisualReview']['status'], 'UNAVAILABLE')
+
+    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False):
+        text = body or ('fun reserve(count: Int): Int {\n'
+                        '    if (count < 0) return 0\n'
+                        '    accepted.add(count)\n'
+                        '    events.on("note.ready") { accept(it) }\n'
+                        '    return accepted.size\n}\n')
+        raw = text.encode()
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+        source = {**self.source, 'file': 'src/Reservations.kt', 'text': text,
+                  'textDigest': D['sha'](raw), 'endLine': len(text.splitlines()),
+                  'occurrence': {**self.source['occurrence'], 'blob': blob, 'endByte': len(raw)}}
+        shutil.rmtree(self.manifest.parent)
+        self.manifest, _, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=source)
+        scope = self.inventory['services'][self.service]
+        files = [source['file']]
+        inventory_rows = [self.native_entry, {'kind': 'THREAD_SCOPE'},
+            {'kind': 'THREAD_FILE', 'record': {'path': source['file'], 'input': {'coverage': 'SYNTAX',
+              'digest': 'sha256:owned-syntax-fingerprint'}}}]
+        if extra_resource:
+            files.append('settings.properties')
+            inventory_rows.append({'kind': 'THREAD_FILE', 'record': {'path': files[-1], 'input': {'coverage': 'FILE_ONLY'}}})
+        member_checks = []
+
+        def collect(launcher, root, work, output, **kwargs):
+            selected = (kwargs.get('selection') or {}).get('query', {}).get('kind')
+            output.mkdir(parents=True)
+            if selected == 'SOURCE':
+                assert kwargs['selection']['query']['file'] == source['file']
+                member_checks.append(source['id'])
+                rows = [{'id': source['id'], 'kind': 'SOURCE_NAVIGATION', 'record': {
+                    'source': {key: value for key, value in source.items() if key != 'text'},
+                    'recordDigest': F['digest'](source), 'textDelivered': False, 'authority': 'NAVIGATION_ONLY'}}]
+            else:
+                rows = inventory_rows if selected == 'THREAD_INVENTORY' else [scope['coverage']]
+            D['save'](output / 'items.json', rows)
+            return {'status': 'COMPLETE', 'omittedRecords': 0,
+                    'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+
+        native = D['command']
+        def command(argv, directory, label, **kwargs):
+            if label not in ('discover', 'read'):
+                return native(argv, directory, label, **kwargs)
+            output = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                output.mkdir()
+                D['save'](output / 'packet.json', {'queryComplete': True, 'choices': [{'file': name} for name in files],
+                           'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                shutil.copytree(self.manifest.parent, output)
+
+        self.job['budget']['maxRepairs'] = repairs
+        D['save'](self.job_path, self.job)
+        run = self.root / 'inline-run'
+        self.enterContext(patch.dict(D['T'], {'collect': collect}))
+        with patch.dict(D['prepare'].__globals__, {'command': command}):
+            receipt = D['prepare'](self.job_path, run)
+        shutil.rmtree(self.manifest.parent)
+        return run, receipt, member_checks, source
+
+    def inline_response(self, *, added=True, literal='0'):
+        def claim(text, *, returns=(), assessment='SUPPORTED'):
+            return {'heading': '', 'text': text, 'cites': ['S1'], 'assessment': assessment, 'returns': list(returns)}
+        def step(kind, label, condition=None, to='caller'):
+            return {'from': 'handler', 'to': to, 'kind': kind, 'label': label, 'condition': condition}
+        entry = {'ref': 'E1', 'disposition': 'EXPLAINED', 'participants': [],
+                 'claims': [claim('When `count < 0`, the method returns `' + literal + '` without adding to the list.', returns=['R1']),
+                            claim('Otherwise it appends the count to `accepted` and returns the list size.'),
+                            claim('The captured source gives no HTTP binding or serialized response.', assessment='EXPLICIT_UNKNOWN')],
+                 'steps': [step('return', 'Return ' + literal + ' without changing the list', 'count < 0'),
+                           step('note', 'Append the input', 'count >= 0', to='handler'),
+                           step('return', 'Return the updated list size', 'count >= 0')]}
+        start = {'kind': 'OTHER', 'title': 'Note arrival', 'initiator': 'Event hub',
+                 'method': None, 'path': None, 'startLabel': 'Receive note.ready', 'startKind': 'async',
+                 'disposition': 'EXPLAINED', 'claims': [claim('The callback passes the payload to `accept`.')],
+                 'participants': [], 'steps': [step('note', 'Pass the payload to accept', to='handler')]}
+        return {'status': 'DOCUMENTED', 'reason': '', 'reviewed': True,
+                'overview': {'title': 'Reservation behavior', 'disposition': 'EXPLAINED',
+                             'claims': [claim('The handler appends accepted reservations to `accepted`.')]},
+                'entries': [entry], 'discovery': [{'ref': 'F1', 'disposition': 'EXPLAINED',
+                    'discovery': 'ADDITIONAL_STARTS' if added else 'NO_ADDITIONAL_STARTS', 'starts': [start] if added else []}],
+                'unresolved': ['Wire response and registration remain unknown.'],
+                'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
+
+    def test_inline_normal_entry_point_assembles_explicit_content_and_discovered_start(self):
+        run, prepared, membership, source = self.prepare_inline_fixture()
+        self.assertEqual(prepared['authorMode'], 'INLINE')
+        prompt = (run / 'prompt.txt').read_text()
+        self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
+        self.assertIn('"path":"/reservations"', prompt)
+        self.assertNotIn('citation-index.json', prompt)
+        self.assertNotIn('compose-original.md', prompt)
+        self.assertNotIn(str(self.root), prompt)
+        D['save'](self.seed / 'inline-response.json', self.inline_response())
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        attempt, = state['attempts']
+        self.assertEqual(attempt['authorMode'], 'INLINE')
+        self.assertIn('--output-schema', attempt['argv'])
+        self.assertIn('shell_tool', attempt['argv'])
+        self.assertIn('unified_exec', attempt['argv'])
+        self.assertIn('read-only', attempt['argv'])
+        self.assertNotIn('--add-dir', attempt['argv'])
+        self.assertEqual(attempt['usage'], {'input_tokens': 20, 'cached_input_tokens': 10, 'output_tokens': 10})
+        self.assertEqual(attempt['argv'][attempt['argv'].index('-m') + 1], self.job['author']['model'])
+        self.assertIn('model_reasoning_effort="max"', attempt['argv'])
+        self.assertGreater(len(membership), 0)
+        report = D['load'](run / 'report.json')
+        self.assertFalse(report['semanticTruthAssessed'])
+        self.assertEqual(report['authorVisualReview']['status'], 'UNAVAILABLE')
+        entry_html = Path(result['ready']) / 'html/reservations-post-reservations.html'
+        self.assertIn('Return the updated list size', entry_html.read_text())
+        self.assertIn('HTTP binding or serialized response', entry_html.read_text())
+        discovery_html = Path(result['ready']) / 'html/reservations-discovered-f1-1.html'
+        self.assertIn('Pass the payload to accept', discovery_html.read_text())
+        review = D['load'](run / 'workspace/draft/self-review.json')
+        self.assertEqual(review['claims']['reservations-post-reservations.md']['claim-3'], 'EXPLICIT_UNKNOWN')
+
+    def test_inline_refuses_wrong_literal_then_repairs_in_same_thread(self):
+        text = 'fun reserve(count: Int): Int {\n    if (count < 0) return 0\n    accepted.add(count)\n    return accepted.size\n}\n'
+        run, _, _, _ = self.prepare_inline_fixture(text, repairs=1)
+        D['save'](self.seed / 'inline-response.json', self.inline_response(added=False, literal='7'))
+        D['save'](self.seed / 'inline-repair.json', self.inline_response(added=False))
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        one, two = D['load'](run / 'state.json')['attempts']
+        self.assertEqual((one['authorMode'], two['authorMode']), ('INLINE', 'INLINE'))
+        self.assertEqual(one['threadId'], two['threadId'])
+        self.assertEqual(two['argv'][two['argv'].index('resume') + 1], one['threadId'])
+        prompt = D['load'](run / 'attempts/1/prompt.txt')
+        self.assertEqual(prompt['failures']['entrySequences']['code'], 'LITERAL_RETURN_VALUE_MISMATCH')
+        self.assertIn('`7`', (run / 'attempts/0/draft/original.json').read_text())
+        self.assertIn('`0`', (run / 'attempts/1/draft/original.json').read_text())
+        review = D['load'](run / 'workspace/draft/self-review.json')
+        self.assertIn('NO_ADDITIONAL_STARTS', json.dumps(review))
+        self.assertEqual(D['load'](run / 'state.json')['modelTokens'], 40)
+
+    def test_inline_explicit_need_for_evidence_recovers_in_workspace_within_same_repair_budget(self):
+        run, _, _, _ = self.prepare_inline_fixture(repairs=1)
+        plan = D['load'](run / 'inputs/author-plan.json')
+        response = self.inline_response()
+        D['save'](self.seed / 'inline-response.json', {**response, 'status': 'NEEDS_WORKSPACE',
+            'reason': 'The requested diagram requires the extra retained dependency.'})
+        # A normal workspace author writes the established draft contract.
+        workspace_draft = D['I']['assemble'](response, plan, D['load'](run / 'inputs/inventory.json'),
+            D['load'](run / 'inputs/starter/original.json'), D['load'](run / 'inputs/starter/navigation.json'))
+        for name, value in workspace_draft.items():
+            D['save'](self.seed / name, value)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        one, two = D['load'](run / 'state.json')['attempts']
+        self.assertEqual(one['assemblyFailure']['code'], 'INLINE_AUTHOR_NEEDS_WORKSPACE')
+        self.assertEqual((one['authorMode'], two['authorMode']), ('INLINE', 'WORKSPACE'))
+        self.assertEqual(one['threadId'], two['threadId'])
+        self.assertNotIn('--output-schema', two['argv'])
+        self.assertIn('--add-dir', two['argv'])
+        prompt = (run / 'attempts/1/prompt.txt').read_text()
+        self.assertIn('Retained root and snapshot', prompt)
+        self.assertIn('requires the extra retained dependency', prompt)
+        self.assertEqual(D['load'](run / 'state.json')['modelTokens'], 40)
+
+    def test_inline_requires_the_authors_explicit_discovery(self):
+        run, _, _, _ = self.prepare_inline_fixture()
+        D['save'](self.seed / 'inline-response.json', {**self.inline_response(), 'discovery': []})
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['checks']['output']['code'], 'INLINE_SCOPE_ACCOUNTING_MISMATCH')
+        self.assertEqual(result['checks']['output']['details']['field'], 'ref')
+        self.assertFalse((run / 'ready').exists())
+
+    def test_retained_resource_selects_workspace(self):
+        root, receipt, _, _ = self.prepare_inline_fixture(extra_resource=True)
+        self.assertEqual((receipt['authorMode'], receipt['authorModeReason']),
+                         ('WORKSPACE', 'RETAINED_RESOURCES_ON_REQUEST'))
+        self.assertIn('Prepared source index', (root / 'prompt.txt').read_text())
+
+    def test_large_fully_captured_source_selects_workspace(self):
+        source = '// ' + 'retained detail ' * 850 + '\nfun inspect() = 1\n'
+        root, receipt, _, _ = self.prepare_inline_fixture(source)
+        self.assertGreater(len(source.encode()), D['I']['MAX_SOURCE_BYTES'])
+        self.assertEqual((receipt['authorMode'], receipt['authorModeReason']),
+                         ('WORKSPACE', 'INLINE_SOURCE_BYTE_LIMIT'))
+        self.assertIn('Prepared source index', (root / 'prompt.txt').read_text())
 
     def test_no_native_entry_supports_evidenced_discovery_with_or_without_starts(self):
         self.inventory['requirements'].remove(self.entry)

@@ -700,6 +700,13 @@ def starter(inventory, language, directory):
          'home': {'title': home['title'], 'target': home['overview']}, 'services': navigation_services, 'routes': []})
 
 
+I = runpy.run_path(str(HERE / 'inline_docs_author.py'), init_globals={
+    'load': load, 'encode': encode, 'sha': sha, 'need': need, 'closed': closed, 'Stop': Stop,
+    'COMPACT_REVIEW': COMPACT_REVIEW,
+})
+INLINE_SCHEMA = SKILL / 'schemas/docs-run-inline-author.schema.json'
+
+
 def prepare(job_path, run):
     job = validate_job(load(job_path)); run = Path(run).absolute()
     need(not run.exists(), 'RUN_ALREADY_EXISTS')
@@ -742,7 +749,10 @@ def prepare(job_path, run):
     required_pages = len({item['page'] for item in expected})
     need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
          nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
-    prepare_sources(job, inventory, inputs / 'author-source')
+    prepared_sources = prepare_sources(job, inventory, inputs / 'author-source')
+    selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
+                                       (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
+    save(inputs / 'author-plan.json', selected)
     starter(inventory, job['language'], inputs / 'starter')
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
@@ -750,8 +760,6 @@ def prepare(job_path, run):
             'nodeExecutableDigest': sha(Path(job['node']).read_bytes())}
     if 'components' in job:
         pins['componentTicketDigest'] = sha(Path(job['components']['path']).read_bytes())
-    pins['inputFiles'] = tree(inputs)
-    save(run / 'pins.json', pins)
     workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
     (workspace / 'draft').mkdir(mode=0o700)
     save(workspace / 'inventory.json', inventory)
@@ -760,11 +768,16 @@ def prepare(job_path, run):
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
         prepared_sources=str(inputs / 'author-source/index.md'), starter=str(inputs / 'starter'),
         model=job['author']['model'], repairs=job['budget']['maxRepairs'])
+    if inline_prompt is not None:
+        (inputs / 'workspace-prompt.txt').write_text(prompt, encoding='utf-8')
+        prompt = inline_prompt
     (run / 'prompt.txt').write_text(prompt, encoding='utf-8')
-    pins['promptDigest'] = sha(prompt.encode()); save(run / 'pins.json', pins)
+    pins.update(inputFiles=tree(inputs), promptDigest=sha(prompt.encode()))
+    save(run / 'pins.json', pins)
     save(run / 'state.json', {'schema': 'codeclew-docs-run-state/1.0', 'status': 'PREPARED', 'attempts': [],
                               'modelTokens': 0, 'usageAvailable': True, 'authorStartedAt': None})
-    return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
+    return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins),
+            'authorMode': selected['mode'], 'authorModeReason': selected['reason']}
 
 
 def frozen_inputs(run):
@@ -922,7 +935,7 @@ def full_file_proof(requirement, handles, entries, snapshot):
         start = occurrence['startByte'] - row['byteSlice']['startByte']
         identity = (occurrence['snapshot'], occurrence['blob'])
         groups.setdefault(identity, {})[(start, len(raw))] = raw
-    for (_, blob), regions in groups.items():
+    for (occurrence_snapshot, blob), regions in groups.items():
         if not isinstance(blob, str) or len(blob) not in (40, 64) or any(c not in '0123456789abcdef' for c in blob):
             continue
         content, cursor = bytearray(), 0
@@ -934,7 +947,8 @@ def full_file_proof(requirement, handles, entries, snapshot):
             header = ('blob ' + str(len(content)) + '\0').encode()
             actual = hashlib.new('sha1' if len(blob) == 40 else 'sha256', header + content).hexdigest()
             if actual == blob:
-                return {'status': 'COMPLETE_RETAINED_GIT_BLOB', 'gitBlob': blob, 'bytes': len(content),
+                return {'status': 'COMPLETE_RETAINED_GIT_BLOB', 'gitBlob': blob, 'occurrenceSnapshot': occurrence_snapshot,
+                        'bytes': len(content),
                         'textDigest': sha(content), 'sourceHandles': list(handles),
                         'scopeFingerprint': requirement['fileFingerprint'], 'semanticTruthAssessed': False}
     raise Stop('DISCOVERY_FULL_FILE_READ_REQUIRED', requirement=requirement['id'],
@@ -1107,6 +1121,8 @@ def verify(run, *, debug=False):
         checks[stage] = {'status': 'PASS', 'usageAvailable': tokens['status'] == 'MEASURED',
                          'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens}
         stage = 'output'; before = tree(draft)
+        if failure := last[0].get('assemblyFailure'):
+            raise Stop(failure['code'], **failure.get('details', {}))
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
         if 'components' in job:
@@ -1226,6 +1242,51 @@ def promote(run, destination=None):
     return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output), 'publicationPerformed': False}
 
 
+def materialize_inline(run, inventory, selected, response):
+    try:
+        value = load(response, maximum=I['MAX_RESPONSE_BYTES'])
+        starter_root = run / 'inputs/starter'
+        artifacts = I['assemble'](value, selected, inventory, load(starter_root / 'original.json'),
+                                  load(starter_root / 'navigation.json'))
+        draft = run / 'workspace/draft'
+        for name, data in artifacts.items():
+            save(draft / name, data)
+    except Stop as error:
+        return {'code': error.code, 'details': error.details}
+    except (OSError, ValueError, RecursionError, KeyError, IndexError, TypeError) as error:
+        return {'code': 'INVALID_INLINE_AUTHOR_RESPONSE', 'details': {'failure': type(error).__name__}}
+    return None
+
+
+def author_prompt(run, state, selected, remaining, max_repairs):
+    attempts = state['attempts']
+    if not attempts:
+        return selected['mode'], (run / 'prompt.txt').read_bytes()
+    previous = attempts[-1]
+    mode = previous.get('authorMode', 'WORKSPACE')
+    failure = previous.get('assemblyFailure') or {}
+    if mode == 'INLINE' and failure.get('code') == 'INLINE_AUTHOR_NEEDS_WORKSPACE':
+        prompt = (run / 'inputs/workspace-prompt.txt').read_bytes()
+        return 'WORKSPACE', prompt + b'\nThe inline author requested additional workspace evidence:\n' + encode(failure['details'])
+
+    report = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
+    checks = report.get('checks')
+    failures = {name: row for name, row in checks.items() if row['status'] == 'FAIL'} if checks else report
+    action = ('Return a corrected complete structured document using the same packet. Repeat the bidirectional review.'
+              if mode == 'INLINE' else
+              'Repair the draft and repeat your bidirectional self-review. Preserve scope and unchanged reads.')
+    return mode, encode({'instruction': action, 'failures': failures, 'remainingSeconds': int(remaining),
+                         'remainingRepairs': max_repairs - len(attempts)})
+
+
+def inline_cli_flags():
+    return ['--output-schema', str(INLINE_SCHEMA), '--ignore-rules', '--disable', 'shell_tool',
+            '--disable', 'unified_exec', '-c', 'features.apps=false', '-c', 'features.plugins=false',
+            '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
+            '-c', 'skills.include_instructions=false', '-c', 'skills.bundled.enabled=false',
+            '-c', 'include_apps_instructions=false', '-c', 'include_collaboration_mode_instructions=false']
+
+
 def author(run):
     run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
@@ -1238,26 +1299,27 @@ def author(run):
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
     need(remaining > 0 and len(attempts) <= job['budget']['maxRepairs'], 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
-    if not attempts:
-        prompt = (run / 'prompt.txt').read_bytes()
-    else:
-        failures = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
-        prompt = encode({'instruction': 'Repair the draft and repeat your bidirectional self-review. Preserve scope and existing unchanged reads; acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
-                         'failures': failures.get('checks', failures),
-                         'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - len(attempts)})
+    plan_path = run / 'inputs/author-plan.json'
+    selected = load(plan_path) if plan_path.exists() else {'mode': 'WORKSPACE'}
+    mode, prompt = author_prompt(run, state, selected, remaining, job['budget']['maxRepairs'])
     (folder / 'prompt.txt').write_bytes(prompt)
     backend = job['author']
+    response = folder / 'last-message.txt'
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
-            '-c', 'approval_policy="never"', '-s', 'workspace-write', '-C', str(run / 'workspace'),
-            '--add-dir', job['root'], '--disable', 'multi_agent', '-o', str(folder / 'last-message.txt')]
-    if backend.get('stateRoot'):
-        argv += ['--add-dir', backend['stateRoot']]
+            '-c', 'approval_policy="never"', '-C', str(run / 'workspace'),
+            '--disable', 'multi_agent', '-o', str(response)]
+    if mode == 'INLINE':
+        argv += ['-s', 'read-only', *inline_cli_flags()]
+    else:
+        argv += ['-s', 'workspace-write', '--add-dir', job['root']]
+        if backend.get('stateRoot'):
+            argv += ['--add-dir', backend['stateRoot']]
     if attempts:
         need(state.get('threadId'), 'INTERRUPTED_AUTHOR_SESSION_UNAVAILABLE')
         argv += ['resume', state['threadId']]
     argv += ['-']
-    attempt = {'argv': argv, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
+    attempt = {'argv': argv, 'authorMode': mode, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
     usage = None; interrupted = False; thread_changed = False
     expected_thread = state.get('threadId')
@@ -1288,8 +1350,6 @@ def author(run):
                 attempt['threadId'] = thread
             if event.get('type') == 'turn.completed':
                 usage = event.get('usage')
-    attempt['draftFiles'] = tree(run / 'workspace/draft')
-    shutil.copytree(run / 'workspace/draft', folder / 'draft')
     attempt.update(status='INTERRUPTED' if interrupted else 'COMPLETED', exitCode=process.returncode, usage=usage)
     tokens = token_accounting(attempts)
     state['tokenAccounting'] = tokens
@@ -1300,6 +1360,12 @@ def author(run):
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
                        'AUTHOR_BUDGET_EXCEEDED' if budget_tokens(tokens) > job['budget']['maxModelTokens'] else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
+    if mode == 'INLINE' and state['status'] == 'AUTHOR_COMPLETED':
+        failure = materialize_inline(run, inventory, selected, response)
+        if failure is not None:
+            attempt['assemblyFailure'] = failure
+    attempt['draftFiles'] = tree(run / 'workspace/draft')
+    shutil.copytree(run / 'workspace/draft', folder / 'draft')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
     need(not thread_changed, 'AUTHOR_THREAD_CHANGED')
     need(thread_valid, 'AUTHOR_THREAD_REQUIRED')
