@@ -156,6 +156,7 @@ ci_run checks python3 -I -S scripts/test_macos_distribution.py
 ci_run checks python3 -I -S scripts/test_refresh_agent_skills.py
 ci_run checks python3 -I -S scripts/test_support_diagnostics.py
 ci_run checks python3 -I -S scripts/test_build_macos_release.py
+ci_run checks python3 -I -S scripts/test_qualify_large_java_capture.py
 ci_run checks python3 -I -S scripts/test_prepare_release_candidate.py
 ci_run checks python3 -I -S scripts/test_build_local_release_candidate.py
 ci_run checks python3 -I -S scripts/test_runtime_attach_canary.py
@@ -193,6 +194,8 @@ ci_run java cargo test --locked -p clew --lib java_project_model::tests::maven_l
 ci_run checks cargo test --locked -p clew --lib 'worker_diagnostics::tests::' -- --test-threads=1
 ci_run checks cargo test --locked -p clew --lib worker::tests::worker_frame_eof_keeps_exit_status_without_inline_stderr -- --exact --test-threads=1
 ci_run java cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
+ci_run java cargo test --locked -p clew --lib 'java_adapter_v2::stream_tests::' -- --test-threads=1
+ci_run java cargo test --locked -p clew --lib documentation::analysis::tests::javac_variables_resolve_storage_modes_spans_and_scoped_admission -- --exact --ignored --test-threads=1
 ci_run java cargo test --locked -p clew --test java_dependency_targets -- --test-threads=1
 ci_run java cargo test --locked -p clew --lib 'java_analysis_' -- --test-threads=1
 ci_run java cargo test --locked -p clew --lib java_analysis_scratch::tests::native_java_child_retains_lease_after_parent_handles_close -- --exact --ignored --test-threads=1

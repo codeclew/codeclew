@@ -1154,7 +1154,7 @@ fn main() -> ExitCode {
                 canonical::bytes(&json!({
                     "event":"request_completed",
                     "durationMs":started.elapsed().as_millis(),
-                    "success":result.is_ok(),
+                    "success":result.as_ref().is_ok_and(|value| clew::documentation::progress::unresolved_check_cause(value).is_none()),
                 }))
                 .unwrap_or_default()
             )

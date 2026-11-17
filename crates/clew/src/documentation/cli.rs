@@ -327,7 +327,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Update { .. } => "docs.update",
         _ => "docs.command",
     };
-    super::progress::run(phase, || run_inner(command))
+    let span = super::progress::Phase::start(phase);
+    let result = run_inner(command);
+    match &result {
+        Ok(value) => match super::progress::unresolved_check_cause(value) {
+            Some(cause) => span.fail(cause),
+            None => span.complete(),
+        },
+        Err(error) => span.fail(error.code.clone()),
+    }
+    result
 }
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {

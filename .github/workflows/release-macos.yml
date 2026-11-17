@@ -123,9 +123,97 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    name: Publish GitHub release
+  java-large:
+    name: Qualify final official Linux large Java producer
     needs: build
+    if: github.event_name != 'workflow_dispatch' || !inputs.build_only
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: codeclew-linux-x86_64
+          path: ${{ runner.temp }}/codeclew-assets
+      - name: Verify exact official archive checksum
+        working-directory: ${{ runner.temp }}/codeclew-assets
+        run: sha256sum --check codeclew-linux-x86_64.tar.gz.sha256
+      - name: Qualify one real large Java producer on the final official Linux package
+        env:
+          LARGE_FIXTURE: ${{ runner.temp }}/java-large-producer
+        run: |
+          # One predeclared runner envelope, with no automatic retry or escalation.
+          # Build-only packages use small independent semantic/SOURCE acceptance.
+          mkdir -p "$LARGE_FIXTURE"
+          free -b > "$LARGE_FIXTURE/runner-before-swap.txt"
+          df -B1 "$RUNNER_TEMP" >> "$LARGE_FIXTURE/runner-before-swap.txt"
+          # Guard the full resource envelope BEFORE allocating swap or extracting.
+          python3 -I -S - <<'PYTHON'
+          import json, os, shutil, tarfile
+          from pathlib import Path
+          root=Path(os.environ["LARGE_FIXTURE"])
+          archive=Path(os.environ["RUNNER_TEMP"])/"codeclew-assets/codeclew-linux-x86_64.tar.gz"
+          values={k:int(v.split()[0])*1024 for k,v in (line.split(":",1) for line in Path("/proc/meminfo").read_text().splitlines())}
+          with tarfile.open(archive) as bundle:
+              extraction=sum(member.size for member in bundle.getmembers())+1024**3
+          required=8*1024**3+8*1024**3+extraction
+          report={"freeDiskBytes":shutil.disk_usage(root).free,"requiredDiskBytesBeforeAllocation":required,
+                  "swapAllocationBytes":8*1024**3,"remainingLaunchReserveBytes":8*1024**3,
+                  "extractionAllowanceBytes":extraction,"memoryTotalBytes":values["MemTotal"],
+                  "minimumMemoryBytes":12*1024**3,"retryOrEscalationAllowed":False}
+          report["status"]="PASS" if report["freeDiskBytes"]>=required and values["MemTotal"]>=report["minimumMemoryBytes"] else "REFUSED"
+          (root/"resource-preflight.json").write_text(json.dumps(report,indent=2)+"\n")
+          if report["status"]!="PASS":raise SystemExit("Runner lacks predeclared space/RAM; no swap allocation or capture started")
+          PYTHON
+          sudo swapoff -a
+          sudo fallocate -l 8G "$RUNNER_TEMP/clew-java-swap"
+          sudo chmod 0600 "$RUNNER_TEMP/clew-java-swap"
+          sudo mkswap "$RUNNER_TEMP/clew-java-swap"
+          sudo swapon "$RUNNER_TEMP/clew-java-swap"
+          free -b > "$LARGE_FIXTURE/runner-after-swap.txt"
+          export LARGE_FIXTURE
+          python3 -I -S - <<'PYTHON'
+          import os, runpy
+          from pathlib import Path
+          archive=Path(os.environ["RUNNER_TEMP"])/"codeclew-assets/codeclew-linux-x86_64.tar.gz"
+          package=runpy.run_path("scripts/build_macos_release.py")["extract_release_archive"](
+              archive,Path(os.environ["RUNNER_TEMP"])/"java-large-official-package")
+          Path(os.environ["LARGE_FIXTURE"],"launcher.txt").write_text(str(package/"bin/clew")+"\n")
+          PYTHON
+          python3 -I -S scripts/qualify_large_java_capture.py \
+            --output "$LARGE_FIXTURE/fixture" --methods 1665 --steps 100 --scopes 3 \
+            --clew "$(cat "$LARGE_FIXTURE/launcher.txt")" \
+            --archive "$RUNNER_TEMP/codeclew-assets/codeclew-linux-x86_64.tar.gz" \
+            --expected-commit "$(git rev-parse HEAD)" --require-old-threshold \
+            > "$LARGE_FIXTURE/qualification.stdout" 2> "$LARGE_FIXTURE/qualification.stderr"
+      - name: Retain large producer primary evidence even on refusal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-large-producer-evidence
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/java-large-producer/*.txt
+            ${{ runner.temp }}/java-large-producer/*.json
+            ${{ runner.temp }}/java-large-producer/qualification.*
+            ${{ runner.temp }}/java-large-producer/fixture/*.json
+            ${{ runner.temp }}/java-large-producer/fixture/repository/**
+            ${{ runner.temp }}/java-large-producer/fixture/capture/**
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Stage verified GitHub draft release
+    needs: [build, java-large]
     if: github.event_name != 'workflow_dispatch' || !inputs.build_only
     runs-on: ubuntu-latest
     permissions:
@@ -138,6 +226,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/release-assets
+          pattern: codeclew-*
           merge-multiple: true
       - name: Stage offline installer
         run: |
@@ -166,7 +255,7 @@ jobs:
           done
           printf '%s\n' 'Timed out waiting for release-commit CI' >&2
           exit 1
-      - name: Publish immutable version assets
+      - name: Stage immutable assets for independent acceptance
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -188,11 +277,14 @@ jobs:
           if [ -f "docs/releases/$RELEASE_VERSION.md" ]; then
             cp "docs/releases/$RELEASE_VERSION.md" "$notes"
           fi
+          # Never race independent package acceptance with public publication.
+          # After acceptance, promote this same draft via gh release edit --draft=false.
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_VERSION" --json isDraft --jq .isDraft)" = true
             gh release upload "$RELEASE_VERSION" "$RUNNER_TEMP"/release-assets/* --clobber
           else
             gh release create "$RELEASE_VERSION" "$RUNNER_TEMP"/release-assets/* \
-              --verify-tag \
+              --verify-tag --draft \
               --title "Codeclew $RELEASE_VERSION — macOS and Linux pilot" \
               --notes-file "$notes"
           fi

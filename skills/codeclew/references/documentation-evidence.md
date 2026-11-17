@@ -32,6 +32,38 @@ worker/Maven output: `clew --diagnostics <new-directory> --include-private-logs
 docs check --root <docs> --service <id>`. It runs that command once. Post-hoc
 collection does not recover old worker/Maven log files or perform another capture.
 
+## Large Java capture failures and progress
+
+Java capture in 0.15.9 processes selected compiler facts through a temporary
+index instead of applying the former 524,288-fact / 256-MiB service aggregate
+limit. Individual records remain limited to 8 MiB. The source pool, compact global
+indexes and final evidence still grow with service size; this is not constant
+total memory or a guarantee for every repository.
+
+Check and default offline support retain three separate closed numeric records:
+`factBudget` describes matching-domain CAS payload occurrences and their declared
+sizes, `compilerOutput` describes raw Java stdout/parser units, and `objectBudget`
+describes a stored documentation object. Do not compare their byte counters as
+if they measured the same data. A failed metadata scan reports an observed prefix
+with unknown planned totals. A complete metadata scan supplies exact planned
+occurrence counts and declared payload bytes; payload hydration verifies CAS
+size/digest. Repeated payloads in separate compilation scopes count again.
+`currentRecordSizeVerified` distinguishes declared size from a successful CAS
+read. Native failures before parsing leave accepted fact counts unknown. Preserve
+the terminal code: compiler errors, oversized units, corrupt references and
+storage exhaustion require different repairs. Do not automatically narrow the
+service or recapture to diagnose an immutable saved failure.
+
+Live stderr uses compatible `codeclew-documentation-progress/1.0` events with
+optional numeric `counts` and `terminalCause`. Select that schema among other
+stderr records. Native build/model/compiler, reference admission, hydration,
+projection, serialization and storage phases report their actual activity.
+Heartbeat means the phase is alive, not that its subprocess advanced; no ETA or
+percentage is inferred. Names, paths and source are excluded from these default
+progress fields. Final stdout remains result JSON; an UNRESOLVED Check ends its
+outer phase with FAILED. `CODECLEW_DOCS_PROGRESS=off` suppresses these diagnostics
+without changing evidence.
+
 ## Export an exact retained snapshot without running the producer
 
 Starting with 0.15.3, when a successful Check already saved the required evidence, export that exact

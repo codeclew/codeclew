@@ -260,6 +260,7 @@ fn capture_selected_with(
         &super::updates::State,
     ) -> Result<ServiceEvidence, ClewError>,
 ) -> Result<Check, ClewError> {
+    let check_progress = super::progress::Phase::start("CAPTURE_SELECTED_SERVICES");
     let input_digest = digest(&inputs)?;
     let services = &inputs.services;
     if selected.iter().any(|id| !services.contains_key(id)) {
@@ -396,6 +397,18 @@ fn capture_selected_with(
         inputs,
     });
     checked.validate_source_input_binding()?;
+    if checked.unresolved.is_empty() {
+        check_progress.complete();
+    } else {
+        let cause = checked
+            .unresolved
+            .values()
+            .find_map(|v| {
+                serde_json::from_value::<crate::error::ErrorCode>(v["reason"].clone()).ok()
+            })
+            .unwrap_or(crate::error::ErrorCode::IncompleteSemanticAnalysis);
+        check_progress.fail(cause);
+    }
     Ok(checked)
 }
 
@@ -1387,6 +1400,12 @@ fn capture_failure(error: &ClewError) -> Value {
     if let Some(diagnostic) = super::cache::budget_diagnostic(error) {
         record["objectBudget"] = diagnostic;
     }
+    if let Some(diagnostic) = super::analysis::fact_index::diagnostic(error) {
+        record["factBudget"] = diagnostic;
+    }
+    if let Some(diagnostic) = crate::java_adapter_v2::output_diagnostic::diagnostic(error) {
+        record["compilerOutput"] = diagnostic;
+    }
     record
 }
 
@@ -1415,6 +1434,18 @@ pub(super) fn unresolved_summary(record: &Value) -> Value {
     {
         summary.insert("objectBudget".into(), value);
     }
+    if let Some(value) = record
+        .get("factBudget")
+        .and_then(super::analysis::fact_index::summary)
+    {
+        summary.insert("factBudget".into(), value);
+    }
+    if let Some(value) = record
+        .get("compilerOutput")
+        .and_then(crate::java_adapter_v2::output_diagnostic::summary)
+    {
+        summary.insert("compilerOutput".into(), value);
+    }
     Value::Object(summary)
 }
 
@@ -1424,6 +1455,115 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn native_compiler_failure_survives_saved_check_and_default_offline_support() {
+        for error in [
+            crate::java_adapter_v2::compiler_output_failure_fixture(),
+            crate::java_adapter_v2::parse_java_compiler_output(&vec![b' '; 256 * 1024 + 1])
+                .unwrap_err(),
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            Repository::init(temporary.path(), "Owned native failure").unwrap();
+            let repo = Repository::open(temporary.path()).unwrap();
+            add_kotlin_service(&repo, "owned");
+            let expected = crate::java_adapter_v2::output_diagnostic::diagnostic(&error).unwrap();
+            if error.code == crate::error::ErrorCode::IncompleteSemanticAnalysis {
+                assert!(expected["acceptedFacts"].is_null());
+                assert!(expected["exceeded"].as_array().unwrap().is_empty());
+            } else {
+                assert_eq!(expected["acceptedFacts"], 0);
+            }
+            let checked = capture_selected_with(
+                &repo,
+                &BTreeSet::new(),
+                repo.inputs().unwrap(),
+                |_, _, _| Err(error.clone()),
+            )
+            .unwrap();
+            let snapshot = checked.save_snapshot(&repo).unwrap();
+            let loaded = Check::load_snapshot(&repo, &snapshot).unwrap();
+            assert_eq!(loaded.unresolved["owned"]["compilerOutput"], expected);
+            assert!(loaded.unresolved["owned"].get("factBudget").is_none());
+            drop(repo);
+            let (support, private) = super::super::support_collect::inspect(
+                temporary.path(),
+                Some(&snapshot),
+                None,
+                false,
+            );
+            assert!(private.is_none());
+            let saved = &support["services"][0]["failure"];
+            assert_eq!(saved["reason"], serde_json::to_value(&error.code).unwrap());
+            assert_eq!(saved["compilerOutput"], expected);
+            assert!(!support.to_string().contains("compiler diagnostic"));
+        }
+    }
+
+    #[test]
+    fn measured_fact_failure_survives_check_summary_with_unknowns_preserved() {
+        for mut error in [
+            super::super::analysis::fact_index::refusal_fixture(),
+            super::super::analysis::fact_index::storage_refusal_fixture(),
+            super::super::analysis::fact_index::integrity_refusal_fixture(),
+        ] {
+            error.details = Some(Box::new(
+                json!({"source":"private-marker","path":"private-marker"}),
+            ));
+            let failure = capture_failure(&error);
+            let expected = failure["factBudget"].clone();
+            if error.code == crate::error::ErrorCode::StateCorrupt {
+                assert_eq!(expected["observedFacts"], 1);
+                assert_eq!(expected["plannedFacts"], 2);
+                assert!(expected["plannedPayloadBytes"].is_null());
+            } else {
+                assert_eq!(expected["observedFacts"], 41);
+                assert_eq!(expected["plannedFacts"], 100);
+            }
+            if error.code == crate::error::ErrorCode::SliceBudgetExceeded {
+                assert_eq!(expected["currentRecordPayloadBytes"], 8 * 1024 * 1024 + 1);
+            } else if error.code == crate::error::ErrorCode::ResourceLimit {
+                assert_eq!(expected["storageCode"], 13);
+            }
+            assert!(failure.get("objectBudget").is_none());
+            assert!(!failure.to_string().contains("private-marker"));
+            let temporary = tempfile::tempdir().unwrap();
+            Repository::init(temporary.path(), "Owned fact refusal").unwrap();
+            let repo = Repository::open(temporary.path()).unwrap();
+            add_kotlin_service(&repo, "owned");
+            let checked = capture_selected_with(
+                &repo,
+                &BTreeSet::new(),
+                repo.inputs().unwrap(),
+                |_, _, _| Err(error.clone()),
+            )
+            .unwrap();
+            assert_eq!(
+                checked.summary()["unresolved"]["owned"]["factBudget"],
+                expected
+            );
+            assert_eq!(
+                unresolved_summary(&checked.unresolved["owned"])["factBudget"],
+                expected
+            );
+            let snapshot = checked.save_snapshot(&repo).unwrap();
+            let loaded = Check::load_snapshot(&repo, &snapshot).unwrap();
+            assert_eq!(loaded.unresolved["owned"]["factBudget"], expected);
+            drop(repo);
+            let (support, private) = super::super::support_collect::inspect(
+                temporary.path(),
+                Some(&snapshot),
+                None,
+                false,
+            );
+            assert!(private.is_none());
+            assert_eq!(
+                support["services"][0]["failure"]["factBudget"], expected,
+                "{support}"
+            );
+            assert!(!support.to_string().contains("private-marker"));
+        }
+    }
 
     #[test]
     fn capture_object_budget_survives_unresolved_public_summary_without_private_fields() {

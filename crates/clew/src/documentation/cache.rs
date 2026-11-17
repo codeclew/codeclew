@@ -357,7 +357,14 @@ pub fn store_capture(
     let sources = super::capture_maps::store(repo, SOURCES_OBJECT_SCHEMA, &evidence.sources)?;
     // Share canonical observation payloads with the Check dependency index.
     // The root is immutable and exact; removed whole-map references are rejected.
-    let observations = super::fact_index::store_dependency_map(repo, &evidence.observations)?;
+    let observations = super::progress::run_counted_if_active(
+        "STORE_CAPTURE_OBSERVATIONS",
+        super::progress::Counts {
+            planned_records: Some(evidence.observations.len() as u64),
+            ..Default::default()
+        },
+        || super::fact_index::store_dependency_map(repo, &evidence.observations),
+    )?;
     let contracts = super::capture_maps::store(repo, CONTRACTS_OBJECT_SCHEMA, &evidence.contracts)?;
     let mut manifest = CaptureManifest {
         schema: CAPTURE_MANIFEST_SCHEMA.into(),

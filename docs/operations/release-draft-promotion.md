@@ -1,0 +1,41 @@
+# Verify and promote an official release draft
+
+The release workflow qualifies and packages the exact source commit, verifies
+checksums and requires successful CI before staging a GitHub **draft** release.
+It never automatically makes that draft public. Build-only candidates do not
+create a release or run the large Linux Java producer case.
+
+For a tagged release, a fresh Linux job downloads the final official Linux
+artifact, verifies its checksum and runs the owned Java producer qualification
+once. Before allocating swap or extracting, it checks RAM and the full disk
+requirement: 8 GiB swap plus 8 GiB remaining launch reserve plus the archive's
+uncompressed member sizes and 1 GiB extraction allowance. The selected three conventional Maven compilations
+must actually exceed both former aggregate limits: 524,288 matching-domain facts
+and 268,435,456 CAS payload bytes. Arithmetic predictions and incomplete captures
+cannot pass. Runner resources, a fixed 8-GiB swap envelope, 45-minute wall limit,
+512-MiB disk reserve, exact source/archive identity, frozen inputs, stdout/stderr,
+live progress and sampled resources are retained as `java-large-producer-evidence`.
+That evidence artifact is excluded from release assets. A failure blocks staging;
+there is no automatic retry, resource escalation or bypass.
+
+Independently inspect the exact draft assets and primary qualification artifacts.
+Use the packaged launcher and preserved archive modes, not a source build. Test
+small compiler semantic closure, failure persistence, retained snapshot reads and
+affected SOURCE paths. Preserve failed results. Confirm all required jobs passed
+for this exact commit and source tree, and all eight expected public assets and
+checksums match the independently accepted archives.
+
+When acceptance passes, promote the existing draft without rebuilding or
+uploading replacement assets:
+
+```sh
+gh release view VERSION --json tagName,isDraft,assets,url
+gh release edit VERSION --draft=false --latest
+```
+
+Replace VERSION with the exact accepted tag. Then verify public tag/commit,
+platform assets/checksums and supported isolated installation/update. Promotion
+uses the release authorization already granted for that slice; it is not a new
+human approval layer. A failed required gate still blocks promotion. Never
+promote because packaging completed while semantic acceptance is outstanding.
+The workflow refuses to overwrite an already public release on a rerun.

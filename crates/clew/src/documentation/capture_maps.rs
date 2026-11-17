@@ -88,6 +88,14 @@ pub(super) fn store<T: Serialize>(
     schema: &str,
     values: &BTreeMap<String, T>,
 ) -> Result<cache::ObjectRef, ClewError> {
+    super::progress::run_if_active("SERIALIZE_CAPTURE_MAP", || store_map(repo, schema, values))
+}
+
+fn store_map<T: Serialize>(
+    repo: &Repository,
+    schema: &str,
+    values: &BTreeMap<String, T>,
+) -> Result<cache::ObjectRef, ClewError> {
     let mut parts = Vec::new();
     let mut payload = vec![b'{'];
     let mut first = String::new();
@@ -95,7 +103,15 @@ pub(super) fn store<T: Serialize>(
     let mut count = 0;
     let flush = |payload: &mut Vec<u8>, first: &str, last: &str, count, parts: &mut Vec<Part>| {
         payload.push(b'}');
-        let object = cache::put(repo, schema, payload)?;
+        let object = super::progress::run_counted_if_active(
+            "STORE_CAPTURE_MAP_PART",
+            super::progress::Counts {
+                records: Some(count as u64),
+                payload_bytes: Some(payload.len() as u64),
+                ..Default::default()
+            },
+            || cache::put(repo, schema, payload),
+        )?;
         parts.push(Part {
             first: first.into(),
             last: last.into(),

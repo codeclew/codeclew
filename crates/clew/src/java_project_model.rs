@@ -1702,6 +1702,23 @@ fn run_build_command(
     stage: &str,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<String, ClewError> {
+    let phase = match stage {
+        "COMPILE_CLASSPATH" => "NATIVE_COMPILATION",
+        "GRADLE_MODEL" => "BUILD_MODEL_EXTRACTION",
+        _ => "BUILD_MODEL_QUERY",
+    };
+    crate::documentation::progress::run_if_active(phase, || {
+        run_build_command_inner(command, message, retain, stage, debug_output)
+    })
+}
+
+fn run_build_command_inner(
+    command: &mut Command,
+    message: &str,
+    retain: bool,
+    stage: &str,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<String, ClewError> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

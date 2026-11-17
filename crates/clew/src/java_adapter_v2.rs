@@ -469,6 +469,24 @@ fn execute_java_compiler(
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
     prepared: Option<&PreparedJavaAnalysisInputs>,
 ) -> Result<fs::File, ClewError> {
+    crate::documentation::progress::run_if_active("COMPILER_ANALYSIS", || {
+        execute_java_compiler_inner(
+            repository,
+            operational,
+            writable_then_seal,
+            debug_output,
+            prepared,
+        )
+    })
+}
+
+fn execute_java_compiler_inner(
+    repository: &Path,
+    operational: &JavaOperationalModel,
+    writable_then_seal: bool,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    prepared: Option<&PreparedJavaAnalysisInputs>,
+) -> Result<fs::File, ClewError> {
     verify_model(&operational.authority)?;
     if prepared.is_none() {
         verify_operational_classpath(operational)?;
@@ -633,6 +651,104 @@ fn execute_java_compiler(
     Ok(output)
 }
 
+/// Raw subprocess output units are distinct from CAS fact payload units.
+pub(crate) mod output_diagnostic {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+    pub(super) enum Stage {
+        CollectOutput,
+        ParseOutput,
+    }
+    #[derive(Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+    pub(super) enum Dimension {
+        OutputBytes,
+        LineBytes,
+        FactCount,
+    }
+    #[derive(Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    pub(super) struct Diagnostic {
+        schema: String,
+        stage: Stage,
+        pub(super) observed_output_bytes: u64,
+        pub(super) accepted_facts: Option<u64>,
+        pub(super) current_line_bytes: Option<u64>,
+        pub(super) current_line_complete: Option<bool>,
+        compilation_ordinal: Option<usize>,
+        compilations_total: Option<usize>,
+        max_output_bytes: usize,
+        pub(super) max_line_bytes: usize,
+        pub(super) max_facts: usize,
+        pub(super) exceeded: Vec<Dimension>,
+    }
+    impl Diagnostic {
+        pub(super) fn new(stage: Stage, output_limit: usize) -> Self {
+            Self {
+                schema: "codeclew-java-compiler-output/1.0".into(),
+                stage,
+                observed_output_bytes: 0,
+                accepted_facts: None,
+                current_line_bytes: None,
+                current_line_complete: None,
+                compilation_ordinal: None,
+                compilations_total: None,
+                max_output_bytes: output_limit,
+                max_line_bytes: MAX_FACT_BYTES,
+                max_facts: MAX_JAVA_FACTS,
+                exceeded: vec![],
+            }
+        }
+        pub(super) fn attach(&self, mut error: ClewError) -> ClewError {
+            error
+                .evidence
+                .push(serde_json::to_string(self).expect("numeric diagnostic"));
+            error
+        }
+    }
+    pub(crate) fn summary(value: &serde_json::Value) -> Option<serde_json::Value> {
+        let d: Diagnostic = serde_json::from_value(value.clone()).ok()?;
+        (d.schema == "codeclew-java-compiler-output/1.0"
+            && d.max_output_bytes > 0
+            && d.max_output_bytes <= MAX_ANALYZER_OUTPUT_BYTES
+            && d.max_line_bytes > 0
+            && d.max_line_bytes <= MAX_FACT_BYTES
+            && d.max_facts > 0
+            && d.max_facts <= MAX_JAVA_FACTS)
+            .then(|| serde_json::to_value(d).expect("numeric diagnostic"))
+    }
+    pub(crate) fn diagnostic(error: &ClewError) -> Option<serde_json::Value> {
+        error
+            .evidence
+            .iter()
+            .filter(|s| s.len() <= 4096)
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .find_map(|v| summary(&v))
+    }
+    pub(crate) fn with_compilation(
+        mut error: ClewError,
+        ordinal: usize,
+        total: usize,
+    ) -> ClewError {
+        if let Some(value) = diagnostic(&error) {
+            let mut d: Diagnostic = serde_json::from_value(value).expect("closed diagnostic");
+            d.compilation_ordinal = Some(ordinal);
+            d.compilations_total = Some(total);
+            error.evidence.retain(|raw| {
+                serde_json::from_str::<serde_json::Value>(raw)
+                    .ok()
+                    .and_then(|v| summary(&v))
+                    .is_none()
+            });
+            return d.attach(error);
+        }
+        error
+    }
+}
+
 /// Drain both pipes concurrently, retaining only bounded tails in memory. The
 /// anonymous 0600 spool is removed on close and never becomes a success receipt
 /// until the complete fact stream and its input membership have been validated.
@@ -700,8 +816,16 @@ fn collect_java_output(
         ))
     });
     if let Some(error) = error {
+        let mut diagnostic =
+            output_diagnostic::Diagnostic::new(output_diagnostic::Stage::CollectOutput, limit);
+        diagnostic.observed_output_bytes = stdout_tail.observed;
+        if stdout_tail.observed > limit as u64 {
+            diagnostic
+                .exceeded
+                .push(output_diagnostic::Dimension::OutputBytes);
+        }
         return Err(crate::maven_diagnostics::annotate_failure(
-            error,
+            diagnostic.attach(error),
             debug_output,
             "JAVA_ANALYZER",
             &status,
@@ -744,74 +868,110 @@ pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerF
 pub(crate) fn parse_java_compiler_reader(
     mut reader: impl BufRead,
 ) -> Result<Vec<JavaCompilerFact>, ClewError> {
+    parse_java_compiler_reader_with_limits(
+        &mut reader,
+        MAX_ANALYZER_OUTPUT_BYTES,
+        MAX_FACT_BYTES,
+        MAX_JAVA_FACTS,
+    )
+}
+
+fn parse_java_compiler_reader_with_limits(
+    mut reader: impl BufRead,
+    output_limit: usize,
+    line_limit: usize,
+    fact_limit: usize,
+) -> Result<Vec<JavaCompilerFact>, ClewError> {
+    let mut diagnostic =
+        output_diagnostic::Diagnostic::new(output_diagnostic::Stage::ParseOutput, output_limit);
+    diagnostic.max_line_bytes = line_limit;
+    diagnostic.max_facts = fact_limit;
+    diagnostic.accepted_facts = Some(0);
     let mut facts = Vec::new();
     let mut line = Vec::new();
     let mut total = 0usize;
-    loop {
-        line.clear();
-        let count = reader
-            .by_ref()
-            .take((MAX_FACT_BYTES + 3) as u64)
-            .read_until(b'\n', &mut line)
-            .map_err(io_error)?;
-        if count == 0 {
-            break;
+    let result = (|| {
+        loop {
+            line.clear();
+            let count = reader
+                .by_ref()
+                .take((line_limit + 3) as u64)
+                .read_until(b'\n', &mut line)
+                .map_err(io_error)?;
+            if count == 0 {
+                break;
+            }
+            total += count;
+            diagnostic.observed_output_bytes = total as u64;
+            diagnostic.current_line_complete =
+                Some(line.last() == Some(&b'\n') || count < line_limit + 3);
+            if total > output_limit {
+                diagnostic
+                    .exceeded
+                    .push(output_diagnostic::Dimension::OutputBytes);
+                return Err(resource(&format!(
+                    "Java analyzer stdout exceeds byte limit: observed at least {total}, limit {output_limit}"
+                )));
+            }
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            diagnostic.current_line_bytes = Some(line.len() as u64);
+            if line.len() > line_limit {
+                diagnostic
+                    .exceeded
+                    .push(output_diagnostic::Dimension::LineBytes);
+                return Err(resource(&format!(
+                    "Java compiler fact exceeds byte limit: observed at least {}, limit {MAX_FACT_BYTES}",
+                    line.len()
+                )));
+            }
+            if line.is_empty() {
+                continue;
+            }
+            if facts.len() == fact_limit {
+                diagnostic
+                    .exceeded
+                    .push(output_diagnostic::Dimension::FactCount);
+                return Err(resource(&format!(
+                    "Java compiler fact count exceeds limit {fact_limit}"
+                )));
+            }
+            let text = std::str::from_utf8(&line)
+                .map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
+            let fact: JavaCompilerFact = serde_json::from_str(text)
+                .map_err(|_| corrupt("Java compiler fact schema is invalid"))?;
+            if matches!(fact, JavaCompilerFact::SourceFile { .. }) {
+                return Err(corrupt(
+                    "Java raw output contains projected source membership",
+                ));
+            }
+            if let JavaCompilerFact::DependencyTarget {
+                binary_origin,
+                dependency_source,
+                source_status,
+                source_boundary,
+                ..
+            } = &fact
+                && (binary_origin.artifact.is_some()
+                    || dependency_source.is_some()
+                    || source_boundary.is_some()
+                    || source_status != "SOURCE_NOT_ATTACHED")
+            {
+                return Err(corrupt(
+                    "Java raw output contains projected binary authority",
+                ));
+            }
+            validate_fact(&fact)?;
+            facts.push(fact);
+            diagnostic.accepted_facts = Some(facts.len() as u64);
         }
-        total += count;
-        if total > MAX_ANALYZER_OUTPUT_BYTES {
-            return Err(resource(&format!(
-                "Java analyzer stdout exceeds byte limit: observed at least {total}, limit {MAX_ANALYZER_OUTPUT_BYTES}"
-            )));
-        }
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        if line.len() > MAX_FACT_BYTES {
-            return Err(resource(&format!(
-                "Java compiler fact exceeds byte limit: observed at least {}, limit {MAX_FACT_BYTES}",
-                line.len()
-            )));
-        }
-        if line.is_empty() {
-            continue;
-        }
-        if facts.len() == MAX_JAVA_FACTS {
-            return Err(resource(&format!(
-                "Java compiler fact count exceeds limit {MAX_JAVA_FACTS}"
-            )));
-        }
-        let text =
-            std::str::from_utf8(&line).map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
-        let fact: JavaCompilerFact = serde_json::from_str(text)
-            .map_err(|_| corrupt("Java compiler fact schema is invalid"))?;
-        if matches!(fact, JavaCompilerFact::SourceFile { .. }) {
-            return Err(corrupt(
-                "Java raw output contains projected source membership",
-            ));
-        }
-        if let JavaCompilerFact::DependencyTarget {
-            binary_origin,
-            dependency_source,
-            source_status,
-            source_boundary,
-            ..
-        } = &fact
-            && (binary_origin.artifact.is_some()
-                || dependency_source.is_some()
-                || source_boundary.is_some()
-                || source_status != "SOURCE_NOT_ATTACHED")
-        {
-            return Err(corrupt(
-                "Java raw output contains projected binary authority",
-            ));
-        }
-        validate_fact(&fact)?;
-        facts.push(fact);
-    }
-    Ok(facts)
+        Ok(facts)
+    })();
+    result.map_err(|e| diagnostic.attach(e))
 }
 
 #[cfg(test)]
@@ -901,8 +1061,61 @@ pub(crate) fn project_java_compiler_facts(
 }
 
 #[cfg(test)]
+pub(crate) fn compiler_output_failure_fixture() -> ClewError {
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "printf 'compiler diagnostic' >&2; exit 7"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    output_diagnostic::with_compilation(
+        collect_java_output(&mut command, None, MAX_ANALYZER_OUTPUT_BYTES).unwrap_err(),
+        2,
+        3,
+    )
+}
+
+#[cfg(test)]
 mod stream_tests {
     use super::*;
+
+    #[test]
+    fn raw_output_budget_reports_distinct_prefixes_and_rejects_extra_fields() {
+        let line=br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"BOUNDARY","code":"X","requiredChecks":[],"resolution":"TEST"}"#;
+        let mut raw = line.to_vec();
+        raw.push(b'\n');
+        raw.extend(line);
+        let error =
+            parse_java_compiler_reader_with_limits(std::io::Cursor::new(&raw), 4096, 256, 1)
+                .unwrap_err();
+        let error = output_diagnostic::with_compilation(error, 2, 3);
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert_eq!(d["acceptedFacts"], 1);
+        assert_eq!(d["observedOutputBytes"], raw.len());
+        assert_eq!(d["compilationOrdinal"], 2);
+        assert_eq!(d["compilationsTotal"], 3);
+        assert_eq!(d["exceeded"], serde_json::json!(["FACT_COUNT"]));
+        let mut forged = d;
+        forged["source"] = serde_json::json!("private");
+        assert!(output_diagnostic::summary(&forged).is_none());
+        let error = parse_java_compiler_reader_with_limits(
+            std::io::Cursor::new(b"abcdefghijk"),
+            4096,
+            4,
+            2,
+        )
+        .unwrap_err();
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(d["acceptedFacts"], 0);
+        assert_eq!(d["currentLineBytes"], 7);
+        assert_eq!(d["currentLineComplete"], false);
+        assert_eq!(d["exceeded"], serde_json::json!(["LINE_BYTES"]));
+        let error = parse_java_compiler_reader_with_limits(std::io::Cursor::new(line), 4, 256, 2)
+            .unwrap_err();
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(d["observedOutputBytes"], line.len());
+        assert_eq!(d["exceeded"], serde_json::json!(["OUTPUT_BYTES"]));
+    }
 
     #[test]
     fn batched_fact_publication_preserves_byte_authority_keys_order_and_duplicates() {
@@ -953,6 +1166,11 @@ mod stream_tests {
         let error = collect_java_output(&mut command, None, 1024).unwrap_err();
         assert_eq!(error.code, ErrorCode::ResourceLimit);
         assert!(error.message.contains("limit 1024"));
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(d["stage"], "COLLECT_OUTPUT");
+        assert!(d["observedOutputBytes"].as_u64().unwrap() > 1024);
+        assert!(d["acceptedFacts"].is_null());
+        assert_eq!(d["exceeded"], serde_json::json!(["OUTPUT_BYTES"]));
         let mut command = Command::new("sh");
         command
             .args(["-c", "printf 'private compiler error' >&2; exit 7"])
@@ -962,6 +1180,11 @@ mod stream_tests {
         assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
         assert!(error.message.contains("Some(7)"));
         assert!(!error.message.contains("private compiler error"));
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(d["observedOutputBytes"], 0);
+        assert!(d["acceptedFacts"].is_null());
+        assert_eq!(d["exceeded"], serde_json::json!([]));
+        assert!(!d.to_string().contains("private"));
     }
 
     #[test]

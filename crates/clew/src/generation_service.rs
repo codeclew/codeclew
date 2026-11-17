@@ -752,12 +752,7 @@ fn ensure_java_generation_set(
         "java",
     )?;
     if writable_then_seal {
-        eprintln!(
-            "CODEDEBUG ensure_java_generation_set writable_then_seal=true repo={}",
-            workspace.repository().display()
-        );
         crate::repository_snapshot::make_files_writable(workspace.repository())?;
-        eprintln!("CODEDEBUG make_files_writable returned OK");
         workspace.set_allow_materialization_mutation(true);
     }
     let sources = effective_java_sources(snapshot)?;
@@ -765,13 +760,15 @@ fn ensure_java_generation_set(
     // every compilation. Transformations run here while the tree is writable.
     // No indexing or publication happens yet.
     let settings = session.maven_settings()?;
-    let models = extract_java_models_with_settings_and_diagnostics(
-        workspace.repository(),
-        &session.compilations,
-        settings.as_ref(),
-        debug_output,
-        extra_annotation_processors,
-    )?;
+    let models = crate::documentation::progress::run_if_active("JAVA_MODEL_EXTRACTION", || {
+        extract_java_models_with_settings_and_diagnostics(
+            workspace.repository(),
+            &session.compilations,
+            settings.as_ref(),
+            debug_output,
+            extra_annotation_processors,
+        )
+    })?;
     let mut captured = Vec::with_capacity(models.len());
     for model in models {
         let compilation = model.authority.compilation.clone();
@@ -837,12 +834,7 @@ fn ensure_java_generation_set(
             preserve_compiled_classes(&attempt_root, model)?;
         }
         workspace.unmount_derived_state()?;
-        eprintln!("CODEDEBUG seal_tree PRE-INDEX START");
-        if let Err(e) = crate::repository_snapshot::seal_tree(workspace.repository()) {
-            eprintln!("CODEDEBUG seal_tree PRE-INDEX ERR {e}");
-            return Err(e);
-        }
-        eprintln!("CODEDEBUG seal_tree PRE-INDEX OK");
+        crate::repository_snapshot::seal_tree(workspace.repository())?;
     }
     // Prepare the whole selected set before sealing the shared input pool.
     // One request owns one JDK image and content-deduplicated classpath copies.
@@ -892,22 +884,39 @@ fn ensure_java_generation_set(
                 ));
             }
         }
-        results.push(ensure_java_generation(
-            session,
-            state,
-            store,
-            snapshot_object.clone(),
-            workspace.repository(),
-            model,
-            source_content_digests,
-            &compilation,
-            &binding_path,
-            writable_then_seal,
-            before_digests.as_ref(),
-            &changed_files,
-            debug_output,
-            prepared,
-            eligibility,
+        results.push(crate::documentation::progress::run_counted_if_active(
+            "COMPILATION_GENERATION",
+            crate::documentation::progress::Counts {
+                compilation_ordinal: Some(results.len() + 1),
+                compilations_total: Some(session.compilations.len()),
+                ..Default::default()
+            },
+            || {
+                ensure_java_generation(
+                    session,
+                    state,
+                    store,
+                    snapshot_object.clone(),
+                    workspace.repository(),
+                    model,
+                    source_content_digests,
+                    &compilation,
+                    &binding_path,
+                    writable_then_seal,
+                    before_digests.as_ref(),
+                    &changed_files,
+                    debug_output,
+                    prepared,
+                    eligibility,
+                )
+                .map_err(|e| {
+                    crate::java_adapter_v2::output_diagnostic::with_compilation(
+                        e,
+                        results.len() + 1,
+                        session.compilations.len(),
+                    )
+                })
+            },
         )?);
     }
     input_pool.close()?;
@@ -1155,16 +1164,19 @@ fn ensure_java_generation(
     };
     journal.transition(AttemptState::Finalizing, "Java deterministic merge started")?;
     let result = (|| {
-        let (generation, generation_object) = finalize_generation(
-            store,
-            derived_input_manifest.clone(),
-            vec![AttemptAuthority {
-                compilation_id: safe_compilation_id(compilation),
-                capability: CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?,
-                completion: analysis.completion,
-            }],
-            analysis.runs,
-        )?;
+        let (generation, generation_object) =
+            crate::documentation::progress::run_if_active("SERIALIZE_GENERATION_FACTS", || {
+                finalize_generation(
+                    store,
+                    derived_input_manifest.clone(),
+                    vec![AttemptAuthority {
+                        compilation_id: safe_compilation_id(compilation),
+                        capability: CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?,
+                        completion: analysis.completion,
+                    }],
+                    analysis.runs,
+                )
+            })?;
         let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
         let scope_digest = java_scope_digest(&index)?;
         let completeness = crate::java_adapter_v2::java_completeness(&index, &scope_digest)?;
@@ -1451,19 +1463,11 @@ fn transformed_java_source_digests(
         let bytes = match std::fs::read(&file) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!(
-                    "CODEDEBUG transformed_java_source_digests read FAIL {}: {e}",
-                    file.display()
-                );
                 return Err(io_error(e));
             }
         };
         out.insert(path.clone(), canonical::hash_bytes(&bytes));
     }
-    eprintln!(
-        "CODEDEBUG transformed_java_source_digests OK count={}",
-        out.len()
-    );
     Ok(out)
 }
 

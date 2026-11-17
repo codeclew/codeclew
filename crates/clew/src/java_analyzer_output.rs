@@ -167,7 +167,9 @@ pub(crate) fn get_or_execute(
     let mut raw = execute()?;
     let facts = validate_output(store, input, &mut raw)?;
     raw.rewind().map_err(internal)?;
-    let output = save_chunked_output(store, &mut raw)?;
+    let output = crate::documentation::progress::run_if_active("STORE_COMPILER_FACTS", || {
+        save_chunked_output(store, &mut raw)
+    })?;
     let receipt = SuccessReceipt {
         schema: RECEIPT_SCHEMA.into(),
         execution_id: uuid::Uuid::new_v4().to_string(),

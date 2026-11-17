@@ -238,6 +238,21 @@ fn safe_failure(value: &Value) -> Value {
         result["remediationId"] = json!("INSPECT_CAPTURE_OBJECT_BUDGET");
         result["retryable"] = json!(false);
     }
+    if let Some(safe) = super::analysis::fact_index::summary(&value["factBudget"]) {
+        result["factBudget"] = safe;
+        if value["reason"] == "SLICE_BUDGET_EXCEEDED" {
+            result["remediationId"] = json!("INSPECT_CAPTURE_FACT_RECORD_UNIT");
+            result["retryable"] = json!(false);
+        }
+    }
+    if let Some(safe) = crate::java_adapter_v2::output_diagnostic::summary(&value["compilerOutput"])
+    {
+        result["compilerOutput"] = safe;
+        if value["reason"] == "RESOURCE_LIMIT" {
+            result["remediationId"] = json!("INSPECT_COMPILER_OUTPUT_UNIT");
+            result["retryable"] = json!(false);
+        }
+    }
     result
 }
 
@@ -769,6 +784,21 @@ pub fn collect_with_cache(
 mod compiler_tests {
     use super::*;
     use crate::{compiler_failure, state::StateAuthority};
+
+    #[test]
+    fn offline_failure_projection_keeps_only_closed_fact_budget_metadata() {
+        let error = super::super::analysis::fact_index::refusal_fixture();
+        let budget = super::super::analysis::fact_index::diagnostic(&error).unwrap();
+        let record = json!({"reason":error.code,"nextAction":"private-marker","factBudget":budget,"source":"private-marker"});
+        let safe = safe_failure(&record);
+        assert_eq!(safe["factBudget"], budget);
+        assert_eq!(safe["factBudget"]["observedPayloadBytes"], 900);
+        assert_eq!(safe["factBudget"]["plannedPayloadBytes"], 2000);
+        assert!(!safe.to_string().contains("private-marker"));
+        let mut foreign = record;
+        foreign["factBudget"]["source"] = json!("private-marker");
+        assert!(safe_failure(&foreign).get("factBudget").is_none());
+    }
 
     #[test]
     fn object_budget_support_metadata_preserves_safe_action_and_counts() {

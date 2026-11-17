@@ -1,5 +1,5 @@
 //! Best-effort phase diagnostics, separate from machine-readable command stdout.
-use crate::error::ClewError;
+use crate::error::{ClewError, ErrorCode};
 use serde::Serialize;
 use std::cell::Cell;
 #[cfg(test)]
@@ -7,9 +7,9 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +33,32 @@ struct Event {
     timestamp_unix_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     syntax_file_cache: Option<SyntaxFileCache>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counts: Option<Counts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_cause: Option<ErrorCode>,
+}
+
+/// Measured numbers only. Names, paths and source never enter default progress.
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compilation_ordinal: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compilations_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facts: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_facts: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_payload_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub records: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_records: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -74,6 +100,8 @@ pub struct Phase {
     sink: Option<Sink>,
     stop: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
+    counts: Arc<Mutex<Option<Counts>>>,
+    terminal_cause: Option<ErrorCode>,
 }
 
 impl Phase {
@@ -83,6 +111,15 @@ impl Phase {
     }
 
     fn with_sink(phase: &'static str, sink: Option<Sink>, interval: Duration) -> Self {
+        Self::with_counts(phase, sink, interval, None)
+    }
+
+    fn with_counts(
+        phase: &'static str,
+        sink: Option<Sink>,
+        interval: Duration,
+        counts: Option<Counts>,
+    ) -> Self {
         let started = Instant::now();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let parent = CURRENT_SPAN.replace(Some(id));
@@ -96,10 +133,13 @@ impl Phase {
             sink,
             stop: None,
             worker: None,
+            counts: Arc::new(Mutex::new(counts)),
+            terminal_cause: None,
         };
         span.emit("STARTED");
         if let Some(sink) = span.sink.clone() {
             let (stop, receiver) = mpsc::channel();
+            let counts = Arc::clone(&span.counts);
             // Failure to allocate a diagnostic thread must not fail the command.
             if let Ok(worker) = std::thread::Builder::new()
                 .name("docs-progress".into())
@@ -108,7 +148,9 @@ impl Phase {
                         receiver.recv_timeout(interval),
                         Err(mpsc::RecvTimeoutError::Timeout)
                     ) {
-                        sink(&event(phase, id, parent, started, "HEARTBEAT"));
+                        let mut value = event(phase, id, parent, started, "HEARTBEAT");
+                        value.counts = counts.lock().ok().and_then(|v| v.clone());
+                        sink(&value);
                     }
                 })
             {
@@ -119,15 +161,19 @@ impl Phase {
         span
     }
 
+    /// Updating counters does not claim forward progress beyond their measured values.
+    pub fn set_counts(&self, counts: Counts) {
+        if let Ok(mut current) = self.counts.lock() {
+            *current = Some(counts);
+        }
+    }
+
     fn emit(&self, status: &'static str) {
         if let Some(sink) = &self.sink {
-            sink(&event(
-                self.phase,
-                self.id,
-                self.parent,
-                self.started,
-                status,
-            ));
+            let mut value = event(self.phase, self.id, self.parent, self.started, status);
+            value.counts = self.counts.lock().ok().and_then(|v| v.clone());
+            value.terminal_cause = self.terminal_cause.clone();
+            sink(&value);
         }
     }
 
@@ -145,6 +191,11 @@ impl Phase {
         }
         self.emit(status);
         self.sink = None;
+    }
+
+    pub fn fail(mut self, cause: ErrorCode) {
+        self.terminal_cause = Some(cause);
+        self.finish("FAILED");
     }
 
     pub fn complete(mut self) {
@@ -178,6 +229,8 @@ fn event(
             .unwrap_or_default()
             .as_millis(),
         syntax_file_cache: None,
+        counts: None,
+        terminal_cause: None,
     }
 }
 
@@ -235,17 +288,113 @@ pub fn run<T>(
     phase: &'static str,
     action: impl FnOnce() -> Result<T, ClewError>,
 ) -> Result<T, ClewError> {
+    run_with_phase(phase, |_| action())
+}
+
+pub fn run_with_phase<T>(
+    phase: &'static str,
+    action: impl FnOnce(&Phase) -> Result<T, ClewError>,
+) -> Result<T, ClewError> {
     let span = Phase::start(phase);
-    let result = action();
-    if result.is_ok() {
-        span.complete();
+    let result = action(&span);
+    match &result {
+        Ok(_) => span.complete(),
+        Err(error) => span.fail(error.code.clone()),
     }
     result
+}
+
+/// Lower-level native tools add documentation progress only within a caller's
+/// existing phase, never to unrelated CLI commands.
+pub(crate) fn run_if_active<T>(
+    phase: &'static str,
+    action: impl FnOnce() -> Result<T, ClewError>,
+) -> Result<T, ClewError> {
+    if CURRENT_SPAN.get().is_some() {
+        run(phase, action)
+    } else {
+        action()
+    }
+}
+
+pub(crate) fn run_counted_if_active<T>(
+    phase: &'static str,
+    counts: Counts,
+    action: impl FnOnce() -> Result<T, ClewError>,
+) -> Result<T, ClewError> {
+    if CURRENT_SPAN.get().is_none() {
+        return action();
+    }
+    let span = Phase::with_counts(phase, configured_sink(), INTERVAL, Some(counts));
+    let result = action();
+    match &result {
+        Ok(_) => span.complete(),
+        Err(error) => span.fail(error.code.clone()),
+    }
+    result
+}
+
+/// A successful command transport can carry a failed retained Check. Preserve
+/// that distinction in both the outer phase and generic request diagnostics.
+pub fn unresolved_check_cause(value: &serde_json::Value) -> Option<ErrorCode> {
+    if value["schema"] != "codeclew-documentation-check/1.0" || value["status"] != "UNRESOLVED" {
+        return None;
+    }
+    Some(
+        value["unresolved"]
+            .as_object()
+            .into_iter()
+            .flat_map(|v| v.values())
+            .find_map(|failure| serde_json::from_value(failure["reason"].clone()).ok())
+            .unwrap_or(ErrorCode::IncompleteSemanticAnalysis),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_check_is_not_a_successful_outer_completion() {
+        let value = serde_json::json!({"schema":"codeclew-documentation-check/1.0", "status":"UNRESOLVED", "unresolved":{"owned":{"reason":"SLICE_BUDGET_EXCEEDED", "nextAction":"private-marker"}}});
+        assert_eq!(
+            unresolved_check_cause(&value),
+            Some(ErrorCode::SliceBudgetExceeded)
+        );
+        let mut ready = value.clone();
+        ready["status"] = serde_json::json!("CHECKED");
+        assert!(unresolved_check_cause(&ready).is_none());
+        let mut unrelated = value;
+        unrelated["schema"] = serde_json::json!("unrelated-report/1.0");
+        assert!(unresolved_check_cause(&unrelated).is_none());
+    }
+
+    #[test]
+    fn live_heartbeat_carries_measured_counts_before_terminal_failure() {
+        let (phase, receiver) = collecting_phase(Duration::from_millis(10));
+        phase.set_counts(Counts {
+            compilation_ordinal: Some(2),
+            compilations_total: Some(3),
+            facts: Some(41),
+            payload_bytes: Some(900),
+            ..Default::default()
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap()["event"],
+            "STARTED"
+        );
+        let live = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(live["event"], "HEARTBEAT");
+        assert_eq!(live["counts"]["facts"], 41);
+        assert_eq!(live["counts"]["compilationOrdinal"], 2);
+        assert!(live["counts"].get("plannedFacts").is_none());
+        assert!(!live.to_string().contains("private"));
+        phase.fail(ErrorCode::SliceBudgetExceeded);
+        let terminal = receiver.try_iter().last().unwrap();
+        assert_eq!(terminal["event"], "FAILED");
+        assert_eq!(terminal["terminalCause"], "SLICE_BUDGET_EXCEEDED");
+        assert_eq!(terminal["counts"]["payloadBytes"], 900);
+    }
 
     #[test]
     fn file_cache_diagnostics_contain_only_counts_and_preserve_parent_span() {
