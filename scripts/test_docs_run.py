@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -32,7 +33,9 @@ import json,shutil,sys,time
 from pathlib import Path
 seed=Path({str(self.seed)!r});mode=Path({str(self.mode)!r}).read_text()
 sys.stdin.read()
-print(json.dumps({{'type':'thread.started','thread_id':'owned-test-session'}}),flush=True)
+if mode!='missing-thread':
+ print(json.dumps({{'type':'thread.started','thread_id':'other-test-session' if mode=='thread-switch' and 'resume' in sys.argv else 'owned-test-session'}}),flush=True)
+if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
 if mode!='empty':
@@ -43,7 +46,14 @@ if mode!='empty':
   if source.is_dir():shutil.copytree(source,target)
   else:shutil.copyfile(source,target)
 (draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
-print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}}}))
+if mode=='repair-on-resume' and 'resume' in sys.argv:
+ path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
+usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
+counter=Path.cwd()/'owned-cumulative-usage.json'
+if 'resume' in sys.argv and counter.exists():
+ previous=json.loads(counter.read_text());usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
+counter.write_text(json.dumps(usage))
+print(json.dumps({{'type':'turn.completed','usage':usage}}))
 sys.exit(23 if mode=='exit-failed' else 0)
 ''')
         self.backend.chmod(0o700)
@@ -296,17 +306,71 @@ else:
         import fcntl
         import subprocess
         D['save'](self.run / 'workspace/draft/original.json', self.original)
-        before = D['load'](self.run / 'state.json')
         with (self.run / '.runner.lock').open('w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = D['tree'](self.run)
             result = subprocess.run([sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'),
                                      'review-template', '--run-dir', str(self.run)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         template = json.loads(result.stdout)
         self.assertEqual(template['schema'], D['COMPACT_REVIEW'])
         self.assertTrue(all(row['disposition'] is None for row in template['requirements'].values()))
-        self.assertEqual(D['load'](self.run / 'state.json'), before)
+        self.assertEqual(D['tree'](self.run), before)
         self.assertFalse((self.run / 'ready').exists())
+
+    def test_whole_document_initial_author_and_same_thread_repair_remain_the_default(self):
+        self.mode.write_text('repair-on-resume')
+        self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.html)\n'
+        self.seed_files()
+        job=D['load'](self.run/'inputs/job.json');job['budget']['maxRepairs']=1
+        D['save'](self.run/'inputs/job.json',job)
+        pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
+        result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
+        state=D['load'](self.run/'state.json');self.assertEqual(len(state['attempts']),2)
+        self.assertEqual(state['modelTokens'],40)
+        self.assertEqual([a['threadId'] for a in state['attempts']],['owned-test-session']*2)
+        self.assertEqual([a['budgetTokens'] for a in state['tokenAccounting']['attemptUsage']],[20,20])
+        self.assertNotIn('resume',state['attempts'][0]['argv'])
+        args=state['attempts'][1]['argv'];self.assertEqual(args[args.index('resume')+1],'owned-test-session')
+        self.assertEqual((self.run/'attempts/0/prompt.txt').read_bytes(),(self.run/'prompt.txt').read_bytes())
+        self.assertEqual(len(D['load'](self.run/'attempts/0/draft/original.json')['pages']),2)
+        self.assertIn('[Missing]',(self.run/'attempts/0/draft/original.json').read_text())
+        self.assertNotIn('[Missing]',(self.run/'attempts/1/draft/original.json').read_text())
+        self.assertEqual(D['load'](self.run/'attempts/0/draft/original.json')['pages'][1],D['load'](self.run/'attempts/1/draft/original.json')['pages'][1])
+
+    def test_resume_thread_mismatch_preserves_the_report_but_cannot_qualify(self):
+        self.generated();self.mode.write_text('thread-switch')
+        job=D['load'](self.run/'inputs/job.json');job['budget']['maxRepairs']=1;D['save'](self.run/'inputs/job.json',job)
+        pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
+        with self.assertRaises(D['Stop']) as error:self.generated()
+        self.assertEqual(error.exception.code,'AUTHOR_THREAD_CHANGED')
+        state=D['load'](self.run/'state.json')
+        self.assertEqual(state['attempts'][1]['threadId'],'other-test-session')
+        self.assertEqual(state['attempts'][1]['usage'],{'input_tokens':40,'cached_input_tokens':20,'output_tokens':20})
+        self.assertNotEqual(self.check()['status'],'READY')
+
+    def test_missing_or_ambiguous_new_thread_attribution_cannot_qualify(self):
+        for mode in ('missing-thread','ambiguous-thread'):
+            self.mode.write_text(mode)
+            with self.assertRaises(D['Stop']) as error:self.generated_for_test_reset()
+            self.assertEqual(error.exception.code,'AUTHOR_THREAD_REQUIRED')
+            state=D['load'](self.run/'state.json')
+            self.assertEqual(state['attempts'][0]['usage'],{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10})
+            self.assertNotEqual(self.check()['status'],'READY')
+
+    def test_review_template_never_probes_native_but_verify_and_promote_probe_parser(self):
+        self.generated();accepted=self.check();self.assertEqual(accepted['status'],'READY')
+        before=D['tree'](self.run)
+        with patch.dict(D['review_for_run'].__globals__,{'command':lambda *a,**k:self.fail('read-only template must not probe runtime')}):
+            self.assertEqual(D['review_for_run'](self.run)['schema'],D['COMPACT_REVIEW'])
+        self.assertEqual(before,D['tree'](self.run))
+        from types import SimpleNamespace
+        with patch.object(D['subprocess'],'run',return_value=SimpleNamespace(returncode=2,stdout=b'')):
+            failed=self.check();self.assertEqual(failed['checks']['inputs']['code'],'RENDERER_PARSER_CHANGED')
+            D['save'](self.run/'report.json',accepted)
+            with self.assertRaises(D['Stop']) as error:D['promote'](self.run)
+            self.assertEqual(error.exception.code,'PROMOTION_RECHECK_FAILED')
+        self.assertFalse((self.run/'ready').exists())
 
     def test_recorded_v2_usage_still_exceeds_budget_after_metric_correction(self):
         usage = {'input_tokens':5089868, 'cached_input_tokens':4811904,
@@ -321,8 +385,8 @@ else:
 
     def test_usage_accumulates_author_and_repairs_without_double_counting_subsets(self):
         result = D['token_accounting']([
-            {'usage':{'input_tokens':5000,'cached_input_tokens':4990,'output_tokens':10,'reasoning_output_tokens':4}},
-            {'usage':{'input_tokens':30,'cached_input_tokens':5,'output_tokens':7,'reasoning_output_tokens':2}}])
+            {'threadId':'one','usage':{'input_tokens':5000,'cached_input_tokens':4990,'output_tokens':10,'reasoning_output_tokens':4}},
+            {'threadId':'two','usage':{'input_tokens':30,'cached_input_tokens':5,'output_tokens':7,'reasoning_output_tokens':2}}])
         self.assertEqual(result['budgetTokens'], 52)
         self.assertEqual(result['rawTotals'], {'input_tokens':5030,'cached_input_tokens':4995,
                                              'output_tokens':17,'reasoning_output_tokens':6})
@@ -330,8 +394,8 @@ else:
 
     def test_missing_cache_counter_stays_explicitly_unavailable_across_repairs(self):
         result = D['token_accounting']([
-            {'usage':{'input_tokens':100,'output_tokens':20}},
-            {'usage':{'input_tokens':50,'cached_input_tokens':45,'output_tokens':10}}])
+            {'threadId':'one','usage':{'input_tokens':100,'output_tokens':20}},
+            {'threadId':'two','usage':{'input_tokens':50,'cached_input_tokens':45,'output_tokens':10}}])
         self.assertEqual(result['status'], 'UNAVAILABLE')
         self.assertIsNone(result['budgetTokens'])
         self.assertIsNone(result['rawTotals']['cached_input_tokens'])
@@ -493,6 +557,200 @@ else:
     def test_unknown_job_gate_override_is_rejected(self):
         job = dict(self.job); job['skipChecks'] = ['entrySequences']
         with self.assertRaises(D['Stop']):D['validate_job'](job)
+
+
+    def test_verify_and_promotion_still_refuse_a_runtime_version_change(self):
+        self.generated();accepted = self.check()
+        self.assertEqual(accepted['status'], 'READY')
+        original_command = D['inputs_unchanged'].__globals__['command']
+        def changed(argv, *args, **kwargs):
+            if argv == [str(self.clew), '--version']:return 'clew changed-runtime'
+            return original_command(argv, *args, **kwargs)
+        with patch.dict(D['inputs_unchanged'].__globals__, {'command': changed}):
+            failed = self.check()
+            self.assertEqual(failed['status'], 'BLOCKED')
+            self.assertEqual(failed['checks']['inputs']['code'], 'ADMITTED_RUNTIME_CHANGED')
+            D['save'](self.run / 'report.json', accepted)
+            with self.assertRaises(D['Stop']) as error:D['promote'](self.run)
+            self.assertEqual(error.exception.code, 'PROMOTION_RECHECK_FAILED')
+            self.assertFalse((self.run / 'ready').exists())
+
+    def test_cumulative_same_thread_resume_uses_deltas_and_preserves_raw_reports(self):
+        # Public counters observed across real CLI 0.159.2 resume boundaries.
+        first = {'input_tokens':1771674, 'cached_input_tokens':1688320,
+                 'output_tokens':36956, 'reasoning_output_tokens':24378}
+        second = {'input_tokens':2793295, 'cached_input_tokens':2670976,
+                  'output_tokens':62544, 'reasoning_output_tokens':43098}
+        attempts = [{'threadId':'same', 'usage': first}, {'threadId':'same', 'usage': second}]
+        before = json.dumps(attempts)
+        result = D['token_accounting'](attempts)
+        self.assertEqual(result['status'], 'MEASURED')
+        self.assertEqual(result['budgetTokens'], 184863)
+        self.assertEqual(result['rawTotals'], second)
+        self.assertEqual([a['budgetTokens'] for a in result['attemptUsage']], [120310, 64553])
+        self.assertEqual(result['reportedUsage'][1]['usage'], second)
+        self.assertEqual(json.dumps(attempts), before)
+        self.assertNotEqual(result['budgetTokens'], 305173)
+
+    def test_cumulative_counter_reset_and_inconsistent_delta_refuse_exact_usage(self):
+        first = {'input_tokens':100, 'cached_input_tokens':80, 'output_tokens':20, 'reasoning_output_tokens':10}
+        for second in [dict(first, input_tokens=99), dict(first, output_tokens=19),
+                       dict(first, reasoning_output_tokens=9),
+                       dict(first, input_tokens=110, cached_input_tokens=95)]:
+            result = D['token_accounting']([{'threadId':'same','usage':first}, {'threadId':'same','usage':second}])
+            self.assertEqual(result['status'], 'INVALID', second)
+            self.assertIsNone(result['budgetTokens'])
+            self.assertGreaterEqual(result['knownBudgetTokensLowerBound'],40)
+
+    def test_missing_thread_or_counters_never_invent_an_exact_resume_cost(self):
+        raw = {'input_tokens':100, 'cached_input_tokens':80, 'output_tokens':20}
+        for attempts in [[{'usage':raw}, {'usage':raw}],
+                         [{'threadId':'same','usage':raw}, {'usage':raw}],
+                         [{'threadId':'same','usage':raw}, {'threadId':'same','usage':None}],
+                         [{'threadId':'same','usage':{'input_tokens':100,'output_tokens':20}},
+                          {'threadId':'same','usage':dict(raw,input_tokens=150,cached_input_tokens=100)}]]:
+            result = D['token_accounting'](attempts)
+            self.assertEqual(result['status'], 'UNAVAILABLE')
+            self.assertIsNone(result['budgetTokens'])
+            self.assertEqual(result['knownBudgetTokensLowerBound'],40 if len(attempts[-1].get('usage') or {})<3 or 'threadId' not in attempts[-1] else 70)
+
+
+class SourceMembershipTests(unittest.TestCase):
+    """Identity metadata supplements complete body proof; never replaces it."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.calls=0
+        self.job={'clew':'trusted-test-engine','root':'retained','snapshot':'frozen'}
+        self.inventory={'services':{'owned':{'sourceInventory':[{'kind':'THREAD_SCOPE'}]}}}
+        self.source={'id':'owned-large','service':'owned','file':'large.json','revision':'same',
+                     'startLine':1,'endLine':5000,'textDigest':'sha256:complete-body',
+                     'authority':'EXACT_SNAPSHOT_TEXT','occurrence':{'startByte':0,'endByte':72092}}
+        self.entry={'work':'immutable-work','source':self.source,'sourceRecordDigest':'sha256:full-record'}
+        self.rows=[{'id':self.source['id'],'kind':'SOURCE_NAVIGATION','record':{
+            'authority':'NAVIGATION_ONLY','textDelivered':False,'recordDigest':self.entry['sourceRecordDigest'],
+            'source':dict(self.source),'fullRecordReference':'s7'}}]
+        self.response={'status':'COMPLETE','omittedRecords':0,'identity':{'snapshot':'frozen'}}
+
+    def collect(self,clew,root,work,output,**kwargs):
+        self.calls+=1;self.assertEqual(work,'immutable-work')
+        output.mkdir();D['save'](output/'items.json',self.rows)
+        return self.response
+
+    def native_page(self, **fields):
+        return {'schema':'codeclew-documentation-work-page/1.0','work':self.entry['work'],
+                'snapshot':self.job['snapshot'],'subject':'service:owned','contextDigest':'sha256:context',
+                'inputDigest':'sha256:input','membershipDigest':'sha256:members','receiptDigest':'sha256:receipt',
+                'influenceCoverage':'RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED',
+                'status':'READY_WITH_LIMITATIONS','items':self.rows,'omitted':[],'total':1,'nextCursor':None,**fields}
+
+    def native_driver(self, payload, exit_code=0, raw=None):
+        config=self.root/'native-response.json';D['save'](config,{'payload':payload,'exitCode':exit_code,'raw':raw})
+        engine=self.root/'native-clew';counter=self.root/'native-count'
+        engine.write_text('#!'+sys.executable+'\n'+
+            'import json,sys\nfrom pathlib import Path\n'+
+            f'config=Path({str(config)!r});counter=Path({str(counter)!r})\n'+
+            'counter.write_text(str(int(counter.read_text())+1 if counter.exists() else 1))\n'+
+            "args=sys.argv[1:];assert args[:3]==['docs','work','read']\n"+
+            "selection=json.loads(Path(args[args.index('--input')+1]).read_text())\n"+
+            "assert selection=={'query':{'kind':'SOURCE','projection':'NAVIGATION','file':'large.json'}}\n"+
+            "value=json.loads(config.read_text());print(value['raw'] if value['raw'] is not None else json.dumps(value['payload']))\n"+
+            "sys.stderr.write('DO_NOT_EMIT_PRIVATE_LOG_OR_SECRET')\n"+
+            "sys.exit(value['exitCode'])\n")
+        engine.chmod(0o700);self.job['clew']=str(engine)
+        return counter
+
+    def failure_after_cleanup(self):
+        cache={}
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            with self.assertRaises(D['Stop']) as error:
+                D['check_source_membership'](self.job,self.inventory,self.entry,Path(temporary),cache)
+            self.assertEqual(error.exception.code,'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE')
+            details=error.exception.details
+        self.assertFalse(Path(temporary).exists());self.assertEqual(cache,{})
+        self.assertEqual(details['service'],'owned');self.assertEqual(details['file'],'large.json')
+        self.assertEqual(details['work'],'immutable-work');self.assertEqual(details['expectedSnapshot'],'frozen')
+        self.assertLess(len(json.dumps(details)),1800)
+        self.assertNotIn('DO_NOT_EMIT',json.dumps(details))
+        self.assertNotIn('sourceRecordDigest',json.dumps(details))
+        return details
+
+    def test_native_process_failure_keeps_structured_cause_after_cleanup_without_payload_or_logs(self):
+        count=self.native_driver({'error':{'code':'CACHE_BUSY','status':'FAILED','message':'DO_NOT_EMIT_MESSAGE',
+                                          'source':'DO_NOT_EMIT_SOURCE','auth':'DO_NOT_EMIT_AUTH'}},23)
+        details=self.failure_after_cleanup();transport=details['transport']
+        self.assertEqual(transport['reason'],'NATIVE_PROCESS_FAILED');self.assertEqual(transport['status'],'INCOMPLETE')
+        self.assertEqual(transport['nativeProcess'],{'exitCode':23,'failure':None,'code':'CACHE_BUSY','status':'FAILED'})
+        self.assertIsNone(details['actualSnapshot']);self.assertEqual(count.read_text(),'1')
+
+    def test_native_start_failure_and_oversize_error_remain_bounded_without_retry(self):
+        self.job['clew']=str(self.root/'missing-engine')
+        details=self.failure_after_cleanup()
+        self.assertEqual(details['transport']['reason'],'PROCESS_START_FileNotFoundError')
+        self.assertEqual(details['transport']['nativeProcess']['failure'],'PROCESS_START_FileNotFoundError')
+        self.assertIsNone(details['transport']['nativeProcess']['exitCode'])
+        count=self.native_driver({'code':'CACHE_BUSY','message':'DO_NOT_EMIT_'*4000},23)
+        details=self.failure_after_cleanup();self.assertIsNone(details['transport']['nativeProcess']['code'])
+        self.assertEqual(details['transport']['nativeProcess']['exitCode'],23);self.assertEqual(count.read_text(),'1')
+        for raw in ('{invalid native response', '['*2000+'0'+']'*2000):
+            count=self.native_driver({},23,raw);before=int(count.read_text())
+            details=self.failure_after_cleanup()
+            self.assertEqual(details['transport']['reason'],'NATIVE_PROCESS_FAILED')
+            self.assertEqual(details['transport']['nativeProcess']['exitCode'],23)
+            self.assertIsNone(details['transport']['nativeProcess']['code'])
+            self.assertEqual(int(count.read_text())-before,1)
+
+    def test_native_incomplete_omissions_and_snapshot_mismatch_keep_exact_refusal_causes(self):
+        cases=[({'total':2},'INCOMPLETE','TOTAL_COUNT_MISMATCH',0,'frozen'),
+               ({'omitted':[{'reason':'DO_NOT_EMIT_OMITTED_BODY'}]},'INCOMPLETE','OMITTED_RECORDS_REQUIRE_NATIVE_INSPECTION',1,'frozen'),
+               ({'snapshot':'foreign'},'COMPLETE',None,0,'foreign')]
+        for fields,status,reason,omissions,snapshot in cases:
+            with self.subTest(fields=fields):
+                count=self.native_driver(self.native_page(**fields))
+                before=int(count.read_text()) if count.exists() else 0
+                details=self.failure_after_cleanup();transport=details['transport']
+                self.assertEqual((transport['status'],transport['reason'],transport['omittedRecords']),
+                                 (status,reason,omissions))
+                self.assertEqual(transport['nativeStatus'],'READY_WITH_LIMITATIONS')
+                self.assertEqual(details['actualSnapshot'],snapshot)
+                self.assertEqual(transport['nativeProcess']['exitCode'],0)
+                self.assertEqual(int(count.read_text())-before,1)
+
+    def test_native_success_keeps_membership_check_and_single_read_cache(self):
+        count=self.native_driver(self.native_page());cache={}
+        with patch.dict(D['check_source_membership'].__globals__,{
+                'source_membership_failure':lambda *a,**k:self.fail('Successful reads need no failure payload')}):
+            with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+                for _ in range(2):D['check_source_membership'](self.job,self.inventory,self.entry,Path(temporary),cache)
+        self.assertEqual(count.read_text(),'1');self.assertEqual(cache[(self.entry['work'],self.source['file'])][self.source['id']],self.rows[0]['record'])
+
+    def test_large_saved_body_validates_by_native_record_identity_and_reuses_file_metadata(self):
+        with patch.dict(D['T'],{'collect':self.collect}),patch.dict(D['check_source_membership'].__globals__,{
+            'command':lambda *a,**k:self.fail('Source file scope must not request a stdout-sized body')}):
+            cache={};D['check_source_membership'](self.job,self.inventory,self.entry,self.root,cache)
+            D['check_source_membership'](self.job,self.inventory,self.entry,self.root,cache)
+        self.assertEqual(self.calls,1)
+
+    def test_foreign_digest_metadata_missing_member_and_incomplete_inventory_refuse(self):
+        changes=[lambda:setattr(self,'rows',[]),
+                 lambda:self.rows[0]['record'].update(recordDigest='sha256:foreign'),
+                 lambda:self.rows[0]['record']['source'].update(revision='other'),
+                 lambda:self.rows[0]['record'].update(textDelivered=True),
+                 lambda:self.response.update(omittedRecords=1),
+                 lambda:self.response['identity'].update(snapshot='other')]
+        for i,change in enumerate(changes):
+            with self.subTest(case=i):
+                original_rows=json.loads(json.dumps(self.rows));original_response=json.loads(json.dumps(self.response))
+                change();path=self.root/str(i);path.mkdir()
+                with patch.dict(D['T'],{'collect':self.collect}):
+                    with self.assertRaises(D['Stop']):D['check_source_membership'](self.job,self.inventory,self.entry,path,{})
+                self.rows=original_rows;self.response=original_response
+
+    def test_compiler_scope_keeps_supported_source_context_route(self):
+        self.inventory['services']['owned']['sourceInventory']=[]
+        response={'snapshot':'frozen','items':[{'kind':'SOURCE','id':self.source['id'],'record':self.source}]}
+        with patch.dict(D['T'],{'collect':lambda *a,**k:self.fail('No SOURCE inventory for compiler Work')}),patch.dict(
+            D['check_source_membership'].__globals__,{'command':lambda *a,**k:response}):
+            D['check_source_membership'](self.job,self.inventory,self.entry,self.root,{})
 
 
 if __name__ == '__main__':

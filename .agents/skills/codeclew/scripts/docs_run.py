@@ -56,7 +56,7 @@ def digest(value):
     return sha(encode(value))
 
 
-def token_accounting(attempts):
+def _sum_usage(attempts):
     """Primary metric excludes cached input; retain all raw reported usage separately."""
     primary, lower_bound, missing, invalid = 0, 0, [], []
     fields = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
@@ -97,6 +97,60 @@ def token_accounting(attempts):
             'knownBudgetTokensLowerBound': lower_bound, 'rawTotals': totals,
             'totalInputOutputFootprint': raw + output if raw is not None and output is not None else None,
             'missing': missing, 'invalid': invalid, 'monetaryCost': 'UNAVAILABLE'}
+
+
+def token_accounting(attempts):
+    """Codex terminal counters are cumulative within a thread, including resume.
+
+    Preserve reports verbatim, derive each turn's delta, and sum distinct threads
+    only once. A historical single report needs no subtraction. Ambiguous identity
+    or missing/regressing counters cannot establish an exact within-budget result.
+    """
+    latest, bounds, missing, invalid, turns, reported = {}, {}, [], [], [], []
+    unidentified = []
+    for number, attempt in enumerate(attempts):
+        usage = attempt.get('usage')
+        checked = _sum_usage([{'usage': usage}])
+        missing += [{**row, 'attempt': number} for row in checked['missing']]
+        invalid += [{**row, 'attempt': number} for row in checked['invalid']]
+        thread = attempt.get('threadId')
+        reported.append({'attempt': number, 'threadId': thread, 'usage': usage})
+        if not isinstance(thread, str) or not thread:
+            if len(attempts) == 1:
+                thread = 'historical-single-report'
+            else:
+                missing.append({'attempt': number, 'fields': ['threadId']})
+                unidentified.append(checked['knownBudgetTokensLowerBound'])
+                turns.append({'attempt': number, 'threadId': None, 'usage': None, 'budgetTokens': None})
+                continue
+        current = usage if isinstance(usage, dict) else {}
+        previous = latest.get(thread)
+        delta = {}
+        for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens'):
+            value = current.get(key)
+            if type(value) is not int or value < 0:continue
+            prior = 0 if previous is None else previous.get(key)
+            if type(prior) is not int or prior < 0:continue
+            if value < prior:
+                invalid.append({'attempt': number, 'field': key, 'code': 'CUMULATIVE_COUNTER_REGRESSED'})
+                continue
+            delta[key] = value - prior
+        incremental = _sum_usage([{'usage': delta}])
+        invalid += [{**row, 'attempt': number, 'scope': 'turnDelta'} for row in incremental['invalid']]
+        latest[thread] = current
+        bounds[thread] = max(bounds.get(thread, 0), checked['knownBudgetTokensLowerBound'])
+        turns.append({'attempt': number, 'threadId': thread, 'usage': delta,
+                      'budgetTokens': incremental['budgetTokens'] if checked['status'] == 'MEASURED' else None})
+    aggregate = _sum_usage([{'usage': usage} for usage in latest.values()])
+    status = 'INVALID' if invalid else 'UNAVAILABLE' if missing else 'MEASURED'
+    aggregate.update(status=status, missing=missing, invalid=invalid,
+                     budgetTokens=aggregate['budgetTokens'] if status == 'MEASURED' else None,
+                     knownBudgetTokensLowerBound=max(sum(bounds.values()), max(unidentified, default=0)),
+                     counterScope='THREAD_CUMULATIVE', reportedUsage=reported, attemptUsage=turns)
+    if unidentified:
+        aggregate['rawTotals'] = dict.fromkeys(aggregate['rawTotals'])
+        aggregate['totalInputOutputFootprint'] = None
+    return aggregate
 
 
 def budget_tokens(accounting):
@@ -512,7 +566,8 @@ def prepare(job_path, run):
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
 
 
-def inputs_unchanged(run):
+def frozen_inputs(run):
+    """Read immutable admission without native probes or receipt writes."""
     job = validate_job(load(run / 'inputs/job.json')); pins = load(run / 'pins.json')
     need(digest(job) == pins['jobDigest'] and digest(load(run / 'inputs/inventory.json')) == pins['inventoryDigest']
          and tree(run / 'inputs') == pins['inputFiles'] and tree(SKILL, skill=True) == pins['skillFiles']
@@ -521,13 +576,98 @@ def inputs_unchanged(run):
          and sha(Path(job['node']).read_bytes()) == pins['nodeExecutableDigest']
          and digest(load(run / 'workspace/inventory.json')) == pins['inventoryDigest'], 'FROZEN_INPUTS_CHANGED')
     need(tree(job['renderer'], skill=True) == pins['renderer']['files'], 'RENDERER_CHANGED')
+    if 'components' in job:
+        need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
+    return job, load(run / 'inputs/inventory.json'), pins
+
+
+def inputs_unchanged(run):
+    job, inventory, pins = frozen_inputs(run)
     current_version = command([job['clew'], '--version'], run / 'runtime-checks', uuid.uuid4().hex)
     need(current_version == pins['clewVersion'], 'ADMITTED_RUNTIME_CHANGED', blocked=True)
     parser = subprocess.run([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], '--probe'], capture_output=True)
     need(parser.returncode == 0 and json.loads(parser.stdout) == pins['renderer']['parser'], 'RENDERER_PARSER_CHANGED')
-    if 'components' in job:
-        need(sha(Path(job['components']['path']).read_bytes()) == pins['componentTicketDigest'], 'COMPONENT_TICKET_CHANGED')
-    return job, load(run / 'inputs/inventory.json'), pins
+    return job, inventory, pins
+
+
+def review_for_run(run):
+    _, inventory, _ = frozen_inputs(run)
+    return review_template(inventory, load(run / 'workspace/draft/original.json'))
+
+
+def source_membership_failure(job, source, work, result, directory):
+    """Keep bounded causes before temporary collection cleanup, never bodies/logs."""
+    def code(value):
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Z][A-Za-z0-9_]{0,95}', value) else None
+    def identity(value, maximum=256):
+        return value[:maximum] if isinstance(value, str) else None
+    observed = result.get('identity') or {}
+    pages = result.get('artifacts', {}).get('pages', [])
+    page = pages[-1] if pages else {}
+    native = {}
+    name = page.get('stdout', '')
+    if isinstance(name, str) and re.fullmatch(r'page-\d{4}\.stdout', name):
+        path = Path(directory) / name
+        try:
+            if not path.is_symlink():
+                with path.open('rb') as stream:raw = stream.read(16385)
+                if len(raw) <= 16384:
+                    body = json.loads(raw)
+                    if isinstance(body, dict):
+                        error = body.get('error')
+                        native = error if isinstance(error, dict) else body
+        except (OSError, ValueError, RecursionError):pass
+    return {'service': identity(source['service'], 128), 'work': identity(work, 128),
+            'file': identity(source['file'], 512), 'expectedSnapshot': identity(job['snapshot']),
+            'actualSnapshot': identity(observed.get('snapshot')),
+            'transport': {'status': code(result.get('status')), 'reason': code(result.get('reason')),
+                          'nativeStatus': code(result.get('nativeStatus')),
+                          'omittedRecords': result.get('omittedRecords'),
+                          'nativeProcess': {'exitCode': page.get('exitCode'), 'failure': code(page.get('failure')),
+                                            'code': code(native.get('code')), 'status': code(native.get('status'))}}}
+
+
+def check_source_membership(job, inventory, entry, checks, cache):
+    """Reload identity without requiring a large SOURCE body on stdout.
+
+    Complete saved body/part proof is still checked by C.load. SOURCE navigation
+    supplies only an independently reloaded Work record digest and metadata; it
+    is never treated as a new body read or source evidence.
+    """
+    source=entry['source'];service=source['service']
+    keys=('id','service','revision','file','textDigest','startLine','endLine','occurrence','authority','evidenceDigest','textOrigin')
+    source_scope=any(r['kind']=='THREAD_SCOPE' for r in inventory['services'][service].get('sourceInventory',[]))
+    if source_scope:
+        work=entry.get('work');need(work,'SOURCE_WORK_IDENTITY_REQUIRED')
+        key=(work,source['file'])
+        if key not in cache:
+            directory=Path(checks)/('source-navigation-'+str(len(cache)))
+            result=T['collect'](job['clew'],job['root'],work,directory,kind='work-selection',
+                selection={'query':{'kind':'SOURCE','projection':'NAVIGATION','file':source['file']}})
+            if not (result['status']=='COMPLETE' and not result['omittedRecords']
+                    and (result.get('identity') or {}).get('snapshot')==job['snapshot']):
+                need(False, 'SOURCE_MEMBERSHIP_NAVIGATION_INCOMPLETE',
+                     **source_membership_failure(job, source, work, result, directory))
+            rows=load(directory/'items.json')
+            need(all(r['kind']=='SOURCE_NAVIGATION' for r in rows),'SOURCE_MEMBERSHIP_NAVIGATION_CHANGED')
+            need(len({r['id'] for r in rows})==len(rows),'SOURCE_MEMBERSHIP_NAVIGATION_AMBIGUOUS')
+            cache[key]={r['id']:r['record'] for r in rows}
+        row=cache[key].get(source['id'])
+        need(row is not None and row.get('authority')=='NAVIGATION_ONLY' and row.get('textDelivered') is False
+             and row.get('recordDigest')==entry['sourceRecordDigest']
+             and all(row.get('source',{}).get(k)==source.get(k) for k in keys),
+             'PROVENANCE_MISMATCH',source=source['id'])
+        return
+    # Compiler Work without SOURCE_SCOPE keeps its own supported context route.
+    # Never retry unsupported file inventory or silently substitute syntax.
+    page=command([job['clew'],'docs','context','--root',job['root'],'--service',service,
+        '--snapshot',job['snapshot'],'--source',source['id'],'--format','compact','--limit','100'],
+        checks,'source-'+str(len(cache)))
+    records=[r['record'] for r in page.get('items',[]) if r.get('kind')=='SOURCE' and r.get('id')==source['id']]
+    need(page.get('selectedSnapshot',page.get('snapshot'))==job['snapshot'] and len(records)==1
+         and all(records[0].get(k)==source.get(k) for k in keys),'PROVENANCE_MISMATCH',
+         source=source['id'],omitted=page.get('omitted',[]))
+    cache[(service,source['id'])]=True
 
 
 def cite_entries(job, inventory, draft, checks, prepared=None):
@@ -548,17 +688,13 @@ def cite_entries(job, inventory, draft, checks, prepared=None):
             matches = [o for o in packet['outcomes'] if o['source']['id'] == source['id']]
             need(len(matches) == 1 and matches[0]['textKey'] in packet['texts'], 'CITATION_TEXT_UNAVAILABLE')
             entries[handle] = {**entry, 'readText': packet['texts'][matches[0]['textKey']]}
-    # Native source membership is reloaded independently of author-written proof.
-    for index, entry in enumerate({(v['source']['service'], v['source']['id']): v for v in entries.values()}.values()):
+    # Complete body proof above remains authoritative; metadata only confirms
+    # native membership without reprinting an entire saved SOURCE body.
+    membership_cache = {}
+    for entry in {(v['source']['service'], v['source']['id']): v for v in entries.values()}.values():
         if entry.get('nativeBinding', {}).get('kind') == 'SOURCE_NATIVE':
             continue  # C.load already reloaded the exact registered native bytes.
-        source = entry['source']
-        page = command([job['clew'], 'docs', 'context', '--root', job['root'], '--service', source['service'],
-                        '--snapshot', job['snapshot'], '--source', source['id'], '--format', 'compact', '--limit', '100'], checks, 'source-' + str(index))
-        records = [r['record'] for r in page.get('items', []) if r.get('kind') == 'SOURCE' and r.get('id') == source['id']]
-        need(page.get('selectedSnapshot', page.get('snapshot')) == job['snapshot'] and len(records) == 1
-             and all(records[0].get(key) == source.get(key) for key in ('id', 'service', 'revision', 'file', 'textDigest', 'startLine', 'endLine', 'occurrence', 'authority', 'evidenceDigest', 'textOrigin')),
-             'PROVENANCE_MISMATCH', source=source['id'])
+        check_source_membership(job, inventory, entry, checks, membership_cache)
     return manifests, entries
 
 
@@ -906,7 +1042,9 @@ def author(run):
     argv += ['-']
     attempt = {'argv': argv, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
-    usage = None; interrupted = False
+    usage = None; interrupted = False; thread_changed = False
+    expected_thread = state.get('threadId')
+    starts = []
     with (folder / 'stdout.jsonl').open('wb') as stdout, (folder / 'stderr.log').open('wb') as stderr:
         process = subprocess.Popen(argv, cwd=run / 'workspace', stdin=subprocess.PIPE,
                                    stdout=stdout, stderr=stderr, start_new_session=True)
@@ -926,7 +1064,11 @@ def author(run):
             except ValueError:
                 continue
             if event.get('type') == 'thread.started':
-                state['threadId'] = event['thread_id']
+                thread = event.get('thread_id')
+                starts.append(thread)
+                if expected_thread and thread != expected_thread:thread_changed = True
+                state['threadId'] = thread
+                attempt['threadId'] = thread
             if event.get('type') == 'turn.completed':
                 usage = event.get('usage')
     attempt['draftFiles'] = tree(run / 'workspace/draft')
@@ -936,11 +1078,14 @@ def author(run):
     state['tokenAccounting'] = tokens
     state['usageAvailable'] = tokens['status'] == 'MEASURED'
     state['modelTokens'] = tokens['budgetTokens']
-    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 else
+    thread_valid = len(starts) == 1 and isinstance(starts[0], str) and bool(starts[0])
+    state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 or thread_changed or not thread_valid else
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
                        'AUTHOR_BUDGET_EXCEEDED' if budget_tokens(tokens) > job['budget']['maxModelTokens'] else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
+    need(not thread_changed, 'AUTHOR_THREAD_CHANGED')
+    need(thread_valid, 'AUTHOR_THREAD_REQUIRED')
     need(not interrupted and process.returncode == 0, 'AUTHOR_NOT_COMPLETED')
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
     need(budget_tokens(tokens) <= job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
@@ -982,8 +1127,7 @@ def main():
             except BlockingIOError:
                 raise Stop('RUN_BUSY', blocked=True)
         if args.command == 'review-template':
-            _, inventory, _ = inputs_unchanged(args.run_dir.absolute())
-            result = review_template(inventory, load(args.run_dir / 'workspace/draft/original.json'))
+            result = review_for_run(args.run_dir.absolute())
             print(encode(result).decode(), end='')
             return 0
         elif args.command == 'prepare':

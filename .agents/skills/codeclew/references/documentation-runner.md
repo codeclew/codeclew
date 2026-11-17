@@ -59,6 +59,10 @@ multiple services, retained citation reads under draft/reads, and the bidirectio
 pages and handler identities are fixed; additional discovered entry accounts cannot
 replace them. The runner uses the real Markdown lexer and packaged sequence
 validator, then compose/bind/finalize/export and source membership checks.
+Native SOURCE membership uses bounded file metadata and record identity; the
+retained read still proves the complete source body, owner, revision and range.
+A metadata match alone cannot replace that proof. Native failures retain bounded
+codes and transport details without source bodies or raw logs.
 Author-written PASS reports are ignored. No gate command or skip list comes from
 the job. Native declaration component tickets, when supplied, keep their own cells,
 coverage and authority through the existing validators.
@@ -66,6 +70,8 @@ coverage and authority through the existing validators.
 After writing annotated originals, the author can run `review-template --run-dir
 RUN` and save its JSON as draft/self-review.json. This read-only template command
 works during the active author invocation; it performs no gate or promotion.
+It validates frozen inputs without native commands or receipt writes. Verification
+and promotion still probe the admitted runtime version and Markdown parser.
 The compact 1.1 review maps stable requirement IDs to explicit semantic answers,
 and maps page/fragment IDs to explicit claim dispositions. Pages, duplicate claim
 evidence and default entry/discovery cite candidates are derived from immutable
@@ -79,6 +85,10 @@ The full canonical 1.0 review remains supported, with the same evidence guards.
 
 At most two repairs receive exact machine failures and retain the same author
 session and unchanged source reads. Each attempt and failed draft stays in the run.
+Terminal usage counters are cumulative within one thread: resumed attempts count
+only their deltas, and separate threads are summed once. Raw reports remain intact.
+Missing or ambiguous thread identity, changed resume identity and regressing
+counters refuse completion; unavailable usage never becomes an exact saving.
 An interrupted/nonzero/over-budget author cannot become complete through resume.
 The primary token budget is cumulative uncached input plus output:
 `input_tokens - cached_input_tokens + output_tokens`. Preserve raw input, cached

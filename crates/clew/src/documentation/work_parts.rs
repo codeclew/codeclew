@@ -111,9 +111,9 @@ pub(super) fn read_part_loaded(
     let part = build_part(work, &request.reference, source, start)?;
 
     // Source lookup, parent validation, and sizing happen before the short
-    // read-modify-write critical section. The existing repository lock is
-    // intentionally non-blocking; callers can retry a conflict.
-    let _lock = repo.lock()?;
+    // read-modify-write critical section. Concurrent delivery records wait for
+    // their shared ledger; the source read itself is never retried or weakened.
+    let _lock = repo.read_receipt_lock()?;
     let mut state = work::read_state(repo, &work.id)?;
     if state.work != work.id {
         return Err(invalid("read ledger belongs to another work"));

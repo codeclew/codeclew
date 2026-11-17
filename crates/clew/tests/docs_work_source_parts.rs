@@ -294,7 +294,7 @@ fn source_batch_public_helper_preserves_fragment_bindings_and_measures_native_tr
 }
 
 #[test]
-fn source_batch_commit_bounds_and_lock_failures_leave_the_ledger_unchanged() {
+fn source_batch_commit_bounds_and_waiting_lock_preserve_the_ledger() {
     let f = Fixture::new();
     f.service("orders");
     f.checked();
@@ -346,9 +346,23 @@ fn source_batch_commit_bounds_and_lock_failures_leave_the_ledger_unchanged() {
     );
     assert_eq!(fs::read(&path).unwrap(), near_limit);
     fs::write(&path, &original).unwrap();
-    let _lock = repo.lock().unwrap();
-    assert_ne!(invoke(json!([selection])).0, 0);
-    assert_eq!(fs::read(&path).unwrap(), original);
+    let held = repo.lock().unwrap();
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let invoke = &invoke;
+        scope.spawn(move || sender.send(invoke(json!([selection]))).unwrap());
+        let waiting = receiver.recv_timeout(std::time::Duration::from_millis(50));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        drop(held);
+        assert!(waiting.is_err());
+        assert_eq!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .0,
+            0
+        );
+    });
 }
 
 #[test]
@@ -996,9 +1010,8 @@ fn source_part_requests_are_strict_work_scoped_retryable_and_concurrency_safe() 
             .is_empty()
     );
 
-    // Two readers race on different SOURCE rows. The repository's existing
-    // nonblocking writer lock may reject one; retrying it must preserve both
-    // new receipts plus the earlier receipt.
+    // Two readers race on different SOURCE rows. Receipt updates wait and merge
+    // under the shared lock; neither caller retries its source read.
     let other_source_id = captured_check.services["orders"]
         .sources
         .keys()
@@ -1051,25 +1064,11 @@ fn source_part_requests_are_strict_work_scoped_retryable_and_concurrency_safe() 
         (next_source.join().unwrap(), other_source.join().unwrap())
     });
     let requests = [
-        (next_source_output, &reference_a, &next_source_args),
-        (other_source_output, &other_reference, &other_source_args),
+        (next_source_output, &reference_a),
+        (other_source_output, &other_reference),
     ];
     let mut completed = Vec::new();
-    for (output, expected_reference, args) in requests {
-        let output = if output.status.success() {
-            output
-        } else {
-            let error: Value =
-                serde_json::from_slice(&output.stdout).unwrap_or_else(|parse_error| {
-                    panic!(
-                        "could not parse conflict error JSON ({parse_error}); stdout={} stderr={}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    )
-                });
-            assert_eq!(error["error"]["code"], "WW_CONFLICT", "{error}");
-            f.run_raw(args)
-        };
+    for (output, expected_reference) in requests {
         assert!(
             output.status.success(),
             "{}",
