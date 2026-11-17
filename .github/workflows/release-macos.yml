@@ -14,6 +14,14 @@ on:
         description: Qualify and build this workflow commit without creating a public tag or release
         type: boolean
         default: false
+      expected_existing_tag_commit:
+        description: Expected current tag target for a corrected runner-local candidate; never changes origin
+        type: string
+        default: ''
+      qualify_large_java:
+        description: Run the large Java gate on a build-only candidate before an authorized tag correction
+        type: boolean
+        default: false
 
 env:
   # Match the development CI profile for native qualification tests; release builds keep their own profile.
@@ -87,7 +95,14 @@ jobs:
           ref: ${{ env.RELEASE_REF }}
       - name: Bind an unpublished candidate version to this exact commit
         if: github.event_name == 'workflow_dispatch' && inputs.build_only
-        run: python3 -I -S scripts/prepare_release_candidate.py --version "$RELEASE_VERSION" --commit "$GITHUB_SHA"
+        env:
+          EXPECTED_EXISTING_TAG_COMMIT: ${{ inputs.expected_existing_tag_commit }}
+        run: |
+          args=(--version "$RELEASE_VERSION" --commit "$GITHUB_SHA")
+          if [ -n "$EXPECTED_EXISTING_TAG_COMMIT" ]; then
+            args+=(--expected-existing-tag-commit "$EXPECTED_EXISTING_TAG_COMMIT")
+          fi
+          python3 -I -S scripts/prepare_release_candidate.py "${args[@]}"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -126,7 +141,7 @@ jobs:
   java-large:
     name: Qualify final official Linux large Java producer
     needs: build
-    if: github.event_name != 'workflow_dispatch' || !inputs.build_only
+    if: github.event_name != 'workflow_dispatch' || !inputs.build_only || inputs.qualify_large_java
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
