@@ -539,7 +539,8 @@ def prepare(job_path, run):
                         '--snapshot', job['snapshot'], '--language', job['language'], '--input', str(inputs / 'request.json')], directory, 'prepare')
         need(page.get('snapshot') == job['snapshot'], 'SNAPSHOT_MISMATCH')
         work = page['work']
-        initial = T['collect'](job['clew'], job['root'], work, directory / 'initial')
+        initial = T['collect'](job['clew'], job['root'], work, directory / 'initial',
+                               prepared_command=directory / 'prepare')
         selected = T['collect'](job['clew'], job['root'], work, directory / 'threads',
                                 kind='work-selection', selection={'query': {'kind': 'THREAD_INVENTORY'}})
         for collection in (initial, selected):
@@ -953,16 +954,22 @@ def verify(run, *, debug=False):
         renderer = directory / 'renderer.json'
         argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', job['request'],
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
+        export_sequences = bool(navigation['routes']) or any(
+            start['kind'] == 'http' for service in navigation['services'] for start in service['starts'])
         if len(job['services']) > 1:
             registry = load(draft / 'routes.json')
             local = registry.get('catalog', {}).get('docset')
             docsets = [d for d in registry['docsets'] if d['id'] == local]
             need(len(docsets) == 1 and {s['id'] for s in docsets[0]['services']} == set(job['services']), 'LOCAL_PROCESS_CATALOG_REQUIRED')
             argv += ['--docset-routes', str(draft / 'routes.json'), '--docset', local, '--docset-version', docsets[0]['version']]
+            export_sequences |= any(route['narrative']['docset'] == local and not route['narrative'].get('problem')
+                                    for route in registry['routes'])
         save(renderer, argv)
         args = [sys.executable, '-I', '-S', str(HERE / 'reader_export_check.py'), 'finalize', '--compose-root', str(compose),
                 '--clew', job['clew'], '--root', job['root'], '--renderer-command', str(renderer), '--source-footers',
-                '--require-sequences', '--output-dir', str(directory / 'final')]
+                '--output-dir', str(directory / 'final')]
+        if export_sequences:
+            args += ['--require-sequences']
         if len(job['services']) > 1:
             args += ['--require-process-search']
         for manifest in manifests:

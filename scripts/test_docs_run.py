@@ -84,7 +84,7 @@ else:
                  'trigger': {'authority': 'OWNED_TEST_DECLARATION', 'sourceRoutes': [{'method': 'POST', 'path': '/reservations'}]}}}}
         file = {'kind': 'THREAD_FILE', 'record': {'path': self.source['file'], 'input': {'coverage': 'SYNTAX', 'digest': 'sha256:owned-syntax-fingerprint-not-a-text-hash'}}}
         def collect(launcher, root, work, output, **kwargs):
-            output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs else [coverage])
+            output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs.get('selection') else [coverage])
             return {'status': 'COMPLETE', 'omittedRecords': 0,
                     'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
         with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
@@ -178,7 +178,7 @@ else:
         scope = self.inventory['services'][self.service]
         def collect(launcher, root, work, output, **kwargs):
             output.mkdir()
-            D['save'](output / 'items.json', scope['sourceInventory'] if kwargs else [scope['coverage']])
+            D['save'](output / 'items.json', scope['sourceInventory'] if kwargs.get('selection') else [scope['coverage']])
             return {'status': 'COMPLETE', 'omittedRecords': 0,
                     'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
         run = self.root / 'discovery-only'
@@ -201,7 +201,7 @@ else:
                                                                    for i in range(routes)]}}}}
             def collect(launcher, root, work, output, **kwargs):
                 output.mkdir()
-                D['save'](output / 'items.json', [entry] if kwargs else [scope['coverage']])
+                D['save'](output / 'items.json', [entry] if kwargs.get('selection') else [scope['coverage']])
                 return {'status': 'COMPLETE', 'omittedRecords': 0,
                         'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
             run = self.root / ('route-limit-' + str(routes))
@@ -291,6 +291,47 @@ else:
         self.assertEqual(promoted['status'], 'READY_PROMOTED')
         self.assertFalse(normal['semanticTruthAssessed']); self.assertTrue(normal['semanticReviewRecorded'])
         self.assertEqual(normal['authorVisualReview']['status'], 'UNAVAILABLE')
+
+    def test_no_native_entry_supports_evidenced_discovery_with_or_without_starts(self):
+        self.inventory['requirements'].remove(self.entry)
+        D['save'](self.run / 'inputs/inventory.json', self.inventory)
+        D['save'](self.run / 'workspace/inventory.json', self.inventory)
+        pins = D['load'](self.run / 'pins.json')
+        pins.update(inputFiles=D['tree'](self.run / 'inputs'), inventoryDigest=D['digest'](self.inventory))
+        D['save'](self.run / 'pins.json', pins)
+
+        for has_start in (False, True):
+            with self.subTest(has_start=has_start):
+                page = self.service + '.md'
+                target = page + '#handler'
+                fragments = [{'text': '# Reservations\n\n<a id="handler"></a>\n\n'},
+                             {'id': 'coverage', 'text': 'Scope explained here.\n', 'evidence': [self.handle]}]
+                accounts = [{**row, 'section': 'handler'} for row in self.review['requirements'] if row['page'] == page]
+                discovery = next(row for row in accounts if 'discoveryDisposition' in row)
+                starts = []
+                if has_start:
+                    diagram = {'title': 'On invoice.ready', 'participants': [{'id': 'event', 'title': 'Event'},
+                        {'id': 'discovered-invoice', 'title': 'Listener', 'target': target}],
+                        'steps': [{'from': 'event', 'to': 'discovered-invoice', 'label': 'invoice.ready',
+                                   'kind': 'async', 'target': target}]}
+                    fragments.append({'text': '\n```clew-sequence\n' + json.dumps(diagram) + '\n```\n'})
+                    starts.append({'title': 'Invoice ready', 'target': target, 'kind': 'other',
+                                   'summary': 'Source shows a registered callback.'})
+                    discovery.update(discoveryDisposition='ADDITIONAL_STARTS', discoveredEntries=[
+                        {'id': 'invoice', 'kind': 'OTHER', 'page': page, 'section': 'handler', 'diagram': 0,
+                         'evidence': [self.handle], 'disposition': 'EXPLAINED'}])
+                D['save'](self.seed / 'original.json', {'pages': [{'page': page, 'fragments': fragments}]})
+                navigation = {**self.navigation, 'services': [{**self.navigation['services'][0],
+                                                               'pages': [page], 'starts': starts}]}
+                D['save'](self.seed / 'navigation.json', navigation)
+                D['save'](self.seed / 'self-review.json', {**self.review, 'requirements': accounts,
+                    'claims': [{'page': page, 'claim': 'coverage', 'evidence': [self.handle], 'disposition': 'SUPPORTED'}]})
+                D['save'](self.run / 'state.json', {'attempts': [], 'authorStartedAt': None})
+                shutil.rmtree(self.run / 'attempts', ignore_errors=True)
+                self.generated()
+                result = self.check()
+                self.assertEqual(result['status'], 'READY', result)
+                self.assertEqual(len(result['checks']['entrySequences']['result']['entries']), int(has_start))
 
     def test_frozen_prepared_manifests_bind_without_author_copy_or_extra_reads(self):
         prepared = self.run / 'inputs/author-source/read'
