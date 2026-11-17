@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 D = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run.py'))
 F = runpy.run_path(str(ROOT / 'scripts/test_author_citations.py'))
 RENDERER = Path(os.environ.get('CODECLEW_MARKDOWN_RENDERER', ROOT / 'skills/codeclew/examples/markdown-renderer'))
+REQUEST_MARKER = 'AUTHOR-INSTRUCTIONS-7C5B'
 
 
 class DocsRunTests(unittest.TestCase):
@@ -75,7 +76,7 @@ else:
  print(json.dumps({{'snapshot':{F['SNAPSHOT']!r},'items':[{{'kind':'SOURCE','id':identity,'record':source}}] if identity==source['id'] else []}}))
 ''')
         self.clew.chmod(0o700)
-        self.job = {'schema': D['SCHEMA'], 'request': 'Document the reservation service', 'clew': str(self.clew),
+        self.job = {'schema': D['SCHEMA'], 'request': 'Document the reservation service. ' + REQUEST_MARKER, 'clew': str(self.clew),
                     'root': str(self.root / 'retained'), 'snapshot': F['SNAPSHOT'], 'services': [self.service], 'language': 'en',
                     'renderer': str(RENDERER), 'node': str(Path(shutil.which('node')).absolute()),
                     'author': {'executable': str(self.backend), 'model': 'owned-test-backend', 'reasoningEffort': 'max'},
@@ -297,6 +298,23 @@ else:
         self.assertEqual(promoted['status'], 'READY_PROMOTED')
         self.assertFalse(normal['semanticTruthAssessed']); self.assertTrue(normal['semanticReviewRecorded'])
         self.assertEqual(normal['authorVisualReview']['status'], 'UNAVAILABLE')
+
+    def test_reader_chrome_uses_navigation_home_title(self):
+        self.navigation['home']['title'] = '--reserve & fulfil'
+        self.seed_files()
+        self.generated()
+        result = self.check()
+        self.assertEqual(result['status'], 'READY', result)
+        self.assertIn(REQUEST_MARKER, D['load'](self.run / 'inputs/job.json')['request'])
+        html_root = self.run / result['output'] / 'html'
+        pages = sorted(html_root.glob('*.html'))
+        self.assertEqual(len(pages), 2)
+        for page in pages:
+            with self.subTest(page=page.name):
+                html = page.read_text()
+                self.assertRegex(html, r'<span class="reader-project">\s*--reserve &amp; fulfil</span>')
+                self.assertRegex(html, r' —\s+--reserve &amp; fulfil</title>')
+                self.assertNotIn(REQUEST_MARKER, html)
 
     def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False):
         text = body or ('fun reserve(count: Int): Int {\n'

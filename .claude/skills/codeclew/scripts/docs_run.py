@@ -1151,6 +1151,12 @@ def verify(run, *, debug=False):
         checks[stage] = {'status': 'PASS', 'result': sequence}
         stage = 'finalize'
         navigation = load(draft / 'navigation.json')
+        home = navigation.get('home')
+        reader_title = home.get('title') if isinstance(home, dict) else None
+        need(isinstance(reader_title, str) and reader_title.strip(), 'NAVIGATION_HOME_TITLE_REQUIRED')
+        # Keep the positional label distinct from CLI options and path placeholders.
+        if reader_title.startswith('--') or reader_title in ('{input}', '{output}'):
+            reader_title = ' ' + reader_title
         service_navigation = {s['id']: s for s in navigation['services']}
         need(set(service_navigation) == set(job['services']) and len(service_navigation) == len(navigation['services']), 'NAVIGATION_SERVICE_SCOPE_MISMATCH')
         for requirement in effective:
@@ -1162,7 +1168,7 @@ def verify(run, *, debug=False):
         compose = directory / 'compose'
         M['compose'](draft / 'original.json', compose)
         renderer = directory / 'renderer.json'
-        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', job['request'],
+        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', reader_title,
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
         export_sequences = bool(navigation['routes']) or any(
             start['kind'] == 'http' for service in navigation['services'] for start in service['starts'])
