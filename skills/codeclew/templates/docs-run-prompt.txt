@@ -25,8 +25,8 @@ packet schemas, repeat discovery or copy their manifests into draft/reads. The
 runner automatically includes these frozen manifests for binding and export.
 Open directly addressed individual views for required entries/discovery files,
 contracts/settings and consequential dependencies. Do not blanket-read every
-resource body or raw sidecar; bulky fixtures and lockfiles remain available when
-needed. The index does not authorize omitting an unresolved requested behavior.
+resource body or raw sidecar; the service index lists file-level resources and
+the saved-Work read route when needed. The index does not authorize omitting an unresolved requested behavior.
 They do not complete your semantic self-review. Read the actual code and retain
 the stated coverage/unknowns. Compiler fragments without exact byte coordinates
 remain separate; identical-looking text is not permission to merge their evidence.

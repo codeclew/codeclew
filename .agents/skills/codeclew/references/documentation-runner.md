@@ -22,9 +22,12 @@ python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" run --run-dir /absolute/
 Prepare records the complete paginated native trigger/file inventory before any
 author starts. A retained executable file also has a discovery obligation: source
 syntax can register an imperative listener that native trigger detection misses.
-The same author must report additional starts or an evidenced no-additions result;
+Even with zero native triggers, prepare retains the service overview and executable
+files for discovery. The author must report additional starts or an evidenced no-additions result;
 a script cannot establish that this judgment is true. Discovered starts remain
-explicit authored syntax, not compiler or runtime registration evidence.
+explicit authored syntax, not compiler or runtime registration evidence. If the
+required overview and entry pages exceed the compose limit, prepare reports the
+count and how to split the output before reading source bodies.
 
 Prepare also serializes the existing retained-source helpers into a source input
 kit before the author starts: a small service/requirement index, directly addressed
@@ -36,13 +39,15 @@ Work uses its returned symbol/source references and retained-resource query, not
 implicit switch to a source profile. Partial coverage and unavailable resources
 remain explicit. No previous authored pages or reviewer prose enter this kit.
 
-The source-input preparation profile has a 300-second wall limit, 128 files and
+The source-input preparation profile has a 300-second wall limit, 128 eagerly read files and
 8 MiB of readable views/indexes, plus the existing 128 MiB/4096-file artifact
 closure limits. Native reads run serially and timed-out helper process groups stop.
 Exceeding a limit blocks preparation; it never silently truncates the source or
 inventory. The author opens relevant individual views rather than replaying whole
-bulky fixtures, lockfiles or raw packet metadata. Additional evidence still uses
-the supported retained-read route. Frozen prepared manifests are included by the
+raw packet metadata. The index lists retained FILE_ONLY resources and points to
+the saved Work and metadata for an exact read when the request needs them. This
+keeps resource bodies outside the eager read count and preserves their file-level
+coverage. Frozen prepared manifests are included by the
 runner automatically; authors must not copy them into their extra read directory.
 
 Discovery reads must reconstruct complete native Git blob bytes using genuine

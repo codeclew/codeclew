@@ -94,7 +94,7 @@ else:
         self.inventory = D['load'](self.run / 'inputs/inventory.json')
         self.entry = next(r for r in self.inventory['requirements'] if r['kind'] == 'ENTRY')
         (self.seed / 'reads').mkdir()
-        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, record=self.source)
+        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=self.source)
         self.handle = view['records'][0]['cite']
         diagram = {'title': 'Reserve an item', 'participants': [{'id': 'caller', 'title': 'Caller'},
                    {'id': self.entry['handlerId'], 'title': 'Reservation handler', 'target': self.entry['page'] + '#handler'}],
@@ -173,6 +173,82 @@ else:
         with self.assertRaises(D['Stop']):
             D['compiler_source_pairs']([{'id':'one', 'sourceIds':['s1'], 'sourceReferences':['e1']},
                                         {'id':'two', 'sourceIds':['s1'], 'sourceReferences':['e2']}])
+
+    def test_prepare_keeps_discovery_when_native_has_no_triggers(self):
+        scope = self.inventory['services'][self.service]
+        def collect(launcher, root, work, output, **kwargs):
+            output.mkdir()
+            D['save'](output / 'items.json', scope['sourceInventory'] if kwargs else [scope['coverage']])
+            return {'status': 'COMPLETE', 'omittedRecords': 0,
+                    'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+        run = self.root / 'discovery-only'
+        with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
+                'prepare_sources': lambda job, inventory, directory: directory.mkdir()}):
+            self.assertEqual(D['prepare'](self.job_path, run)['status'], 'PREPARED')
+        rows = D['load'](run / 'inputs/inventory.json')['requirements']
+        self.assertEqual([(r['kind'], r['page']) for r in rows],
+                         [('DISCOVERY', self.service + '.md'), ('SERVICE', self.service + '.md')])
+        self.assertEqual(rows[0]['file'], self.source['file'])
+
+    def test_required_page_limit_matches_compose_before_body_reads(self):
+        scope = self.inventory['services'][self.service]
+        limit = D['M']['MAX_PAGES']
+        calls = []
+        for routes in (limit - 1, limit):
+            entry = {'kind': 'THREAD_ENTRY', 'record': {'classification': 'DISCOVERED_TRIGGER',
+                       'entrypoint': {'id': 'many', 'kind': 'HTTP_ENDPOINT', 'sourceIds': [self.source['id']],
+                                      'trigger': {'sourceRoutes': [{'method': 'GET', 'path': '/route-' + str(i)}
+                                                                   for i in range(routes)]}}}}
+            def collect(launcher, root, work, output, **kwargs):
+                output.mkdir()
+                D['save'](output / 'items.json', [entry] if kwargs else [scope['coverage']])
+                return {'status': 'COMPLETE', 'omittedRecords': 0,
+                        'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+            run = self.root / ('route-limit-' + str(routes))
+            with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
+                    'prepare_sources': lambda job, inventory, directory: calls.append(directory.mkdir())}):
+                if routes < limit:
+                    self.assertEqual(D['prepare'](self.job_path, run)['status'], 'PREPARED')
+                else:
+                    with self.assertRaises(D['Stop']) as raised:
+                        D['prepare'](self.job_path, run)
+                    self.assertEqual(raised.exception.code, 'REQUIRED_PAGE_LIMIT')
+                    self.assertEqual(raised.exception.details['requiredPages'], limit + 1)
+                    self.assertEqual(raised.exception.details['limit'], limit)
+                    self.assertIn('entry pages', raised.exception.details['nextAction'])
+            rows = D['load'](run / 'inputs/inventory.json')['requirements']
+            self.assertEqual(len({r['page'] for r in rows}), routes + 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_prepare_reads_executable_and_indexes_128_file_only_resources(self):
+        file = self.source['file']
+        files = ['resources/file-' + str(i) + '.txt' for i in range(128)]
+        scope = self.inventory['services'][self.service]
+        scope['sourceInventory'] += [{'kind': 'THREAD_SCOPE'}] + [
+            {'kind': 'THREAD_FILE', 'record': {'path': path, 'input': {'coverage': 'FILE_ONLY'}}}
+            for path in files]
+        calls = []
+        def command(argv, directory, label, **kwargs):
+            calls.append(label)
+            out = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                out.mkdir()
+                D['save'](out / 'packet.json', {'queryComplete': True, 'choices': [{'file': path} for path in [file] + files],
+                                              'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                self.assertEqual(D['load'](argv[argv.index('--selection') + 1]), [{'file': file}])
+                self.assertEqual(argv[argv.index('--packet') + 1], str(directory / 'discovery/packet.json'))
+                shutil.copytree(self.manifest.parent, out)
+        directory = self.root / 'source-preparation'
+        with patch.dict(D['_prepare_sources'].__globals__, {'command': command}):
+            result = D['prepare_sources'](self.job, self.inventory, directory)
+        self.assertEqual(calls, ['discover', 'read'])
+        self.assertEqual(result['sourceFiles'], 1)
+        self.assertEqual(result['services'][self.service]['deferredResourceFiles'], sorted(files))
+        self.assertIn('COMPLETE_RETAINED_GIT_BLOB', (directory / 'index.json').read_text())
+        index = (directory / self.service / 'index.md').read_text()
+        self.assertIn('read-files with discovery/packet.json', index)
+        self.assertTrue(all('- ' + file + '\n' in index for file in files))
 
     def test_preparation_file_limit_refuses_before_body_reads(self):
         calls = []

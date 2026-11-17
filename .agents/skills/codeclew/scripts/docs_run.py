@@ -292,7 +292,6 @@ def requirements(service, rows, initial):
                            'sourceReferences': row.get('sourceReferences', []),
                            'rootDeclarations': record.get('rootDeclarations', []),
                            'authority': trigger.get('authority'), 'boundaries': entry.get('boundaries', [])})
-    need(result, 'ENTRY_INVENTORY_EMPTY', service=service)
     for row in rows:
         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') != 'FILE_ONLY':
             file = row['record']['path']
@@ -367,7 +366,7 @@ def _prepare_sources(job, inventory, directory):
 
     for service, scope in inventory['services'].items():
         home = directory / service; home.mkdir(mode=0o700)
-        resource_count = None
+        resource_count, deferred_resources = None, []
         base = [sys.executable, '-I', '-S', str(HERE / 'evidence_packet.py')]
         common = ['--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot']]
         source_scope = any(r['kind'] == 'THREAD_SCOPE' for r in scope['sourceInventory'])
@@ -377,10 +376,12 @@ def _prepare_sources(job, inventory, directory):
         need(discovery.get('queryComplete'), 'PREPARED_DISCOVERY_INCOMPLETE', service=service)
         choices = discovery['choices']
         if source_scope:
-            selection = [{'file': row['file']} for row in choices]
+            file_only = {row['record']['path'] for row in scope['sourceInventory']
+                         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') == 'FILE_ONLY'}
+            selection = [{'file': row['file']} for row in choices if row['file'] not in file_only]
+            deferred_resources = [row['file'] for row in choices if row['file'] in file_only]
             count += len(selection)
-            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT')
-            save(home / 'selection.json', selection)
+            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT', files=count, limit=bounds['files'])
             arguments = ['read-files', *common, '--packet', str(home / 'discovery/packet.json')]
         else:
             pairs = compiler_source_pairs(choices)
@@ -396,16 +397,20 @@ def _prepare_sources(job, inventory, directory):
                 need(row['kind'] == 'SOURCE_NAVIGATION', 'PREPARED_RESOURCE_KIND_CHANGED')
                 identity, reference = row['id'], row['record']['fullRecordReference']
                 need(identity not in pairs or pairs[identity] == reference, 'PREPARED_SOURCE_REFERENCE_CHANGED')
-                pairs[identity] = reference
+                if identity not in pairs:
+                    deferred_resources.append(row['record']['source']['file'])
             selection = [{'sourceId': identity, 'sourceReference': reference} for identity, reference in sorted(pairs.items())]
-            save(home / 'selection.json', selection)
             arguments = ['read-sources', *common, '--work', scope['work']]
-        need(selection, 'PREPARED_SOURCE_SELECTION_EMPTY', service=service)
-        invoke(base + [*arguments, '--selection', str(home / 'selection.json'), '--source-union',
-                       '--output-dir', str(home / 'read')], home, 'read')
-        manifest = home / 'read/citations.json'
-        _, packet, _, entries = M['C']['load'](manifest)
-        need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work'], 'PREPARED_SOURCE_SCOPE_CHANGED')
+        save(home / 'selection.json', selection)
+        manifest = None
+        packet = {'scope': discovery['scope'], 'outcomes': [], 'texts': {}}
+        entries = {}
+        if selection:
+            invoke(base + [*arguments, '--selection', str(home / 'selection.json'), '--source-union',
+                           '--output-dir', str(home / 'read')], home, 'read')
+            manifest = str(home / 'read/citations.json')
+            _, packet, _, entries = M['C']['load'](manifest)
+            need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work'], 'PREPARED_SOURCE_SCOPE_CHANGED')
         for handle, entry in entries.items():
             source = entry['source']
             need(source['service'] == service and source['revision'] == scope['revision'], 'PREPARED_SOURCE_REVISION_CHANGED')
@@ -413,8 +418,8 @@ def _prepare_sources(job, inventory, directory):
         regions, bindings, metrics = source_projection(packet, entries)
         if not source_scope:
             count += len({entry['source']['file'] for entry in entries.values()})
-            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT')
-        all_bindings.update({handle: {**value, 'manifest': str(manifest)} for handle, value in bindings.items()})
+            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT', files=count, limit=bounds['files'])
+        all_bindings.update({handle: {**value, 'manifest': manifest} for handle, value in bindings.items()})
         views = home / 'views'; views.mkdir()
         view_index = {}
         for key, region in regions.items():
@@ -439,7 +444,8 @@ def _prepare_sources(job, inventory, directory):
                 continue
             handles = [h for h, b in bindings.items() if (b['source']['id'] in requirement['sourceIds'] if requirement['kind'] == 'ENTRY'
                        else b['source']['file'] == requirement.get('file') if requirement['kind'] == 'DISCOVERY' else True)]
-            need(handles, 'PREPARED_REQUIREMENT_SOURCE_MISSING', requirement=requirement['id'])
+            if requirement['kind'] != 'SERVICE':
+                need(handles, 'PREPARED_REQUIREMENT_SOURCE_MISSING', requirement=requirement['id'])
             requirements_index[requirement['id']] = handles
             if requirement['kind'] == 'ENTRY':
                 need(set(requirement['sourceIds']) <= source_ids, 'PREPARED_ENTRY_SOURCE_MEMBERSHIP_MISSING', requirement=requirement['id'])
@@ -462,10 +468,10 @@ def _prepare_sources(job, inventory, directory):
         save(home / 'requirements.json', ready)
         save(home / 'views.json', view_index)
         services[service] = {'work': scope['work'], 'revision': scope['revision'], 'coverage': scope['coverage'],
-                             'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': str(manifest),
+                             'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': manifest,
                              'citationIndex': str(home / 'citation-index.json'), 'requirements': requirements_index,
                              'discoveryProofs': proofs, 'records': len(bindings), 'regions': len(regions), 'union': metrics,
-                             'retainedResourceRecords': resource_count,
+                             'retainedResourceRecords': resource_count, 'deferredResourceFiles': sorted(set(deferred_resources)),
                              'inventoryKind': 'SOURCE_FILES' if source_scope else 'COMPILER_SYMBOLS_AND_RETAINED_RESOURCES',
                              'wholeServiceOrRuntimeCompletenessClaimed': False}
         lookup = ['# ' + service + ' source index', '', 'Open the individual source views needed for your explanation. Cite supplied handles directly.',
@@ -473,18 +479,25 @@ def _prepare_sources(job, inventory, directory):
                   'Capture coverage: ' + scope['coverage']['coverage'] + '. No runtime proof.', '']
         if metrics['fallbacks']:
             lookup += ['Some original fragments lack compatible exact coordinates; they remain separate, including overlapping text.', '']
-        if resource_count is not None:
-            lookup += ['Compiler Work retained-resource query returned ' + str(resource_count) + ' records. Files outside retained inputs remain unknown.', '']
         lookup += ['## Required entry and discovery reads', '']
         for requirement in inventory['requirements']:
             if requirement['id'] in ready:
                 row = ready[requirement['id']]
                 lookup.append('- ' + requirement.get('file', requirement['page']) + ': ' + ', '.join(row['views']) + '; cite ' + ', '.join(row['evidenceCandidates']))
-        lookup += ['', '## All retained source regions', '']
+        lookup += ['', '## Prepared source regions', '']
         for region in view_index.values():
             lookup.append('- ' + region['view'] + ': ' + region['file'] + ' (' + str(region['codeBytes']) + ' bytes of code)')
-        lookup += ['', 'Open large resource bodies when needed; all remain available, with no scope filter or truncation.',
-                   'Requirements and ready evidence candidates: requirements.json. All original handles and full-file proofs: ../index.json.',
+        if deferred_resources:
+            lookup += ['', '## Retained resources available on request', '',
+                       'Select files relevant to the request or needed to resolve a source question. These resources have file-level coverage.',
+                       'Saved Work: ' + scope['work']]
+            if source_scope:
+                lookup.append('Run evidence_packet.py read-files with discovery/packet.json and an explicit JSON selection of file paths.')
+            else:
+                lookup.append('Run evidence_packet.py read-sources with the saved Work and exact SOURCE ID/reference pairs from resources/read-collection/items.json.')
+            lookup += ['- ' + file for file in sorted(set(deferred_resources))]
+        lookup += ['', 'Files outside retained inputs remain unknown. Requirements and evidence candidates: requirements.json.',
+                   'Original handles and full-file proofs: ../index.json.',
                    'These mappings are input navigation, not semantic self-review or registration proof.']
         (home / 'index.md').write_text('\n'.join(lookup) + '\n', encoding='utf-8')
     need(time.monotonic() - started <= bounds['wallSeconds'], 'SOURCE_PREPARATION_WALL_LIMIT')
@@ -542,6 +555,9 @@ def prepare(job_path, run):
     inventory = {'schema': 'codeclew-docs-run-inventory/1.0', 'snapshot': job['snapshot'], 'services': scopes,
                  'requirements': expected, 'scope': 'Retained captured source; unclassified surfaces and runtime registration remain explicit limits.'}
     save(inputs / 'inventory.json', inventory)
+    required_pages = len({item['page'] for item in expected})
+    need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
+         nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
     prepare_sources(job, inventory, inputs / 'author-source')
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
