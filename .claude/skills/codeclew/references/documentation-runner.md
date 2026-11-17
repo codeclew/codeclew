@@ -5,6 +5,11 @@ component, renderer and export helpers. It never captures, refreshes or publishe
 The calling agent fills a job and a short launcher; it does not generate validators.
 A source helper treatment is experimental until included in an official package.
 
+For routine updates to existing documentation, use the [prior checked export
+route](compose-original.md#update-an-existing-checked-export). It preserves the
+original, bound index and citation manifests and applies the requested edits.
+Use a fresh run for a new documentation set.
+
 Create a job matching [docs-run-job](../schemas/docs-run-job.schema.json). Pin the
 supported clew launcher, exact saved snapshot, selected services, language, current
 skill and unchanged packaged renderer. Install that renderer's locked dependencies
@@ -62,7 +67,8 @@ The starter assigns required page names and anchors, links the overview to entry
 pages, and supplies each declared HTTP method/path and first call in its diagram.
 The author copies these files, explains the selected behavior with real citation
 handles from the source indexes, completes the remaining sequence steps, and adds
-any newly discovered starts. For multiple services, also write draft/routes.json.
+any newly discovered starts. Every required page needs a cited explanation or a
+source-bounded unknown. For multiple services, also write draft/routes.json.
 Place any additional citation reads under draft/reads and complete the bidirectional
 [self-review protocol](../schemas/docs-run-review.schema.json). Required entry
 pages and handler identities are fixed; additional discovered entry accounts cannot
@@ -115,8 +121,20 @@ Missing counters remain unavailable; bytes are never presented as tokens or cost
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.
-A real source handle can accompany a false claim. Author visual review is recorded
-as REVIEWED or UNAVAILABLE; independent visual/source acceptance remains separate.
+For the initial direct statements of a self-contained retained Kotlin entry
+function, prepare can check a unique single-line guard of the form
+`if (identifier comparison INTEGER) return INTEGER` (also with inline braces).
+The prepared source index lists each such local literal return check. The author names a
+supported fragment in the review template's optional `returnClaims` map. It
+must cite the listed entry source and contain the guard and result as successive
+inline code spans in the same top-level Markdown paragraph. The runner checks the actual
+renderable claim against the retained integer and keeps the authored text intact.
+This check covers the statement when reached. Branch reachability, arbitrary
+prose, other expressions/languages and older unbound exports need independent
+meaning review. The candidate scan skips statement text with block comments,
+multiline or interpolated strings, and ambiguous matching predicates. A bare
+`EXPORT_CHECKED` reports technical export only. Author visual review is recorded
+as REVIEWED or UNAVAILABLE. Independent visual/source acceptance remains separate.
 Do not claim an unavailable browser stage as completed author work.
 
 `verify --run-dir RUN` repeats the fixed checks without a model. `promote --run-dir

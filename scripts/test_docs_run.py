@@ -658,6 +658,118 @@ else:
         self.assertNotEqual(self.check()['status'], 'READY')
         self.assertFalse((self.run / 'ready').exists())
 
+    def test_bare_starter_cannot_pass_on_formal_self_review(self):
+        original = self.run / 'inputs/starter/original.json'
+        shutil.copyfile(original, self.seed / 'original.json')
+        self.review['claims'] = []
+        D['save'](self.seed / 'self-review.json', self.review)
+        self.generated()
+        result = self.check()
+        detail = result['checks']['output']
+        self.assertEqual(detail['code'], 'INVALID_PAGE_CLAIMS')
+        self.assertIn('cited reader explanation', detail['details']['nextAction'])
+
+    def test_literal_guard_with_the_same_claim_and_cite_rejects_a_changed_inline_result(self):
+        previous = self.source
+        text = 'fun change(size: Int): Int {\n    if (size < -3) { return -12 }\n    return size\n}\n'
+        raw = text.encode()
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+        self.source = {**previous, 'file': 'src/Change.kt', 'text': text, 'textDigest': D['sha'](raw), 'endLine': 4,
+                       'occurrence': {**previous['occurrence'], 'blob': blob, 'endByte': len(raw)}}
+        self.clew.write_text(self.clew.read_text().replace(repr(previous), repr(self.source)))
+        shutil.rmtree(self.manifest.parent)
+        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=self.source)
+        old_handle, self.handle = self.handle, view['records'][0]['cite']
+
+        scope = self.inventory['services'][self.service]
+        scope['sourceInventory'][0]['record']['path'] = self.source['file']
+        scope['sourceInventory'].append({'kind': 'THREAD_SCOPE'})
+        discovery = next(row for row in self.inventory['requirements'] if row['kind'] == 'DISCOVERY')
+        discovery['file'] = self.source['file']
+
+        def source_command(argv, directory, label, **kwargs):
+            out = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                out.mkdir()
+                D['save'](out / 'packet.json', {'queryComplete': True, 'choices': [{'file': self.source['file']}],
+                                              'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                shutil.copytree(self.manifest.parent, out)
+        prepared = self.run / 'inputs/author-source'
+        prepared.rmdir()
+        with patch.dict(D['_prepare_sources'].__globals__, {'command': source_command}):
+            D['prepare_sources'](self.job, self.inventory, prepared)
+        scope['sourceInventory'].pop()  # The verify fixture supplies the compiler membership transport.
+        shutil.rmtree(self.manifest.parent)
+        pins = D['load'](self.run / 'pins.json')
+        for path in ('inputs/inventory.json', 'workspace/inventory.json'):
+            D['save'](self.run / path, self.inventory)
+        pins.update(inputFiles=D['tree'](self.run / 'inputs'), inventoryDigest=D['digest'](self.inventory))
+        D['save'](self.run / 'pins.json', pins)
+
+        operation = self.original['pages'][0]
+        claim = {'id': 'guard', 'text': '\r\nWhen `size < -3`, the result is `-12`.\r\n', 'evidence': [old_handle]}
+        operation['fragments'].extend([{'text': '\n## Examples π\n' + claim['text']},
+                                       {'text': '\n## Checked return\n'}, claim])
+        self.review['claims'].append({'page': operation['page'], 'claim': claim['id'],
+                                      'evidence': [old_handle], 'disposition': 'SUPPORTED'})
+        for row in self.review['requirements'] + self.review['claims'] + [
+                item for page in self.original['pages'] for item in page['fragments'] if 'evidence' in item]:
+            row['evidence'] = [self.handle if handle == old_handle else handle for handle in row['evidence']]
+        D['save'](self.run / 'workspace/draft/original.json', self.original)
+        template = D['review_for_run'](self.run)
+        self.assertEqual(list(template['returnClaims'].values()), [None])
+        check = next(iter(template['returnClaims']))
+        self.assertIn(check, (prepared / self.service / 'index.md').read_text())
+        self.review['returnClaims'] = {check: 'guard'}
+        self.seed_files(); self.generated()
+        result = self.check()
+        self.assertEqual(result['status'], 'READY', result)
+        self.assertFalse(result['semanticTruthAssessed'])
+        check_result = result['checks']['entrySequences']['result']['literalReturns']
+        self.assertEqual(check_result[check], {'claim': 'guard', 'page': operation['page']})
+        html = (self.run / result['output'] / 'html' / operation['page'].replace('.md', '.html')).read_text()
+        self.assertIn('When <code>size &lt; -3</code>, the result is <code>-12</code>.', html)
+
+        claim['text'] = claim['text'].replace('`-12`', '`6`')
+        self.seed_files(); self.generated_for_test_reset()
+        result = self.check()
+        self.assertEqual(result['status'], 'FAILED')
+        detail = result['checks']['entrySequences']
+        self.assertEqual(detail['code'], 'LITERAL_RETURN_VALUE_MISMATCH')
+        self.assertEqual(detail['details']['response']['details']['documented'], '6')
+        self.assertEqual(detail['details']['response']['details']['expected'], '-12')
+
+    def test_literal_guard_scan_skips_unsupported_ambiguous_and_commented_source(self):
+        def candidates(body, extension='.kt'):
+            source = {'readText': body, 'source': {'file': 'Example' + extension, 'id': 'exact', 'startLine': 1}}
+            return D['literal_return_candidates'](self.entry, [self.handle], {self.handle: source})
+        statement = '  if (amount != 18) return -2'
+        function = lambda body: 'fun adjust(amount: Int): Int {\n' + body + '\n  return amount\n}'
+        self.assertEqual(candidates(function(statement))[0]['literal'], '-2')
+        self.assertEqual(candidates(function(statement), '.java'), [])
+        self.assertEqual(candidates(function('/*\n' + statement + '\n*/')), [])
+        self.assertEqual(candidates(function('val text = """\n' + statement + '\n"""')), [])
+        self.assertEqual(candidates(function('// ' + statement)), [])
+        self.assertEqual(candidates(function(statement + '\n' + statement.replace('-2', '5'))), [])
+        self.assertEqual(candidates(function('if (amount != 18) return run { -2 }')), [])
+        self.assertEqual(candidates(function(statement + '\n  + adjustment')), [])
+        nested = function('  fun unused(other: Int): Int {\n    if (other < -2) return 17\n    return other\n  }\n' + statement)
+        self.assertEqual(candidates(nested), [])
+        self.assertEqual(candidates(function(statement) + '\n\n' + function(statement.replace('-2', '5'))), [])
+        self.assertEqual(candidates('class Example {\n' + function(statement) + '\n}'), [])
+
+    def test_overlapping_exact_function_reads_produce_one_literal_obligation(self):
+        function = 'fun route(value: Int): Int {\n    if (value > 42) return 9\n    return value\n}'
+        fragment = {'readText': function, 'source': {'file': 'Example.kt', 'id': 'method', 'startLine': 11}}
+        annotated = {'readText': '@GetMapping("/somewhere")\n' + function,
+                     'source': {'file': 'Example.kt', 'id': 'mapped-method', 'startLine': 10}}
+        entries = {'first': fragment, 'second': annotated}
+        checks = D['literal_return_candidates'](self.entry, list(entries), entries)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]['sourceIds'], ['method', 'mapped-method'])
+        self.assertEqual(checks[0]['line'], 12)
+
     def test_source_backed_false_assertion_is_not_a_semantic_certificate(self):
         self.original['pages'][0]['fragments'][1]['text'] += '\nDelivery is guaranteed.\n'
         self.seed_files(); self.generated(); result = self.check()

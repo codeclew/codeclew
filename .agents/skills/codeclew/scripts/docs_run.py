@@ -350,6 +350,99 @@ def compiler_source_pairs(choices):
     return pairs
 
 
+DECIMAL = r'(?:0|-?[1-9][0-9]{0,9})'
+KOTLIN_FUNCTION = re.compile(r'[ \t]*fun[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*'
+                             r'\([^(){}]*\)[ \t]*(?::[^{=]+)?\{[ \t]*')
+KOTLIN_NON_CODE = re.compile(r"""//.*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`""")
+KOTLIN_LITERAL_GUARD = re.compile(
+    rf'[ \t]*if[ \t]*\((?P<predicate>[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:<=|>=|==|!=|<|>)'
+    rf'[ \t]*{DECIMAL})\)[ \t]*(?P<brace>\{{)?[ \t]*return[ \t]+(?P<literal>{DECIMAL})'
+    r'(?(brace)[ \t]*\})[ \t]*')
+
+
+def kotlin_literal_guards(entry):
+    """Select initial direct guards of one self-contained retained function."""
+    text = entry['readText']
+    source = entry['source']
+    if not source['file'].endswith('.kt') or any(token in text for token in ('/*', '"""', '${')):
+        return []
+    lines = [KOTLIN_NON_CODE.sub(lambda token: ' ' * len(token[0]), line.removesuffix('\r')) for line in text.split('\n')]
+    code = [(line, body) for line, body in enumerate(lines) if body.strip()]
+    # The attached source must contain one standalone method. Allow annotation
+    # lines but skip enclosing files/classes and code following the method body.
+    body_start = next((i for i, (_, body) in enumerate(code) if not body.lstrip().startswith('@')), len(code))
+    if body_start + 2 >= len(code) or not KOTLIN_FUNCTION.fullmatch(code[body_start][1]):
+        return []
+    depth = 1
+    for index, (_, body) in enumerate(code[body_start + 1:], start=body_start + 1):
+        for token in body:
+            if token == '{':
+                depth += 1
+            elif token == '}':
+                depth -= 1
+                if depth == 0 and (index != len(code) - 1 or body.strip() != '}'):
+                    return []
+    if depth != 0:
+        return []
+    result = []
+    for index in range(body_start + 1, len(code) - 1):
+        line, body = code[index]
+        match = KOTLIN_LITERAL_GUARD.fullmatch(body)
+        if not match or (not match['brace'] and re.match(r'\s*[+*/%?:.<>=!&|\-]', code[index + 1][1])):
+            break
+        result.append((match['predicate'], match['literal'], source['startLine'] + line))
+    return result
+
+
+def literal_return_candidates(requirement, handles, entries):
+    conditions = {}
+    for handle in handles:
+        source = entries[handle]['source']
+        for predicate, literal, line in kotlin_literal_guards(entries[handle]):
+            key = re.sub(r'[ \t]+', '', predicate)
+            location = (source['file'], line, literal)
+            conditions.setdefault(key, {}).setdefault(location, []).append((predicate, source['id'], handle))
+    result = []
+    for key, locations in conditions.items():
+        if len(locations) != 1:
+            continue
+        (file, line, literal), matches = next(iter(locations.items()))
+        predicate, _, handle = matches[0]
+        identity = 'return-' + digest([requirement['id'], file, line, key])[-16:]
+        result.append({'id': identity, 'page': requirement['page'], 'sourceIds': [row[1] for row in matches],
+                       'cite': handle, 'predicate': predicate, 'literal': literal, 'line': line})
+    return result
+
+
+def frozen_return_checks(prepared):
+    return [check for path in sorted(prepared.glob('*/literal-returns.json')) for check in load(path)]
+
+
+def literal_return_claims(candidates, selected, review, originals, composed, entries):
+    need(isinstance(selected, dict) and selected.keys() == {row['id'] for row in candidates},
+         'LITERAL_RETURN_CLAIMS_REQUIRED', checks=[row['id'] for row in candidates],
+         nextAction='Run review-template and bind each returnClaims check to the claim ID on its entry page.')
+    ranges = {(p['page'], f['id']): (f['startByte'], f['endByte'])
+              for p in composed['pages'] for f in p['claims']}
+    fragments = {(p['page'], f['id']): f for p in originals['pages'] for f in p['fragments'] if 'id' in f}
+    supported = {(row['page'], row['claim']) for row in review['claims'] if row['disposition'] == 'SUPPORTED'}
+    result = []
+    for row in candidates:
+        claim = selected[row['id']]
+        key = (row['page'], claim)
+        need(isinstance(claim, str) and key in supported and key in fragments,
+             'LITERAL_RETURN_CLAIM_MISSING', check=row['id'], page=row['page'])
+        fragment = fragments[key]
+        condition = (row['predicate'], row['literal'], row['line'])
+        need(any(entries[h]['source']['id'] in row['sourceIds'] and condition in kotlin_literal_guards(entries[h])
+                 for h in fragment['evidence']), 'LITERAL_RETURN_CITATION_REQUIRED',
+             check=row['id'], page=row['page'], cite=row['cite'], claim=claim)
+        start, end = ranges[key]
+        result.append({'id': row['id'], 'page': row['page'], 'claim': claim, 'startByte': start, 'endByte': end,
+                       'predicate': row['predicate'], 'literal': row['literal']})
+    return result
+
+
 def _prepare_sources(job, inventory, directory):
     """Prepare supported retained reads serially, without an author or new capture."""
     started = time.monotonic(); directory.mkdir(mode=0o700)
@@ -435,7 +528,7 @@ def _prepare_sources(job, inventory, directory):
                                'coveringCitations': full, 'originalCitations': region['citations']}
         save(home / 'citation-index.json', bindings)
         source_ids = {value['source']['id'] for value in bindings.values()}
-        requirements_index, proofs, ready = {}, {}, {}
+        requirements_index, proofs, ready, literal_returns = {}, {}, {}, []
         source_texts = {o['source']['id']: packet['texts'][o['textKey']] for o in packet['outcomes']}
         source_entries = {h: {**entry, 'readText': source_texts[entry['source']['id']]}
                           for h, entry in entries.items()}
@@ -449,6 +542,7 @@ def _prepare_sources(job, inventory, directory):
             requirements_index[requirement['id']] = handles
             if requirement['kind'] == 'ENTRY':
                 need(set(requirement['sourceIds']) <= source_ids, 'PREPARED_ENTRY_SOURCE_MEMBERSHIP_MISSING', requirement=requirement['id'])
+                literal_returns.extend(literal_return_candidates(requirement, handles, source_entries))
             if requirement['kind'] == 'DISCOVERY':
                 proofs[requirement['id']] = full_file_proof(requirement, handles, source_entries, job['snapshot'])
             suggested = handles
@@ -466,6 +560,8 @@ def _prepare_sources(job, inventory, directory):
                     'views': list(dict.fromkeys(view_index[bindings[h]['region']]['view'] for h in suggested)),
                     'meaningReviewed': False}
         save(home / 'requirements.json', ready)
+        if literal_returns:
+            save(home / 'literal-returns.json', literal_returns)
         save(home / 'views.json', view_index)
         services[service] = {'work': scope['work'], 'revision': scope['revision'], 'coverage': scope['coverage'],
                              'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': manifest,
@@ -484,6 +580,12 @@ def _prepare_sources(job, inventory, directory):
             if requirement['id'] in ready:
                 row = ready[requirement['id']]
                 lookup.append('- ' + requirement.get('file', requirement['page']) + ': ' + ', '.join(row['views']) + '; cite ' + ', '.join(row['evidenceCandidates']))
+        if literal_returns:
+            lookup += ['', '## Literal return checks', '',
+                       'Describe each listed guard and its integer result in the same paragraph with inline code for both. The result must be the next code span after the condition.',
+                       'Use the listed cite and set each returnClaims value in self-review to the claim ID on its entry page.']
+            lookup += ['- ' + row['id'] + ' in ' + row['page'] + ': `' + row['predicate'] + '` → `' + row['literal'] + '`; cite ' + row['cite']
+                       for row in literal_returns]
         lookup += ['', '## Prepared source regions', '']
         for region in view_index.values():
             lookup.append('- ' + region['view'] + ': ' + region['file'] + ' (' + str(region['codeBytes']) + ' bytes of code)')
@@ -525,7 +627,9 @@ def start_kind(requirement):
 def starter(inventory, language, directory):
     """Render only fixed destinations and source-level entry identities."""
     pages, navigation_services = [], []
-    caller, handler = ('HTTP-клиент', 'Обработчик') if language == 'ru' else ('HTTP client', 'Handler')
+    labels = {'client': 'HTTP client', 'handler': 'Handler'}
+    if language == 'ru':
+        labels = load(SKILL / 'examples/markdown-renderer/assets/ru.json')['sequence']
     for service in inventory['services']:
         overview = service + '.md'
         overview_fragments = [{'text': '# ' + service + '\n\n<a id="service-scope"></a>\n\n'}]
@@ -545,8 +649,8 @@ def starter(inventory, language, directory):
             fragments = [{'text': '# ' + markdown_label + '\n\n<a id="handler"></a>\n\n'}]
             if method:
                 entry = requirement['handlerId']
-                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': caller},
-                             {'id': entry, 'title': handler, 'target': target}],
+                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': labels['client']},
+                             {'id': entry, 'title': labels['handler'], 'target': target}],
                             'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call', 'target': target}]}
                 fragments.append({'text': '```clew-sequence\n' + encode(sequence).decode() + '```\n\n'})
             pages.append({'page': page, 'fragments': fragments})
@@ -654,7 +758,11 @@ def inputs_unchanged(run):
 
 def review_for_run(run):
     _, inventory, _ = frozen_inputs(run)
-    return review_template(inventory, load(run / 'workspace/draft/original.json'))
+    template = review_template(inventory, load(run / 'workspace/draft/original.json'))
+    candidates = frozen_return_checks(run / 'inputs/author-source')
+    if candidates:
+        template['returnClaims'] = {row['id']: None for row in candidates}
+    return template
 
 
 def source_membership_failure(job, source, work, result, directory):
@@ -968,22 +1076,25 @@ def verify(run, *, debug=False):
         original = load(draft / 'original.json')
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
-        pages, _, _ = M['compose_pages'](original)
+        pages, composed, _ = M['compose_pages'](original)
         need(all(r['page'] in pages and pages[r['page']].strip() for r in inventory['requirements']), 'MISSING_REQUIRED_PAGE')
         checks[stage] = {'status': 'PASS', 'pages': len(pages)}
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
         stage = 'selfReview'; review = load(draft / 'self-review.json')
+        selected_returns = review.pop('returnClaims', {}) if isinstance(review, dict) else {}
         defaults = {}
         for path in (run / 'inputs/author-source').glob('*/requirements.json'):
             defaults.update({key: value['evidenceCandidates'] for key, value in load(path).items()})
         review = resolve_review(review, inventory, entries, original, defaults)
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
+        returns = literal_return_claims(frozen_return_checks(run / 'inputs/author-source'), selected_returns, review, original, composed, entries)
         checks[stage] = {'status': 'PASS', 'discoveryCoverage': discovery_proofs}; result['semanticReviewRecorded'] = True
         result['authorVisualReview'] = review['visual']
         stage = 'entrySequences'; request = directory / 'sequences.json'
-        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts})
+        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts,
+                       'literalReturns': returns})
         sequence = command([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], str(request)], directory, 'sequences')
         need(sequence.get('status') == 'ENTRY_SEQUENCES_CHECKED', 'ENTRY_SEQUENCES_NOT_CHECKED')
         checks[stage] = {'status': 'PASS', 'result': sequence}

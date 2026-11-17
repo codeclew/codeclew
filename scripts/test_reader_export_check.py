@@ -577,6 +577,62 @@ for path in source.glob('*.md'):
         self.assertEqual([c['id'] for c in mapped['claims']], ['guide', 'added'])
         self.assertTrue(all(c['sources'][0]['work'] == 'work-b' for c in mapped['claims']))
 
+    def test_addressed_update_recovers_previous_inputs_and_preserves_editorial_page(self):
+        heading = 'Editor-approved entry'
+        self.original['pages'][1]['fragments'][0]['text'] = INDEX.replace('# Start', '# ' + heading)
+        package = self.compose(self.original)
+
+        def check_editorial_heading():
+            contract = json.loads(self.contract.read_bytes())
+            contract['index.md']['html'] = INDEX_HTML.replace('>Start<', '>' + heading + '<')
+            self.contract.write_text(json.dumps(contract))
+
+        self.manual(package, 'manual-base')
+        check_editorial_heading()
+        base = self.finalize(package=package, repositories=self.mapping)
+        self.assertEqual(base['status'], 'CHECKED_PAGES_FINALIZED', base)
+        previous = self.output
+        before = self.snapshot(previous)
+        base_original = previous / base['original']
+        change = {**self.original['pages'][0]['fragments'][0]}
+        change['text'] = change['text'].replace('limit <= 10', 'limit <= 11').replace('| 10 |', '| 11 |')
+        edits = self.root / 'edits.json'
+        edits.write_text(json.dumps({'baseSHA256': M['sha'](base_original.read_bytes())[7:],
+            'edits': [{'page': 'guide.md', 'start': 0, 'delete': 1, 'fragments': [change]}]}))
+        update = self.root / 'updated'
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            code = M['main'](['update-original', '--previous-final', str(previous), '--edits', str(edits),
+                              '--output-dir', str(update)])
+        self.assertEqual(code, 0, stream.getvalue())
+        receipt = json.loads((update / 'update.json').read_bytes())['previousFinal']
+        self.assertEqual(receipt['manifests'], [str(self.a)])
+        self.assertEqual(receipt['rendererCommand'], str(previous / base['rendererCommand']))
+        prior_index = Path(receipt['previousIndex'])
+        self.assertEqual(prior_index, previous / base['checkedIndex'])
+        self.manual(update, 'manual-new', previous=prior_index)
+        check_editorial_heading()
+        result = self.finalize(package=update, manifests=[Path(path) for path in receipt['manifests']], previous=prior_index)
+        self.assertEqual(result['status'], 'CHECKED_PAGES_FINALIZED', result)
+        index = json.loads((self.output / result['checkedIndex']).read_bytes())
+        old_index = json.loads(prior_index.read_bytes())
+        self.assertEqual({p['page']: p['claimIds'] for p in index['pages']},
+                         {p['page']: p['claimIds'] for p in old_index['pages']})
+        self.assertEqual((self.output / 'html/index.html').read_bytes(), before['html/index.html'])
+        self.assertIn(heading.encode(), (self.output / 'html/index.html').read_bytes())
+        self.assertNotEqual((self.output / 'html/guide.html').read_bytes(), before['html/guide.html'])
+        self.assertEqual(self.snapshot(previous), before)
+
+        original_md = previous / base['authoredRoot'] / 'index.md'
+        original_md.write_text('Unreconciled manual edit.\n')
+        with self.assertRaises(M['Stop']) as raised:
+            M['update_original'](None, edits, self.root / 'outside-edit', previous_final=previous)
+        self.assertEqual(raised.exception.status, 'PREVIOUS_ORIGINAL_OUT_OF_SYNC')
+        self.assertEqual(raised.exception.details['pages'], ['index.md'])
+        self.assertIn('fresh checked baseline', raised.exception.details['nextAction'])
+        self.assertFalse((self.root / 'outside-edit').exists())
+        self.assertEqual(original_md.read_text(), 'Unreconciled manual edit.\n')
+
     def test_failed_bind_stops_before_render_and_retains_full_native_failure(self):
         self.manual(self.package, 'manual')
         proof = self.a.parent / 'part.stdout.json'; proof.write_bytes(proof.read_bytes() + b' ')

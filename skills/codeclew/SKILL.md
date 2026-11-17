@@ -14,18 +14,21 @@ metadata:
 
 Choose by the requested result, not the presence of a root/snapshot:
 
-For HTTP documentation, read [HTTP closure](references/http-reader-closure.md)
+When drafting HTTP documentation, read [HTTP closure](references/http-reader-closure.md)
 **before drafting**: each evidenced method/path needs its own page and
 handler-started sequence.
 
 | Result | Read next |
 | --- | --- |
-| Generate/update durable service or process documentation | [Bounded documentation run](references/documentation-runner.md) |
+| Generate durable service or process documentation | [Bounded documentation run](references/documentation-runner.md) |
+| Update existing service or process documentation | [Update the prior original and checked export](references/compose-original.md#update-an-existing-checked-export) |
 | Bounded SOURCE Q&A or saved-answer maintenance | [Prepared SOURCE](README.md) |
 | Inspect shared semantic candidates across retained service caches | [Shared catalog inputs](references/shared-semantic-catalog.md) |
 
-Broad documentation requests use the bounded runner with authored originals and
-the packaged renderer for checked local HTML. The calling agent fills the job and
+New broad documentation requests use the bounded runner with authored originals
+and the packaged renderer for checked local HTML. For an update, locate the
+previous checked export and its original/index/manifests first. Keep agreed editor
+changes in that original and update only the requested fragments. The calling agent fills the job and
 launcher; the author follows [guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages)
 and writes the draft and self-review, without starting another runner.
 Reuse frozen evidence. A new repository first

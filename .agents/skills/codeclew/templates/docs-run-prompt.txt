@@ -1,7 +1,7 @@
 Request: {request}
 Write the reader pages in {language}. You are the sole author ({model}).
 Run workspace: {run}/workspace
-Admitted clew: {clew}
+Admitted clew: {clew}. Release admission is complete for this run.
 Retained root and snapshot: {root} {snapshot}
 Inventory: {inventory}
 Prepared source index: {prepared_sources}
@@ -20,6 +20,7 @@ Prepared source index: {prepared_sources}
    the evidence. Add fragments like
    {{"id":"stable-local-id","text":"Reader Markdown ending with blank lines.\n\n","evidence":["REAL_CITE"]}}.
    Use plain {{"text":"..."}} for headings, local anchors and navigation.
+   Add a cited explanation or a source-bounded unknown on every required page.
    Preserve supported branches, state changes, return values and limits. Separate
    method behavior from runtime/transport guarantees. Complete each diagram's
    steps and conditions with the observed flow, including any extra starts.
@@ -42,6 +43,9 @@ Prepared source index: {prepared_sources}
    PAGE.md#handler. A found source start says nothing about runtime registration.
    Default entry/file cites come from prepared evidence. Override evidence only
    with real citation handles. For each claim choose SUPPORTED or EXPLICIT_UNKNOWN.
+   For returnClaims, if present, select the claim ID on the entry page. Use the
+   listed cite and write the exact condition and the result as consecutive inline
+   code spans in one top-level paragraph. Keep the surrounding explanation in natural language.
    Set unresolved to concrete remaining limits, or [] after review. Set visual
    to UNAVAILABLE with a reason unless you actually inspected rendered pages in
    a browser. If reviewed, record the observed pages and viewports.

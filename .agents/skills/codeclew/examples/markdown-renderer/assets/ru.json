@@ -23,6 +23,8 @@
   "kind_manual": "Вручную",
   "kind_other": "Другой вход",
   "sequence": {
+    "client": "HTTP-клиент",
+    "handler": "Обработчик",
     "call": "Вызов",
     "return": "Возврат",
     "async": "Запуск без ожидания",
