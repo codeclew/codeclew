@@ -2144,6 +2144,10 @@ else:
         compact=json.loads(saved.stdout);full=D['load'](self.run/'workspace/last-save-pages.json')
         self.assertEqual(compact['changed'],full['changed'])
         self.assertLess(len(saved.stdout),len(D['encode'](full)))
+        assessment=D['W']['review_page'](self.run,page['page'],None,D)
+        for row in assessment['requirements'].values():row['disposition']='EXPLAINED'
+        assessment['claims']={key:'SUPPORTED' for key in assessment['claims']}
+        D['W']['review_page'](self.run,page['page'],assessment,D)
         checked=call('check','--page',page['page']);self.assertEqual(checked.returncode,0,checked.stdout+checked.stderr)
         compact=json.loads(checked.stdout);full=D['load'](self.run/'workspace/last-local-check.json')
         self.assertTrue(compact['sourceBindingsChecked']);self.assertFalse(compact['ready'])
@@ -2783,6 +2787,54 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
         pins['inputFiles']=D['tree'](f.run/'inputs');D['save'](f.run/'pins.json',pins)
         self.page=f.service+'.md'
 
+    def test_explicit_check_and_caller_require_rereview_after_page_metadata_changes(self):
+        f=self.f;page=f.entry['page'];other=self.page
+        shell=D['W']['review_page'](f.run,other,None,D)
+        for row in shell['requirements'].values():
+            row['disposition']='EXPLAINED'
+            if 'topics' in row:
+                row['sourceNotes']={'references':[{'page':other,'claim':'overview'}]}
+                row['topics']={k:{'disposition':'EXPLAINED','page':other,'claim':'overview'} for k in row['topics']}
+            if 'discoveryDisposition' in row:row.update(discoveryDisposition='NO_ADDITIONAL_STARTS',discoveredEntries=[])
+        shell['claims']={key:'SUPPORTED' for key in shell['claims']}
+        D['W']['review_page'](f.run,other,shell,D)
+        other_review=D['W']['review_page'](f.run,other,None,D)
+        other_stamp=D['load'](f.run/'workspace/draft/reviewed-pages.json')[other]
+        other_body=next(p for p in D['load'](f.run/'workspace/draft/original.json')['pages'] if p['page']==other)
+        code='''
+before=subprocess.run(['./docs','check','--page',page],capture_output=True,text=True)
+subprocess.run(['./docs','page-info','--page',page,'--service','reservations',
+ '--title','Reserve an item','--summary','Validate and accept a reservation.'],check=True,stdout=subprocess.DEVNULL)
+missing=subprocess.run(['./docs','check','--page',page],capture_output=True,text=True)
+repeat=subprocess.run(['./docs','check','--page',page],capture_output=True,text=True)
+scaffold=subprocess.run(['./docs','check','--page',page,'--scaffold'],capture_output=True,text=True)
+subprocess.run(['./docs','review-page','--page',page,'--input',str(assessment)],check=True,stdout=subprocess.DEVNULL)
+after=subprocess.run(['./docs','check','--page',page],capture_output=True,text=True)
+(workspace/'metadata-check-trace.json').write_text(json.dumps({
+ key:{'exit':value.returncode,'result':json.loads(value.stdout)}
+ for key,value in [('before',before),('missing',missing),('repeat',repeat),('scaffold',scaffold),('after',after)]}))
+'''
+        text=f.backend.read_text();marker="print(json.dumps({'type':'thread.started'"
+        f.backend.write_text(text.replace(marker,code+'\n'+marker))
+        pins=D['load'](f.run/'pins.json');pins['authorExecutableDigest']=D['sha'](f.backend.read_bytes());D['save'](f.run/'pins.json',pins)
+        D['DH']['prepare'](f.run,page,[],D)
+        result=D['execute'](f.run);self.assertEqual(result['status'],'PAGE_COMPLETED',result)
+        trace=D['load'](f.run/'workspace/metadata-check-trace.json')
+        for key in ('before','after'):
+            self.assertEqual(trace[key]['exit'],0,trace)
+            self.assertEqual(trace[key]['result']['status'],'UNIT_CHECKED')
+            self.assertTrue(trace[key]['result']['sourceBindingsChecked'])
+        for key in ('missing','repeat'):
+            self.assertEqual(trace[key]['exit'],2)
+            self.assertEqual(trace[key]['result']['code'],'PAGE_REVIEW_REQUIRED')
+            self.assertEqual(trace[key]['result']['details']['pages'],[page])
+            self.assertIn('./docs review-page --page '+page+' --input FILE',trace[key]['result']['recovery'])
+        self.assertEqual(trace['scaffold']['result']['status'],'SCAFFOLD_CHECKED')
+        self.assertEqual(other_review,D['W']['review_page'](f.run,other,None,D))
+        self.assertEqual(other_stamp,D['load'](f.run/'workspace/draft/reviewed-pages.json')[other])
+        self.assertEqual(other_body,next(p for p in D['load'](f.run/'workspace/draft/original.json')['pages'] if p['page']==other))
+        self.assertEqual(D['load'](f.run/'state.json')['modelTokens'],105)
+
     def test_fresh_page_request_preserves_materials_and_omits_history_with_idempotent_run(self):
         f=self.f
         prepared=D['DH']['prepare'](f.run,self.page,[],D)
@@ -2814,6 +2866,37 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
         state=D['load'](f.run/'state.json');self.assertEqual(state['modelTokens'],190)
         self.assertEqual(state['threadId'],'recording-context-2')
         self.assertEqual(D['S']['history'](f.run,state,D)[1]['budgetTokens'],190)
+
+    def test_failed_page_check_prepares_same_runtime_successor_without_an_author(self):
+        f=self.f;page=f.entry['page']
+        marker="print(json.dumps({'type':'thread.started'"
+        edit="subprocess.run(['./docs','page-info','--page',page,'--service','reservations','--title','Reserve an item','--summary','Validate and accept a reservation.'],check=True,stdout=subprocess.DEVNULL)\n"
+        f.backend.write_text(f.backend.read_text().replace(marker,edit+marker))
+        pins=D['load'](f.run/'pins.json');pins['authorExecutableDigest']=D['sha'](f.backend.read_bytes());D['save'](f.run/'pins.json',pins)
+        D['DH']['prepare'](f.run,page,[],D)
+        result=D['execute'](f.run);self.assertEqual(result['status'],'FAILED')
+        self.assertEqual(result['checks']['local']['code'],'PAGE_REVIEW_REQUIRED')
+        report=D['verify'](f.run);self.assertEqual(report['status'],'FAILED')
+        self.assertEqual(report['checks']['author']['status'],'PASS')
+        (f.run/'.runner.lock').touch();before=D['tree'](f.run)
+        job=f.root/'continuation-job.json';D['save'](job,f.job);child=f.root/'same-campaign-successor'
+        def sources(job,inventory,directory):
+            shutil.copytree(f.run/'inputs/author-source',directory)
+            shutil.copytree(f.run/'inputs/source-proof',directory.parent/'source-proof')
+        with patch.dict(D['T'],{'collect':f.collect}),patch.dict(D['prepare'].__globals__,{'prepare_sources':sources}),\
+             patch.dict(D,{'author':lambda *a,**k:self.fail('prepare/handoff must not launch an author')}):
+            prepared=D['S']['prepare'](job,f.run,D['SKILL'],child,D)
+            handoff=D['DH']['prepare'](child,page,[],D)
+        self.assertEqual(prepared['modelCalls'],0);self.assertEqual(handoff['modelCalls'],0)
+        self.assertEqual(prepared['inheritedModelTokens'],105)
+        self.assertEqual(before,D['tree'](f.run))
+        self.assertEqual(D['tree'](child/'workspace/draft'),D['tree'](f.run/'workspace/draft'))
+        self.assertEqual(D['load'](child/'state.json')['attempts'],D['load'](f.run/'state.json')['attempts'])
+        self.assertEqual(D['load'](child/'inputs/job.json')['clew'],f.job['clew'])
+        self.assertEqual(D['load'](child/'inputs/job.json')['snapshot'],f.job['snapshot'])
+        self.assertEqual(D['S']['prepared_bindings'](child,D),D['S']['prepared_bindings'](f.run,D))
+        self.assertEqual(D['load'](child/'pins.json')['clewCapabilities'],D['load'](f.run/'pins.json')['clewCapabilities'])
+        self.assertFalse((child/'attempts/2').exists())
 
     def test_restart_after_recorded_turn_checks_it_once_without_redispatch(self):
         f=self.f;D['DH']['prepare'](f.run,self.page,[],D)

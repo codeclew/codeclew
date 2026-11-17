@@ -41,7 +41,9 @@ capture, refresh, export or publication. Use the prepared profile and local ./do
    retain a complete causal path through their linked phases. Keep proof metadata
    out of reader prose. Private notes are optional; do not create a second body
    that merely restates canonical reader text.
-5. Obtain ./docs review-page --page PAGE.md, fill explicit claim/requirement/topic
+5. Set the page-info title/summary before the final page review. After any prose,
+   diagram or metadata change, repeat the affected page review before check.
+   Obtain ./docs review-page --page PAGE.md, fill explicit claim/requirement/topic
    and discovery judgments, then record with --input FILE. Retain genuine canonical
    sourceNotes references or valid own notes. Null is pending, not approval.
    Independent quality rejection requires fresh judgments even for preserved text;

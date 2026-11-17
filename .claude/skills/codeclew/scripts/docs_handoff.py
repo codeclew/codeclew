@@ -148,15 +148,7 @@ def execute(run, api, *, debug=False):
                     'AUTHOR_HANDOFF_ATTEMPT_EXISTS', recovery='The recorded attempt is not resumable; preserve its status, usage and errors.')
     state = api['load'](run / 'state.json')
     api['need'](state['attempts'][index]['draftFiles'] == api['tree'](run / 'workspace/draft'), 'AUTHOR_HANDOFF_STALE')
-    checked = api['W']['check'](run, [handoff['page']], False, api)
-    if checked['status'] == 'UNIT_CHECKED':
-        original = api['load'](run / 'workspace/draft/original.json')
-        page = next(p for p in original['pages'] if p['page'] == handoff['page'])
-        path = run / 'workspace/draft/reviewed-pages.json'
-        reviewed = api['load'](path) if path.exists() else {}
-        if reviewed.get(page['page']) != api['S']['review_stamp'](run, page, api):
-            checked = {**checked, 'status': 'FAILED', 'stage': 'page-review', 'code': 'PAGE_REVIEW_REQUIRED',
-                       'details': {'page': page['page'], 'recovery': './docs review-page --page ' + page['page']}}
+    checked = api['W']['check'](run, [handoff['page']], False, api, require_review=True)
     result = {'status': 'PAGE_COMPLETED' if checked['status'] == 'UNIT_CHECKED' else 'FAILED',
               'page': handoff['page'], 'context': handoff['digest'], 'checks': {'local': checked},
               'ready': False, 'semanticTruthAssessed': False, 'fullFinalGate': 'NOT_RUN'}

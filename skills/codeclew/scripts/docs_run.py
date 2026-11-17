@@ -1486,7 +1486,7 @@ def main():
             need(args.input is not None, 'PAGE_INPUT_REQUIRED')
             result = W['save_pages'](args.run_dir.absolute(), args.input, globals())
         elif args.command == 'check':
-            result = W['check'](args.run_dir.absolute(), args.page, args.scaffold, globals())
+            result = W['check'](args.run_dir.absolute(), args.page, args.scaffold, globals(), require_review=True)
         elif args.command == 'review-template':
             result = review_for_run(args.run_dir.absolute())
             print(encode(result).decode(), end='')

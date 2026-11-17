@@ -890,7 +890,12 @@ def finish_review(run, value, api):
     return {'status': 'GLOBAL_REVIEW_RECORDED', 'ready': False, 'semanticTruthAssessed': False}
 
 
-def check(run, pages, scaffold_only, api):
+def check(run, pages, scaffold_only, api, *, require_review=False):
+    """Check structural editing feedback or an explicitly completed page.
+
+    Public check and the handoff caller require current recorded decisions;
+    structural previews and scaffold editing do not assert page completion.
+    """
     job, inventory, _ = api['frozen_inputs'](run)
     original = api['load'](run / 'workspace/draft/original.json')
     before = api['tree'](run / 'workspace/draft')
@@ -973,6 +978,20 @@ def check(run, pages, scaffold_only, api):
             except api['E']['Stop'] as error:
                 raise api['Stop'](error.status, page=name.replace('.html', '.md'), **error.details)
         result['internalLinks'] = api['E']['check_links'](documents, (folder / 'html/favicon.svg').read_bytes())
+        if require_review and not scaffold_only:
+            stage = 'page-review'
+            path = run / 'workspace/draft/reviewed-pages.json'
+            reviewed = api['load'](path) if path.exists() else {}
+            missing = [p['page'] for p in original['pages'] if p['page'] in selected
+                       and reviewed.get(p['page']) != api['S']['review_stamp'](run, p, api)]
+            issues = [{'code': 'PAGE_REVIEW_REQUIRED', 'page': name,
+                       'field': 'draft/reviewed-pages.json/' + name} for name in missing]
+            recovery = ' '.join('Obtain current decisions with ./docs review-page --page ' + shlex.quote(name) +
+                '; compare the current page with source and record them with ./docs review-page --page ' +
+                shlex.quote(name) + ' --input FILE; then repeat ./docs check --page ' + shlex.quote(name) + '.'
+                for name in missing)
+            api['need'](not missing, 'PAGE_REVIEW_REQUIRED', pages=missing, issues=issues,
+                        recovery=recovery)
         api['frozen_inputs'](run)
         api['need'](api['tree'](run / 'workspace/draft') == before, 'DRAFT_CHANGED_DURING_CHECK')
         result['status'] = 'SCAFFOLD_CHECKED' if scaffold_only else 'UNIT_CHECKED'
