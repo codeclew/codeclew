@@ -169,10 +169,14 @@ def assemble(value, selected, inventory, original, navigation):
     def add_trace(page, trace, diagram):
         participants = trace['participants']
         ids = {'caller': diagram['participants'][0]['id'], 'handler': diagram['participants'][1]['id']}
+        declared = set()
         for participant in participants:
             key = participant['id']
-            need(isinstance(key, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,31}', key) and key not in ids,
+            need(isinstance(key, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,31}', key) and key not in declared,
                  'INVALID_INLINE_PARTICIPANT', page=page['page'])
+            declared.add(key)
+            if key in ids:
+                continue  # Keep the participant and target already supplied by the entry.
             ids[key] = 'actor-' + key
             diagram['participants'].append({'id': ids[key], 'title': participant['title']})
         for step in trace['steps']:

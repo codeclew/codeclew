@@ -390,7 +390,12 @@ else:
         self.assertNotIn('citation-index.json', prompt)
         self.assertNotIn('compose-original.md', prompt)
         self.assertNotIn(str(self.root), prompt)
-        D['save'](self.seed / 'inline-response.json', self.inline_response())
+        response = self.inline_response()
+        response['entries'][0]['participants'] = [
+            {'id': 'caller', 'title': 'Calling code'},
+            {'id': 'handler', 'title': 'Reservations.reserve'},
+        ]
+        D['save'](self.seed / 'inline-response.json', response)
         result = D['execute'](run)
         self.assertEqual(result['status'], 'READY_PROMOTED', result)
         state = D['load'](run / 'state.json')
@@ -413,8 +418,37 @@ else:
         self.assertIn('HTTP binding or serialized response', entry_html.read_text())
         discovery_html = Path(result['ready']) / 'html/reservations-discovered-f1-1.html'
         self.assertIn('Pass the payload to accept', discovery_html.read_text())
+        starter = D['load'](run / 'inputs/starter/original.json')
+        built = D['load'](run / 'workspace/draft/original.json')
+        def diagram(original):
+            page = next(page for page in original['pages'] if page['page'] == 'reservations-post-reservations.md')
+            return json.loads(page['fragments'][-1]['text'].split('\n', 1)[1].rsplit('```', 1)[0])
+        self.assertEqual(diagram(built)['participants'], diagram(starter)['participants'])
         review = D['load'](run / 'workspace/draft/self-review.json')
         self.assertEqual(review['claims']['reservations-post-reservations.md']['claim-3'], 'EXPLICIT_UNKNOWN')
+
+    def test_inline_rejects_duplicate_or_invalid_actor_ids_and_unknown_step_endpoints(self):
+        run, _, _, _ = self.prepare_inline_fixture()
+        plan = D['load'](run / 'inputs/author-plan.json')
+        inventory = D['load'](run / 'inputs/inventory.json')
+        cases = (
+            (['caller', 'caller'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['handler', 'handler'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['worker', 'worker'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['unexpected/id'], None, 'INVALID_INLINE_PARTICIPANT'),
+            ([], 'from', 'INVALID_INLINE_STEP_PARTICIPANT'),
+            ([], 'to', 'INVALID_INLINE_STEP_PARTICIPANT'),
+        )
+        for roles, endpoint, code in cases:
+            with self.subTest(roles=roles, endpoint=endpoint), self.assertRaises(D['Stop']) as raised:
+                response = self.inline_response()
+                entry = response['entries'][0]
+                entry['participants'] = [{'id': role, 'title': 'Declared participant'} for role in roles]
+                if endpoint:
+                    entry['steps'][0][endpoint] = 'unknown'
+                D['I']['assemble'](response, plan, inventory, D['load'](run / 'inputs/starter/original.json'),
+                                   D['load'](run / 'inputs/starter/navigation.json'))
+            self.assertEqual(raised.exception.code, code)
 
     def test_inline_refuses_wrong_literal_then_repairs_in_same_thread(self):
         text = 'fun reserve(count: Int): Int {\n    if (count < 0) return 0\n    accepted.add(count)\n    return accepted.size\n}\n'
