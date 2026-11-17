@@ -109,6 +109,20 @@ impl Budget {
         error
     }
 
+    fn begin_hydration(&mut self) {
+        self.stage = Stage::HydrateFactPayloads;
+        self.observed_facts = 0;
+        self.observed_payload_bytes = 0;
+        // No payload row has been selected yet. Do not attribute an initial
+        // SQLite/read failure to the last metadata record or compilation.
+        self.compilation_ordinal = None;
+        self.current_compilation_facts = None;
+        self.current_compilation_payload_bytes = None;
+        self.current_record_ordinal = None;
+        self.current_record_payload_bytes = None;
+        self.current_record_size_verified = false;
+    }
+
     fn add(&mut self, size: u64) -> Result<(), ClewError> {
         let next = self
             .observed_facts
@@ -301,9 +315,7 @@ impl FactIndex {
                 }
                 Ok(())
             })?;
-            budget.stage = Stage::HydrateFactPayloads;
-            budget.observed_facts = 0;
-            budget.observed_payload_bytes = 0;
+            budget.begin_hydration();
             progress::run_with_phase("HYDRATE_FACT_PAYLOADS", |phase| {
                 let mut offset = 0u64;
                 while offset < index.count {
@@ -677,6 +689,46 @@ mod tests {
         )
         .unwrap()
         .1
+    }
+
+    #[test]
+    fn first_hydration_storage_failure_does_not_inherit_metadata_record_context() {
+        let mut budget = Budget::new(3);
+        budget.add(100).unwrap();
+        budget.planned_facts = Some(1);
+        budget.planned_payload_bytes = Some(100);
+        budget.compilation_ordinal = Some(3);
+        budget.current_compilation_facts = Some(1);
+        budget.current_compilation_payload_bytes = Some(100);
+        budget.current_record_ordinal = Some(1);
+        budget.current_record_payload_bytes = Some(100);
+        budget.begin_hydration();
+        let index = FactIndex::empty().unwrap();
+        index.connection.execute_batch("DROP TABLE facts").unwrap();
+        let cause = index
+            .connection
+            .prepare("SELECT ordinal FROM facts")
+            .err()
+            .unwrap();
+        let error = budget.attach(io_error(cause));
+        let d = diagnostic(&error).unwrap();
+        assert_eq!(d["stage"], "HYDRATE_FACT_PAYLOADS");
+        assert_eq!(d["observedFacts"], 0);
+        assert_eq!(d["plannedFacts"], 1);
+        assert_eq!(d["plannedPayloadBytes"], 100);
+        for key in [
+            "compilationOrdinal",
+            "currentCompilationFacts",
+            "currentCompilationPayloadBytes",
+            "currentRecordOrdinal",
+            "currentRecordPayloadBytes",
+        ] {
+            assert!(
+                d[key].is_null(),
+                "{key} must be unknown before selecting a hydration row"
+            );
+        }
+        assert_eq!(d["currentRecordSizeVerified"], false);
     }
 
     #[test]

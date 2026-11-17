@@ -893,6 +893,9 @@ fn parse_java_compiler_reader_with_limits(
     let result = (|| {
         loop {
             line.clear();
+            // A read or output-budget refusal must never reuse a previous line.
+            diagnostic.current_line_bytes = None;
+            diagnostic.current_line_complete = None;
             let count = reader
                 .by_ref()
                 .take((line_limit + 3) as u64)
@@ -1077,6 +1080,29 @@ pub(crate) fn compiler_output_failure_fixture() -> ClewError {
 #[cfg(test)]
 mod stream_tests {
     use super::*;
+
+    #[test]
+    fn output_overflow_on_second_line_does_not_reuse_previous_line_size() {
+        let first=br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"BOUNDARY","code":"X","requiredChecks":[],"resolution":"TEST"}"#;
+        let second=br#"{"schema":"codeclew-java-compiler-fact/1.0","kind":"BOUNDARY","code":"LONGER_SECOND_LINE","requiredChecks":[],"resolution":"TEST"}"#;
+        assert_ne!(first.len(), second.len());
+        let mut raw = first.to_vec();
+        raw.push(b'\n');
+        raw.extend(second);
+        let limit = first.len() + 1 + second.len() / 2;
+        let error =
+            parse_java_compiler_reader_with_limits(std::io::Cursor::new(&raw), limit, 1024, 3)
+                .unwrap_err();
+        let d = output_diagnostic::diagnostic(&error).unwrap();
+        assert_eq!(d["acceptedFacts"], 1);
+        assert_eq!(d["observedOutputBytes"], raw.len());
+        assert_eq!(d["exceeded"], serde_json::json!(["OUTPUT_BYTES"]));
+        assert!(
+            d["currentLineBytes"].is_null(),
+            "early output refusal has no accepted current line measurement"
+        );
+        assert_eq!(d["currentLineComplete"], true);
+    }
 
     #[test]
     fn raw_output_budget_reports_distinct_prefixes_and_rejects_extra_fields() {

@@ -643,6 +643,19 @@ fn check_page(
         "{}:{start}",
         binding.report_id.trim_start_matches("sha256:")
     );
+    // Preserve the whole Check outcome even when this page does not contain
+    // its status or unresolved rows. Only a closed terminal code enters metadata.
+    let status = rows
+        .iter()
+        .find(|r| r["section"] == "status")
+        .map(|r| r["record"].clone())
+        .unwrap_or(Value::Null);
+    let cause = rows
+        .iter()
+        .filter(|r| r["section"] == "unresolved")
+        .find_map(|r| {
+            serde_json::from_value::<crate::error::ErrorCode>(r["record"]["reason"].clone()).ok()
+        });
     let mut result = page(
         &binding.report_id,
         rows,
@@ -652,6 +665,8 @@ fn check_page(
             // The public report retains Check's schema and exit-status
             // contract; CHECK_REPORT_SCHEMA belongs to the saved cursor binding.
             "reportSchema": "codeclew-documentation-check/1.0",
+            "status": status,
+            "terminalCause": if status=="UNRESOLVED" {cause} else {None},
             "reportId": binding.report_id,
             "snapshot": binding.snapshot,
             "inputDigest": binding.input_digest,
@@ -1932,6 +1947,55 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paginated_unresolved_check_preserves_terminal_outcome_outside_hidden_rows() {
+        let value = json!({"schema":"codeclew-documentation-check/1.0","status":"UNRESOLVED",
+            "unresolved":{"owned":{"reason":"RESOURCE_LIMIT","nextAction":"private-marker"}}});
+        let binding = CheckReportBinding {
+            schema: CHECK_REPORT_SCHEMA.into(),
+            report_id: format!("sha256:{}", "a".repeat(64)),
+            snapshot: "owned-snapshot".into(),
+            input_digest: "owned-input".into(),
+            context_digest: "owned-context".into(),
+            service_selection: vec![],
+            freshness: json!({"status":"UNRESOLVED"}),
+            output_binding: "owned-output".into(),
+        };
+        let first = check_page(&binding, check_rows(&value), None, 1).unwrap();
+        assert_eq!(first["status"], "UNRESOLVED");
+        assert!(
+            !first["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["section"] == "unresolved")
+        );
+        assert_eq!(
+            super::super::progress::unresolved_check_cause(&first),
+            Some(crate::error::ErrorCode::ResourceLimit)
+        );
+        assert!(!first["terminalCause"].to_string().contains("private"));
+        let next = check_page(
+            &binding,
+            check_rows(&value),
+            first["nextCursor"].as_str(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::progress::unresolved_check_cause(&next),
+            Some(crate::error::ErrorCode::ResourceLimit)
+        );
+        let checked = check_page(
+            &binding,
+            check_rows(&json!({"status":"CHECKED","unresolved":{}})),
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(super::super::progress::unresolved_check_cause(&checked).is_none());
+    }
 
     #[test]
     fn diagnostic_unknown_work_subject_explains_scenario_and_selector_namespaces() {

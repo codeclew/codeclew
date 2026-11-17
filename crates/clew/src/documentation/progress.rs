@@ -337,8 +337,14 @@ pub(crate) fn run_counted_if_active<T>(
 /// A successful command transport can carry a failed retained Check. Preserve
 /// that distinction in both the outer phase and generic request diagnostics.
 pub fn unresolved_check_cause(value: &serde_json::Value) -> Option<ErrorCode> {
-    if value["schema"] != "codeclew-documentation-check/1.0" || value["status"] != "UNRESOLVED" {
+    if (value["schema"] != "codeclew-documentation-check/1.0"
+        && value["reportSchema"] != "codeclew-documentation-check/1.0")
+        || value["status"] != "UNRESOLVED"
+    {
         return None;
+    }
+    if let Ok(cause) = serde_json::from_value(value["terminalCause"].clone()) {
+        return Some(cause);
     }
     Some(
         value["unresolved"]
