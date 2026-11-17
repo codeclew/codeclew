@@ -59,7 +59,7 @@ def page_name(value):
     return value
 
 
-def read(root, relative, maximum=MAX_FILE):
+def artifact_path(root, relative):
     root = Path(root)
     require(not root.is_symlink(), "UNSAFE_PAGE_ARTIFACT")
     relative = PurePosixPath(relative)
@@ -69,6 +69,11 @@ def read(root, relative, maximum=MAX_FILE):
     for part in relative.parts:
         path = path / part
         require(not path.is_symlink(), "UNSAFE_PAGE_ARTIFACT")
+    return path
+
+
+def read(root, relative, maximum=MAX_FILE):
+    path = artifact_path(root, relative)
     require(path.is_file() and path.stat().st_size <= maximum, "PAGE_ARTIFACT_UNAVAILABLE_OR_OVERSIZED", artifact=str(relative))
     return path.read_bytes()
 
@@ -446,11 +451,21 @@ def previous_final_update(root, final, original, pages):
     prepared = json.loads(read(root, PurePosixPath(final['receipts']) / 'prepare.json'))
     indexed = {page_name(row['page']): row['inputMarkdownDigest'] for row in index['pages']}
     require(len(indexed) == len(index['pages']), 'INVALID_PREVIOUS_INDEX')
-    authored = PurePosixPath(final['authoredRoot'])
-    drift = set(pages) ^ set(indexed)
-    for page in set(pages) & set(indexed):
+    authored = artifact_path(root, final['authoredRoot'])
+    present = set()
+    if authored.exists():
+        require(authored.is_dir(), 'UNSAFE_PAGE_ARTIFACT', artifact=final['authoredRoot'])
+        # Finalize accepts flat Markdown pages. Bound pages and their sidecars
+        # under .codeclew are separate artifacts and do not enter this inventory.
+        for path in authored.iterdir():
+            if path.suffix == '.md':
+                require(not path.is_symlink() and path.is_file(), 'UNSAFE_PAGE_ARTIFACT', artifact=path.name)
+                present.add(path.name)
+    expected = set(pages)
+    drift = (expected ^ indexed.keys()) | (expected ^ present)
+    for page in expected & indexed.keys() & present:
         try:
-            actual = read(root, authored / page)
+            actual = read(authored, page)
         except Stop as error:
             if error.status != 'PAGE_ARTIFACT_UNAVAILABLE_OR_OVERSIZED':
                 raise

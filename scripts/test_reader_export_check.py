@@ -633,6 +633,37 @@ for path in source.glob('*.md'):
         self.assertFalse((self.root / 'outside-edit').exists())
         self.assertEqual(original_md.read_text(), 'Unreconciled manual edit.\n')
 
+    def test_addressed_update_names_added_and_removed_authored_markdown(self):
+        self.manual(self.package, 'manual-base')
+        prior = self.finalize(repositories=self.mapping)
+        self.assertEqual(prior['status'], 'CHECKED_PAGES_FINALIZED', prior)
+        previous = self.output
+        authored = previous / prior['authoredRoot']
+        added = authored / 'human-added.md'
+        added.write_text('# Human-added page\n')
+        edits = self.root / 'edits.json'
+        base_original = (previous / prior['original']).read_bytes()
+        edits.write_text(json.dumps({'baseSHA256': M['sha'](base_original)[7:],
+            'edits': [{'page': 'guide.md', 'start': 1, 'delete': 0,
+                       'fragments': [{'text': 'New text.\n'}]}]}))
+        updated = self.root / 'updated'
+        for expected in (['human-added.md'], ['human-added.md', 'index.md']):
+            with self.subTest(pages=expected), self.assertRaises(M['Stop']) as raised:
+                M['update_original'](None, edits, updated, previous_final=previous)
+            self.assertEqual(raised.exception.status, 'PREVIOUS_ORIGINAL_OUT_OF_SYNC')
+            self.assertEqual(raised.exception.details['pages'], expected)
+            self.assertFalse(updated.exists())
+            if len(expected) == 1:
+                (authored / 'index.md').unlink()
+        self.assertEqual(added.read_text(), '# Human-added page\n')
+
+        (authored / 'linked.md').symlink_to(added)
+        with self.assertRaises(M['Stop']) as raised:
+            M['update_original'](None, edits, updated, previous_final=previous)
+        self.assertEqual(raised.exception.status, 'UNSAFE_PAGE_ARTIFACT')
+        self.assertEqual(raised.exception.details['artifact'], 'linked.md')
+        self.assertFalse(updated.exists())
+
     def test_failed_bind_stops_before_render_and_retains_full_native_failure(self):
         self.manual(self.package, 'manual')
         proof = self.a.parent / 'part.stdout.json'; proof.write_bytes(proof.read_bytes() + b' ')
