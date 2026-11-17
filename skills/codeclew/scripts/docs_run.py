@@ -517,6 +517,50 @@ def _prepare_sources(job, inventory, directory):
     return result
 
 
+def start_kind(requirement):
+    return {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
+            'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
+
+
+def starter(inventory, language, directory):
+    """Render only fixed destinations and source-level entry identities."""
+    pages, navigation_services = [], []
+    caller, handler = ('HTTP-клиент', 'Обработчик') if language == 'ru' else ('HTTP client', 'Handler')
+    for service in inventory['services']:
+        overview = service + '.md'
+        overview_fragments = [{'text': '# ' + service + '\n\n<a id="service-scope"></a>\n\n'}]
+        pages.append({'page': overview, 'fragments': overview_fragments})
+        entry_pages, starts = [], []
+        for requirement in inventory['requirements']:
+            if requirement['service'] != service or requirement['kind'] != 'ENTRY':
+                continue
+            page = requirement['page']
+            target = page + '#handler'
+            method = requirement['method']
+            title = method + ' ' + requirement['path'] if method else requirement['entrypoint']
+            fence = '`' * (1 + max((len(token) for token in re.findall(r'`+', title)), default=0))
+            markdown_label = fence + ' ' + ' '.join(title.splitlines()) + ' ' + fence
+            output_target = page.removesuffix('.md') + '.html#handler'
+            overview_fragments.append({'text': '- [' + markdown_label + '](' + output_target + ')\n'})
+            fragments = [{'text': '# ' + markdown_label + '\n\n<a id="handler"></a>\n\n'}]
+            if method:
+                entry = requirement['handlerId']
+                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': caller},
+                             {'id': entry, 'title': handler, 'target': target}],
+                            'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call', 'target': target}]}
+                fragments.append({'text': '```clew-sequence\n' + encode(sequence).decode() + '```\n\n'})
+            pages.append({'page': page, 'fragments': fragments})
+            entry_pages.append(page)
+            starts.append({'title': title, 'summary': title, 'target': target, 'kind': start_kind(requirement)})
+        navigation_services.append({'id': service, 'title': service, 'overview': overview,
+                                    'pages': [overview, *entry_pages], 'starts': starts, 'data': []})
+    home = navigation_services[0]
+    directory.mkdir(mode=0o700)
+    save(directory / 'original.json', {'pages': pages})
+    save(directory / 'navigation.json', {'schema': 'codeclew-markdown-navigation/1',
+         'home': {'title': home['title'], 'target': home['overview']}, 'services': navigation_services, 'routes': []})
+
+
 def prepare(job_path, run):
     job = validate_job(load(job_path)); run = Path(run).absolute()
     need(not run.exists(), 'RUN_ALREADY_EXISTS')
@@ -560,6 +604,7 @@ def prepare(job_path, run):
     need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
          nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
     prepare_sources(job, inventory, inputs / 'author-source')
+    starter(inventory, job['language'], inputs / 'starter')
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
             'authorExecutableDigest': sha(Path(job['author']['executable']).read_bytes()),
@@ -574,7 +619,7 @@ def prepare(job_path, run):
     prompt = (SKILL / 'templates/docs-run-prompt.txt').read_text().format(
         request=job['request'], language=job['language'], skill=str(SKILL), clew=job['clew'], root=job['root'], run=str(run),
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
-        prepared_sources=str(inputs / 'author-source/index.md'),
+        prepared_sources=str(inputs / 'author-source/index.md'), starter=str(inputs / 'starter'),
         model=job['author']['model'], repairs=job['budget']['maxRepairs'])
     (run / 'prompt.txt').write_text(prompt, encoding='utf-8')
     pins['promptDigest'] = sha(prompt.encode()); save(run / 'pins.json', pins)
@@ -755,8 +800,11 @@ def full_file_proof(requirement, handles, entries, snapshot):
 
 def review_template(inventory, original):
     requirements = {}
+    scope_anchors = {page['page'] for page in original['pages']
+                     if any('<a id="service-scope"></a>' in fragment.get('text', '') for fragment in page['fragments'])}
     for requirement in inventory['requirements']:
-        row = {'disposition': None, 'section': 'handler' if requirement['kind'] == 'ENTRY' else None}
+        section = 'handler' if requirement['kind'] == 'ENTRY' else 'service-scope' if requirement['page'] in scope_anchors else None
+        row = {'disposition': None, 'section': section}
         if requirement['kind'] == 'ENTRY':
             row['diagram'] = 0
         if requirement['kind'] == 'DISCOVERY':
@@ -819,7 +867,7 @@ def resolve_review(review, inventory, entries, original, defaults=None):
             else:
                 candidates = page_handles
             requirements.append({'requirement': requirement['id'], 'page': requirement['page'],
-                                 'section': 'handler' if requirement['kind'] == 'ENTRY' else None,
+                                 'section': template['requirements'][requirement['id']]['section'],
                                  **({'diagram': 0} if requirement['kind'] == 'ENTRY' else {}),
                                  'evidence': candidates, **row})
         result = {'schema': REVIEW, 'requirements': requirements, 'claims': claims,
@@ -945,7 +993,7 @@ def verify(run, *, debug=False):
         need(set(service_navigation) == set(job['services']) and len(service_navigation) == len(navigation['services']), 'NAVIGATION_SERVICE_SCOPE_MISMATCH')
         for requirement in effective:
             if requirement['kind'] == 'ENTRY':
-                kind = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka', 'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
+                kind = start_kind(requirement)
                 need(any(start['target'] == requirement['page'] + '#handler' and start['kind'] == kind
                          for start in service_navigation[requirement['service']]['starts']),
                      'REQUIRED_START_NAVIGATION_MISSING', requirement=requirement['id'])

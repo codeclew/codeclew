@@ -380,6 +380,51 @@ else:
         self.assertEqual(json.dumps(canonical, sort_keys=True), original_review)
         self.assertTrue(all(row['section'].startswith('#') for row in self.review['requirements'].values()))
 
+    def test_starter_supplies_working_pages_navigation_and_http_entry_for_authored_review(self):
+        draft = self.run / 'workspace/draft'
+        starter = self.run / 'inputs/starter'
+        original = D['load'](starter / 'original.json')
+        navigation = D['load'](starter / 'navigation.json')
+        pages = {page['page']: page['fragments'] for page in original['pages']}
+        entry = self.entry['page']
+        overview = self.service + '.md'
+        self.assertEqual(set(pages), {overview, entry})
+        self.assertIn(entry.removesuffix('.md') + '.html#handler', pages[overview][1]['text'])
+        sequence = json.loads(pages[entry][-1]['text'].split('\n', 1)[1].rsplit('```', 1)[0])
+        first = sequence['steps'][0]
+        self.assertEqual((first['label'], first['to'], first['target']),
+                         ('POST /reservations', self.entry['handlerId'], entry + '#handler'))
+        self.assertEqual(navigation['services'][0]['starts'][0]['target'], entry + '#handler')
+        self.assertFalse(any('id' in item for fragments in pages.values() for item in fragments))
+
+        pages[overview].append({'id': 'overview', 'text': '\nA bounded overview.\n', 'evidence': [self.handle]})
+        pages[entry].insert(1, {'id': 'operation', 'text': 'Accept a reservation.\n\n', 'evidence': [self.handle]})
+        sequence['steps'].append({'from': self.entry['handlerId'], 'to': 'caller',
+                                  'label': 'Return a result', 'kind': 'return'})
+        pages[entry][-1]['text'] = '```clew-sequence\n' + json.dumps(sequence) + '\n```\n'
+        D['save'](draft / 'original.json', original)
+        review = D['review_for_run'](self.run)
+        self.assertEqual(review['requirements'][self.entry['id']]['section'], 'handler')
+        for row in self.inventory['requirements']:
+            assessment = review['requirements'][row['id']]
+            self.assertIsNone(assessment['disposition'])
+            if row['kind'] != 'ENTRY':
+                self.assertEqual(assessment['section'], 'service-scope')
+            if row['kind'] == 'DISCOVERY':
+                self.assertIsNone(assessment['discoveryDisposition'])
+                assessment.update(discoveryDisposition='NO_ADDITIONAL_STARTS', discoveredEntries=[])
+            assessment['disposition'] = 'EXPLAINED'
+        self.assertIsNone(review['visual']['status'])
+        for assessments in review['claims'].values():
+            for key in assessments:
+                self.assertIsNone(assessments[key])
+                assessments[key] = 'SUPPORTED'
+        review.update(unresolved=[], visual={'status': 'UNAVAILABLE', 'reason': 'Owned non-browser fixture'})
+        for name, value in [('original.json', original), ('navigation.json', navigation), ('self-review.json', review)]:
+            D['save'](self.seed / name, value)
+        self.generated()
+        self.assertEqual(self.check()['status'], 'READY')
+
     def test_template_has_no_semantic_pass_or_discovery_outcome(self):
         review = D['review_template'](self.inventory, self.original)
         self.assertTrue(all(row['disposition'] is None for row in review['requirements'].values()))

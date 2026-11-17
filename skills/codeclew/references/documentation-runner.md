@@ -57,9 +57,13 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
-The runner builds its prompt from the request, admitted inputs and versioned
-contract. The author writes draft/original.json, navigation.json, routes.json for
-multiple services, retained citation reads under draft/reads, and the bidirectional
+The runner provides a short author prompt and starter original/navigation files.
+The starter assigns required page names and anchors, links the overview to entry
+pages, and supplies each declared HTTP method/path and first call in its diagram.
+The author copies these files, explains the selected behavior with real citation
+handles from the source indexes, completes the remaining sequence steps, and adds
+any newly discovered starts. For multiple services, also write draft/routes.json.
+Place any additional citation reads under draft/reads and complete the bidirectional
 [self-review protocol](../schemas/docs-run-review.schema.json). Required entry
 pages and handler identities are fixed; additional discovered entry accounts cannot
 replace them. The runner uses the real Markdown lexer and packaged sequence
