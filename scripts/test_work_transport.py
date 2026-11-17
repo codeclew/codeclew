@@ -197,6 +197,58 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(json.loads((self.output/"page-0002.stdout").read_text())["receiptDigest"],"sha256:second")
         self.assertEqual((self.root/"unchanged.md").read_bytes(),b"Human text\r\n")
 
+    def prepared_command(self, page):
+        prepare = self.base / "prepare"
+        raw = ("  " + json.dumps(page, indent=2) + "\n").encode()
+        prepare.with_suffix(".stdout").write_bytes(raw)
+        prepare.with_suffix(".stderr").write_bytes(b"native prepare stderr\n")
+        prepare.with_suffix(".command.json").write_text(json.dumps({
+            "argv": [str(self.launcher), "docs", "work", "prepare"], "exitCode": 0, "seconds": 0.1}))
+        return prepare, raw
+
+    def test_continue_from_prepare_without_repeating_default_read(self):
+        for next_cursor in (None, "next"):
+            with self.subTest(next_cursor=next_cursor):
+                self.output = self.base / ("output-" + str(next_cursor))
+                first = row("COVERAGE", "sample")
+                second = row("DEPENDENCY", "d1")
+                prepare, raw = self.prepared_command(work_page(
+                    [first], next_cursor, 1 + bool(next_cursor), receiptDigest="sha256:prepare"))
+                result = self.collect({"next": {"page": work_page([second], total=2, receiptDigest="sha256:read")}},
+                                      prepared_command=prepare)
+                self.assertEqual(result["status"], "COMPLETE")
+                self.assertTrue(result["terminalCursorObserved"])
+                self.assertIsNone(result["nextCursor"])
+                rows = [first, second] if next_cursor else [first]
+                self.assertEqual(json.loads((self.output / "items.json").read_text()), rows)
+                reused, *continued = result["artifacts"]["pages"]
+                self.assertEqual(reused["origin"], "WORK_PREPARE")
+                self.assertEqual(reused["command"][1:], ["docs", "work", "prepare"])
+                self.assertEqual((self.output / reused["stdout"]).read_bytes(), raw)
+                self.assertEqual((self.output / reused["stderr"]).read_bytes(), b"native prepare stderr\n")
+                self.assertFalse((self.output / "page-0001.stdout").exists())
+                self.assertFalse((self.output / "page-0001.selection.json").exists())
+                if next_cursor:
+                    self.assertEqual(continued[0]["cursor"], next_cursor)
+                    self.assertEqual(json.loads((self.output / "page-0002.selection.json").read_text()), {"cursor": next_cursor})
+                    self.assertEqual(json.loads((self.output / continued[0]["stdout"]).read_text())["receiptDigest"], "sha256:read")
+                else:
+                    self.assertEqual(continued, [])
+
+    def test_prepare_page_uses_the_same_omission_and_identity_guards(self):
+        first = row("SOURCE", "original")
+        omitted = [{"kind": "SOURCE", "id": "oversize"}]
+        prepare, _ = self.prepared_command(work_page([first], omitted=omitted))
+        result = self.collect({}, prepared_command=prepare)
+        self.assertEqual(result["reason"], "OMITTED_RECORDS_REQUIRE_NATIVE_INSPECTION")
+        self.assertEqual(json.loads((self.output / "omitted.json").read_text()), omitted)
+        self.output = self.base / "drifted"
+        prepare, _ = self.prepared_command(work_page([first], "next", 2))
+        result = self.collect({"next": {"page": work_page([row("SOURCE", "later")], total=2, contextDigest="changed")}},
+                              prepared_command=prepare)
+        self.assertEqual(result["reason"], "PAGE_IDENTITY_CHANGED")
+        self.assertEqual(result["rows"], 1)
+
     def test_work_initial_identity_and_future_authority_drift_fail_closed(self):
         for field in ("work","snapshot","subject","contextDigest","inputDigest","membershipDigest","authority","futureEvidenceAuthority"):
             with self.subTest(field=field),tempfile.TemporaryDirectory() as directory:

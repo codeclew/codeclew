@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -66,7 +67,8 @@ def page_identity(page, work, kind="work-initial"):
 
 
 def collect(launcher, root, work, output, *, max_pages=1000,
-            timeout=120, max_page_bytes=256 * 1024, kind="work-initial", references=None, selection=None):
+            timeout=120, max_page_bytes=256 * 1024, kind="work-initial", references=None, selection=None,
+            prepared_command=None):
     if kind not in ("work-initial", "work-evidence", "work-selection"):
         raise Incomplete("UNSUPPORTED_COLLECTION_KIND")
     if kind == "work-evidence" and (not isinstance(references, list) or not 1 <= len(references) <= 8
@@ -75,6 +77,8 @@ def collect(launcher, root, work, output, *, max_pages=1000,
         raise Incomplete("INVALID_EXACT_REFERENCES")
     if kind == "work-selection" and not isinstance(selection, dict):
         raise Incomplete("MISSING_EXPLICIT_WORK_SELECTION")
+    if prepared_command is not None and kind != "work-initial":
+        raise Incomplete("PREPARED_PAGE_REQUIRES_INITIAL_COLLECTION")
     selected_base = dict(selection or {})
     initial_cursor = selected_base.pop("cursor", None)
     tail = kind == "work-selection" and initial_cursor is not None
@@ -88,29 +92,38 @@ def collect(launcher, root, work, output, *, max_pages=1000,
     try:
         for index in range(max_pages):
             stem = f"page-{index + 1:04d}"
-            selection_path = output / (stem + ".selection.json")
-            selected = dict(selected_base) if kind == "work-selection" else ({"references": references} if kind == "work-evidence" else {})
-            if cursor is not None:
-                selected["cursor"] = cursor
-            save(selection_path, selected)
-            command = [str(launcher), "docs", "work", "read", "--root", str(root),
-                       "--work", work, "--input", str(selection_path)]
-            record = {"command": command, "cursor": cursor, "exitCode": None,
-                      "stdout": stem + ".stdout", "stderr": stem + ".stderr"}
-            save(output / (stem + ".command.json"), record)
-            pages.append(record)
-            start = time.monotonic()
-            with (output / record["stdout"]).open("xb") as stdout, (output / record["stderr"]).open("xb") as stderr:
-                try:
-                    process = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=stdout,
-                                             stderr=stderr, timeout=timeout, check=False)
-                    record["exitCode"] = process.returncode
-                except subprocess.TimeoutExpired:
-                    record["failure"] = "PROCESS_TIMEOUT_NO_AUTOMATIC_RETRY"
-                except OSError as error:
-                    record["failure"] = "PROCESS_START_" + type(error).__name__
-            record["seconds"] = time.monotonic() - start
-            save(output / (stem + ".command.json"), record)
+            if index == 0 and prepared_command is not None:
+                receipt = Path(str(prepared_command) + ".command.json")
+                native = json.loads(receipt.read_bytes(), object_pairs_hook=unique_object, parse_constant=reject_constant)
+                record = {"command": native["argv"], "cursor": None, "exitCode": native["exitCode"],
+                          "seconds": native["seconds"], "origin": "WORK_PREPARE",
+                          **{name: os.path.relpath(str(prepared_command) + "." + name, output) for name in ("stdout", "stderr")}}
+                pages.append(record)
+                save(output / (stem + ".command.json"), record)
+            else:
+                selection_path = output / (stem + ".selection.json")
+                selected = dict(selected_base) if kind == "work-selection" else ({"references": references} if kind == "work-evidence" else {})
+                if cursor is not None:
+                    selected["cursor"] = cursor
+                save(selection_path, selected)
+                command = [str(launcher), "docs", "work", "read", "--root", str(root),
+                           "--work", work, "--input", str(selection_path)]
+                record = {"command": command, "cursor": cursor, "exitCode": None,
+                          "stdout": stem + ".stdout", "stderr": stem + ".stderr"}
+                save(output / (stem + ".command.json"), record)
+                pages.append(record)
+                start = time.monotonic()
+                with (output / record["stdout"]).open("xb") as stdout, (output / record["stderr"]).open("xb") as stderr:
+                    try:
+                        process = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=stdout,
+                                                 stderr=stderr, timeout=timeout, check=False)
+                        record["exitCode"] = process.returncode
+                    except subprocess.TimeoutExpired:
+                        record["failure"] = "PROCESS_TIMEOUT_NO_AUTOMATIC_RETRY"
+                    except OSError as error:
+                        record["failure"] = "PROCESS_START_" + type(error).__name__
+                record["seconds"] = time.monotonic() - start
+                save(output / (stem + ".command.json"), record)
             if record.get("failure"):
                 raise Incomplete(record["failure"])
             if record["exitCode"] != 0:

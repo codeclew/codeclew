@@ -1,0 +1,373 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "DOCUMENTED",
+        "NEEDS_WORKSPACE"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "reviewed": {
+      "type": "boolean"
+    },
+    "overview": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "disposition": {
+              "type": "string",
+              "enum": [
+                "EXPLAINED",
+                "EXPLICIT_UNKNOWN"
+              ]
+            },
+            "claims": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/claim"
+              }
+            }
+          },
+          "required": [
+            "title",
+            "disposition",
+            "claims"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "discovery": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/discovery"
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "visual": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "UNAVAILABLE"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "reviewed",
+    "overview",
+    "entries",
+    "discovery",
+    "unresolved",
+    "visual"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "properties": {
+        "heading": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "cites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assessment": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED",
+            "EXPLICIT_UNKNOWN"
+          ]
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "heading",
+        "text",
+        "cites",
+        "assessment",
+        "returns"
+      ],
+      "additionalProperties": false
+    },
+    "participant": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "call",
+            "return",
+            "async",
+            "await",
+            "note"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "label",
+        "condition"
+      ],
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "EXPLAINED",
+            "EXPLICIT_UNKNOWN"
+          ]
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/participant"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
+      },
+      "required": [
+        "ref",
+        "disposition",
+        "claims",
+        "participants",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "start": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "HTTP",
+            "KAFKA",
+            "SCHEDULED",
+            "OTHER"
+          ]
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "initiator": {
+          "type": "string"
+        },
+        "startLabel": {
+          "type": "string"
+        },
+        "startKind": {
+          "type": "string",
+          "enum": [
+            "call",
+            "return",
+            "async",
+            "await",
+            "note"
+          ]
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "EXPLAINED",
+            "EXPLICIT_UNKNOWN"
+          ]
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/participant"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "method",
+        "path",
+        "title",
+        "initiator",
+        "startLabel",
+        "startKind",
+        "disposition",
+        "claims",
+        "participants",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "EXPLAINED",
+            "EXPLICIT_UNKNOWN"
+          ]
+        },
+        "discovery": {
+          "type": "string",
+          "enum": [
+            "NO_ADDITIONAL_STARTS",
+            "ADDITIONAL_STARTS"
+          ]
+        },
+        "starts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/start"
+          }
+        }
+      },
+      "required": [
+        "ref",
+        "disposition",
+        "discovery",
+        "starts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -21,6 +21,10 @@
         "visual"
       ],
       "properties": {
+        "returnClaims": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
         "schema": {
           "const": "codeclew-docs-run-review/1.0"
         },
@@ -128,6 +132,10 @@
         "visual"
       ],
       "properties": {
+        "returnClaims": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
         "schema": {
           "const": "codeclew-docs-run-review/1.1"
         },

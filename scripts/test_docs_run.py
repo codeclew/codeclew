@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 D = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run.py'))
 F = runpy.run_path(str(ROOT / 'scripts/test_author_citations.py'))
 RENDERER = Path(os.environ.get('CODECLEW_MARKDOWN_RENDERER', ROOT / 'skills/codeclew/examples/markdown-renderer'))
+REQUEST_MARKER = 'AUTHOR-INSTRUCTIONS-7C5B'
 
 
 class DocsRunTests(unittest.TestCase):
@@ -38,16 +39,21 @@ if mode!='missing-thread':
 if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
-if mode!='empty':
- for source in seed.iterdir():
-  target=draft/source.name
-  if target.is_dir():shutil.rmtree(target)
-  elif target.exists():target.unlink()
-  if source.is_dir():shutil.copytree(source,target)
-  else:shutil.copyfile(source,target)
-(draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
-if mode=='repair-on-resume' and 'resume' in sys.argv:
- path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
+if '--output-schema' in sys.argv:
+ source=seed/('inline-repair.json' if 'resume' in sys.argv and (seed/'inline-repair.json').exists() else 'inline-response.json')
+ Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(source.read_bytes())
+else:
+ if mode!='empty':
+  for source in seed.iterdir():
+   if source.name.startswith('inline-'):continue
+   target=draft/source.name
+   if target.is_dir():shutil.rmtree(target)
+   elif target.exists():target.unlink()
+   if source.is_dir():shutil.copytree(source,target)
+   else:shutil.copyfile(source,target)
+ (draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
+ if mode=='repair-on-resume' and 'resume' in sys.argv:
+  path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
 usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
 counter=Path.cwd()/'owned-cumulative-usage.json'
 if 'resume' in sys.argv and counter.exists():
@@ -70,7 +76,7 @@ else:
  print(json.dumps({{'snapshot':{F['SNAPSHOT']!r},'items':[{{'kind':'SOURCE','id':identity,'record':source}}] if identity==source['id'] else []}}))
 ''')
         self.clew.chmod(0o700)
-        self.job = {'schema': D['SCHEMA'], 'request': 'Document the reservation service', 'clew': str(self.clew),
+        self.job = {'schema': D['SCHEMA'], 'request': 'Document the reservation service. ' + REQUEST_MARKER, 'clew': str(self.clew),
                     'root': str(self.root / 'retained'), 'snapshot': F['SNAPSHOT'], 'services': [self.service], 'language': 'en',
                     'renderer': str(RENDERER), 'node': str(Path(shutil.which('node')).absolute()),
                     'author': {'executable': str(self.backend), 'model': 'owned-test-backend', 'reasoningEffort': 'max'},
@@ -83,8 +89,9 @@ else:
                  'entrypoint': {'id': 'reserve', 'kind': 'HTTP_ENDPOINT', 'sourceIds': [self.source['id']],
                  'trigger': {'authority': 'OWNED_TEST_DECLARATION', 'sourceRoutes': [{'method': 'POST', 'path': '/reservations'}]}}}}
         file = {'kind': 'THREAD_FILE', 'record': {'path': self.source['file'], 'input': {'coverage': 'SYNTAX', 'digest': 'sha256:owned-syntax-fingerprint-not-a-text-hash'}}}
+        self.native_entry = entry
         def collect(launcher, root, work, output, **kwargs):
-            output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs else [coverage])
+            output.mkdir(); D['save'](output / 'items.json', [entry, file] if kwargs.get('selection') else [coverage])
             return {'status': 'COMPLETE', 'omittedRecords': 0,
                     'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
         with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
@@ -94,7 +101,7 @@ else:
         self.inventory = D['load'](self.run / 'inputs/inventory.json')
         self.entry = next(r for r in self.inventory['requirements'] if r['kind'] == 'ENTRY')
         (self.seed / 'reads').mkdir()
-        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, record=self.source)
+        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=self.source)
         self.handle = view['records'][0]['cite']
         diagram = {'title': 'Reserve an item', 'participants': [{'id': 'caller', 'title': 'Caller'},
                    {'id': self.entry['handlerId'], 'title': 'Reservation handler', 'target': self.entry['page'] + '#handler'}],
@@ -174,6 +181,82 @@ else:
             D['compiler_source_pairs']([{'id':'one', 'sourceIds':['s1'], 'sourceReferences':['e1']},
                                         {'id':'two', 'sourceIds':['s1'], 'sourceReferences':['e2']}])
 
+    def test_prepare_keeps_discovery_when_native_has_no_triggers(self):
+        scope = self.inventory['services'][self.service]
+        def collect(launcher, root, work, output, **kwargs):
+            output.mkdir()
+            D['save'](output / 'items.json', scope['sourceInventory'] if kwargs.get('selection') else [scope['coverage']])
+            return {'status': 'COMPLETE', 'omittedRecords': 0,
+                    'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+        run = self.root / 'discovery-only'
+        with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
+                'prepare_sources': lambda job, inventory, directory: directory.mkdir()}):
+            self.assertEqual(D['prepare'](self.job_path, run)['status'], 'PREPARED')
+        rows = D['load'](run / 'inputs/inventory.json')['requirements']
+        self.assertEqual([(r['kind'], r['page']) for r in rows],
+                         [('DISCOVERY', self.service + '.md'), ('SERVICE', self.service + '.md')])
+        self.assertEqual(rows[0]['file'], self.source['file'])
+
+    def test_required_page_limit_matches_compose_before_body_reads(self):
+        scope = self.inventory['services'][self.service]
+        limit = D['M']['MAX_PAGES']
+        calls = []
+        for routes in (limit - 1, limit):
+            entry = {'kind': 'THREAD_ENTRY', 'record': {'classification': 'DISCOVERED_TRIGGER',
+                       'entrypoint': {'id': 'many', 'kind': 'HTTP_ENDPOINT', 'sourceIds': [self.source['id']],
+                                      'trigger': {'sourceRoutes': [{'method': 'GET', 'path': '/route-' + str(i)}
+                                                                   for i in range(routes)]}}}}
+            def collect(launcher, root, work, output, **kwargs):
+                output.mkdir()
+                D['save'](output / 'items.json', [entry] if kwargs.get('selection') else [scope['coverage']])
+                return {'status': 'COMPLETE', 'omittedRecords': 0,
+                        'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+            run = self.root / ('route-limit-' + str(routes))
+            with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__, {
+                    'prepare_sources': lambda job, inventory, directory: calls.append(directory.mkdir())}):
+                if routes < limit:
+                    self.assertEqual(D['prepare'](self.job_path, run)['status'], 'PREPARED')
+                else:
+                    with self.assertRaises(D['Stop']) as raised:
+                        D['prepare'](self.job_path, run)
+                    self.assertEqual(raised.exception.code, 'REQUIRED_PAGE_LIMIT')
+                    self.assertEqual(raised.exception.details['requiredPages'], limit + 1)
+                    self.assertEqual(raised.exception.details['limit'], limit)
+                    self.assertIn('entry pages', raised.exception.details['nextAction'])
+            rows = D['load'](run / 'inputs/inventory.json')['requirements']
+            self.assertEqual(len({r['page'] for r in rows}), routes + 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_prepare_reads_executable_and_indexes_128_file_only_resources(self):
+        file = self.source['file']
+        files = ['resources/file-' + str(i) + '.txt' for i in range(128)]
+        scope = self.inventory['services'][self.service]
+        scope['sourceInventory'] += [{'kind': 'THREAD_SCOPE'}] + [
+            {'kind': 'THREAD_FILE', 'record': {'path': path, 'input': {'coverage': 'FILE_ONLY'}}}
+            for path in files]
+        calls = []
+        def command(argv, directory, label, **kwargs):
+            calls.append(label)
+            out = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                out.mkdir()
+                D['save'](out / 'packet.json', {'queryComplete': True, 'choices': [{'file': path} for path in [file] + files],
+                                              'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                self.assertEqual(D['load'](argv[argv.index('--selection') + 1]), [{'file': file}])
+                self.assertEqual(argv[argv.index('--packet') + 1], str(directory / 'discovery/packet.json'))
+                shutil.copytree(self.manifest.parent, out)
+        directory = self.root / 'source-preparation'
+        with patch.dict(D['_prepare_sources'].__globals__, {'command': command}):
+            result = D['prepare_sources'](self.job, self.inventory, directory)
+        self.assertEqual(calls, ['discover', 'read'])
+        self.assertEqual(result['sourceFiles'], 1)
+        self.assertEqual(result['services'][self.service]['deferredResourceFiles'], sorted(files))
+        self.assertIn('COMPLETE_RETAINED_GIT_BLOB', (directory / 'index.json').read_text())
+        index = (directory / self.service / 'index.md').read_text()
+        self.assertIn('read-files with discovery/packet.json', index)
+        self.assertTrue(all('- ' + file + '\n' in index for file in files))
+
     def test_preparation_file_limit_refuses_before_body_reads(self):
         calls = []
         def command(argv, directory, label, **kwargs):
@@ -215,6 +298,282 @@ else:
         self.assertEqual(promoted['status'], 'READY_PROMOTED')
         self.assertFalse(normal['semanticTruthAssessed']); self.assertTrue(normal['semanticReviewRecorded'])
         self.assertEqual(normal['authorVisualReview']['status'], 'UNAVAILABLE')
+
+    def test_reader_chrome_uses_navigation_home_title(self):
+        self.navigation['home']['title'] = '--reserve & fulfil'
+        self.seed_files()
+        self.generated()
+        result = self.check()
+        self.assertEqual(result['status'], 'READY', result)
+        self.assertIn(REQUEST_MARKER, D['load'](self.run / 'inputs/job.json')['request'])
+        html_root = self.run / result['output'] / 'html'
+        pages = sorted(html_root.glob('*.html'))
+        self.assertEqual(len(pages), 2)
+        for page in pages:
+            with self.subTest(page=page.name):
+                html = page.read_text()
+                self.assertRegex(html, r'<span class="reader-project">\s*--reserve &amp; fulfil</span>')
+                self.assertRegex(html, r' —\s+--reserve &amp; fulfil</title>')
+                self.assertNotIn(REQUEST_MARKER, html)
+
+    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False):
+        text = body or ('fun reserve(count: Int): Int {\n'
+                        '    if (count < 0) return 0\n'
+                        '    accepted.add(count)\n'
+                        '    events.on("note.ready") { accept(it) }\n'
+                        '    return accepted.size\n}\n')
+        raw = text.encode()
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+        source = {**self.source, 'file': 'src/Reservations.kt', 'text': text,
+                  'textDigest': D['sha'](raw), 'endLine': len(text.splitlines()),
+                  'occurrence': {**self.source['occurrence'], 'blob': blob, 'endByte': len(raw)}}
+        shutil.rmtree(self.manifest.parent)
+        self.manifest, _, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=source)
+        scope = self.inventory['services'][self.service]
+        files = [source['file']]
+        inventory_rows = [self.native_entry, {'kind': 'THREAD_SCOPE'},
+            {'kind': 'THREAD_FILE', 'record': {'path': source['file'], 'input': {'coverage': 'SYNTAX',
+              'digest': 'sha256:owned-syntax-fingerprint'}}}]
+        if extra_resource:
+            files.append('settings.properties')
+            inventory_rows.append({'kind': 'THREAD_FILE', 'record': {'path': files[-1], 'input': {'coverage': 'FILE_ONLY'}}})
+        member_checks = []
+
+        def collect(launcher, root, work, output, **kwargs):
+            selected = (kwargs.get('selection') or {}).get('query', {}).get('kind')
+            output.mkdir(parents=True)
+            if selected == 'SOURCE':
+                assert kwargs['selection']['query']['file'] == source['file']
+                member_checks.append(source['id'])
+                rows = [{'id': source['id'], 'kind': 'SOURCE_NAVIGATION', 'record': {
+                    'source': {key: value for key, value in source.items() if key != 'text'},
+                    'recordDigest': F['digest'](source), 'textDelivered': False, 'authority': 'NAVIGATION_ONLY'}}]
+            else:
+                rows = inventory_rows if selected == 'THREAD_INVENTORY' else [scope['coverage']]
+            D['save'](output / 'items.json', rows)
+            return {'status': 'COMPLETE', 'omittedRecords': 0,
+                    'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+
+        native = D['command']
+        def command(argv, directory, label, **kwargs):
+            if label not in ('discover', 'read'):
+                return native(argv, directory, label, **kwargs)
+            output = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                output.mkdir()
+                D['save'](output / 'packet.json', {'queryComplete': True, 'choices': [{'file': name} for name in files],
+                           'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                shutil.copytree(self.manifest.parent, output)
+
+        self.job['budget']['maxRepairs'] = repairs
+        D['save'](self.job_path, self.job)
+        run = self.root / 'inline-run'
+        self.enterContext(patch.dict(D['T'], {'collect': collect}))
+        with patch.dict(D['prepare'].__globals__, {'command': command}):
+            receipt = D['prepare'](self.job_path, run)
+        shutil.rmtree(self.manifest.parent)
+        return run, receipt, member_checks, source
+
+    def inline_response(self, *, added=True, literal='0'):
+        def claim(text, *, returns=(), assessment='SUPPORTED'):
+            return {'heading': '', 'text': text, 'cites': ['S1'], 'assessment': assessment, 'returns': list(returns)}
+        def step(kind, label, condition=None, to='caller'):
+            return {'from': 'handler', 'to': to, 'kind': kind, 'label': label, 'condition': condition}
+        entry = {'ref': 'E1', 'disposition': 'EXPLAINED', 'participants': [],
+                 'claims': [claim('When `count < 0`, the method returns `' + literal + '` without adding to the list.', returns=['R1']),
+                            claim('Otherwise it appends the count to `accepted` and returns the list size.'),
+                            claim('The captured source gives no HTTP binding or serialized response.', assessment='EXPLICIT_UNKNOWN')],
+                 'steps': [step('return', 'Return ' + literal + ' without changing the list', 'count < 0'),
+                           step('note', 'Append the input', 'count >= 0', to='handler'),
+                           step('return', 'Return the updated list size', 'count >= 0')]}
+        start = {'kind': 'OTHER', 'title': 'Note arrival', 'initiator': 'Event hub',
+                 'method': None, 'path': None, 'startLabel': 'Receive note.ready', 'startKind': 'async',
+                 'disposition': 'EXPLAINED', 'claims': [claim('The callback passes the payload to `accept`.')],
+                 'participants': [], 'steps': [step('note', 'Pass the payload to accept', to='handler')]}
+        return {'status': 'DOCUMENTED', 'reason': '', 'reviewed': True,
+                'overview': {'title': 'Reservation behavior', 'disposition': 'EXPLAINED',
+                             'claims': [claim('The handler appends accepted reservations to `accepted`.')]},
+                'entries': [entry], 'discovery': [{'ref': 'F1', 'disposition': 'EXPLAINED',
+                    'discovery': 'ADDITIONAL_STARTS' if added else 'NO_ADDITIONAL_STARTS', 'starts': [start] if added else []}],
+                'unresolved': ['Wire response and registration remain unknown.'],
+                'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
+
+    def test_inline_normal_entry_point_assembles_explicit_content_and_discovered_start(self):
+        run, prepared, membership, source = self.prepare_inline_fixture()
+        self.assertEqual(prepared['authorMode'], 'INLINE')
+        prompt = (run / 'prompt.txt').read_text()
+        self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
+        self.assertIn('"path":"/reservations"', prompt)
+        self.assertNotIn('citation-index.json', prompt)
+        self.assertNotIn('compose-original.md', prompt)
+        self.assertNotIn(str(self.root), prompt)
+        response = self.inline_response()
+        response['entries'][0]['participants'] = [
+            {'id': 'caller', 'title': 'Calling code'},
+            {'id': 'handler', 'title': 'Reservations.reserve'},
+        ]
+        D['save'](self.seed / 'inline-response.json', response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        attempt, = state['attempts']
+        self.assertEqual(attempt['authorMode'], 'INLINE')
+        self.assertIn('--output-schema', attempt['argv'])
+        self.assertIn('shell_tool', attempt['argv'])
+        self.assertIn('unified_exec', attempt['argv'])
+        self.assertIn('read-only', attempt['argv'])
+        self.assertNotIn('--add-dir', attempt['argv'])
+        self.assertEqual(attempt['usage'], {'input_tokens': 20, 'cached_input_tokens': 10, 'output_tokens': 10})
+        self.assertEqual(attempt['argv'][attempt['argv'].index('-m') + 1], self.job['author']['model'])
+        self.assertIn('model_reasoning_effort="max"', attempt['argv'])
+        self.assertGreater(len(membership), 0)
+        report = D['load'](run / 'report.json')
+        self.assertFalse(report['semanticTruthAssessed'])
+        self.assertEqual(report['authorVisualReview']['status'], 'UNAVAILABLE')
+        entry_html = Path(result['ready']) / 'html/reservations-post-reservations.html'
+        self.assertIn('Return the updated list size', entry_html.read_text())
+        self.assertIn('HTTP binding or serialized response', entry_html.read_text())
+        discovery_html = Path(result['ready']) / 'html/reservations-discovered-f1-1.html'
+        self.assertIn('Pass the payload to accept', discovery_html.read_text())
+        starter = D['load'](run / 'inputs/starter/original.json')
+        built = D['load'](run / 'workspace/draft/original.json')
+        def diagram(original):
+            page = next(page for page in original['pages'] if page['page'] == 'reservations-post-reservations.md')
+            return json.loads(page['fragments'][-1]['text'].split('\n', 1)[1].rsplit('```', 1)[0])
+        self.assertEqual(diagram(built)['participants'], diagram(starter)['participants'])
+        review = D['load'](run / 'workspace/draft/self-review.json')
+        self.assertEqual(review['claims']['reservations-post-reservations.md']['claim-3'], 'EXPLICIT_UNKNOWN')
+
+    def test_inline_rejects_duplicate_or_invalid_actor_ids_and_unknown_step_endpoints(self):
+        run, _, _, _ = self.prepare_inline_fixture()
+        plan = D['load'](run / 'inputs/author-plan.json')
+        inventory = D['load'](run / 'inputs/inventory.json')
+        cases = (
+            (['caller', 'caller'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['handler', 'handler'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['worker', 'worker'], None, 'INVALID_INLINE_PARTICIPANT'),
+            (['unexpected/id'], None, 'INVALID_INLINE_PARTICIPANT'),
+            ([], 'from', 'INVALID_INLINE_STEP_PARTICIPANT'),
+            ([], 'to', 'INVALID_INLINE_STEP_PARTICIPANT'),
+        )
+        for roles, endpoint, code in cases:
+            with self.subTest(roles=roles, endpoint=endpoint), self.assertRaises(D['Stop']) as raised:
+                response = self.inline_response()
+                entry = response['entries'][0]
+                entry['participants'] = [{'id': role, 'title': 'Declared participant'} for role in roles]
+                if endpoint:
+                    entry['steps'][0][endpoint] = 'unknown'
+                D['I']['assemble'](response, plan, inventory, D['load'](run / 'inputs/starter/original.json'),
+                                   D['load'](run / 'inputs/starter/navigation.json'))
+            self.assertEqual(raised.exception.code, code)
+
+    def test_inline_refuses_wrong_literal_then_repairs_in_same_thread(self):
+        text = 'fun reserve(count: Int): Int {\n    if (count < 0) return 0\n    accepted.add(count)\n    return accepted.size\n}\n'
+        run, _, _, _ = self.prepare_inline_fixture(text, repairs=1)
+        D['save'](self.seed / 'inline-response.json', self.inline_response(added=False, literal='7'))
+        D['save'](self.seed / 'inline-repair.json', self.inline_response(added=False))
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        one, two = D['load'](run / 'state.json')['attempts']
+        self.assertEqual((one['authorMode'], two['authorMode']), ('INLINE', 'INLINE'))
+        self.assertEqual(one['threadId'], two['threadId'])
+        self.assertEqual(two['argv'][two['argv'].index('resume') + 1], one['threadId'])
+        prompt = D['load'](run / 'attempts/1/prompt.txt')
+        self.assertEqual(prompt['failures']['entrySequences']['code'], 'LITERAL_RETURN_VALUE_MISMATCH')
+        self.assertIn('`7`', (run / 'attempts/0/draft/original.json').read_text())
+        self.assertIn('`0`', (run / 'attempts/1/draft/original.json').read_text())
+        review = D['load'](run / 'workspace/draft/self-review.json')
+        self.assertIn('NO_ADDITIONAL_STARTS', json.dumps(review))
+        self.assertEqual(D['load'](run / 'state.json')['modelTokens'], 40)
+
+    def test_inline_explicit_need_for_evidence_recovers_in_workspace_within_same_repair_budget(self):
+        run, _, _, _ = self.prepare_inline_fixture(repairs=1)
+        plan = D['load'](run / 'inputs/author-plan.json')
+        response = self.inline_response()
+        D['save'](self.seed / 'inline-response.json', {**response, 'status': 'NEEDS_WORKSPACE',
+            'reason': 'The requested diagram requires the extra retained dependency.'})
+        # A normal workspace author writes the established draft contract.
+        workspace_draft = D['I']['assemble'](response, plan, D['load'](run / 'inputs/inventory.json'),
+            D['load'](run / 'inputs/starter/original.json'), D['load'](run / 'inputs/starter/navigation.json'))
+        for name, value in workspace_draft.items():
+            D['save'](self.seed / name, value)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        one, two = D['load'](run / 'state.json')['attempts']
+        self.assertEqual(one['assemblyFailure']['code'], 'INLINE_AUTHOR_NEEDS_WORKSPACE')
+        self.assertEqual((one['authorMode'], two['authorMode']), ('INLINE', 'WORKSPACE'))
+        self.assertEqual(one['threadId'], two['threadId'])
+        self.assertNotIn('--output-schema', two['argv'])
+        self.assertIn('--add-dir', two['argv'])
+        prompt = (run / 'attempts/1/prompt.txt').read_text()
+        self.assertIn('Retained root and snapshot', prompt)
+        self.assertIn('requires the extra retained dependency', prompt)
+        self.assertEqual(D['load'](run / 'state.json')['modelTokens'], 40)
+
+    def test_inline_requires_the_authors_explicit_discovery(self):
+        run, _, _, _ = self.prepare_inline_fixture()
+        D['save'](self.seed / 'inline-response.json', {**self.inline_response(), 'discovery': []})
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['checks']['output']['code'], 'INLINE_SCOPE_ACCOUNTING_MISMATCH')
+        self.assertEqual(result['checks']['output']['details']['field'], 'ref')
+        self.assertFalse((run / 'ready').exists())
+
+    def test_retained_resource_selects_workspace(self):
+        root, receipt, _, _ = self.prepare_inline_fixture(extra_resource=True)
+        self.assertEqual((receipt['authorMode'], receipt['authorModeReason']),
+                         ('WORKSPACE', 'RETAINED_RESOURCES_ON_REQUEST'))
+        self.assertIn('Prepared source index', (root / 'prompt.txt').read_text())
+
+    def test_large_fully_captured_source_selects_workspace(self):
+        source = '// ' + 'retained detail ' * 850 + '\nfun inspect() = 1\n'
+        root, receipt, _, _ = self.prepare_inline_fixture(source)
+        self.assertGreater(len(source.encode()), D['I']['MAX_SOURCE_BYTES'])
+        self.assertEqual((receipt['authorMode'], receipt['authorModeReason']),
+                         ('WORKSPACE', 'INLINE_SOURCE_BYTE_LIMIT'))
+        self.assertIn('Prepared source index', (root / 'prompt.txt').read_text())
+
+    def test_no_native_entry_supports_evidenced_discovery_with_or_without_starts(self):
+        self.inventory['requirements'].remove(self.entry)
+        D['save'](self.run / 'inputs/inventory.json', self.inventory)
+        D['save'](self.run / 'workspace/inventory.json', self.inventory)
+        pins = D['load'](self.run / 'pins.json')
+        pins.update(inputFiles=D['tree'](self.run / 'inputs'), inventoryDigest=D['digest'](self.inventory))
+        D['save'](self.run / 'pins.json', pins)
+
+        for has_start in (False, True):
+            with self.subTest(has_start=has_start):
+                page = self.service + '.md'
+                target = page + '#handler'
+                fragments = [{'text': '# Reservations\n\n<a id="handler"></a>\n\n'},
+                             {'id': 'coverage', 'text': 'Scope explained here.\n', 'evidence': [self.handle]}]
+                accounts = [{**row, 'section': 'handler'} for row in self.review['requirements'] if row['page'] == page]
+                discovery = next(row for row in accounts if 'discoveryDisposition' in row)
+                starts = []
+                if has_start:
+                    diagram = {'title': 'On invoice.ready', 'participants': [{'id': 'event', 'title': 'Event'},
+                        {'id': 'discovered-invoice', 'title': 'Listener', 'target': target}],
+                        'steps': [{'from': 'event', 'to': 'discovered-invoice', 'label': 'invoice.ready',
+                                   'kind': 'async', 'target': target}]}
+                    fragments.append({'text': '\n```clew-sequence\n' + json.dumps(diagram) + '\n```\n'})
+                    starts.append({'title': 'Invoice ready', 'target': target, 'kind': 'other',
+                                   'summary': 'Source shows a registered callback.'})
+                    discovery.update(discoveryDisposition='ADDITIONAL_STARTS', discoveredEntries=[
+                        {'id': 'invoice', 'kind': 'OTHER', 'page': page, 'section': 'handler', 'diagram': 0,
+                         'evidence': [self.handle], 'disposition': 'EXPLAINED'}])
+                D['save'](self.seed / 'original.json', {'pages': [{'page': page, 'fragments': fragments}]})
+                navigation = {**self.navigation, 'services': [{**self.navigation['services'][0],
+                                                               'pages': [page], 'starts': starts}]}
+                D['save'](self.seed / 'navigation.json', navigation)
+                D['save'](self.seed / 'self-review.json', {**self.review, 'requirements': accounts,
+                    'claims': [{'page': page, 'claim': 'coverage', 'evidence': [self.handle], 'disposition': 'SUPPORTED'}]})
+                D['save'](self.run / 'state.json', {'attempts': [], 'authorStartedAt': None})
+                shutil.rmtree(self.run / 'attempts', ignore_errors=True)
+                self.generated()
+                result = self.check()
+                self.assertEqual(result['status'], 'READY', result)
+                self.assertEqual(len(result['checks']['entrySequences']['result']['entries']), int(has_start))
 
     def test_frozen_prepared_manifests_bind_without_author_copy_or_extra_reads(self):
         prepared = self.run / 'inputs/author-source/read'
@@ -262,6 +621,51 @@ else:
         canonical = D['load'](resolved)
         self.assertEqual(json.dumps(canonical, sort_keys=True), original_review)
         self.assertTrue(all(row['section'].startswith('#') for row in self.review['requirements'].values()))
+
+    def test_starter_supplies_working_pages_navigation_and_http_entry_for_authored_review(self):
+        draft = self.run / 'workspace/draft'
+        starter = self.run / 'inputs/starter'
+        original = D['load'](starter / 'original.json')
+        navigation = D['load'](starter / 'navigation.json')
+        pages = {page['page']: page['fragments'] for page in original['pages']}
+        entry = self.entry['page']
+        overview = self.service + '.md'
+        self.assertEqual(set(pages), {overview, entry})
+        self.assertIn(entry.removesuffix('.md') + '.html#handler', pages[overview][1]['text'])
+        sequence = json.loads(pages[entry][-1]['text'].split('\n', 1)[1].rsplit('```', 1)[0])
+        first = sequence['steps'][0]
+        self.assertEqual((first['label'], first['to'], first['target']),
+                         ('POST /reservations', self.entry['handlerId'], entry + '#handler'))
+        self.assertEqual(navigation['services'][0]['starts'][0]['target'], entry + '#handler')
+        self.assertFalse(any('id' in item for fragments in pages.values() for item in fragments))
+
+        pages[overview].append({'id': 'overview', 'text': '\nA bounded overview.\n', 'evidence': [self.handle]})
+        pages[entry].insert(1, {'id': 'operation', 'text': 'Accept a reservation.\n\n', 'evidence': [self.handle]})
+        sequence['steps'].append({'from': self.entry['handlerId'], 'to': 'caller',
+                                  'label': 'Return a result', 'kind': 'return'})
+        pages[entry][-1]['text'] = '```clew-sequence\n' + json.dumps(sequence) + '\n```\n'
+        D['save'](draft / 'original.json', original)
+        review = D['review_for_run'](self.run)
+        self.assertEqual(review['requirements'][self.entry['id']]['section'], 'handler')
+        for row in self.inventory['requirements']:
+            assessment = review['requirements'][row['id']]
+            self.assertIsNone(assessment['disposition'])
+            if row['kind'] != 'ENTRY':
+                self.assertEqual(assessment['section'], 'service-scope')
+            if row['kind'] == 'DISCOVERY':
+                self.assertIsNone(assessment['discoveryDisposition'])
+                assessment.update(discoveryDisposition='NO_ADDITIONAL_STARTS', discoveredEntries=[])
+            assessment['disposition'] = 'EXPLAINED'
+        self.assertIsNone(review['visual']['status'])
+        for assessments in review['claims'].values():
+            for key in assessments:
+                self.assertIsNone(assessments[key])
+                assessments[key] = 'SUPPORTED'
+        review.update(unresolved=[], visual={'status': 'UNAVAILABLE', 'reason': 'Owned non-browser fixture'})
+        for name, value in [('original.json', original), ('navigation.json', navigation), ('self-review.json', review)]:
+            D['save'](self.seed / name, value)
+        self.generated()
+        self.assertEqual(self.check()['status'], 'READY')
 
     def test_template_has_no_semantic_pass_or_discovery_outcome(self):
         review = D['review_template'](self.inventory, self.original)
@@ -495,6 +899,164 @@ else:
         self.assertEqual(D['load'](self.run / 'state.json')['status'], 'INTERRUPTED')
         self.assertNotEqual(self.check()['status'], 'READY')
         self.assertFalse((self.run / 'ready').exists())
+
+    def test_bare_starter_cannot_pass_on_formal_self_review(self):
+        original = self.run / 'inputs/starter/original.json'
+        shutil.copyfile(original, self.seed / 'original.json')
+        self.review['claims'] = []
+        D['save'](self.seed / 'self-review.json', self.review)
+        self.generated()
+        result = self.check()
+        detail = result['checks']['output']
+        self.assertEqual(detail['code'], 'INVALID_PAGE_CLAIMS')
+        self.assertIn('cited reader explanation', detail['details']['nextAction'])
+
+    def test_literal_guard_with_the_same_claim_and_cite_rejects_a_changed_inline_result(self):
+        previous = self.source
+        text = 'fun change(size: Int): Int {\n    if (size < -3) { return -12 }\n    return size\n}\n'
+        raw = text.encode()
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+        self.source = {**previous, 'file': 'src/Change.kt', 'text': text, 'textDigest': D['sha'](raw), 'endLine': 4,
+                       'occurrence': {**previous['occurrence'], 'blob': blob, 'endByte': len(raw)}}
+        self.clew.write_text(self.clew.read_text().replace(repr(previous), repr(self.source)))
+        shutil.rmtree(self.manifest.parent)
+        self.manifest, view, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=self.source)
+        old_handle, self.handle = self.handle, view['records'][0]['cite']
+
+        scope = self.inventory['services'][self.service]
+        scope['sourceInventory'][0]['record']['path'] = self.source['file']
+        scope['sourceInventory'].append({'kind': 'THREAD_SCOPE'})
+        discovery = next(row for row in self.inventory['requirements'] if row['kind'] == 'DISCOVERY')
+        discovery['file'] = self.source['file']
+
+        def source_command(argv, directory, label, **kwargs):
+            out = Path(argv[argv.index('--output-dir') + 1])
+            if label == 'discover':
+                out.mkdir()
+                D['save'](out / 'packet.json', {'queryComplete': True, 'choices': [{'file': self.source['file']}],
+                                              'scope': {'snapshot': F['SNAPSHOT']}})
+            else:
+                shutil.copytree(self.manifest.parent, out)
+        prepared = self.run / 'inputs/author-source'
+        prepared.rmdir()
+        with patch.dict(D['_prepare_sources'].__globals__, {'command': source_command}):
+            D['prepare_sources'](self.job, self.inventory, prepared)
+        scope['sourceInventory'].pop()  # The verify fixture supplies the compiler membership transport.
+        shutil.rmtree(self.manifest.parent)
+        pins = D['load'](self.run / 'pins.json')
+        for path in ('inputs/inventory.json', 'workspace/inventory.json'):
+            D['save'](self.run / path, self.inventory)
+        pins.update(inputFiles=D['tree'](self.run / 'inputs'), inventoryDigest=D['digest'](self.inventory))
+        D['save'](self.run / 'pins.json', pins)
+
+        operation = self.original['pages'][0]
+        claim = {'id': 'guard', 'text': '\r\nWhen `size < -3`, the result is `-12`.\r\n', 'evidence': [old_handle]}
+        operation['fragments'].extend([{'text': '\n## Examples π\n' + claim['text']},
+                                       {'text': '\n## Checked return\n'}, claim])
+        self.review['claims'].append({'page': operation['page'], 'claim': claim['id'],
+                                      'evidence': [old_handle], 'disposition': 'SUPPORTED'})
+        for row in self.review['requirements'] + self.review['claims'] + [
+                item for page in self.original['pages'] for item in page['fragments'] if 'evidence' in item]:
+            row['evidence'] = [self.handle if handle == old_handle else handle for handle in row['evidence']]
+        D['save'](self.run / 'workspace/draft/original.json', self.original)
+        template = D['review_for_run'](self.run)
+        self.assertEqual(list(template['returnClaims'].values()), [None])
+        check = next(iter(template['returnClaims']))
+        self.assertIn(check, (prepared / self.service / 'index.md').read_text())
+        self.review['returnClaims'] = {check: 'guard'}
+        self.seed_files(); self.generated()
+        result = self.check()
+        self.assertEqual(result['status'], 'READY', result)
+        self.assertFalse(result['semanticTruthAssessed'])
+        check_result = result['checks']['entrySequences']['result']['literalReturns']
+        self.assertEqual(check_result[check], {'claim': 'guard', 'page': operation['page']})
+        html = (self.run / result['output'] / 'html' / operation['page'].replace('.md', '.html')).read_text()
+        self.assertIn('When <code>size &lt; -3</code>, the result is <code>-12</code>.', html)
+
+        claim['text'] = claim['text'].replace('`-12`', '`6`')
+        self.seed_files(); self.generated_for_test_reset()
+        result = self.check()
+        self.assertEqual(result['status'], 'FAILED')
+        detail = result['checks']['entrySequences']
+        self.assertEqual(detail['code'], 'LITERAL_RETURN_VALUE_MISMATCH')
+        self.assertEqual(detail['details']['response']['details']['documented'], '6')
+        self.assertEqual(detail['details']['response']['details']['expected'], '-12')
+
+    def test_literal_guard_accepts_only_an_exact_covering_occurrence(self):
+        method = 'fun guard(delta: Int): Int {\n    if (delta < -9) return 23\n    return delta\n}'
+        prefix = 'class Charges {\n    // π🙂\n    '
+        body = prefix + method + '\n}\n'
+        raw = body.encode()
+        start, end = len(prefix.encode()), len((prefix + method).encode())
+        snapshot = 'sha256:owned-captured-file'
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+
+        def evidence(identity, text, a, b):
+            return {'readText': text, 'source': {'id': identity, 'file': 'src/Charges.kt', 'service': self.service,
+                'revision': self.source['revision'], 'startLine': 3 if a else 1,
+                'occurrence': {'snapshot': snapshot, 'blob': blob, 'startByte': a, 'endByte': b}}}
+
+        exact = evidence('method', method, start, end)
+        covering = evidence('class', body, 0, len(raw))
+        candidates = D['literal_return_candidates'](self.entry, ['exact'], {'exact': exact})
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(D['kotlin_literal_guards'](covering), [])
+        check = candidates[0]['id']
+        page = self.entry['page']
+        claim = {'id': 'guard', 'text': 'When `delta < -9`, the result is `23`.\n', 'evidence': ['provided']}
+        original = {'pages': [{'page': page, 'fragments': [claim]}]}
+        _, composed, _ = D['M']['compose_pages'](original)
+        review = {'claims': [{'page': page, 'claim': claim['id'], 'disposition': 'SUPPORTED'}]}
+
+        def validate(reference):
+            return D['literal_return_claims'](candidates, {check: claim['id']}, review, original, composed,
+                                              {'exact': exact, 'provided': reference})
+
+        self.assertEqual(validate(covering)[0]['literal'], '23')
+        self.assertEqual(claim['evidence'], ['provided'])
+        partial = evidence('partial', raw[start + 1:end].decode(), start + 1, end)
+        conflicting = evidence('conflict', body.replace('return 23', 'return 93'), 0, len(raw))
+        malformed = evidence('malformed', body, 0, len(raw) + 1)
+        wrong = {'partial': partial, 'conflicting overlap': conflicting, 'bad byte width': malformed}
+        for field in ('service', 'file', 'revision', 'occurrence'):
+            wrong[field] = {**covering, 'source': {**covering['source'], field: None if field == 'occurrence' else 'foreign'}}
+        for field in ('snapshot', 'blob'):
+            occurrence = {**covering['source']['occurrence'], field: '1' * 40}
+            wrong[field] = {**covering, 'source': {**covering['source'], 'occurrence': occurrence}}
+        for case, reference in wrong.items():
+            with self.subTest(case=case), self.assertRaises(D['Stop']) as raised:
+                validate(reference)
+            self.assertEqual(raised.exception.code, 'LITERAL_RETURN_CITATION_REQUIRED')
+
+    def test_literal_guard_scan_skips_unsupported_ambiguous_and_commented_source(self):
+        def candidates(body, extension='.kt'):
+            source = {'readText': body, 'source': {'file': 'Example' + extension, 'id': 'exact', 'startLine': 1}}
+            return D['literal_return_candidates'](self.entry, [self.handle], {self.handle: source})
+        statement = '  if (amount != 18) return -2'
+        function = lambda body: 'fun adjust(amount: Int): Int {\n' + body + '\n  return amount\n}'
+        self.assertEqual(candidates(function(statement))[0]['literal'], '-2')
+        self.assertEqual(candidates(function(statement), '.java'), [])
+        self.assertEqual(candidates(function('/*\n' + statement + '\n*/')), [])
+        self.assertEqual(candidates(function('val text = """\n' + statement + '\n"""')), [])
+        self.assertEqual(candidates(function('// ' + statement)), [])
+        self.assertEqual(candidates(function(statement + '\n' + statement.replace('-2', '5'))), [])
+        self.assertEqual(candidates(function('if (amount != 18) return run { -2 }')), [])
+        self.assertEqual(candidates(function(statement + '\n  + adjustment')), [])
+        nested = function('  fun unused(other: Int): Int {\n    if (other < -2) return 17\n    return other\n  }\n' + statement)
+        self.assertEqual(candidates(nested), [])
+        self.assertEqual(candidates(function(statement) + '\n\n' + function(statement.replace('-2', '5'))), [])
+        self.assertEqual(candidates('class Example {\n' + function(statement) + '\n}'), [])
+
+    def test_overlapping_exact_function_reads_produce_one_literal_obligation(self):
+        function = 'fun route(value: Int): Int {\n    if (value > 42) return 9\n    return value\n}'
+        fragment = {'readText': function, 'source': {'file': 'Example.kt', 'id': 'method', 'startLine': 11}}
+        annotated = {'readText': '@GetMapping("/somewhere")\n' + function,
+                     'source': {'file': 'Example.kt', 'id': 'mapped-method', 'startLine': 10}}
+        entries = {'first': fragment, 'second': annotated}
+        checks = D['literal_return_candidates'](self.entry, list(entries), entries)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]['sourceIds'], ['method', 'mapped-method'])
+        self.assertEqual(checks[0]['line'], 12)
 
     def test_source_backed_false_assertion_is_not_a_semantic_certificate(self):
         self.original['pages'][0]['fragments'][1]['text'] += '\nDelivery is guaranteed.\n'

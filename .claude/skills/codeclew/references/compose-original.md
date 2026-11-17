@@ -511,9 +511,44 @@ by `<link rel="icon" type="image/svg+xml" href="favicon.svg">`. Other local asse
 nested/root-relative links, base URLs and srcset remain unsupported. Compose
 itself checks no evidence.
 
+## Update an existing checked export
+
+Start from the previous finalization directory with `result.json`. For a prior
+bounded run, use the checked output named by its report or the local promoted
+package. A published `html/` alone lacks the original and citation bindings.
+The old `result.json` gives the relative `original` and `checkedIndex` paths and
+the retained `manifests`. Recover the original, full checked bundle and proof
+packages from that run if any are missing.
+
+Read the portions of the original that need changing. Use the [addressed edit
+format](#addressed-original-edits) with the raw SHA-256 of the prior original.
+Keep stable claim IDs and unchanged evidence, and preserve already agreed
+editorial edits in the original.
+
+```sh
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/page_citations.py" update-original --previous-final OLD_FINAL --edits EDITS_JSON --output-dir NEW_COMPOSE
+python3 -I -S "$CODECLEW_SKILL_DIR/scripts/reader_export_check.py" finalize --compose-root NEW_COMPOSE --previous-index OLD_INDEX --manifest OLD_MANIFEST --renderer-command RENDERER_JSON --output-dir NEW_FINAL
+```
+
+`NEW_COMPOSE/update.json` records the old index, original renderer request,
+citation manifest paths and export options. Repeat `--manifest` for every
+required old and new package. Reuse the admitted launcher/root and any existing
+component tickets, repository mapping, and sequence, process search or source
+footer options. Keep navigation for a text-only change. If scope changes, update
+it with the affected pages and bind any genuinely new evidence explicitly.
+
+On `PREVIOUS_ORIGINAL_OUT_OF_SYNC`, inspect the named pages and recover all agreed
+edits in the original. For edits saved only to Markdown, reconcile them into the
+corresponding original fragments with the same claim IDs and evidence, then
+compose a fresh baseline and finalize it using the intact previous index and
+manifests. Keep working copies of the edited files while reconciling. If the
+previous bound package itself was changed, first recover its checked copy. Use
+the newly checked baseline for any subsequent addressed update. Review the
+changed reader answers against source before accepting the new checked output.
+
 ## Addressed original edits
 
-Use `update-original` instead of compose to avoid repeating old prose. Save
+Use `update-original` for addressed edits without rewriting old prose. Save
 `originalSHA256` from compose/update; for an existing original compute its raw-file
 SHA-256. Read needed fragments locally. All `start`/`delete` positions address the
 same base page's zero-based `fragments` array:

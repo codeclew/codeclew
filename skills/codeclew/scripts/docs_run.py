@@ -292,7 +292,6 @@ def requirements(service, rows, initial):
                            'sourceReferences': row.get('sourceReferences', []),
                            'rootDeclarations': record.get('rootDeclarations', []),
                            'authority': trigger.get('authority'), 'boundaries': entry.get('boundaries', [])})
-    need(result, 'ENTRY_INVENTORY_EMPTY', service=service)
     for row in rows:
         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') != 'FILE_ONLY':
             file = row['record']['path']
@@ -351,6 +350,134 @@ def compiler_source_pairs(choices):
     return pairs
 
 
+DECIMAL = r'(?:0|-?[1-9][0-9]{0,9})'
+KOTLIN_FUNCTION = re.compile(r'[ \t]*fun[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*'
+                             r'\([^(){}]*\)[ \t]*(?::[^{=]+)?\{[ \t]*')
+KOTLIN_NON_CODE = re.compile(r"""//.*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`""")
+KOTLIN_LITERAL_GUARD = re.compile(
+    rf'[ \t]*if[ \t]*\((?P<predicate>[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:<=|>=|==|!=|<|>)'
+    rf'[ \t]*{DECIMAL})\)[ \t]*(?P<brace>\{{)?[ \t]*return[ \t]+(?P<literal>{DECIMAL})'
+    r'(?(brace)[ \t]*\})[ \t]*')
+
+
+def kotlin_literal_guards(entry):
+    """Select initial direct guards of one self-contained retained function."""
+    text = entry['readText']
+    source = entry['source']
+    if not source['file'].endswith('.kt') or any(token in text for token in ('/*', '"""', '${')):
+        return []
+    lines = [KOTLIN_NON_CODE.sub(lambda token: ' ' * len(token[0]), line.removesuffix('\r')) for line in text.split('\n')]
+    code = [(line, body) for line, body in enumerate(lines) if body.strip()]
+    # The attached source must contain one standalone method. Allow annotation
+    # lines but skip enclosing files/classes and code following the method body.
+    body_start = next((i for i, (_, body) in enumerate(code) if not body.lstrip().startswith('@')), len(code))
+    if body_start + 2 >= len(code) or not KOTLIN_FUNCTION.fullmatch(code[body_start][1]):
+        return []
+    depth = 1
+    for index, (_, body) in enumerate(code[body_start + 1:], start=body_start + 1):
+        for token in body:
+            if token == '{':
+                depth += 1
+            elif token == '}':
+                depth -= 1
+                if depth == 0 and (index != len(code) - 1 or body.strip() != '}'):
+                    return []
+    if depth != 0:
+        return []
+    result = []
+    for index in range(body_start + 1, len(code) - 1):
+        line, body = code[index]
+        match = KOTLIN_LITERAL_GUARD.fullmatch(body)
+        if not match or (not match['brace'] and re.match(r'\s*[+*/%?:.<>=!&|\-]', code[index + 1][1])):
+            break
+        result.append((match['predicate'], match['literal'], source['startLine'] + line))
+    return result
+
+
+def literal_return_candidates(requirement, handles, entries):
+    conditions = {}
+    for handle in handles:
+        source = entries[handle]['source']
+        for predicate, literal, line in kotlin_literal_guards(entries[handle]):
+            key = re.sub(r'[ \t]+', '', predicate)
+            location = (source['file'], line, literal)
+            conditions.setdefault(key, {}).setdefault(location, []).append((predicate, source['id'], handle))
+    result = []
+    for key, locations in conditions.items():
+        if len(locations) != 1:
+            continue
+        (file, line, literal), matches = next(iter(locations.items()))
+        predicate, _, handle = matches[0]
+        identity = 'return-' + digest([requirement['id'], file, line, key])[-16:]
+        result.append({'id': identity, 'page': requirement['page'], 'sourceIds': [row[1] for row in matches],
+                       'cite': handle, 'predicate': predicate, 'literal': literal, 'line': line})
+    return result
+
+
+def frozen_return_checks(prepared):
+    return [check for path in sorted(prepared.glob('*/literal-returns.json')) for check in load(path)]
+
+
+def covers_literal_declaration(citation, declaration):
+    """Match a broader verified occurrence to the exact captured declaration bytes."""
+    outer, inner = citation['source'], declaration['source']
+    owners = ('service', 'file', 'revision')
+    if any(not isinstance(inner.get(key), str) or not inner[key] or outer.get(key) != inner[key] for key in owners):
+        return False
+    if any(outer.get(key) != inner.get(key) for key in ('textOrigin', 'libraryOrigin')):
+        return False
+    outer_occ, inner_occ = outer.get('occurrence'), inner.get('occurrence')
+    if not isinstance(outer_occ, dict) or not isinstance(inner_occ, dict):
+        return False
+    snapshot, blob = inner_occ.get('snapshot'), inner_occ.get('blob')
+    if (not isinstance(snapshot, str) or not snapshot or not isinstance(blob, str)
+            or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', blob)
+            or (outer_occ.get('snapshot'), outer_occ.get('blob')) != (snapshot, blob)
+            or outer_occ.get('generatedOrigin') is not None or inner_occ.get('generatedOrigin') is not None):
+        return False
+    outer_start, outer_end = outer_occ.get('startByte'), outer_occ.get('endByte')
+    inner_start, inner_end = inner_occ.get('startByte'), inner_occ.get('endByte')
+    if (any(type(bound) is not int for bound in (outer_start, outer_end, inner_start, inner_end))
+            or not 0 <= outer_start <= inner_start < inner_end <= outer_end):
+        return False
+    full_bytes = citation['readText'].encode('utf-8')
+    declaration_bytes = declaration['readText'].encode('utf-8')
+    return (len(full_bytes) == outer_end - outer_start and len(declaration_bytes) == inner_end - inner_start
+            and full_bytes[inner_start - outer_start:inner_end - outer_start] == declaration_bytes)
+
+
+def literal_return_claims(candidates, selected, review, originals, composed, entries):
+    need(isinstance(selected, dict) and selected.keys() == {row['id'] for row in candidates},
+         'LITERAL_RETURN_CLAIMS_REQUIRED', checks=[row['id'] for row in candidates],
+         nextAction='Run review-template and bind each returnClaims check to the claim ID on its entry page.')
+    ranges = {(p['page'], f['id']): (f['startByte'], f['endByte'])
+              for p in composed['pages'] for f in p['claims']}
+    fragments = {(p['page'], f['id']): f for p in originals['pages'] for f in p['fragments'] if 'id' in f}
+    supported = {(row['page'], row['claim']) for row in review['claims'] if row['disposition'] == 'SUPPORTED'}
+    by_source = {}
+    for entry in entries.values():
+        source = entry['source']
+        by_source.setdefault((source['service'], source['id']), []).append(entry)
+    result = []
+    for row in candidates:
+        claim = selected[row['id']]
+        key = (row['page'], claim)
+        need(isinstance(claim, str) and key in supported and key in fragments,
+             'LITERAL_RETURN_CLAIM_MISSING', check=row['id'], page=row['page'])
+        fragment = fragments[key]
+        condition = (row['predicate'], row['literal'], row['line'])
+        owner = entries[row['cite']]['source']['service']
+        declarations = [entry for identity in row['sourceIds'] for entry in by_source.get((owner, identity), [])
+                        if condition in kotlin_literal_guards(entry)]
+        need(any(entries[h] is declaration or covers_literal_declaration(entries[h], declaration)
+                 for h in fragment['evidence'] for declaration in declarations), 'LITERAL_RETURN_CITATION_REQUIRED',
+             check=row['id'], page=row['page'], cite=row['cite'], claim=claim)
+        start, end = ranges[key]
+        result.append({'id': row['id'], 'page': row['page'], 'claim': claim, 'startByte': start, 'endByte': end,
+                       'predicate': row['predicate'], 'literal': row['literal']})
+    return result
+
+
 def _prepare_sources(job, inventory, directory):
     """Prepare supported retained reads serially, without an author or new capture."""
     started = time.monotonic(); directory.mkdir(mode=0o700)
@@ -367,7 +494,7 @@ def _prepare_sources(job, inventory, directory):
 
     for service, scope in inventory['services'].items():
         home = directory / service; home.mkdir(mode=0o700)
-        resource_count = None
+        resource_count, deferred_resources = None, []
         base = [sys.executable, '-I', '-S', str(HERE / 'evidence_packet.py')]
         common = ['--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot']]
         source_scope = any(r['kind'] == 'THREAD_SCOPE' for r in scope['sourceInventory'])
@@ -377,10 +504,12 @@ def _prepare_sources(job, inventory, directory):
         need(discovery.get('queryComplete'), 'PREPARED_DISCOVERY_INCOMPLETE', service=service)
         choices = discovery['choices']
         if source_scope:
-            selection = [{'file': row['file']} for row in choices]
+            file_only = {row['record']['path'] for row in scope['sourceInventory']
+                         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') == 'FILE_ONLY'}
+            selection = [{'file': row['file']} for row in choices if row['file'] not in file_only]
+            deferred_resources = [row['file'] for row in choices if row['file'] in file_only]
             count += len(selection)
-            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT')
-            save(home / 'selection.json', selection)
+            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT', files=count, limit=bounds['files'])
             arguments = ['read-files', *common, '--packet', str(home / 'discovery/packet.json')]
         else:
             pairs = compiler_source_pairs(choices)
@@ -396,16 +525,20 @@ def _prepare_sources(job, inventory, directory):
                 need(row['kind'] == 'SOURCE_NAVIGATION', 'PREPARED_RESOURCE_KIND_CHANGED')
                 identity, reference = row['id'], row['record']['fullRecordReference']
                 need(identity not in pairs or pairs[identity] == reference, 'PREPARED_SOURCE_REFERENCE_CHANGED')
-                pairs[identity] = reference
+                if identity not in pairs:
+                    deferred_resources.append(row['record']['source']['file'])
             selection = [{'sourceId': identity, 'sourceReference': reference} for identity, reference in sorted(pairs.items())]
-            save(home / 'selection.json', selection)
             arguments = ['read-sources', *common, '--work', scope['work']]
-        need(selection, 'PREPARED_SOURCE_SELECTION_EMPTY', service=service)
-        invoke(base + [*arguments, '--selection', str(home / 'selection.json'), '--source-union',
-                       '--output-dir', str(home / 'read')], home, 'read')
-        manifest = home / 'read/citations.json'
-        _, packet, _, entries = M['C']['load'](manifest)
-        need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work'], 'PREPARED_SOURCE_SCOPE_CHANGED')
+        save(home / 'selection.json', selection)
+        manifest = None
+        packet = {'scope': discovery['scope'], 'outcomes': [], 'texts': {}}
+        entries = {}
+        if selection:
+            invoke(base + [*arguments, '--selection', str(home / 'selection.json'), '--source-union',
+                           '--output-dir', str(home / 'read')], home, 'read')
+            manifest = str(home / 'read/citations.json')
+            _, packet, _, entries = M['C']['load'](manifest)
+            need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work'], 'PREPARED_SOURCE_SCOPE_CHANGED')
         for handle, entry in entries.items():
             source = entry['source']
             need(source['service'] == service and source['revision'] == scope['revision'], 'PREPARED_SOURCE_REVISION_CHANGED')
@@ -413,8 +546,8 @@ def _prepare_sources(job, inventory, directory):
         regions, bindings, metrics = source_projection(packet, entries)
         if not source_scope:
             count += len({entry['source']['file'] for entry in entries.values()})
-            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT')
-        all_bindings.update({handle: {**value, 'manifest': str(manifest)} for handle, value in bindings.items()})
+            need(count <= bounds['files'], 'SOURCE_PREPARATION_FILE_LIMIT', files=count, limit=bounds['files'])
+        all_bindings.update({handle: {**value, 'manifest': manifest} for handle, value in bindings.items()})
         views = home / 'views'; views.mkdir()
         view_index = {}
         for key, region in regions.items():
@@ -430,7 +563,7 @@ def _prepare_sources(job, inventory, directory):
                                'coveringCitations': full, 'originalCitations': region['citations']}
         save(home / 'citation-index.json', bindings)
         source_ids = {value['source']['id'] for value in bindings.values()}
-        requirements_index, proofs, ready = {}, {}, {}
+        requirements_index, proofs, ready, literal_returns = {}, {}, {}, []
         source_texts = {o['source']['id']: packet['texts'][o['textKey']] for o in packet['outcomes']}
         source_entries = {h: {**entry, 'readText': source_texts[entry['source']['id']]}
                           for h, entry in entries.items()}
@@ -439,10 +572,12 @@ def _prepare_sources(job, inventory, directory):
                 continue
             handles = [h for h, b in bindings.items() if (b['source']['id'] in requirement['sourceIds'] if requirement['kind'] == 'ENTRY'
                        else b['source']['file'] == requirement.get('file') if requirement['kind'] == 'DISCOVERY' else True)]
-            need(handles, 'PREPARED_REQUIREMENT_SOURCE_MISSING', requirement=requirement['id'])
+            if requirement['kind'] != 'SERVICE':
+                need(handles, 'PREPARED_REQUIREMENT_SOURCE_MISSING', requirement=requirement['id'])
             requirements_index[requirement['id']] = handles
             if requirement['kind'] == 'ENTRY':
                 need(set(requirement['sourceIds']) <= source_ids, 'PREPARED_ENTRY_SOURCE_MEMBERSHIP_MISSING', requirement=requirement['id'])
+                literal_returns.extend(literal_return_candidates(requirement, handles, source_entries))
             if requirement['kind'] == 'DISCOVERY':
                 proofs[requirement['id']] = full_file_proof(requirement, handles, source_entries, job['snapshot'])
             suggested = handles
@@ -460,12 +595,14 @@ def _prepare_sources(job, inventory, directory):
                     'views': list(dict.fromkeys(view_index[bindings[h]['region']]['view'] for h in suggested)),
                     'meaningReviewed': False}
         save(home / 'requirements.json', ready)
+        if literal_returns:
+            save(home / 'literal-returns.json', literal_returns)
         save(home / 'views.json', view_index)
         services[service] = {'work': scope['work'], 'revision': scope['revision'], 'coverage': scope['coverage'],
-                             'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': str(manifest),
+                             'sourceIndex': str(home / 'index.md'), 'views': view_index, 'manifest': manifest,
                              'citationIndex': str(home / 'citation-index.json'), 'requirements': requirements_index,
                              'discoveryProofs': proofs, 'records': len(bindings), 'regions': len(regions), 'union': metrics,
-                             'retainedResourceRecords': resource_count,
+                             'retainedResourceRecords': resource_count, 'deferredResourceFiles': sorted(set(deferred_resources)),
                              'inventoryKind': 'SOURCE_FILES' if source_scope else 'COMPILER_SYMBOLS_AND_RETAINED_RESOURCES',
                              'wholeServiceOrRuntimeCompletenessClaimed': False}
         lookup = ['# ' + service + ' source index', '', 'Open the individual source views needed for your explanation. Cite supplied handles directly.',
@@ -473,18 +610,31 @@ def _prepare_sources(job, inventory, directory):
                   'Capture coverage: ' + scope['coverage']['coverage'] + '. No runtime proof.', '']
         if metrics['fallbacks']:
             lookup += ['Some original fragments lack compatible exact coordinates; they remain separate, including overlapping text.', '']
-        if resource_count is not None:
-            lookup += ['Compiler Work retained-resource query returned ' + str(resource_count) + ' records. Files outside retained inputs remain unknown.', '']
         lookup += ['## Required entry and discovery reads', '']
         for requirement in inventory['requirements']:
             if requirement['id'] in ready:
                 row = ready[requirement['id']]
                 lookup.append('- ' + requirement.get('file', requirement['page']) + ': ' + ', '.join(row['views']) + '; cite ' + ', '.join(row['evidenceCandidates']))
-        lookup += ['', '## All retained source regions', '']
+        if literal_returns:
+            lookup += ['', '## Literal return checks', '',
+                       'Describe each listed guard and its integer result in the same paragraph with inline code for both. The result must be the next code span after the condition.',
+                       'Use the listed cite and set each returnClaims value in self-review to the claim ID on its entry page.']
+            lookup += ['- ' + row['id'] + ' in ' + row['page'] + ': `' + row['predicate'] + '` → `' + row['literal'] + '`; cite ' + row['cite']
+                       for row in literal_returns]
+        lookup += ['', '## Prepared source regions', '']
         for region in view_index.values():
             lookup.append('- ' + region['view'] + ': ' + region['file'] + ' (' + str(region['codeBytes']) + ' bytes of code)')
-        lookup += ['', 'Open large resource bodies when needed; all remain available, with no scope filter or truncation.',
-                   'Requirements and ready evidence candidates: requirements.json. All original handles and full-file proofs: ../index.json.',
+        if deferred_resources:
+            lookup += ['', '## Retained resources available on request', '',
+                       'Select files relevant to the request or needed to resolve a source question. These resources have file-level coverage.',
+                       'Saved Work: ' + scope['work']]
+            if source_scope:
+                lookup.append('Run evidence_packet.py read-files with discovery/packet.json and an explicit JSON selection of file paths.')
+            else:
+                lookup.append('Run evidence_packet.py read-sources with the saved Work and exact SOURCE ID/reference pairs from resources/read-collection/items.json.')
+            lookup += ['- ' + file for file in sorted(set(deferred_resources))]
+        lookup += ['', 'Files outside retained inputs remain unknown. Requirements and evidence candidates: requirements.json.',
+                   'Original handles and full-file proofs: ../index.json.',
                    'These mappings are input navigation, not semantic self-review or registration proof.']
         (home / 'index.md').write_text('\n'.join(lookup) + '\n', encoding='utf-8')
     need(time.monotonic() - started <= bounds['wallSeconds'], 'SOURCE_PREPARATION_WALL_LIMIT')
@@ -502,6 +652,59 @@ def _prepare_sources(job, inventory, directory):
               'sourceBindings': len(all_bindings), 'semanticTruthAssessed': False}
     save(directory / 'index.json', result)
     return result
+
+
+def start_kind(requirement):
+    return {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
+            'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
+
+
+def starter(inventory, language, directory):
+    """Render only fixed destinations and source-level entry identities."""
+    pages, navigation_services = [], []
+    labels = {'client': 'HTTP client', 'handler': 'Handler'}
+    if language == 'ru':
+        labels = load(SKILL / 'examples/markdown-renderer/assets/ru.json')['sequence']
+    for service in inventory['services']:
+        overview = service + '.md'
+        overview_fragments = [{'text': '# ' + service + '\n\n<a id="service-scope"></a>\n\n'}]
+        pages.append({'page': overview, 'fragments': overview_fragments})
+        entry_pages, starts = [], []
+        for requirement in inventory['requirements']:
+            if requirement['service'] != service or requirement['kind'] != 'ENTRY':
+                continue
+            page = requirement['page']
+            target = page + '#handler'
+            method = requirement['method']
+            title = method + ' ' + requirement['path'] if method else requirement['entrypoint']
+            fence = '`' * (1 + max((len(token) for token in re.findall(r'`+', title)), default=0))
+            markdown_label = fence + ' ' + ' '.join(title.splitlines()) + ' ' + fence
+            output_target = page.removesuffix('.md') + '.html#handler'
+            overview_fragments.append({'text': '- [' + markdown_label + '](' + output_target + ')\n'})
+            fragments = [{'text': '# ' + markdown_label + '\n\n<a id="handler"></a>\n\n'}]
+            if method:
+                entry = requirement['handlerId']
+                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': labels['client']},
+                             {'id': entry, 'title': labels['handler'], 'target': target}],
+                            'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call', 'target': target}]}
+                fragments.append({'text': '```clew-sequence\n' + encode(sequence).decode() + '```\n\n'})
+            pages.append({'page': page, 'fragments': fragments})
+            entry_pages.append(page)
+            starts.append({'title': title, 'summary': title, 'target': target, 'kind': start_kind(requirement)})
+        navigation_services.append({'id': service, 'title': service, 'overview': overview,
+                                    'pages': [overview, *entry_pages], 'starts': starts, 'data': []})
+    home = navigation_services[0]
+    directory.mkdir(mode=0o700)
+    save(directory / 'original.json', {'pages': pages})
+    save(directory / 'navigation.json', {'schema': 'codeclew-markdown-navigation/1',
+         'home': {'title': home['title'], 'target': home['overview']}, 'services': navigation_services, 'routes': []})
+
+
+I = runpy.run_path(str(HERE / 'inline_docs_author.py'), init_globals={
+    'load': load, 'encode': encode, 'sha': sha, 'need': need, 'closed': closed, 'Stop': Stop,
+    'COMPACT_REVIEW': COMPACT_REVIEW,
+})
+INLINE_SCHEMA = SKILL / 'schemas/docs-run-inline-author.schema.json'
 
 
 def prepare(job_path, run):
@@ -526,7 +729,8 @@ def prepare(job_path, run):
                         '--snapshot', job['snapshot'], '--language', job['language'], '--input', str(inputs / 'request.json')], directory, 'prepare')
         need(page.get('snapshot') == job['snapshot'], 'SNAPSHOT_MISMATCH')
         work = page['work']
-        initial = T['collect'](job['clew'], job['root'], work, directory / 'initial')
+        initial = T['collect'](job['clew'], job['root'], work, directory / 'initial',
+                               prepared_command=directory / 'prepare')
         selected = T['collect'](job['clew'], job['root'], work, directory / 'threads',
                                 kind='work-selection', selection={'query': {'kind': 'THREAD_INVENTORY'}})
         for collection in (initial, selected):
@@ -542,28 +746,38 @@ def prepare(job_path, run):
     inventory = {'schema': 'codeclew-docs-run-inventory/1.0', 'snapshot': job['snapshot'], 'services': scopes,
                  'requirements': expected, 'scope': 'Retained captured source; unclassified surfaces and runtime registration remain explicit limits.'}
     save(inputs / 'inventory.json', inventory)
-    prepare_sources(job, inventory, inputs / 'author-source')
+    required_pages = len({item['page'] for item in expected})
+    need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
+         nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
+    prepared_sources = prepare_sources(job, inventory, inputs / 'author-source')
+    selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
+                                       (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
+    save(inputs / 'author-plan.json', selected)
+    starter(inventory, job['language'], inputs / 'starter')
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
             'authorExecutableDigest': sha(Path(job['author']['executable']).read_bytes()),
             'nodeExecutableDigest': sha(Path(job['node']).read_bytes())}
     if 'components' in job:
         pins['componentTicketDigest'] = sha(Path(job['components']['path']).read_bytes())
-    pins['inputFiles'] = tree(inputs)
-    save(run / 'pins.json', pins)
     workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
     (workspace / 'draft').mkdir(mode=0o700)
     save(workspace / 'inventory.json', inventory)
     prompt = (SKILL / 'templates/docs-run-prompt.txt').read_text().format(
         request=job['request'], language=job['language'], skill=str(SKILL), clew=job['clew'], root=job['root'], run=str(run),
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
-        prepared_sources=str(inputs / 'author-source/index.md'),
+        prepared_sources=str(inputs / 'author-source/index.md'), starter=str(inputs / 'starter'),
         model=job['author']['model'], repairs=job['budget']['maxRepairs'])
+    if inline_prompt is not None:
+        (inputs / 'workspace-prompt.txt').write_text(prompt, encoding='utf-8')
+        prompt = inline_prompt
     (run / 'prompt.txt').write_text(prompt, encoding='utf-8')
-    pins['promptDigest'] = sha(prompt.encode()); save(run / 'pins.json', pins)
+    pins.update(inputFiles=tree(inputs), promptDigest=sha(prompt.encode()))
+    save(run / 'pins.json', pins)
     save(run / 'state.json', {'schema': 'codeclew-docs-run-state/1.0', 'status': 'PREPARED', 'attempts': [],
                               'modelTokens': 0, 'usageAvailable': True, 'authorStartedAt': None})
-    return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins)}
+    return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins),
+            'authorMode': selected['mode'], 'authorModeReason': selected['reason']}
 
 
 def frozen_inputs(run):
@@ -592,7 +806,11 @@ def inputs_unchanged(run):
 
 def review_for_run(run):
     _, inventory, _ = frozen_inputs(run)
-    return review_template(inventory, load(run / 'workspace/draft/original.json'))
+    template = review_template(inventory, load(run / 'workspace/draft/original.json'))
+    candidates = frozen_return_checks(run / 'inputs/author-source')
+    if candidates:
+        template['returnClaims'] = {row['id']: None for row in candidates}
+    return template
 
 
 def source_membership_failure(job, source, work, result, directory):
@@ -717,7 +935,7 @@ def full_file_proof(requirement, handles, entries, snapshot):
         start = occurrence['startByte'] - row['byteSlice']['startByte']
         identity = (occurrence['snapshot'], occurrence['blob'])
         groups.setdefault(identity, {})[(start, len(raw))] = raw
-    for (_, blob), regions in groups.items():
+    for (occurrence_snapshot, blob), regions in groups.items():
         if not isinstance(blob, str) or len(blob) not in (40, 64) or any(c not in '0123456789abcdef' for c in blob):
             continue
         content, cursor = bytearray(), 0
@@ -729,7 +947,8 @@ def full_file_proof(requirement, handles, entries, snapshot):
             header = ('blob ' + str(len(content)) + '\0').encode()
             actual = hashlib.new('sha1' if len(blob) == 40 else 'sha256', header + content).hexdigest()
             if actual == blob:
-                return {'status': 'COMPLETE_RETAINED_GIT_BLOB', 'gitBlob': blob, 'bytes': len(content),
+                return {'status': 'COMPLETE_RETAINED_GIT_BLOB', 'gitBlob': blob, 'occurrenceSnapshot': occurrence_snapshot,
+                        'bytes': len(content),
                         'textDigest': sha(content), 'sourceHandles': list(handles),
                         'scopeFingerprint': requirement['fileFingerprint'], 'semanticTruthAssessed': False}
     raise Stop('DISCOVERY_FULL_FILE_READ_REQUIRED', requirement=requirement['id'],
@@ -738,8 +957,11 @@ def full_file_proof(requirement, handles, entries, snapshot):
 
 def review_template(inventory, original):
     requirements = {}
+    scope_anchors = {page['page'] for page in original['pages']
+                     if any('<a id="service-scope"></a>' in fragment.get('text', '') for fragment in page['fragments'])}
     for requirement in inventory['requirements']:
-        row = {'disposition': None, 'section': 'handler' if requirement['kind'] == 'ENTRY' else None}
+        section = 'handler' if requirement['kind'] == 'ENTRY' else 'service-scope' if requirement['page'] in scope_anchors else None
+        row = {'disposition': None, 'section': section}
         if requirement['kind'] == 'ENTRY':
             row['diagram'] = 0
         if requirement['kind'] == 'DISCOVERY':
@@ -802,7 +1024,7 @@ def resolve_review(review, inventory, entries, original, defaults=None):
             else:
                 candidates = page_handles
             requirements.append({'requirement': requirement['id'], 'page': requirement['page'],
-                                 'section': 'handler' if requirement['kind'] == 'ENTRY' else None,
+                                 'section': template['requirements'][requirement['id']]['section'],
                                  **({'diagram': 0} if requirement['kind'] == 'ENTRY' else {}),
                                  'evidence': candidates, **row})
         result = {'schema': REVIEW, 'requirements': requirements, 'claims': claims,
@@ -899,54 +1121,71 @@ def verify(run, *, debug=False):
         checks[stage] = {'status': 'PASS', 'usageAvailable': tokens['status'] == 'MEASURED',
                          'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens}
         stage = 'output'; before = tree(draft)
+        if failure := last[0].get('assemblyFailure'):
+            raise Stop(failure['code'], **failure.get('details', {}))
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
         if 'components' in job:
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
-        pages, _, _ = M['compose_pages'](original)
+        pages, composed, _ = M['compose_pages'](original)
         need(all(r['page'] in pages and pages[r['page']].strip() for r in inventory['requirements']), 'MISSING_REQUIRED_PAGE')
         checks[stage] = {'status': 'PASS', 'pages': len(pages)}
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
         stage = 'selfReview'; review = load(draft / 'self-review.json')
+        selected_returns = review.pop('returnClaims', {}) if isinstance(review, dict) else {}
         defaults = {}
         for path in (run / 'inputs/author-source').glob('*/requirements.json'):
             defaults.update({key: value['evidenceCandidates'] for key, value in load(path).items()})
         review = resolve_review(review, inventory, entries, original, defaults)
         save(directory / 'resolved-self-review.json', review)
         accounts, effective, discovery_proofs = review_accounts(review, inventory, pages, entries, original)
+        returns = literal_return_claims(frozen_return_checks(run / 'inputs/author-source'), selected_returns, review, original, composed, entries)
         checks[stage] = {'status': 'PASS', 'discoveryCoverage': discovery_proofs}; result['semanticReviewRecorded'] = True
         result['authorVisualReview'] = review['visual']
         stage = 'entrySequences'; request = directory / 'sequences.json'
-        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts})
+        save(request, {'pages': {k: v.decode() for k, v in pages.items()}, 'requirements': effective, 'accounts': accounts,
+                       'literalReturns': returns})
         sequence = command([job['node'], str(HERE / 'docs_run_sequences.mjs'), job['renderer'], str(request)], directory, 'sequences')
         need(sequence.get('status') == 'ENTRY_SEQUENCES_CHECKED', 'ENTRY_SEQUENCES_NOT_CHECKED')
         checks[stage] = {'status': 'PASS', 'result': sequence}
         stage = 'finalize'
         navigation = load(draft / 'navigation.json')
+        home = navigation.get('home')
+        reader_title = home.get('title') if isinstance(home, dict) else None
+        need(isinstance(reader_title, str) and reader_title.strip(), 'NAVIGATION_HOME_TITLE_REQUIRED')
+        # Keep the positional label distinct from CLI options and path placeholders.
+        if reader_title.startswith('--') or reader_title in ('{input}', '{output}'):
+            reader_title = ' ' + reader_title
         service_navigation = {s['id']: s for s in navigation['services']}
         need(set(service_navigation) == set(job['services']) and len(service_navigation) == len(navigation['services']), 'NAVIGATION_SERVICE_SCOPE_MISMATCH')
         for requirement in effective:
             if requirement['kind'] == 'ENTRY':
-                kind = {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka', 'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
+                kind = start_kind(requirement)
                 need(any(start['target'] == requirement['page'] + '#handler' and start['kind'] == kind
                          for start in service_navigation[requirement['service']]['starts']),
                      'REQUIRED_START_NAVIGATION_MISSING', requirement=requirement['id'])
         compose = directory / 'compose'
         M['compose'](draft / 'original.json', compose)
         renderer = directory / 'renderer.json'
-        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', job['request'],
+        argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', reader_title,
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
+        export_sequences = bool(navigation['routes']) or any(
+            start['kind'] == 'http' for service in navigation['services'] for start in service['starts'])
         if len(job['services']) > 1:
             registry = load(draft / 'routes.json')
             local = registry.get('catalog', {}).get('docset')
             docsets = [d for d in registry['docsets'] if d['id'] == local]
             need(len(docsets) == 1 and {s['id'] for s in docsets[0]['services']} == set(job['services']), 'LOCAL_PROCESS_CATALOG_REQUIRED')
             argv += ['--docset-routes', str(draft / 'routes.json'), '--docset', local, '--docset-version', docsets[0]['version']]
+            export_sequences |= any(route['narrative']['docset'] == local and not route['narrative'].get('problem')
+                                    for route in registry['routes'])
         save(renderer, argv)
         args = [sys.executable, '-I', '-S', str(HERE / 'reader_export_check.py'), 'finalize', '--compose-root', str(compose),
                 '--clew', job['clew'], '--root', job['root'], '--renderer-command', str(renderer), '--source-footers',
-                '--require-sequences', '--output-dir', str(directory / 'final')]
+                '--output-dir', str(directory / 'final')]
+        if export_sequences:
+            args += ['--require-sequences']
         if len(job['services']) > 1:
             args += ['--require-process-search']
         for manifest in manifests:
@@ -1009,6 +1248,51 @@ def promote(run, destination=None):
     return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output), 'publicationPerformed': False}
 
 
+def materialize_inline(run, inventory, selected, response):
+    try:
+        value = load(response, maximum=I['MAX_RESPONSE_BYTES'])
+        starter_root = run / 'inputs/starter'
+        artifacts = I['assemble'](value, selected, inventory, load(starter_root / 'original.json'),
+                                  load(starter_root / 'navigation.json'))
+        draft = run / 'workspace/draft'
+        for name, data in artifacts.items():
+            save(draft / name, data)
+    except Stop as error:
+        return {'code': error.code, 'details': error.details}
+    except (OSError, ValueError, RecursionError, KeyError, IndexError, TypeError) as error:
+        return {'code': 'INVALID_INLINE_AUTHOR_RESPONSE', 'details': {'failure': type(error).__name__}}
+    return None
+
+
+def author_prompt(run, state, selected, remaining, max_repairs):
+    attempts = state['attempts']
+    if not attempts:
+        return selected['mode'], (run / 'prompt.txt').read_bytes()
+    previous = attempts[-1]
+    mode = previous.get('authorMode', 'WORKSPACE')
+    failure = previous.get('assemblyFailure') or {}
+    if mode == 'INLINE' and failure.get('code') == 'INLINE_AUTHOR_NEEDS_WORKSPACE':
+        prompt = (run / 'inputs/workspace-prompt.txt').read_bytes()
+        return 'WORKSPACE', prompt + b'\nThe inline author requested additional workspace evidence:\n' + encode(failure['details'])
+
+    report = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
+    checks = report.get('checks')
+    failures = {name: row for name, row in checks.items() if row['status'] == 'FAIL'} if checks else report
+    action = ('Return a corrected complete structured document using the same packet. Repeat the bidirectional review.'
+              if mode == 'INLINE' else
+              'Repair the draft and repeat your bidirectional self-review. Preserve scope and unchanged reads.')
+    return mode, encode({'instruction': action, 'failures': failures, 'remainingSeconds': int(remaining),
+                         'remainingRepairs': max_repairs - len(attempts)})
+
+
+def inline_cli_flags():
+    return ['--output-schema', str(INLINE_SCHEMA), '--ignore-rules', '--disable', 'shell_tool',
+            '--disable', 'unified_exec', '-c', 'features.apps=false', '-c', 'features.plugins=false',
+            '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
+            '-c', 'skills.include_instructions=false', '-c', 'skills.bundled.enabled=false',
+            '-c', 'include_apps_instructions=false', '-c', 'include_collaboration_mode_instructions=false']
+
+
 def author(run):
     run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
@@ -1021,26 +1305,27 @@ def author(run):
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
     need(remaining > 0 and len(attempts) <= job['budget']['maxRepairs'], 'AUTHOR_BUDGET_EXHAUSTED')
     folder = run / 'attempts' / str(len(attempts)); folder.mkdir(mode=0o700, parents=True)
-    if not attempts:
-        prompt = (run / 'prompt.txt').read_bytes()
-    else:
-        failures = load(run / 'report.json') if (run / 'report.json').exists() else {'status': 'INTERRUPTED'}
-        prompt = encode({'instruction': 'Repair the draft and repeat your bidirectional self-review. Preserve scope and existing unchanged reads; acquire only needed missing sources. Only machine failures follow, not a semantic answer key.',
-                         'failures': failures.get('checks', failures),
-                         'remainingSeconds': int(remaining), 'remainingRepairs': job['budget']['maxRepairs'] - len(attempts)})
+    plan_path = run / 'inputs/author-plan.json'
+    selected = load(plan_path) if plan_path.exists() else {'mode': 'WORKSPACE'}
+    mode, prompt = author_prompt(run, state, selected, remaining, job['budget']['maxRepairs'])
     (folder / 'prompt.txt').write_bytes(prompt)
     backend = job['author']
+    response = folder / 'last-message.txt'
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
-            '-c', 'approval_policy="never"', '-s', 'workspace-write', '-C', str(run / 'workspace'),
-            '--add-dir', job['root'], '--disable', 'multi_agent', '-o', str(folder / 'last-message.txt')]
-    if backend.get('stateRoot'):
-        argv += ['--add-dir', backend['stateRoot']]
+            '-c', 'approval_policy="never"', '-C', str(run / 'workspace'),
+            '--disable', 'multi_agent', '-o', str(response)]
+    if mode == 'INLINE':
+        argv += ['-s', 'read-only', *inline_cli_flags()]
+    else:
+        argv += ['-s', 'workspace-write', '--add-dir', job['root']]
+        if backend.get('stateRoot'):
+            argv += ['--add-dir', backend['stateRoot']]
     if attempts:
         need(state.get('threadId'), 'INTERRUPTED_AUTHOR_SESSION_UNAVAILABLE')
         argv += ['resume', state['threadId']]
     argv += ['-']
-    attempt = {'argv': argv, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
+    attempt = {'argv': argv, 'authorMode': mode, 'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     attempts.append(attempt); state['status'] = 'AUTHOR_RUNNING'; save(run / 'state.json', state)
     usage = None; interrupted = False; thread_changed = False
     expected_thread = state.get('threadId')
@@ -1071,8 +1356,6 @@ def author(run):
                 attempt['threadId'] = thread
             if event.get('type') == 'turn.completed':
                 usage = event.get('usage')
-    attempt['draftFiles'] = tree(run / 'workspace/draft')
-    shutil.copytree(run / 'workspace/draft', folder / 'draft')
     attempt.update(status='INTERRUPTED' if interrupted else 'COMPLETED', exitCode=process.returncode, usage=usage)
     tokens = token_accounting(attempts)
     state['tokenAccounting'] = tokens
@@ -1083,6 +1366,12 @@ def author(run):
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
                        'AUTHOR_BUDGET_EXCEEDED' if budget_tokens(tokens) > job['budget']['maxModelTokens'] else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
+    if mode == 'INLINE' and state['status'] == 'AUTHOR_COMPLETED':
+        failure = materialize_inline(run, inventory, selected, response)
+        if failure is not None:
+            attempt['assemblyFailure'] = failure
+    attempt['draftFiles'] = tree(run / 'workspace/draft')
+    shutil.copytree(run / 'workspace/draft', folder / 'draft')
     save(run / 'state.json', state); save(folder / 'result.json', attempt)
     need(not thread_changed, 'AUTHOR_THREAD_CHANGED')
     need(thread_valid, 'AUTHOR_THREAD_REQUIRED')

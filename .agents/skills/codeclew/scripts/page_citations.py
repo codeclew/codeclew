@@ -59,7 +59,7 @@ def page_name(value):
     return value
 
 
-def read(root, relative, maximum=MAX_FILE):
+def artifact_path(root, relative):
     root = Path(root)
     require(not root.is_symlink(), "UNSAFE_PAGE_ARTIFACT")
     relative = PurePosixPath(relative)
@@ -69,6 +69,11 @@ def read(root, relative, maximum=MAX_FILE):
     for part in relative.parts:
         path = path / part
         require(not path.is_symlink(), "UNSAFE_PAGE_ARTIFACT")
+    return path
+
+
+def read(root, relative, maximum=MAX_FILE):
+    path = artifact_path(root, relative)
     require(path.is_file() and path.stat().st_size <= maximum, "PAGE_ARTIFACT_UNAVAILABLE_OR_OVERSIZED", artifact=str(relative))
     return path.read_bytes()
 
@@ -126,7 +131,8 @@ def extract(raw, spec):
                 and len(set(values)) == len(values), "INVALID_EXPLICIT_REPAIR")
     markdown = raw.decode("utf-8")
     selected = spec.get("claims")
-    require(isinstance(selected, list) and 0 < len(selected) <= 1024, "INVALID_PAGE_CLAIMS")
+    require(isinstance(selected, list) and 0 < len(selected) <= 1024, "INVALID_PAGE_CLAIMS",
+            page=spec["page"], nextAction="Include a cited reader explanation or source-bounded unknown on this page and keep the claim count within 1024.")
     claims, ranges, ids, selected_bytes = [], [], set(), 0
     lines = line_ranges(raw)
     for item in selected:
@@ -435,11 +441,78 @@ def compose(input_path, output):
             "semanticTruthAssessed": False, "sourceFallbackAllowed": False, "nativeCommands": component_call("native_commands")}
 
 
-def update_original(input_path, edits_path, output):
+def previous_final_update(root, final, original, pages):
+    """Locate the checked update inputs and refuse authored Markdown drift."""
+    root = Path(root).absolute()
+    index = json.loads(read(root, final['checkedIndex']))
+    require(index.get('schema') == INDEX
+            and index.get('indexDigest') == digest({k: v for k, v in index.items() if k != 'indexDigest'}),
+            'INVALID_PREVIOUS_INDEX')
+    prepared = json.loads(read(root, PurePosixPath(final['receipts']) / 'prepare.json'))
+    indexed = {page_name(row['page']): row['inputMarkdownDigest'] for row in index['pages']}
+    require(len(indexed) == len(index['pages']), 'INVALID_PREVIOUS_INDEX')
+    authored = artifact_path(root, final['authoredRoot'])
+    present = set()
+    if authored.exists():
+        require(authored.is_dir(), 'UNSAFE_PAGE_ARTIFACT', artifact=final['authoredRoot'])
+        # Finalize accepts flat Markdown pages. Bound pages and their sidecars
+        # under .codeclew are separate artifacts and do not enter this inventory.
+        for path in authored.iterdir():
+            if path.suffix == '.md':
+                require(not path.is_symlink() and path.is_file(), 'UNSAFE_PAGE_ARTIFACT', artifact=path.name)
+                present.add(path.name)
+    expected = set(pages)
+    drift = (expected ^ indexed.keys()) | (expected ^ present)
+    for page in expected & indexed.keys() & present:
+        try:
+            actual = read(authored, page)
+        except Stop as error:
+            if error.status != 'PAGE_ARTIFACT_UNAVAILABLE_OR_OVERSIZED':
+                raise
+            drift.add(page)
+        else:
+            if pages[page] != actual or sha(actual) != indexed[page]:
+                drift.add(page)
+    require(not drift and sha(original) == prepared['originalSHA256'], 'PREVIOUS_ORIGINAL_OUT_OF_SYNC',
+            pages=sorted(drift),
+            nextAction='Reconcile the intended edits in the original and create a fresh checked baseline with the intact previous index and manifests before applying addressed edits.')
+    renderer = 'renderer.request.json' if (root / 'renderer.request.json').is_file() else final['rendererCommand']
+    read(root, renderer)
+    manifests = final['manifests']
+    require(isinstance(manifests, list) and len(manifests) <= MAX_PAGES
+            and all(isinstance(value, str) and Path(value).is_absolute() for value in manifests),
+            'INVALID_PREVIOUS_MANIFEST_LIST')
+    return {'previousIndex': str(root / final['checkedIndex']), 'manifests': manifests,
+            'rendererCommand': str(root / renderer), 'sourceFooters': 'sourceFooterBundle' in final,
+            'requireSequences': 'sequences' in final, 'requireProcessSearch': 'processSearch' in final}
+
+
+def update_original(input_path, edits_path, output, *, previous_final=None):
     """Splice explicit fragments at base-version indices, never matching prose."""
-    input_path, edits_path = Path(input_path), Path(edits_path)
-    original = read(input_path.parent, input_path.name, MAX_MAP)
-    value = original_value(original); compose_pages(value)  # Validate even removed base fragments.
+    require(input_path is not None or previous_final is not None, 'ORIGINAL_UPDATE_INPUT_REQUIRED')
+    edits_path = Path(edits_path)
+    if previous_final is not None:
+        previous_final = Path(previous_final)
+        final = json.loads(read(previous_final, 'result.json'))
+        require(final.get('status') == 'CHECKED_PAGES_FINALIZED' and final.get('exportStatus') == 'EXPORT_CHECKED',
+                'PREVIOUS_CHECKED_EXPORT_REQUIRED')
+        prior_original = read(previous_final, final['original'], MAX_MAP)
+    if input_path is None:
+        original = prior_original
+    else:
+        input_path = Path(input_path)
+        original = read(input_path.parent, input_path.name, MAX_MAP)
+    value = original_value(original)
+    base_pages, _, _ = compose_pages(value)  # Validate even removed base fragments.
+    prior_inputs = None
+    if previous_final is not None:
+        require(original == prior_original, 'PREVIOUS_ORIGINAL_OUT_OF_SYNC',
+                nextAction='Use the checked original from the previous finalization, or reconcile edits into a new checked baseline.')
+        prior_inputs = previous_final_update(previous_final, final, original, base_pages)
+        for page in value['pages']:
+            # The checked baseline has already consumed these history directives.
+            page.pop('replace', None)
+            page.pop('remove', None)
     edits_raw = read(edits_path.parent, edits_path.name, MAX_MAP)
     request = original_value(edits_raw)
     require(isinstance(request, dict) and set(request) == {"baseSHA256", "edits"}, "INVALID_ORIGINAL_UPDATE")
@@ -498,6 +571,8 @@ def update_original(input_path, edits_path, output):
     receipt = {"status": "ORIGINAL_UPDATED", "baseSHA256": sha(original)[7:], "originalSHA256": sha(candidate)[7:],
                "editsSHA256": sha(edits_raw)[7:], "changes": changed, "nativeProofChecked": False,
                "semanticTruthAssessed": False}
+    if prior_inputs is not None:
+        receipt['previousFinal'] = prior_inputs
     publish_composed(candidate, pages, generated, output,
                      {"edits.json": edits_raw, "update.json": encode(receipt).encode("utf-8")})
     output = Path(output)
@@ -641,7 +716,8 @@ def main(argv=None):
     producer.add_argument("--input", type=Path, required=True)
     producer.add_argument("--output-dir", type=Path, required=True)
     updater = sub.add_parser("update-original", help="Update original fragments by base SHA-256 and zero-based fragment indices")
-    updater.add_argument("--input", type=Path, required=True)
+    updater.add_argument("--input", type=Path)
+    updater.add_argument("--previous-final", type=Path, help="Prior checked finalization directory used to recover the original and detect Markdown drift")
     updater.add_argument("--edits", type=Path, required=True)
     updater.add_argument("--output-dir", type=Path, required=True)
     binder = sub.add_parser("bind", help="Extract authored text and emit page maps plus a checked index")
@@ -674,7 +750,7 @@ def main(argv=None):
         elif args.action == "compose":
             result = compose(args.input, args.output_dir)
         elif args.action == "update-original":
-            result = update_original(args.input, args.edits, args.output_dir)
+            result = update_original(args.input, args.edits, args.output_dir, previous_final=args.previous_final)
         elif args.action == "bind":
             result = bind(args.manifest, args.markdown_root, args.request, args.output_dir,
                           previous=args.previous_index, repositories=args.repositories)

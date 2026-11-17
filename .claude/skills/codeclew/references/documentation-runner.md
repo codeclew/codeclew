@@ -5,6 +5,11 @@ component, renderer and export helpers. It never captures, refreshes or publishe
 The calling agent fills a job and a short launcher; it does not generate validators.
 A source helper treatment is experimental until included in an official package.
 
+For routine updates to existing documentation, use the [prior checked export
+route](compose-original.md#update-an-existing-checked-export). It preserves the
+original, bound index and citation manifests and applies the requested edits.
+Use a fresh run for a new documentation set.
+
 Create a job matching [docs-run-job](../schemas/docs-run-job.schema.json). Pin the
 supported clew launcher, exact saved snapshot, selected services, language, current
 skill and unchanged packaged renderer. Install that renderer's locked dependencies
@@ -22,9 +27,12 @@ python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" run --run-dir /absolute/
 Prepare records the complete paginated native trigger/file inventory before any
 author starts. A retained executable file also has a discovery obligation: source
 syntax can register an imperative listener that native trigger detection misses.
-The same author must report additional starts or an evidenced no-additions result;
+Even with zero native triggers, prepare retains the service overview and executable
+files for discovery. The author must report additional starts or an evidenced no-additions result;
 a script cannot establish that this judgment is true. Discovered starts remain
-explicit authored syntax, not compiler or runtime registration evidence.
+explicit authored syntax, not compiler or runtime registration evidence. If the
+required overview and entry pages exceed the compose limit, prepare reports the
+count and how to split the output before reading source bodies.
 
 Prepare also serializes the existing retained-source helpers into a source input
 kit before the author starts: a small service/requirement index, directly addressed
@@ -36,13 +44,15 @@ Work uses its returned symbol/source references and retained-resource query, not
 implicit switch to a source profile. Partial coverage and unavailable resources
 remain explicit. No previous authored pages or reviewer prose enter this kit.
 
-The source-input preparation profile has a 300-second wall limit, 128 files and
+The source-input preparation profile has a 300-second wall limit, 128 eagerly read files and
 8 MiB of readable views/indexes, plus the existing 128 MiB/4096-file artifact
 closure limits. Native reads run serially and timed-out helper process groups stop.
 Exceeding a limit blocks preparation; it never silently truncates the source or
 inventory. The author opens relevant individual views rather than replaying whole
-bulky fixtures, lockfiles or raw packet metadata. Additional evidence still uses
-the supported retained-read route. Frozen prepared manifests are included by the
+raw packet metadata. The index lists retained FILE_ONLY resources and points to
+the saved Work and metadata for an exact read when the request needs them. This
+keeps resource bodies outside the eager read count and preserves their file-level
+coverage. Frozen prepared manifests are included by the
 runner automatically; authors must not copy them into their extra read directory.
 
 Discovery reads must reconstruct complete native Git blob bytes using genuine
@@ -52,9 +62,41 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
-The runner builds its prompt from the request, admitted inputs and versioned
-contract. The author writes draft/original.json, navigation.json, routes.json for
-multiple services, retained citation reads under draft/reads, and the bidirectional
+## Author delivery
+
+Prepare returns the author mode and the reason it was selected. A single service
+with proven complete executable file bodies, at most four files and three native
+HTTP entries, no deferred resources or declaration components, at most 24 cite
+aliases, at most 12 KiB of source, and at most 20 KiB of inline prompt uses the
+structured inline mode. Discovered source starts can be added in the response,
+including for a service with zero native entries. Compiler-only or larger inputs
+and cases with resources to retrieve use the workspace authoring path.
+
+The inline author receives the request, verbatim file bytes, source-level entry
+inventory, real citation aliases and the [response contract](../schemas/docs-run-inline-author.schema.json).
+The user-selected Codex CLI, model, reasoning effort and reported counters remain
+the same. Shell, web and extension tooling are disabled for this turn. The runner
+builds the ordinary originals, navigation, sequences and self-review from the
+response. The author decides claim wording, citations, outcomes, effects, unknowns,
+discovery and the absence of a browser review. The same provenance, source and
+rendered export checks apply.
+
+The raw inline response is saved with its attempt. A machine rejection can be
+repaired in the same session and scope. If the author explicitly gives a reason
+for needing more retained evidence or a richer layout, the next permitted repair
+supplies the workspace prompt. It uses the same cumulative time, token and repair
+budgets.
+
+### Workspace authoring
+
+The runner provides a short author prompt and starter original/navigation files.
+The starter assigns required page names and anchors, links the overview to entry
+pages, and supplies each declared HTTP method/path and first call in its diagram.
+The author copies these files, explains the selected behavior with real citation
+handles from the source indexes, completes the remaining sequence steps, and adds
+any newly discovered starts. Every required page needs a cited explanation or a
+source-bounded unknown. For multiple services, also write draft/routes.json.
+Place any additional citation reads under draft/reads and complete the bidirectional
 [self-review protocol](../schemas/docs-run-review.schema.json). Required entry
 pages and handler identities are fixed; additional discovered entry accounts cannot
 replace them. The runner uses the real Markdown lexer and packaged sequence
@@ -106,8 +148,21 @@ Missing counters remain unavailable; bytes are never presented as tokens or cost
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.
-A real source handle can accompany a false claim. Author visual review is recorded
-as REVIEWED or UNAVAILABLE; independent visual/source acceptance remains separate.
+For the initial direct statements of a self-contained retained Kotlin entry
+function, prepare can check a unique single-line guard of the form
+`if (identifier comparison INTEGER) return INTEGER` (also with inline braces).
+The prepared source index lists each such local literal return check. The author names a
+supported fragment in the review template's optional `returnClaims` map. It
+must cite the listed entry source or a verified occurrence from the same
+captured file that contains the declaration byte for byte. Write the guard and
+result as successive inline code spans in the same top-level Markdown paragraph. The runner checks the actual
+renderable claim against the retained integer and keeps the authored text intact.
+This check covers the statement when reached. Branch reachability, arbitrary
+prose, other expressions/languages and older unbound exports need independent
+meaning review. The candidate scan skips statement text with block comments,
+multiline or interpolated strings, and ambiguous matching predicates. A bare
+`EXPORT_CHECKED` reports technical export only. Author visual review is recorded
+as REVIEWED or UNAVAILABLE. Independent visual/source acceptance remains separate.
 Do not claim an unavailable browser stage as completed author work.
 
 `verify --run-dir RUN` repeats the fixed checks without a model. `promote --run-dir

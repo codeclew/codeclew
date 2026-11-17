@@ -1,96 +1,55 @@
-Original request: {request}
+Request: {request}
+Write the reader pages in {language}. You are the sole author ({model}).
+Run workspace: {run}/workspace
+Admitted clew: {clew}. Release admission is complete for this run.
+Retained root and snapshot: {root} {snapshot}
+Inventory: {inventory}
+Prepared source index: {prepared_sources}
 
-You are the sole documentation author, using {model}. Use the Codeclew skill at
-{skill}. Read SKILL.md and references/compose-original.md before authoring.
-The calling agent already prepared this run; do not start another runner.
-Admitted clew: {clew}
-Retained documentation root: {root}
-Exact historical snapshot: {snapshot}
-Language: {language}
-Pre-author inventory: {inventory}
-Prepared source start: {prepared_sources}
-Your output directory: {draft}
+1. Open the prepared source index and read the individual required source views.
+   They give real cite handles and complete retained executable-file views for
+   discovery. Read requested resources or dependencies as needed via the saved
+   Work instructions there. Save new citation packages under {draft}/reads.
+   Frozen manifests already bind automatically. Use retained APIs only. Do not
+   capture, refresh, read repositories/caches directly, consult previous drafts
+   or reviewers, use other models, change inputs, or publish.
 
-Use only retained source through supported clew/skill APIs. Do not capture,
-refresh, read source repositories or private cache files directly, publish,
-inspect previous documentation/reviewer results, launch other models, or change
-runner inputs. Native source limits and unknown trigger discovery remain explicit.
-The inventory records source-level entries; absence is not proof of no behavior.
-Follow the full requested source scope, including message/scheduled starts,
-contracts, individual fields, effects, conditions, responses/errors and settings.
-Read the prepared source start and service indexes first. They give readable
-retained source regions, ready real cite handles for required entries, and
-unchanged full-file proofs. Use these sources directly; do not reconstruct their
-packet schemas, repeat discovery or copy their manifests into draft/reads. The
-runner automatically includes these frozen manifests for binding and export.
-Open directly addressed individual views for required entries/discovery files,
-contracts/settings and consequential dependencies. Do not blanket-read every
-resource body or raw sidecar; bulky fixtures and lockfiles remain available when
-needed. The index does not authorize omitting an unresolved requested behavior.
-They do not complete your semantic self-review. Read the actual code and retain
-the stated coverage/unknowns. Compiler fragments without exact byte coordinates
-remain separate; identical-looking text is not permission to merge their evidence.
-Acquire only additional missing retained bodies/configuration through the normal
-skill and save new citation packages underneath draft/reads; never invent handles.
+2. Copy {starter}/original.json and navigation.json into {draft}/ and edit them.
+   Required filenames, anchors, entry links, HTTP diagrams' first steps and
+   handler targets are already in place. Write the requested explanation over
+   the evidence. Add fragments like
+   {{"id":"stable-local-id","text":"Reader Markdown ending with blank lines.\n\n","evidence":["REAL_CITE"]}}.
+   Use plain {{"text":"..."}} for headings, local anchors and navigation.
+   Add a cited explanation or a source-bounded unknown on every required page.
+   Preserve supported branches, state changes, return values and limits. Separate
+   method behavior from runtime/transport guarantees. Complete each diagram's
+   steps and conditions with the observed flow, including any extra starts.
+   Steps use from/to participant IDs, kind call/return/async/await/note, label and
+   optional condition/target. The supplied entry step, alone, is only a template.
+   Update navigation for any added pages and starts. For multiple services also
+   author routes.json using the renderer's local process catalog contract.
+   For details when needed, see {skill}/references/compose-original.md and
+   {skill}/references/http-reader-closure.md.
 
-Write draft/original.json in page_citations.py compose original format. Use the
-exact required page names in inventory.json; extra readable process/data pages
-are allowed. Each required entry page must contain an actual clew-sequence fence,
-with a real diagram and the same narrow trace. A heading or numbered list does
-not qualify. Use the inventory's handlerId as that participant's internal id.
-Give it target REQUIRED_PAGE.md#handler, add an actual handler anchor in the
-page, and start the diagram with a step to that handler and the same target.
-For HTTP the first step is a call labelled exactly METHOD PATH from inventory.
-Explain the actual operation after that boundary; a structurally valid diagram
-is not proof of its meaning. Preserve branches, failure paths and unknowns.
+3. Review both directions against the actual source. Get the mechanical review
+   shell after writing the original:
+   python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
+   In requirements choose EXPLAINED or EXPLICIT_UNKNOWN. Keep the supplied
+   sections/entry diagram indexes or correct them to your actual layout.
+   Discovery requires NO_ADDITIONAL_STARTS with [] after reading that file, or
+   ADDITIONAL_STARTS with each actual finding: id, kind HTTP/KAFKA/SCHEDULED/OTHER,
+   page, section, diagram index, evidence and disposition. HTTP also needs
+   method/path. Give its diagram handler ID discovered-LOCAL_ID and target
+   PAGE.md#handler. A found source start says nothing about runtime registration.
+   Default entry/file cites come from prepared evidence. Override evidence only
+   with real citation handles. For each claim choose SUPPORTED or EXPLICIT_UNKNOWN.
+   For returnClaims, if present, select the claim ID on the entry page. Use the
+   listed cite and write the exact condition and the result as consecutive inline
+   code spans in one top-level paragraph. Keep the surrounding explanation in natural language.
+   Set unresolved to concrete remaining limits, or [] after review. Set visual
+   to UNAVAILABLE with a reason unless you actually inspected rendered pages in
+   a browser. If reviewed, record the observed pages and viewports.
 
-Write draft/navigation.json using the packaged renderer's navigation contract.
-For multiple services also write draft/routes.json with a local process catalog,
-Starts/Includes membership, source-bound routes and appropriate service/visit
-links. Follow the renderer README and schemas. Do not substitute service links
-for process search, or equate unknown participation with no match.
-
-Before completion, compare input -> explanation and explanation -> source using
-this same author. After draft/original.json exists, generate the mechanical review
-shell with the trusted helper (this command does not assess meaning or run gates):
-python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
-
-Fill the generated codeclew-docs-run-review/1.1 shell with your actual assessments:
-- requirements[ID]: explicitly choose EXPLAINED or EXPLICIT_UNKNOWN. IDs/pages and
-  default source-candidate mappings come from immutable inventory. ENTRY defaults
-  to local section handler and diagram 0; explicitly override section/diagram if
-  your actual layout differs. Other requirements need an actual local section.
-  A section is an anchor ID or same-page #anchor, never another page/URL.
-- Evidence overrides are optional and contain genuine cite handles ONLY, such as
-  the handles printed beside prepared code. Never put a raw SOURCE ID in evidence.
-  The runner checks source-ID membership through each cite's immutable binding.
-  Your source choices in annotated original fragments remain authoritative for
-  claim evidence; adjust the original if those choices need to change.
-- DISCOVERY: read the complete required source view. Explicitly choose
-  NO_ADDITIONAL_STARTS with discoveredEntries empty, or ADDITIONAL_STARTS with the
-  actual discovered entries. Each needs a unique local ASCII id, kind
-  HTTP/KAFKA/SCHEDULED/OTHER, page, section, diagram, genuine evidence and disposition;
-  HTTP also needs method/path. Its diagram handler id is discovered-LOCAL_ID and
-  targets its page#handler. These are authored syntax findings, not registration
-  proof. Prepared full-file byte proofs do not perform your source review.
-- claims[page][fragment ID]: explicitly choose SUPPORTED or EXPLICIT_UNKNOWN for
-  every annotated fragment after comparing its text with source. Exact duplicate
-  claim-evidence lists are derived from original fragments, not manually retyped.
-- unresolved: explicitly supply remaining limits/contradictions, or an empty list
-  only after your actual review. Missing/null assessments are not completion.
-- visual: REVIEWED only after actual browser inspection with observed pages and
-  viewports. Otherwise use UNAVAILABLE with a reason. Root visual acceptance is
-  separate and cannot be claimed as your work.
-
-No semantic disposition, absence of additional starts or visual verdict is filled
-by the helper. The resolved bookkeeping is not a semantic certificate.
-
-The runner owns compose/bind/render/export and its report/ready promotion. Do not
-write a PASS report, runner receipts or ready output. Author exit0 and prose DONE
-cannot replace those gates. There are at most {repairs} machine-guided repairs;
-reuse unchanged source reads and repair only the reported gaps. Do not remove
-requirements, citations or diagram distinctions to make a check pass.
-
-Keep runner budgets, hashes, raw origin labels, discovery matrices and review
-protocols out of the human narrative. Write clear reader language; put technical
-provenance in the normal local Sources disclosure and runner metadata.
+Write original.json, navigation.json and self-review.json. Compose, export and
+readiness belong to the runner. Up to {repairs} repairs reuse this draft and
+these reads. Keep receipts, budgets and review bookkeeping out of reader prose.
