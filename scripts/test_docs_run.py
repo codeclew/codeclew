@@ -740,6 +740,52 @@ else:
         self.assertEqual(detail['details']['response']['details']['documented'], '6')
         self.assertEqual(detail['details']['response']['details']['expected'], '-12')
 
+    def test_literal_guard_accepts_only_an_exact_covering_occurrence(self):
+        method = 'fun guard(delta: Int): Int {\n    if (delta < -9) return 23\n    return delta\n}'
+        prefix = 'class Charges {\n    // π🙂\n    '
+        body = prefix + method + '\n}\n'
+        raw = body.encode()
+        start, end = len(prefix.encode()), len((prefix + method).encode())
+        snapshot = 'sha256:owned-captured-file'
+        blob = hashlib.sha1(('blob ' + str(len(raw)) + '\0').encode() + raw).hexdigest()
+
+        def evidence(identity, text, a, b):
+            return {'readText': text, 'source': {'id': identity, 'file': 'src/Charges.kt', 'service': self.service,
+                'revision': self.source['revision'], 'startLine': 3 if a else 1,
+                'occurrence': {'snapshot': snapshot, 'blob': blob, 'startByte': a, 'endByte': b}}}
+
+        exact = evidence('method', method, start, end)
+        covering = evidence('class', body, 0, len(raw))
+        candidates = D['literal_return_candidates'](self.entry, ['exact'], {'exact': exact})
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(D['kotlin_literal_guards'](covering), [])
+        check = candidates[0]['id']
+        page = self.entry['page']
+        claim = {'id': 'guard', 'text': 'When `delta < -9`, the result is `23`.\n', 'evidence': ['provided']}
+        original = {'pages': [{'page': page, 'fragments': [claim]}]}
+        _, composed, _ = D['M']['compose_pages'](original)
+        review = {'claims': [{'page': page, 'claim': claim['id'], 'disposition': 'SUPPORTED'}]}
+
+        def validate(reference):
+            return D['literal_return_claims'](candidates, {check: claim['id']}, review, original, composed,
+                                              {'exact': exact, 'provided': reference})
+
+        self.assertEqual(validate(covering)[0]['literal'], '23')
+        self.assertEqual(claim['evidence'], ['provided'])
+        partial = evidence('partial', raw[start + 1:end].decode(), start + 1, end)
+        conflicting = evidence('conflict', body.replace('return 23', 'return 93'), 0, len(raw))
+        malformed = evidence('malformed', body, 0, len(raw) + 1)
+        wrong = {'partial': partial, 'conflicting overlap': conflicting, 'bad byte width': malformed}
+        for field in ('service', 'file', 'revision', 'occurrence'):
+            wrong[field] = {**covering, 'source': {**covering['source'], field: None if field == 'occurrence' else 'foreign'}}
+        for field in ('snapshot', 'blob'):
+            occurrence = {**covering['source']['occurrence'], field: '1' * 40}
+            wrong[field] = {**covering, 'source': {**covering['source'], 'occurrence': occurrence}}
+        for case, reference in wrong.items():
+            with self.subTest(case=case), self.assertRaises(D['Stop']) as raised:
+                validate(reference)
+            self.assertEqual(raised.exception.code, 'LITERAL_RETURN_CITATION_REQUIRED')
+
     def test_literal_guard_scan_skips_unsupported_ambiguous_and_commented_source(self):
         def candidates(body, extension='.kt'):
             source = {'readText': body, 'source': {'file': 'Example' + extension, 'id': 'exact', 'startLine': 1}}

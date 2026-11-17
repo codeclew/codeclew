@@ -126,8 +126,9 @@ function, prepare can check a unique single-line guard of the form
 `if (identifier comparison INTEGER) return INTEGER` (also with inline braces).
 The prepared source index lists each such local literal return check. The author names a
 supported fragment in the review template's optional `returnClaims` map. It
-must cite the listed entry source and contain the guard and result as successive
-inline code spans in the same top-level Markdown paragraph. The runner checks the actual
+must cite the listed entry source or a verified occurrence from the same
+captured file that contains the declaration byte for byte. Write the guard and
+result as successive inline code spans in the same top-level Markdown paragraph. The runner checks the actual
 renderable claim against the retained integer and keeps the authored text intact.
 This check covers the statement when reached. Branch reachability, arbitrary
 prose, other expressions/languages and older unbound exports need independent

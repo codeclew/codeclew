@@ -418,6 +418,34 @@ def frozen_return_checks(prepared):
     return [check for path in sorted(prepared.glob('*/literal-returns.json')) for check in load(path)]
 
 
+def covers_literal_declaration(citation, declaration):
+    """Match a broader verified occurrence to the exact captured declaration bytes."""
+    outer, inner = citation['source'], declaration['source']
+    owners = ('service', 'file', 'revision')
+    if any(not isinstance(inner.get(key), str) or not inner[key] or outer.get(key) != inner[key] for key in owners):
+        return False
+    if any(outer.get(key) != inner.get(key) for key in ('textOrigin', 'libraryOrigin')):
+        return False
+    outer_occ, inner_occ = outer.get('occurrence'), inner.get('occurrence')
+    if not isinstance(outer_occ, dict) or not isinstance(inner_occ, dict):
+        return False
+    snapshot, blob = inner_occ.get('snapshot'), inner_occ.get('blob')
+    if (not isinstance(snapshot, str) or not snapshot or not isinstance(blob, str)
+            or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', blob)
+            or (outer_occ.get('snapshot'), outer_occ.get('blob')) != (snapshot, blob)
+            or outer_occ.get('generatedOrigin') is not None or inner_occ.get('generatedOrigin') is not None):
+        return False
+    outer_start, outer_end = outer_occ.get('startByte'), outer_occ.get('endByte')
+    inner_start, inner_end = inner_occ.get('startByte'), inner_occ.get('endByte')
+    if (any(type(bound) is not int for bound in (outer_start, outer_end, inner_start, inner_end))
+            or not 0 <= outer_start <= inner_start < inner_end <= outer_end):
+        return False
+    full_bytes = citation['readText'].encode('utf-8')
+    declaration_bytes = declaration['readText'].encode('utf-8')
+    return (len(full_bytes) == outer_end - outer_start and len(declaration_bytes) == inner_end - inner_start
+            and full_bytes[inner_start - outer_start:inner_end - outer_start] == declaration_bytes)
+
+
 def literal_return_claims(candidates, selected, review, originals, composed, entries):
     need(isinstance(selected, dict) and selected.keys() == {row['id'] for row in candidates},
          'LITERAL_RETURN_CLAIMS_REQUIRED', checks=[row['id'] for row in candidates],
@@ -426,6 +454,10 @@ def literal_return_claims(candidates, selected, review, originals, composed, ent
               for p in composed['pages'] for f in p['claims']}
     fragments = {(p['page'], f['id']): f for p in originals['pages'] for f in p['fragments'] if 'id' in f}
     supported = {(row['page'], row['claim']) for row in review['claims'] if row['disposition'] == 'SUPPORTED'}
+    by_source = {}
+    for entry in entries.values():
+        source = entry['source']
+        by_source.setdefault((source['service'], source['id']), []).append(entry)
     result = []
     for row in candidates:
         claim = selected[row['id']]
@@ -434,8 +466,11 @@ def literal_return_claims(candidates, selected, review, originals, composed, ent
              'LITERAL_RETURN_CLAIM_MISSING', check=row['id'], page=row['page'])
         fragment = fragments[key]
         condition = (row['predicate'], row['literal'], row['line'])
-        need(any(entries[h]['source']['id'] in row['sourceIds'] and condition in kotlin_literal_guards(entries[h])
-                 for h in fragment['evidence']), 'LITERAL_RETURN_CITATION_REQUIRED',
+        owner = entries[row['cite']]['source']['service']
+        declarations = [entry for identity in row['sourceIds'] for entry in by_source.get((owner, identity), [])
+                        if condition in kotlin_literal_guards(entry)]
+        need(any(entries[h] is declaration or covers_literal_declaration(entries[h], declaration)
+                 for h in fragment['evidence'] for declaration in declarations), 'LITERAL_RETURN_CITATION_REQUIRED',
              check=row['id'], page=row['page'], cite=row['cite'], claim=claim)
         start, end = ranges[key]
         result.append({'id': row['id'], 'page': row['page'], 'claim': claim, 'startByte': start, 'endByte': end,
