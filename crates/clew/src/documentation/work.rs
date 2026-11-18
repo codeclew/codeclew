@@ -2669,7 +2669,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
                 let handle = work.handles.get(reference)?;
                 let dependency = work.checked.dependencies.get(&handle.id)?;
                 (handle.kind == "DEPENDENCY"
-                    && dependency.kind == "EXTERNAL_SERVICE"
+                    && semantic_inventory::external_origin_dependency(dependency)
                     && semantic_inventory::dependency_admitted(work, dependency))
                 .then(|| json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency}))
             })
@@ -2951,7 +2951,7 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
         if let Some(handle) = work.handles.get(reference)
             && handle.kind == "DEPENDENCY"
             && let Some(dependency) = work.checked.dependencies.get(&handle.id)
-            && dependency.kind == "EXTERNAL_SERVICE"
+            && semantic_inventory::external_origin_dependency(dependency)
             && semantic_inventory::dependency_admitted(work, dependency)
             && !items
                 .iter()

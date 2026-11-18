@@ -2548,6 +2548,7 @@ mod tests {
                 source_web: None,
                 contract_files: vec![contract.into()],
                 annotation_processor_paths: vec![],
+                external_origin: None,
             };
             for kind in ["VARIABLE_DECLARATION", "VARIABLE_ACCESS"] {
                 assert!(

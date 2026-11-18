@@ -72,6 +72,33 @@ class SemanticCatalogTest(unittest.TestCase):
         _,accepted,current=self.link(inventory,path,routes,output)
         self.assertTrue(accepted['complete']);self.assertNotEqual(current['records'][0]['definitionDigest'],old)
 
+    def test_same_id_promotion_uses_bound_root_and_rejects_two_targets(self):
+        for key, current in list(self.contexts.items()):
+            alias, service, _ = key
+            dependency = copy.deepcopy(current['dependency'])
+            dependency['kind'] = 'PROMOTED_SERVICE_METADATA'
+            dependency['normalized']['externalService']['resolvedService'] = 'provider'
+            dependency['digest'] = S['digest'](dependency['normalized'])
+            uses = dependency['normalized']['interactions']
+            index = next(i for i, use in enumerate(uses) if use['from']['service'] == service)
+            self.contexts[key] = self.context(alias, service, current['snapshot'], dependency, index)
+        inventory, path, routes, decisions = self.prepare()
+        registry = json.loads(routes.read_text())
+        for docset in registry['docsets'][:2]:
+            docset['services'].append({'id':'provider', 'title':'Provider',
+                                      'overview':{'docset':docset['id'], 'page':'provider.html'}})
+        self.write(routes, registry)
+        output, result, _ = self.link(inventory, path, routes)
+        self.assertTrue(result['complete'])
+        record = json.loads((output/'routes.json').read_text())['semanticCatalog']['records'][0]
+        self.assertEqual(record['resolvedService'], {'docset':'east', 'service':'provider'})
+        self.assertEqual(record['target'], {'docset':'catalog', 'page':'payments.html'})
+        decisions['records'][0]['aliases'].append({'input':'west', 'docset':'west', 'localId':'provider'})
+        self.write(path, decisions)
+        _, result, _ = self.link(inventory, path, routes)
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['issues'][0]['status'], 'CONFLICTING_PROMOTED_SERVICE_TARGETS')
+
     def test_missing_local_target_is_bounded_and_does_not_delete_confirmed_decision(self):
         inventory,path,routes,decisions=self.prepare();output,_,saved=self.link(inventory,path,routes)
         decisions['locations']=decisions['locations'][1:];self.write(path,decisions)

@@ -3,12 +3,19 @@ use super::{Query, QueryProjection, Work, bytes, digest, invalid};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 
+pub(super) fn external_origin_dependency(dependency: &super::Observation) -> bool {
+    matches!(
+        dependency.kind.as_str(),
+        "EXTERNAL_SERVICE" | "PROMOTED_SERVICE_METADATA"
+    )
+}
+
 pub(super) fn dependency_admitted(work: &Work, dependency: &super::Observation) -> bool {
     let Some(service) = work.subject.strip_prefix("service:") else {
         return false;
     };
     match dependency.kind.as_str() {
-        "EXTERNAL_SERVICE" => dependency.normalized["interactions"]
+        "EXTERNAL_SERVICE" | "PROMOTED_SERVICE_METADATA" => dependency.normalized["interactions"]
             .as_array()
             .is_some_and(|uses| {
                 uses.is_empty()
@@ -48,7 +55,7 @@ pub(super) fn rows(work: &Work, query: &Query) -> Result<Vec<Value>, ClewError> 
     }
     let mut result = Vec::new();
     for dependency in work.checked.dependencies.values() {
-        if dependency.kind == "EXTERNAL_SERVICE" {
+        if external_origin_dependency(dependency) {
             let declaration = &dependency.normalized["externalService"];
             let usages = dependency.normalized["interactions"]
                 .as_array()

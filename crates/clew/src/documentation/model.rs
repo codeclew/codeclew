@@ -48,6 +48,9 @@ pub struct Service {
     /// without editing its pom.xml. Optional and skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation_processor_paths: Vec<String>,
+    /// Supplemental authored declaration retained when this exact ID was promoted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_origin: Option<super::external_services::ExternalService>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

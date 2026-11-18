@@ -568,20 +568,26 @@ impl Repository {
     }
 
     pub fn services(&self) -> Result<BTreeMap<String, Service>, ClewError> {
+        self.services_with_external_records(&super::external_services::raw_records(self)?)
+    }
+
+    pub(super) fn services_with_external_records(
+        &self,
+        external: &BTreeMap<String, super::external_services::ExternalService>,
+    ) -> Result<BTreeMap<String, Service>, ClewError> {
         let rows: BTreeMap<String, Service> = self.records("catalog/services", "json")?;
         for (id, s) in &rows {
             validate_service(s)?;
             if id != &s.id {
                 return Err(invalid("service ID and filename disagree"));
             }
-        }
-        if super::external_services::records(self)?
-            .keys()
-            .any(|id| rows.contains_key(id))
-        {
-            return Err(invalid(
-                "external-service identity collides with a captured service",
-            ));
+            if let Some(origin) = external.get(id)
+                && s.external_origin.as_ref() != Some(origin)
+            {
+                return Err(invalid(
+                    "external-service identity collides with a captured service",
+                ));
+            }
         }
         Ok(rows)
     }
@@ -697,7 +703,17 @@ impl Repository {
         value: &T,
         expected: Option<&str>,
     ) -> Result<Value, ClewError> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
+        self.put_locked(&lock, path, value, expected)
+    }
+
+    pub(super) fn put_locked<T: Serialize>(
+        &self,
+        _lock: &WriteLock,
+        path: &str,
+        value: &T,
+        expected: Option<&str>,
+    ) -> Result<Value, ClewError> {
         let current = self.input_digest()?;
         let data = bytes(value)?;
         let target = self.path(path)?;
@@ -725,22 +741,37 @@ impl Repository {
         )
     }
 
-    pub fn service_add(&self, value: Service, expected: Option<&str>) -> Result<Value, ClewError> {
+    pub fn service_add(
+        &self,
+        mut value: Service,
+        expected: Option<&str>,
+    ) -> Result<Value, ClewError> {
         validate_service(&value)?;
-        if super::external_services::records(self)?.contains_key(&value.id) {
+        let lock = self.lock()?;
+        let mut external = super::external_services::raw_records(self)?;
+        let services = self.services_with_external_records(&external)?;
+        let origin = if let Some(old) = services.get(&value.id) {
+            if old.repository_id != value.repository_id
+                || (old.external_origin.is_some()
+                    && (old.repository != value.repository || old.target_ref != value.target_ref))
+            {
+                return Err(invalid(
+                    "repository identity migration requires an explicit new service record",
+                ));
+            }
+            old.external_origin.clone()
+        } else {
+            external.remove(&value.id)
+        };
+        if value.external_origin.is_some() && value.external_origin != origin {
             return Err(invalid(
-                "service identity already belongs to the external registry",
+                "externalOrigin must match the retained promotion declaration",
             ));
         }
-        let services = self.services()?;
-        if let Some(old) = services.get(&value.id)
-            && old.repository_id != value.repository_id
-        {
-            return Err(invalid(
-                "repository identity migration requires an explicit new service record",
-            ));
-        }
-        let mut result = self.put(
+        value.external_origin = origin;
+        super::external_services::validate_promotion(&value)?;
+        let mut result = self.put_locked(
+            &lock,
             &format!("catalog/services/{}.json", value.id),
             &value,
             expected,
@@ -752,7 +783,11 @@ impl Repository {
         if let Some(id) = &value.external_service
             && (!value.external
                 || &value.to.service != id
-                || !super::external_services::records(self)?.contains_key(id))
+                || (!super::external_services::records(self)?.contains_key(id)
+                    && self
+                        .services()?
+                        .get(id)
+                        .is_none_or(|s| s.external_origin.is_none())))
         {
             return Err(invalid(
                 "interaction externalService must name a registered external destination matching to.service",
@@ -828,6 +863,7 @@ fn validate_manifest_schema(manifest: &Manifest) -> Result<(), ClewError> {
 
 pub fn validate_service(s: &Service) -> Result<(), ClewError> {
     super::modules::validate(s)?;
+    super::external_services::validate_promotion(s)?;
     if s.schema != "codeclew-documentation-service/1.0"
         || !valid_id(&s.id)
         || !valid_id(&s.repository_id)
@@ -1142,6 +1178,7 @@ mod tests {
             source_web: None,
             contract_files: vec![],
             annotation_processor_paths: vec![],
+            external_origin: None,
         }
     }
     fn scenario(id: &str, service_id: &str) -> Scenario {

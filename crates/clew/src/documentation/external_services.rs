@@ -3,7 +3,7 @@ use super::{
     check::Check,
     cli::{InputArgs, ListArgs},
     digest, invalid,
-    model::Observation,
+    model::{Observation, Service},
     store::{self, Repository},
 };
 use crate::error::ClewError;
@@ -143,7 +143,29 @@ pub(super) fn validate(value: &ExternalService) -> Result<(), ClewError> {
     }
     Ok(())
 }
-pub fn records(repo: &Repository) -> Result<BTreeMap<String, ExternalService>, ClewError> {
+pub(super) fn validate_promotion(service: &Service) -> Result<(), ClewError> {
+    if let Some(origin) = &service.external_origin {
+        validate(origin)?;
+        if origin.id != service.id {
+            return Err(invalid(
+                "externalOrigin must have the same ID as its promoted service",
+            ));
+        }
+        if origin.repository.as_ref().is_some_and(|declared| {
+            super::source_links::repository(declared).ok()
+                != super::source_links::repository(&service.repository).ok()
+        }) {
+            return Err(invalid(
+                "externalOrigin repository conflicts with the promoted service",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn raw_records(
+    repo: &Repository,
+) -> Result<BTreeMap<String, ExternalService>, ClewError> {
     let rows: BTreeMap<String, ExternalService> =
         repo.records("catalog/external-services", "json")?;
     for (id, value) in &rows {
@@ -156,6 +178,14 @@ pub fn records(repo: &Repository) -> Result<BTreeMap<String, ExternalService>, C
     }
     Ok(rows)
 }
+
+pub fn records(repo: &Repository) -> Result<BTreeMap<String, ExternalService>, ClewError> {
+    let mut rows = raw_records(repo)?;
+    let services = repo.services_with_external_records(&rows)?;
+    rows.retain(|id, _| !services.contains_key(id));
+    Ok(rows)
+}
+
 pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result<(), ClewError> {
     if inputs.external_services.len() > store::MAX_RECORDS {
         return Err(invalid(
@@ -170,6 +200,9 @@ pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result
             ));
         }
     }
+    for service in inputs.services.values() {
+        validate_promotion(service)?;
+    }
     // Historical input manifests without the registry keep their existing
     // declaration-reading contract, including partial source catalogues.
     // Live process writes always validate captured and external participants.
@@ -183,7 +216,11 @@ pub(super) fn validate_inputs(inputs: &super::store::RepositoryInputs) -> Result
         if let Some(id) = &interaction.external_service
             && (!interaction.external
                 || interaction.to.service != *id
-                || !inputs.external_services.contains_key(id))
+                || (!inputs.external_services.contains_key(id)
+                    && inputs
+                        .services
+                        .get(id)
+                        .is_none_or(|s| s.external_origin.is_none())))
         {
             return Err(invalid(
                 "interaction externalService requires a registered external destination with the same to.service identity",
@@ -197,15 +234,39 @@ pub(super) fn attach(
     checked: &mut Check,
 ) -> Result<(), ClewError> {
     validate_inputs(inputs)?;
-    for (id, value) in &inputs.external_services {
-        let normalized = json!({"externalService":value,"configurationEvidence":configuration::project(checked,&value.configuration_references),"interactions":inputs.interactions.values().filter(|i| i.external_service.as_deref()==Some(id)).collect::<Vec<_>>(),"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","runtime":"UNVERIFIED"});
+    let external = inputs
+        .external_services
+        .iter()
+        .map(|(id, origin)| (id, origin, false));
+    let promoted = inputs.services.iter().filter_map(|(id, service)| {
+        service
+            .external_origin
+            .as_ref()
+            .map(|origin| (id, origin, true))
+    });
+    for (id, value, promoted) in external.chain(promoted) {
+        let kind = if promoted {
+            "PROMOTED_SERVICE_METADATA"
+        } else {
+            "EXTERNAL_SERVICE"
+        };
+        let mut normalized = json!({"externalService":value,
+            "configurationEvidence":configuration::project(checked,&value.configuration_references),
+            "interactions":inputs.interactions.values().filter(|i| i.external_service.as_deref()==Some(id)).collect::<Vec<_>>(),
+            "authority":if promoted { "PROMOTED_SERVICE_METADATA" } else { "DECLARED_EXTERNAL_SERVICE" },
+            "runtime":"UNVERIFIED"});
+        if promoted {
+            normalized["externalService"]["resolvedService"] = json!(id);
+        } else {
+            normalized["sourceCapture"] = json!("NOT_CAPTURED");
+        }
         let key = format!("external-service:{id}");
         checked.dependencies.insert(
             key.clone(),
             Observation {
                 id: key,
-                kind: "EXTERNAL_SERVICE".into(),
-                service: String::new(),
+                kind: kind.into(),
+                service: if promoted { id.clone() } else { String::new() },
                 symbol: value.title.clone(),
                 digest: digest(&normalized)?,
                 normalized,
@@ -239,6 +300,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let repo = Repository::open(&args.root)?;
             let value: ExternalService = store::read_authored(&args.input, 64 * 1024)?;
             validate(&value)?;
+            let lock = repo.lock()?;
             let previous = records(&repo)?.remove(&value.id);
             if !human
                 && (value
@@ -260,7 +322,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     "external identity already belongs to a captured service",
                 ));
             }
-            repo.put(
+            repo.put_locked(
+                &lock,
                 &format!("catalog/external-services/{}.json", value.id),
                 &value,
                 args.expected_input_digest.as_deref(),
@@ -282,6 +345,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 return Err(invalid("invalid external-service ID"));
             }
             let repo = Repository::open(&root)?;
+            if let Some(service) = repo.services()?.get(&id)
+                && let Some(origin) = &service.external_origin
+            {
+                return Ok(json!({"record":origin,"resolvedService":service.id,
+                    "authority":"PROMOTED_SERVICE_METADATA","inputDigest":repo.input_digest()?}));
+            }
             Ok(
                 json!({"record":records(&repo)?.get(&id).ok_or_else(||invalid("external service not registered"))?,"authority":"DECLARED_EXTERNAL_SERVICE","sourceCapture":"NOT_CAPTURED","inputDigest":repo.input_digest()?}),
             )
@@ -303,7 +372,7 @@ pub(super) fn for_page(checked: &Check, subject: &str) -> Value {
     let Some(inputs) = inputs else {
         return json!({});
     };
-    let selected: Vec<_> = inputs
+    let mut selected: Vec<_> = inputs
         .interactions
         .values()
         .filter(|i| {
@@ -318,23 +387,32 @@ pub(super) fn for_page(checked: &Check, subject: &str) -> Value {
         })
         .filter_map(|i| i.external_service.as_ref())
         .collect();
-    let mut selected = selected;
     if let Some(process) = subject
         .strip_prefix("scenario:")
         .and_then(|id| inputs.scenarios.get(id))
         .and_then(|s| s.process.as_ref())
     {
-        selected.extend(
-            process
-                .participants
-                .iter()
-                .filter(|id| inputs.external_services.contains_key(*id)),
-        );
+        selected.extend(process.participants.iter().filter(|id| {
+            inputs.external_services.contains_key(*id)
+                || inputs
+                    .services
+                    .get(*id)
+                    .is_some_and(|s| s.external_origin.is_some())
+        }));
+    }
+    if let Some((id, _)) = subject
+        .strip_prefix("service:")
+        .and_then(|id| inputs.services.get_key_value(id))
+    {
+        selected.push(id);
     }
     json!(
         inputs
             .external_services
             .iter()
+            .chain(inputs.services.iter().filter_map(|(id, service)| {
+                service.external_origin.as_ref().map(|origin| (id, origin))
+            }))
             .filter(|(id, _)| selected.contains(id))
             .collect::<BTreeMap<_, _>>()
     )
@@ -463,6 +541,74 @@ print(json.dumps({"location": location, "passwordPresent": parsed.password == fi
         assert!(
             repo.service_add(service, Some(&repo.input_digest().unwrap()))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_service_id_promotes_external_metadata_and_keeps_authored_links() {
+        let t = tempfile::tempdir().unwrap();
+        Repository::init(t.path(), "Promotion fixture").unwrap();
+        let repo = Repository::open(t.path()).unwrap();
+        let mut external = record();
+        external.references.push(KnowledgeReference {
+            id: "guide".into(),
+            title: "External guide".into(),
+            kind: "document".into(),
+            location: "https://docs.example.invalid/guide".into(),
+            status: "reviewed".into(),
+            declaration: external.declaration.clone(),
+        });
+        let external_path = "catalog/external-services/forecast-provider.json";
+        repo.put(
+            external_path,
+            &external,
+            Some(&repo.input_digest().unwrap()),
+        )
+        .unwrap();
+        let service: super::super::model::Service = serde_json::from_value(json!({
+            "schema": "codeclew-documentation-service/1.0",
+            "id": external.id, "title": "Captured Forecast Provider", "repositoryId": "provider",
+            "repository": external.repository, "language": "java", "profile": "source-syntax",
+            "targetRef": "main", "source": {"roots":["src"], "dialect":"17"}
+        }))
+        .unwrap();
+        let mut caller = service.clone();
+        caller.id = "caller".into();
+        repo.service_add(caller, Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let interaction: super::super::model::Interaction = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-interaction/1.0", "id":"fetch", "title":"Fetch forecast",
+            "from":{"service":"caller"}, "to":{"service":external.id},
+            "external":true, "externalService":external.id, "transport":{"kind":"logical"},
+            "declaration":external.declaration
+        })).unwrap();
+        repo.interaction_put(interaction.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let before = repo.inputs().unwrap();
+        let before_digest = repo.input_digest().unwrap();
+        let raw = std::fs::read(t.path().join(external_path)).unwrap();
+
+        assert!(repo.service_add(service.clone(), Some("stale")).is_err());
+        assert_eq!(repo.input_digest().unwrap(), before_digest);
+        let result = repo
+            .service_add(service.clone(), Some(&before_digest))
+            .unwrap();
+        assert_eq!(result["status"], "SAVED");
+        let after = Repository::open(t.path()).unwrap().inputs().unwrap();
+        assert!(!after.external_services.contains_key(&external.id));
+        let retained = serde_json::to_value(&after.services[&external.id]).unwrap();
+        assert_eq!(
+            retained["externalOrigin"],
+            serde_json::to_value(&external).unwrap()
+        );
+        assert_eq!(after.interactions[&interaction.id], interaction);
+        assert!(validate_inputs(&after).is_ok());
+        assert_eq!(before.external_services[&external.id], external);
+        assert!(validate_inputs(&before).is_ok());
+        assert_eq!(std::fs::read(t.path().join(external_path)).unwrap(), raw);
+        assert_eq!(
+            repo.service_add(service, Some(&before_digest)).unwrap()["status"],
+            "CURRENT"
         );
     }
     #[test]

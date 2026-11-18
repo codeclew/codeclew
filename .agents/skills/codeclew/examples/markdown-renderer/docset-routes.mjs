@@ -95,7 +95,7 @@ export function validateDocsetRoutes(value,nav,docset,version){
   const aliases=new Set(),resolvedRecords=[];
   const owner=(v,p)=>{shape(v,['docset','service'],p);fail(services.has(serviceKey(v)),p,'unknown service namespace')};
   for(const r of records.values()){
-   const p='/semanticCatalog/'+r.id;shape(r,['id','kind','title','target','aliases','uses','scope','represents'],p,['scope','represents']);
+   const p='/semanticCatalog/'+r.id;shape(r,['id','kind','title','target','aliases','uses','scope','represents','resolvedService'],p,['scope','represents','resolvedService']);
    fail(['external','concept','local','representation'].includes(r.kind),p,'unsupported semantic kind');text(r.title,p,160);
    fail((r.kind==='local'||r.kind==='representation')===Object.hasOwn(r,'scope'),p,'local and representation records require explicit service scope');
    if(r.scope)owner(r.scope,p+'/scope');
@@ -122,7 +122,16 @@ export function validateDocsetRoutes(value,nav,docset,version){
     uses.push({...u,to:target,processTo:process});
    }
    if(r.scope)fail(uses.every(u=>u.docset===r.scope.docset&&u.service===r.scope.service),p,'scoped term has foreign uses');
-   resolvedRecords.push({...r,to,uses});
+   let record={...r,to,uses};
+   if(r.resolvedService!==undefined){
+    const target=r.resolvedService,path=p+'/resolvedService';
+    shape(target,['docset','service'],path);
+    fail(r.kind==='external'&&r.aliases.some(a=>a.docset===target.docset&&a.localId===target.service),path,'expected an exact external alias');
+    const service=resolvedServices.find(s=>s.docset===target.docset&&s.id===target.service);
+    fail(service,path,'unknown promoted service');
+    record={...record,to:service.to,supplementalTo:to};
+   }
+   resolvedRecords.push(record);
   }
   semantic={...raw,records:resolvedRecords};
  }

@@ -159,6 +159,7 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
     original_reused=0;bound_records=[];covered=set();local_uses={}
     for identity,row in sorted(active.items()):
         record=row['definition'];bound={};uses=[];seen_uses=set();record_uses={}
+        resolved_targets = set()
         try:
             target=record['target'];need(isinstance(target,dict) and text(target.get('page'),255)
                 and target['page'].endswith('.html') and target.get('docset') in docsets,'INVALID_CANONICAL_TARGET')
@@ -181,6 +182,13 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
                     bound[selector]={k:value[k] for k in ('recordDigest','projectionDigest','snapshot','work','basis')}
                     related=[(selector,value)]
                     if record['kind']=='external':
+                        promoted = value['value'].get('resolvedService')
+                        if promoted is not None:
+                            destination = (alias['docset'], promoted)
+                            need(isinstance(promoted, str) and promoted == alias['localId']
+                                 and destination in service_names, 'PROMOTED_SERVICE_TARGET_UNAVAILABLE',
+                                 record=identity, input=alias['input'], localId=alias['localId'])
+                            resolved_targets.add(destination)
                         related=external_uses.get((alias['input'],alias['localId']),[])
                     for local_key,local in related:
                         need(local_key in locations,'LOCAL_DETAIL_TARGET_MISSING',record=local_key)
@@ -195,6 +203,10 @@ def links(collection_path,roots_path,clew,inventory_dir,decision_path,routes_pat
             try:M['compose_pages']({'pages':[page]})
             except M['Stop'] as error:raise Stop(error.status,exit_code=2,**error.details) from error
             entry={k:record[k] for k in ('id','kind','title','target','aliases','scope','represents') if k in record}
+            need(len(resolved_targets) <= 1, 'CONFLICTING_PROMOTED_SERVICE_TARGETS', record=identity)
+            if resolved_targets:
+                docset, service = next(iter(resolved_targets))
+                entry['resolvedService'] = {'docset':docset, 'service':service}
             entry['uses']=uses;entries.append(entry);aliases.update(selected_aliases);covered.update(bound)
             local_uses.update(record_uses);covered.update(record_uses)
             originals[target['docset']].append(page)

@@ -2144,6 +2144,7 @@ mod tests {
                 source_web: None,
                 contract_files: vec![],
                 annotation_processor_paths: vec![],
+                external_origin: None,
             };
             store::validate_service(&service).unwrap();
             let symbol = "callable:example/Importer.importStock#jvm:()V";

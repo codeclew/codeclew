@@ -6,6 +6,12 @@ Start with the existing documentation roots and exact retained snapshots. Select
 only the services needed for this collection. Roots remain independent; the same
 service or external ID in two roots does not establish shared identity.
 
+When an alias names an external identity promoted by exact ID in its own
+root, a refreshed collection uses the existing service overview. The
+previous canonical page and its provenance remain available as supplemental
+references. If explicit aliases identify different promoted targets for the
+same canonical record, resolve that conflict in the authored mapping.
+
 Use installed `clew` with `semantic-inventory-v1` support and the matching skill.
 An older runtime refusing this profile needs a supported upgrade, not recapture.
 Keep a running trial on its admitted runtime. The collector never captures or

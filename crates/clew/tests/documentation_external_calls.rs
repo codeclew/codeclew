@@ -7,6 +7,99 @@ use std::fs;
 use support::{Fixture, commit, read};
 
 #[test]
+fn same_id_registration_preserves_historical_external_snapshot_and_current_work() {
+    let f = Fixture::new();
+    f.service("orders");
+    let external = json!({
+        "schema":"codeclew-documentation-external-service/1.0", "id":"inventory",
+        "title":"Declared inventory", "description":"Owned metadata",
+        "repository":"https://example.invalid/inventory", "wiki":"https://example.invalid/guide",
+        "declaration":{"origin":"human","rationale":"Owned fixture"}
+    });
+    let path = f.input("inventory-external.json", &external);
+    let listed = f.ok(&["docs", "service", "list"]);
+    f.ok(&[
+        "docs",
+        "external",
+        "put",
+        "--input",
+        path.to_str().unwrap(),
+        "--expected-input-digest",
+        listed["inputDigest"].as_str().unwrap(),
+    ]);
+    let interaction = f.input("inventory-call.json", &json!({
+        "schema":"codeclew-documentation-interaction/1.0", "id":"inventory-call", "title":"Check inventory",
+        "from":{"service":"orders"}, "to":{"service":"inventory"}, "external":true,
+        "externalService":"inventory", "transport":{"kind":"logical"}, "declaration":external["declaration"]
+    }));
+    let listed = f.ok(&["docs", "service", "list"]);
+    f.ok(&[
+        "docs",
+        "interaction",
+        "put",
+        "--input",
+        interaction.to_str().unwrap(),
+        "--expected-input-digest",
+        listed["inputDigest"].as_str().unwrap(),
+    ]);
+    let repo = Repository::open(&f.docs).unwrap();
+    let old_snapshot = f.checked().save_snapshot(&repo).unwrap();
+    f.service("inventory");
+    let current = f.checked();
+    assert!(current.services.contains_key("inventory"));
+    let old = Check::load_snapshot(&repo, &old_snapshot).unwrap();
+    assert_eq!(
+        old.dependencies["external-service:inventory"].kind,
+        "EXTERNAL_SERVICE"
+    );
+    let current_metadata = &current.dependencies["external-service:inventory"];
+    assert_eq!(current_metadata.kind, "PROMOTED_SERVICE_METADATA");
+    assert_eq!(
+        current_metadata.normalized["externalService"]["resolvedService"],
+        "inventory"
+    );
+    assert_eq!(
+        current_metadata.normalized["interactions"][0]["id"],
+        "inventory-call"
+    );
+    let listed = f.ok(&["docs", "external", "list"]);
+    assert!(!listed.to_string().contains("Declared inventory"));
+    let resolved = f.ok(&["docs", "external", "show", "--id", "inventory"]);
+    assert_eq!(resolved["resolvedService"], "inventory");
+    assert_eq!(resolved["record"]["wiki"], external["wiki"]);
+    let current_snapshot = current.save_snapshot(&repo).unwrap();
+    let request = f.input(
+        "promotion-work.json",
+        &json!({
+            "schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Catalog maintainers", "contextProfile":"semantic-inventory-v1"
+        }),
+    );
+    let prepare = |snapshot: &str| {
+        f.ok(&[
+            "docs",
+            "work",
+            "prepare",
+            "--subject",
+            "service:orders",
+            "--snapshot",
+            snapshot,
+            "--input",
+            request.to_str().unwrap(),
+        ])
+    };
+    let baseline = prepare(&old_snapshot);
+    let promoted = prepare(&current_snapshot);
+    let kind = |page: &Value, authority: &str| {
+        page["items"].as_array().unwrap().iter().any(|row| {
+            row["id"] == "EXTERNAL_SYSTEM:inventory" && row["record"]["authority"] == authority
+        })
+    };
+    assert!(kind(&baseline, "DECLARED_EXTERNAL_SERVICE"));
+    assert!(kind(&promoted, "PROMOTED_SERVICE_METADATA"));
+}
+
+#[test]
 fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() {
     let f = Fixture::new();
     let caller = f.service("orders");

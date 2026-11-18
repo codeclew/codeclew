@@ -7,6 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {validateDocsetRoutes} from '../skills/codeclew/examples/markdown-renderer/docset-routes.mjs';
 import {validateNavigation,navigationView} from '../skills/codeclew/examples/markdown-renderer/navigation.mjs';
 import {docsetView,routeWords} from '../skills/codeclew/examples/markdown-renderer/route-view.mjs';
+import {resolveCatalogSequenceLinks} from '../skills/codeclew/examples/markdown-renderer/sequence.mjs';
 const fixture=JSON.parse(await readFile(new URL('../skills/codeclew/examples/markdown-renderer/docset-semantic.example.json',import.meta.url),'utf8'));
 function inputs(docset,value=fixture){
  const local=value.docsets.find(d=>d.id===docset),names=new Set(['index.md',...local.services.map(s=>s.id+'.md')]);
@@ -59,6 +60,24 @@ test('explicit alias collisions, ownership, scoped uses, representation promotio
  ]){
   const value=structuredClone(fixture);change(value);assert.throws(()=>validateDocsetRoutes(value,inputs('east').nav,'east','r1'));
  }
+});
+test('a promoted external resolves its existing canonical links to the exact service and preserves its authored page',()=>{
+ const value=structuredClone(fixture),payment=value.semanticCatalog.records.find(r=>r.id==='payments');
+ payment.aliases.push({input:'east',docset:'east',localId:'billing'});
+ payment.resolvedService={docset:'east',service:'billing'};
+ const model=validateDocsetRoutes(value,inputs('catalog',value).nav,'catalog','r1');
+ const record=model.semantic.records.find(r=>r.id==='payments');
+ assert.match(record.to.href,/east\/billing.html$/);
+ assert.equal(record.supplementalTo.href,'payments.html');
+ const pages=[{html:'<a data-clew-catalog-ref="payments">Payment boundary</a>'}];
+ resolveCatalogSequenceLinks([{participants:[{catalogRef:'payments'}],steps:[]}],pages,model);
+ assert.match(pages[0].html,/east\/billing.html">Payment boundary/);
+ assert.doesNotMatch(docsetView(model,'index.md').hub,/>Payments<\/a>/);
+ assert.match(docsetView(model,'payments.md').hub,/Used by/);
+ assert.match(docsetView(validateDocsetRoutes(value,inputs('east',value).nav,'east','r1'),'billing.md').hub,
+              /catalog\/payments.html/);
+ payment.resolvedService={docset:'east',service:'orders'};
+ assert.throws(()=>validateDocsetRoutes(value,inputs('catalog',value).nav,'catalog','r1'),/exact external alias/);
 });
 test('saved glossary aliases retain exact Work/review scope and cannot silently duplicate a concept as a carrier',()=>{
  const value=structuredClone(fixture),alias={input:'east',docset:'east',localId:'device',service:'enrollment',work:'a'.repeat(64),reviewRun:'b'.repeat(32)};

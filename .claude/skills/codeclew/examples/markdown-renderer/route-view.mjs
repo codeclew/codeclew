@@ -11,18 +11,31 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
   if(to.problem)return `<span class="route-link-unavailable">${esc(title)} — ${esc(to.problem.note)}</span>`;
   const remote=to.kind==='REMOTE_DOCSET';return `<a href="${esc(to.href)}"${remote?` data-docset="${esc(to.docset)}" aria-label="${esc(title)} (${esc(words.other)}: ${esc(sets.get(to.docset).title)})"`:` data-page="${esc(to.file)}" data-fragment="${esc(to.fragment)}"${to.file===file&&!to.fragment?' aria-current="page"':''}`}>${esc(title)}</a>`;
  }
- const actorTitle=a=>a.kind==='service'?serviceTitle(services.get(serviceKey(a))):a.kind==='external'?registry.externalActors.find(x=>x.id===a.id).title:a.kind==='none'?words.noneRecipient:words.unknown;
- const actorTarget=a=>a.kind==='external'?model.semantic?.records.find(r=>r.id===registry.externalActors.find(x=>x.id===a.id)?.canonical)?.to:null;
+ const actorRecord=a=>a.kind==='external'?model.semantic?.records.find(r=>r.id===registry.externalActors.find(x=>x.id===a.id)?.canonical):null;
+ const actorService=a=>a.kind==='service'?a:actorRecord(a)?.resolvedService;
+ const actorTitle=a=>{
+  const service=actorService(a);
+  if(service)return serviceTitle(services.get(serviceKey(service)));
+  return a.kind==='external'?registry.externalActors.find(x=>x.id===a.id).title:a.kind==='none'?words.noneRecipient:words.unknown;
+ };
+ const actorTarget=a=>actorRecord(a)?.to;
  const actorDisplay=a=>actorTarget(a)?link(actorTarget(a),actorTitle(a)):esc(actorTitle(a));
  const origin=r=>{if(r.origin.status!=='known')return esc(words.unknown);const o=r.occurrences.find(o=>o.id===r.origin.occurrence);return esc(words.triggerLabels?.[r.origin.kind]||r.origin.kind)+' · '+link(o.to,actorTitle(o.actor)+' · '+r.origin.title)};
- const roles=r=>r.occurrences.map(o=>`<li>${link(o.to,actorTitle(o.actor))} — ${esc(o.role)}${o.actor.kind==='service'?` · ${link(services.get(serviceKey(o.actor)).to,words.services)}`:` · ${actorTarget(o.actor)?link(actorTarget(o.actor),words.external):esc(words.external)}`}</li>`).join('');
+ const roles=r=>r.occurrences.map(o=>{
+  const service=actorService(o.actor);
+  const overview=service?link(services.get(serviceKey(service)).to,words.services)
+                       :actorTarget(o.actor)?link(actorTarget(o.actor),words.external):esc(words.external);
+  return `<li>${link(o.to,actorTitle(o.actor))} — ${esc(o.role)} · ${overview}</li>`;
+ }).join('');
  const ends=r=>r.outcomes.map(o=>{const owner=o.end.status==='known'?actorDisplay(r.occurrences.find(x=>x.id===o.end.ownerOccurrence).actor):esc(words.unknownEnd);return `<li>${esc(o.title)} (${esc(words[o.kind])}): ${owner}${o.end.status==='known'?` · ${esc(words.recipient)}: ${actorDisplay(o.end.recipient)}`:''}</li>`}).join('');
  const endSummary=r=>{
   const values=[...new Set(r.outcomes.map(o=>words[o.kind]+': '+(o.end.status==='known'?actorTitle(r.occurrences.find(x=>x.id===o.end.ownerOccurrence).actor):words.unknownEnd)))];
   return values.slice(0,4).map(esc).join('; ')+(values.length>4?' · +'+(values.length-4)+' '+esc(words.more):'')||esc(words.unknownEnd);
  };
- const localRoles=(r,service)=>r.occurrences.filter(o=>o.actor.kind==='service'&&o.actor.docset===model.docset&&o.actor.service===service);
- const relevant=r=>r.narrative.docset===model.docset||r.occurrences.some(o=>o.actor.kind==='service'&&o.actor.docset===model.docset);
+ const localRoles=(r,service)=>r.occurrences.filter(o=>{
+  const owner=actorService(o.actor);return owner?.docset===model.docset&&owner.service===service;
+ });
+ const relevant=r=>r.narrative.docset===model.docset||r.occurrences.some(o=>actorService(o.actor)?.docset===model.docset);
  const semanticTitle=r=>r.title+(r.scope?' · '+serviceTitle(services.get(serviceKey(r.scope))):'');
  const extra={canonical:model.canonical,routes:model.routes.filter(relevant).map(r=>link(r.to,r.title)),participation:service=>model.routes.filter(r=>localRoles(r,service).length).map(r=>link(r.to,r.title))};
  if(model.catalog&&!(model.semantic&&!model.routes.length)&&!(model.catalog.kind==='LOCAL_DOCSET'&&model.catalog.file===file))extra.routes.unshift(link(model.catalog,words.catalog));
@@ -33,13 +46,17 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
   for(const r of model.semantic.records)if(r.kind==='representation'){
    if(!representations.has(r.represents))representations.set(r.represents,[]);representations.get(r.represents).push(r);
   }
-  extra.semanticTitle=title;extra.semanticPages=new Set(model.semantic.records.filter(r=>r.to.kind==='LOCAL_DOCSET').map(r=>r.to.file));
+  extra.semanticTitle=title;extra.semanticPages=new Set(model.semantic.records.map(r=>r.supplementalTo||r.to).filter(to=>to.kind==='LOCAL_DOCSET').map(to=>to.file));
   extra.semanticCatalogHome=model.catalog?.kind==='LOCAL_DOCSET'?model.catalog.file:undefined;
-  extra.semanticLinks=model.semantic.records.filter(r=>model.catalog?.docset===model.docset||r.target.docset===model.docset||r.uses.some(u=>u.docset===model.docset)).map(r=>link(r.to,semanticTitle(r)));
+  extra.semanticLinks=model.semantic.records.filter(r=>!r.resolvedService&&(model.catalog?.docset===model.docset||r.target.docset===model.docset||r.uses.some(u=>u.docset===model.docset))).map(r=>link(r.to,semanticTitle(r)));
   if(!model.routes.length&&model.catalog?.kind==='REMOTE_DOCSET')extra.semanticLinks.unshift(link(model.catalog,title));
   for(const r of model.semantic.records){
-   const own=r.to.kind==='LOCAL_DOCSET'&&r.to.file===file;
+   const authored=r.supplementalTo||r.to;
+   const own=authored.kind==='LOCAL_DOCSET'&&authored.file===file;
    const relevant=r.uses.filter(u=>u.to.kind==='LOCAL_DOCSET'&&u.to.file===file||u.docset===model.docset&&services.get(serviceKey(u)).to.file===file);
+   if(r.supplementalTo&&r.to.kind==='LOCAL_DOCSET'&&r.to.file===file){
+    hub+=`<p>${link(r.supplementalTo,semanticTitle(r)+' · '+(words.externalReferences||'External references'))}</p>`;
+   }
    if(own){
     const details=r.uses.map(u=>`<li>${link(u.to,serviceTitle(services.get(serviceKey(u)))+' · '+u.title)}${u.processTo?` · ${link(u.processTo,words.whole)}`:''}</li>`).join('');
     const related=r.kind==='representation'?`<p>${esc(words.representationOf||'Representation of')}: ${link(byId.get(r.represents).to,semanticTitle(byId.get(r.represents)))}</p>`:representations.has(r.id)?`<p>${esc(words.representations||'Representations')}: ${representations.get(r.id).map(x=>link(x.to,semanticTitle(x))).join('; ')}</p>`:'';
@@ -64,7 +81,7 @@ export function docsetView(model,file,words=routeWords,prefix='clew-route'){
   script=`<script type="application/json" id="${prefix}-data">${data}</script><script>(()=>{const evaluate=(${filterRoutes.toString()});(${catalogClient.toString()})(evaluate,${JSON.stringify(prefix)})})()</script>`;
   if(model.semantic){
    const group=(title,rows)=>rows.length?`<h2>${esc(title)}</h2><ul class="route-service-list">${rows.map(r=>`<li>${link(r.to,semanticTitle(r))}</li>`).join('')}</ul>`:'';
-   const semantic=group(words.externalSystems||'External systems',model.semantic.records.filter(r=>r.kind==='external'))+group(words.terms||'Terms',model.semantic.records.filter(r=>r.kind!=='external'));
+   const semantic=group(words.externalSystems||'External systems',model.semantic.records.filter(r=>r.kind==='external'&&!r.resolvedService))+group(words.terms||'Terms',model.semantic.records.filter(r=>r.kind!=='external'));
    if(!model.routes.length){
     catalog=`<section class="route-catalog" id="${prefix}-catalog"><h2>${esc(words.services)}</h2><ul class="route-service-list">${model.services.map(s=>`<li>${link(s.to,serviceTitle(s))}</li>`).join('')}</ul>${semantic}</section>`;script='';
    }else catalog+=`<section class="route-catalog semantic-catalog">${semantic}</section>`;

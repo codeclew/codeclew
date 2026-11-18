@@ -351,6 +351,7 @@ fn reuse_key_binds_identity_so_state_change_recaptures() {
         source_web: None,
         contract_files: vec![],
         annotation_processor_paths: vec![],
+        external_origin: None,
     })
     .unwrap();
     cache::save_capture(&repo, service, &key_v2, &changed).unwrap();
