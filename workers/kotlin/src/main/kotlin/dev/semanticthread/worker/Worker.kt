@@ -1485,6 +1485,27 @@ internal fun repoOwnedStateDirectory(repo: Path, vararg components: String): Pat
     return resolved
 }
 
+private const val GRADLE_PROPERTIES_ENV = "CODECLEW_WORKER_GRADLE_PROPERTIES"
+
+private class GradleProjectProperties(val id: String, val args: List<String>) {
+    companion object {
+        fun fromLaunchEnvironment(): GradleProjectProperties? {
+            val raw = System.getenv(GRADLE_PROPERTIES_ENV) ?: return null
+            try {
+                val config = Json.parseToJsonElement(raw).jsonObject
+                return GradleProjectProperties(
+                    config.getValue("id").jsonPrimitive.content,
+                    config.getValue("args").jsonArray.map { it.jsonPrimitive.content },
+                )
+            } catch (_: IllegalArgumentException) {
+                error("Invalid managed Gradle project property transport")
+            } catch (_: NoSuchElementException) {
+                error("Incomplete managed Gradle project property transport")
+            }
+        }
+    }
+}
+
 internal fun gradleModelCommand(
     wrapper: Path,
     repo: Path,
@@ -1495,6 +1516,7 @@ internal fun gradleModelCommand(
     modelTask: String,
     preparedState: BuildStateLayout? = null,
     reuseDaemon: Boolean = false,
+    projectPropertyArgs: List<String> = emptyList(),
 ): List<String> = buildList {
     add(wrapper.toString())
     addAll(listOf("-p", repo.toString()))
@@ -1514,6 +1536,7 @@ internal fun gradleModelCommand(
     add("--quiet")
     addAll(listOf("-I", initScript.toString()))
     add("-Dsemantic.thread.compileTask=$compileTask")
+    addAll(projectPropertyArgs)
     add(modelTask)
 }
 
@@ -1565,6 +1588,7 @@ internal fun sanitizedProjectModelProcess(
                 null -> error("unreachable project-model build tool")
             }
         }
+        builder.environment().remove(GRADLE_PROPERTIES_ENV)
         builder.directory(repo.toFile()).redirectErrorStream(true)
     }
 
@@ -1572,6 +1596,7 @@ internal class Worker(
     private val configuredBuildStateRoot: Path? =
         System.getenv(K1_BUILD_STATE_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of),
 ) : AutoCloseable {
+    private val gradleProperties = GradleProjectProperties.fromLaunchEnvironment()
     private val disposable = Disposer.newDisposable("semantic-thread-worker")
     private val environment = KotlinCoreEnvironment.createForProduction(
         disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES
@@ -1879,6 +1904,7 @@ internal class Worker(
                 put("chosen", "UNAVAILABLE_PROVIDER")
             })
             put("buildState", stateFor(repo).semanticIdentity())
+            gradleProperties?.let { put("gradlePropertyId", it.id) }
             put("generatedSourceConfiguration", buildModel["generatedSourceConfiguration"] ?: buildJsonObject {
                 putJsonArray("roots") { generatedRoots.forEach(::add) }
                 putJsonArray("producers") {}
@@ -1894,6 +1920,7 @@ internal class Worker(
         val semanticInputManifest = buildJsonObject {
             put("schema", "kotlin-semantic-input-manifest/0.1")
             put("compilation", canonicalCompilation)
+            gradleProperties?.let { put("gradlePropertyId", it.id) }
             put("declaredCompilerVersion", declaredCompilerVersion)
             put("analyzerCompilerVersion", WORKER_COMPILER_VERSION)
             put("kotlinProjectSemantics", normalized["kotlinProjectSemantics"] ?: JsonNull)
@@ -1979,6 +2006,7 @@ internal class Worker(
                     modelTask,
                     preparedState = state,
                     reuseDaemon = !System.getenv("CODECLEW_K2_INDEX_ROOT").isNullOrBlank(),
+                    projectPropertyArgs = gradleProperties?.args.orEmpty(),
                 ),
                 repo,
                 state.gradleUserHome.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
@@ -2162,7 +2190,8 @@ internal class Worker(
         val canonicalRepo = repo.toRealPath()
         val view = if (extract == null) "RAW" else "CANONICAL"
         val inventory = projectInventory(canonicalRepo)
-        val key = "$canonicalRepo|${compilation ?: ":/main"}|${inventory.inputHash(view)}|authority=${cacheAuthority.orEmpty()}"
+        val propertyKey = gradleProperties?.let { "|gradlePropertyId=${it.id}" }.orEmpty()
+        val key = "$canonicalRepo|${compilation ?: ":/main"}|${inventory.inputHash(view)}|authority=${cacheAuthority.orEmpty()}$propertyKey"
         val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
         val persistentCacheAuthorized = projectModelCacheIsWorkerScoped && extract != null

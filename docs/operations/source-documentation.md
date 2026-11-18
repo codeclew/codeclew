@@ -245,6 +245,8 @@ Kotlin workers require JDK 21 independently of the project's JVM target; configu
 `CODECLEW_WORKER_JAVA_HOME` separately from the project's `JAVA_HOME`. A Java 17
 project target does not require the analyzer to run on Java 17. Project plugins,
 options and compiler compatibility still pass the existing admission checks.
+For Java or Kotlin builds that need a version or profile override, see
+[Gradle project properties](gradle-project-properties.md).
 
 The versioned `modules` field belongs at the service record's top level:
 

@@ -680,6 +680,9 @@ fn create_with_selector(
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let ready = if parent.is_some() {
+        // Expanding a context creates new results for an active session.
+        // Stored context and snapshot readers remain independent of live inputs.
+        session.resolve_gradle_properties()?;
         load_session_generation(session)?
     } else {
         ensure_session_generation(session)?

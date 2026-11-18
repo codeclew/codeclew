@@ -603,6 +603,8 @@ fn worker_process_group_exists(pgid: i32) -> Result<bool, ClewError> {
     }
 }
 
+const GRADLE_PROPERTIES_ENV: &str = "CODECLEW_WORKER_GRADLE_PROPERTIES";
+
 const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 const SEALED_WORKER_JVM_OPTIONS: &str = "-Xms64m -Xmx2048m -XX:MaxMetaspaceSize=384m -XX:MaxDirectMemorySize=256m -XX:+ExitOnOutOfMemoryError";
@@ -1888,6 +1890,7 @@ impl WorkerClient {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -1898,6 +1901,7 @@ impl WorkerClient {
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: &str,
+        gradle_properties: Option<&crate::project_config::GradleProperties>,
     ) -> Result<Self, ClewError> {
         let engine = KotlinSemanticEngine::Kotlin24;
         Self::start_engine(
@@ -1907,6 +1911,7 @@ impl WorkerClient {
             compiler_index_root,
             Some(build_namespace_digest),
             None,
+            gradle_properties,
         )
     }
 
@@ -1925,6 +1930,7 @@ impl WorkerClient {
             compiler_index_root,
             Some(build_namespace_digest),
             Some(engine),
+            None,
         )
     }
 
@@ -1935,6 +1941,7 @@ impl WorkerClient {
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: Option<&str>,
         qualification_engine: Option<KotlinSemanticEngine>,
+        gradle_properties: Option<&crate::project_config::GradleProperties>,
     ) -> Result<Self, ClewError> {
         #[cfg(unix)]
         use std::os::unix::process::CommandExt;
@@ -1992,6 +1999,17 @@ impl WorkerClient {
             resolved_compiler_index.as_deref(),
             &build_namespace_digest,
         );
+        command.env_remove(GRADLE_PROPERTIES_ENV);
+        if let Some(properties) = gradle_properties {
+            command.env(
+                GRADLE_PROPERTIES_ENV,
+                serde_json::to_string(&serde_json::json!({
+                    "id": properties.binding.id,
+                    "args": properties.args().collect::<Vec<_>>(),
+                }))
+                .map_err(|_| internal("cannot encode Gradle project property arguments"))?,
+            );
+        }
         if let Some(qualification_engine) = qualification_engine {
             if qualification_engine != engine {
                 return Err(ClewError::new(
@@ -5443,6 +5461,7 @@ mod tests {
         let error = WorkerClient::start_engine(
             Path::new("/nonexistent/retired-engine"),
             KotlinSemanticEngine::Kotlin23,
+            None,
             None,
             None,
             None,

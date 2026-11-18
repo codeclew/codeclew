@@ -70,6 +70,7 @@ impl Fixture {
         let compiler = run(Command::new(tool("javac")).arg("--version"));
         let mut authority = JavaProjectModel {
             schema: clew::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),

@@ -329,6 +329,9 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
     let binding_path = session_root.join("generation.json");
+    // Live requests must still match the admitted build inputs on a cache hit.
+    // Explicit reads of a retained generation use load_session_generation.
+    let gradle_properties = session.resolve_gradle_properties()?;
     let store = CasStore::open(&state)?;
     if state.private_file_exists(&binding_path)? {
         return load_ready_set(&state, &store, &binding_path, session, false);
@@ -423,6 +426,7 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
                 debug_output,
                 writable_then_seal,
                 extra_annotation_processors,
+                gradle_properties.as_ref(),
             );
         }
         SessionLanguage::JavaScript => {
@@ -448,8 +452,9 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
         SessionLanguage::Kotlin => {}
     }
     let pool = generation_pool(session)?;
-    let workspace =
+    let mut workspace =
         ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &session.compilations)?;
+    workspace.set_gradle_properties(gradle_properties);
     // The exact selected set is authorized once. The private bridge retains
     // legacy per-compilation OpenProject calls until the post-G1 worker
     // protocol cutover; no caller can bypass or widen the set authority.
@@ -743,6 +748,7 @@ fn ensure_java_generation_set(
     debug_output: Option<&DebugOutput>,
     writable_then_seal: bool,
     extra_annotation_processors: &[String],
+    gradle_properties: Option<&crate::project_config::GradleProperties>,
 ) -> Result<ReadyGenerationSet, ClewError> {
     let mut workspace = ProjectNativeKotlinWorkspace::prepare_language(
         state,
@@ -767,6 +773,7 @@ fn ensure_java_generation_set(
             settings.as_ref(),
             debug_output,
             extra_annotation_processors,
+            gradle_properties,
         )
     })?;
     let mut captured = Vec::with_capacity(models.len());
@@ -3066,6 +3073,7 @@ pub fn ensure_candidate_generation(
     if !git_oid(candidate_revision) {
         return Err(corrupt("candidate generation revision is invalid"));
     }
+    let gradle_properties = session.resolve_gradle_properties()?;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let mut candidate = session.clone();
@@ -3154,8 +3162,9 @@ pub fn ensure_candidate_generation(
         ));
     }
     let pool = generation_pool(&candidate)?;
-    let workspace =
+    let mut workspace =
         ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &candidate.compilations)?;
+    workspace.set_gradle_properties(gradle_properties);
     let lane = GenerationLaneContext {
         session: &candidate,
         repo: repository,
@@ -3342,12 +3351,23 @@ fn ensure_generation(
             "generation repository differs from session Git authority",
         ));
     }
-    let preparation_key = project_model_key(&runtime.runtime_key, snapshot_object, compilation)?;
+    let preparation_key = project_model_key(
+        &runtime.runtime_key,
+        snapshot_object,
+        compilation,
+        session.gradle_properties.as_ref(),
+    )?;
     let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
     if state.private_file_exists(binding_path)? {
         return load_ready(&state, &store, binding_path, session, compilation, false);
     }
     let compiler_namespace = compiler_store_key(&runtime, compilation)?;
+    let compiler_namespace = match &session.gradle_properties {
+        Some(properties) => {
+            canonical::hash(&(&compiler_namespace, properties.id)).map_err(internal)?
+        }
+        None => compiler_namespace,
+    };
     let external_build_state = session.external_build_state_path()?;
     let head_path = incremental_head_path(&repository.root, compilation)?;
     let live_attempt = workspace.open_compilation_from_set(
@@ -3840,7 +3860,12 @@ fn ensure_prepared_authority(
     compilation: &str,
     project: &Value,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let model_key = project_model_key(&runtime.runtime_key, snapshot_object, compilation)?;
+    let model_key = project_model_key(
+        &runtime.runtime_key,
+        snapshot_object,
+        compilation,
+        session.gradle_properties.as_ref(),
+    )?;
     let root = repository_root.join("generations/models");
     state.directory_at(&root)?;
     let path = root.join(format!("{}.json", digest_component(&model_key)?));
@@ -3875,14 +3900,18 @@ fn project_model_key(
     runtime_key: &str,
     snapshot: &CasObject,
     compilation: &str,
+    properties: Option<&crate::project_config::GradlePropertyBinding>,
 ) -> Result<String, ClewError> {
-    canonical::hash(&json!({
+    let mut key = json!({
         "schema":"codeclew-project-native-model-key/2.0",
         "runtimeKey":runtime_key,
         "snapshot":snapshot,
         "compilation":compilation,
-    }))
-    .map_err(internal)
+    });
+    if let Some(properties) = properties {
+        key["gradlePropertyId"] = json!(properties.id);
+    }
+    canonical::hash(&key).map_err(internal)
 }
 
 fn prepare_authority(
@@ -5571,6 +5600,7 @@ mod tests {
         JavaOperationalModel {
             authority: JavaProjectModel {
                 schema: JAVA_MODEL_SCHEMA.into(),
+                gradle_property_id: None,
                 model_digest: String::new(),
                 build_system: JavaBuildSystem::Maven,
                 compilation: "java:maven:module:main".into(),

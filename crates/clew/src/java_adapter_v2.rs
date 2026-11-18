@@ -2897,6 +2897,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
             compilation: "example".into(),
             model: JavaProjectModel {
                 schema: "codeclew-java-project-model/1.0".into(),
+                gradle_property_id: None,
                 model_digest: "digest".into(),
                 build_system: crate::java_project_model::JavaBuildSystem::Maven,
                 compilation: "example".into(),
@@ -2951,6 +2952,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
             compilation: "example".into(),
             model: JavaProjectModel {
                 schema: "codeclew-java-project-model/1.0".into(),
+                gradle_property_id: None,
                 model_digest: "digest".into(),
                 build_system: crate::java_project_model::JavaBuildSystem::Maven,
                 compilation: "example".into(),
@@ -3044,6 +3046,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
     fn saved_output_projection_uses_current_model_boundaries_and_provenance() {
         let mut authority = JavaProjectModel {
             schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: crate::java_project_model::JavaBuildSystem::Maven,
             compilation: ":/main".into(),

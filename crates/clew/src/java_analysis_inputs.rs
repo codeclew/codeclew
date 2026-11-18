@@ -971,6 +971,7 @@ mod tests {
         JavaOperationalModel {
             authority: JavaProjectModel {
                 schema: JAVA_MODEL_SCHEMA.into(),
+                gradle_property_id: None,
                 model_digest: String::new(),
                 build_system: JavaBuildSystem::Maven,
                 compilation: ":/main".into(),

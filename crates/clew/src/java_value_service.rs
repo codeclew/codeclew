@@ -718,6 +718,7 @@ mod tests {
         let (_, snapshot) = crate::repository_snapshot::capture(&repo, &store).unwrap();
         let mut model = JavaProjectModel {
             schema: JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: JavaBuildSystem::Gradle,
             compilation: ":/main".into(),
