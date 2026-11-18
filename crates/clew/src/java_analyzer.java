@@ -373,6 +373,7 @@ final class CodeclewJavaAnalyzer {
         private final Set<CompilationUnitTree> variableUnits = Collections.newSetFromMap(new IdentityHashMap<>());
         private final Map<Tree, String> variablePaths = new IdentityHashMap<>();
         private final Map<CompilationUnitTree, int[]> utf8Offsets = new IdentityHashMap<>();
+        private final Map<Element, TreePath> declarationPaths = new IdentityHashMap<>();
 
         private Analyzer(
                 Path root,
@@ -392,6 +393,39 @@ final class CodeclewJavaAnalyzer {
             this.files = files;
             this.classpath = classpath;
             this.facts = facts;
+            // JavacTrees.getPath(Element) searches the compilation unit. Index
+            // retained declarations once, rather than repeating that search for
+            // every variable access or source call. Symbols, not names, retain
+            // the distinction between shadowed variables and compilation units.
+            TreePathScanner<Void, Void> declarations = new TreePathScanner<>() {
+                private void remember() {
+                    Element element = trees.getElement(getCurrentPath());
+                    if (element != null) declarationPaths.putIfAbsent(element, getCurrentPath());
+                }
+                @Override public Void visitClass(ClassTree tree, Void unused) {
+                    remember();
+                    return super.visitClass(tree, unused);
+                }
+                @Override public Void visitMethod(MethodTree tree, Void unused) {
+                    remember();
+                    return super.visitMethod(tree, unused);
+                }
+                @Override public Void visitVariable(VariableTree tree, Void unused) {
+                    remember();
+                    return super.visitVariable(tree, unused);
+                }
+            };
+            variableUnits.forEach(unit -> declarations.scan(unit, null));
+        }
+
+        private TreePath declarationPath(Element element) {
+            // Preserve javac's handling of binary/generated and implicit record
+            // declarations outside the retained source traversal. Cache misses
+            // too: this map belongs to one fully analyzed, immutable JavacTask.
+            if (!declarationPaths.containsKey(element)) {
+                declarationPaths.put(element, trees.getPath(element));
+            }
+            return declarationPaths.get(element);
         }
 
         @Override
@@ -763,7 +797,7 @@ final class CodeclewJavaAnalyzer {
                 return slot < 0 ? null : "parameter:" + callable + "/slot/" + slot;
             }
             if (variable.getKind() == ElementKind.LOCAL_VARIABLE) {
-                TreePath declaration = trees.getPath(variable);
+                TreePath declaration = declarationPath(variable);
                 String path = declaration == null ? null : variablePaths.get(declaration.getLeaf());
                 return path == null ? null : "local:" + callable + "/" + path;
             }
@@ -825,7 +859,7 @@ final class CodeclewJavaAnalyzer {
                     && unary.getExpression() == operand && Set.of(Tree.Kind.PREFIX_INCREMENT, Tree.Kind.POSTFIX_INCREMENT,
                             Tree.Kind.PREFIX_DECREMENT, Tree.Kind.POSTFIX_DECREMENT).contains(unary.getKind())) access = "READ_WRITE";
             row.put("accessMode", access);
-            TreePath declaration = trees.getPath(variable);
+            TreePath declaration = declarationPath(variable);
             boolean retained = false;
             if (declaration != null) {
                 CompilationUnitTree unit = declaration.getCompilationUnit();
@@ -851,7 +885,7 @@ final class CodeclewJavaAnalyzer {
                     || constructor.getKind() != ElementKind.CONSTRUCTOR
                     || !(constructor.getEnclosingElement() instanceof TypeElement record)
                     || record.getKind() != ElementKind.RECORD) return null;
-            TreePath constructorPath = trees.getPath(constructor);
+            TreePath constructorPath = declarationPath(constructor);
             if (constructorPath == null || !hasSourceRange(constructorPath.getLeaf())) return null;
             var components = record.getRecordComponents();
             var parameters = constructor.getParameters();
@@ -1299,7 +1333,7 @@ final class CodeclewJavaAnalyzer {
 
         /** A binary signature is compiler evidence, never a method body or DI implementation. */
         private void dependencyTarget(Element executable, String name, String descriptor, Tree call) {
-            if (trees.getPath(executable) != null) return;
+            if (declarationPath(executable) != null) return;
             TypeElement owner = executable instanceof TypeElement type ? type
                     : executable.getEnclosingElement() instanceof TypeElement type ? type : null;
             if (owner == null) return;
@@ -1584,7 +1618,7 @@ final class CodeclewJavaAnalyzer {
                 // resolve interface/superclass route prefixes and inherited context.
                 return Map.of("method", method(method, bases), "classes", types(owner), "beanClass", classIdentity(owner),
                         "abstractMethod", method.getModifiers().contains(Modifier.ABSTRACT), "inherited", inherited,
-                        "implementationSource", trees.getPath(method) != null);
+                        "implementationSource", declarationPath(method) != null);
             }
 
             private Map<String, Object> method(ExecutableElement method, List<Map<String, Object>> bases) {
@@ -1624,7 +1658,7 @@ final class CodeclewJavaAnalyzer {
                 Map<String, Object> value = new LinkedHashMap<>();
                 value.put("kind", "BINARY");
                 value.put("identity", element.toString());
-                TreePath path = trees.getPath(element);
+                TreePath path = declarationPath(element);
                 Tree tree = annotation == null ? trees.getTree(element) : trees.getTree(element, annotation);
                 if (path != null && tree != null) {
                     long start = positions.getStartPosition(path.getCompilationUnit(), tree);

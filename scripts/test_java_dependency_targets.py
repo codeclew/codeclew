@@ -25,11 +25,14 @@ class JavaDependencyTargetsTest(unittest.TestCase):
         subprocess.run([cls.javac, '-d', str(cls.root), str(analyzer)],
                        check=True, capture_output=True, text=True)
 
-    def analyze(self, source, classpath=()):
+    def analyze(self, source, classpath=(), extra_sources=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'Refs.java').write_text(source)
-            (root / 'sources').write_text('Refs.java\n')
+            for name, body in (extra_sources or {}).items():
+                (root / name).write_text(body)
+            (root / 'sources').write_text('Refs.java\n' + ''.join(
+                name + '\n' for name in (extra_sources or {})))
             (root / 'classpath').write_text(''.join(str(p) + '\n' for p in classpath))
             (root / 'empty').mkdir()
             result = subprocess.run([
@@ -123,6 +126,83 @@ class Refs { Supplier<Object> missing() { return Missing::new; } }''')
         self.assertTrue(facts)
         self.assertTrue(all(f['kind'] == 'BOUNDARY' and f['resolution'] == 'UNKNOWN' for f in facts))
         self.assertFalse(any(f['kind'] == 'DEPENDENCY_TARGET' for f in facts))
+
+    def test_repeated_source_calls_keep_each_site_overload_and_synthetic_constructor(self):
+        source = '''class Refs {
+    static void run() { sink(); sink(); sink(1); new Refs(); Runnable r = Refs::sink; }
+    static void sink() {}
+    static void sink(int value) {}
+}'''
+        facts = self.analyze(source)
+        relations = [f for f in facts if f['kind'] == 'RELATION']
+        calls = [f for f in relations if f['relationKind'] == 'CALLS']
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sum(f['targetIdentity'] == 'method:class:Refs#sink()V'
+                             for f in calls), 2)
+        self.assertEqual(sum(f['targetIdentity'] == 'method:class:Refs#sink(I)V'
+                             for f in calls), 1)
+        self.assertEqual(len({f['byteStart'] for f in calls}), 3)
+        self.assertTrue(any(f['relationKind'] == 'CONSTRUCTS' and
+                            f['targetIdentity'] == 'method:class:Refs#<init>()V'
+                            for f in relations))
+        self.assertTrue(any(f['relationKind'] == 'REFERENCES' and
+                            f['targetIdentity'] == 'method:class:Refs#sink()V'
+                            for f in relations))
+        self.assertFalse(any(f['kind'] == 'DEPENDENCY_TARGET' for f in facts))
+
+    def test_variable_symbols_keep_cross_unit_shadowing_record_and_byte_ranges(self):
+        sources = {
+            'Refs.java': '''class Refs {
+    int value;
+    int first(int input) {
+        int value = input;
+        value++;
+        return value + Later.value + this.value;
+    }
+    int second(int input) {
+        int value = input;
+        String label = "😀";
+        System.out.println(label);
+        int café = value;
+        return café;
+    }
+}''',
+            'Later.java': '''class Later {
+    static int value;
+    static int read(int input) { int value = input; return value; }
+}''',
+            'Entry.java': '''record Entry(int value) {
+    Entry { if (value < 0) value = 0; }
+    int read() { return value; }
+}''',
+        }
+        facts = self.analyze(sources['Refs.java'], extra_sources={
+            name: body for name, body in sources.items() if name != 'Refs.java'})
+        variables = [f for f in facts if f['kind'] in
+                     ('VARIABLE_DECLARATION', 'VARIABLE_ACCESS')]
+        locals = [f for f in variables if f['kind'] == 'VARIABLE_DECLARATION'
+                  and f['name'] == 'value' and f['variableKind'] == 'LOCAL_VARIABLE']
+        self.assertEqual(len(locals), 3)
+        self.assertEqual(len({f['variableIdentity'] for f in locals}), 3)
+        for declaration in locals:
+            accesses = [f for f in variables if f['kind'] == 'VARIABLE_ACCESS'
+                        and f['variableIdentity'] == declaration['variableIdentity']]
+            self.assertTrue(accesses)
+            self.assertTrue(all(f['declarationStatus'] == 'SOURCE_RETAINED' for f in accesses))
+        self.assertTrue(any(f.get('variableIdentity') == 'field:class:Later#value:I'
+                            and f.get('declarationStatus') == 'SOURCE_RETAINED'
+                            and f['file'] == 'Refs.java' for f in variables))
+        self.assertTrue(any(f['name'] == 'out' and f.get('declarationStatus') ==
+                            'DECLARATION_SOURCE_UNAVAILABLE' for f in variables))
+        self.assertTrue(any(f.get('declarationStatus') ==
+                            'IMPLICIT_RECORD_COMPONENT_RETAINED' for f in variables))
+        self.assertTrue(any(f['name'] == 'café' for f in variables))
+        for fact in variables:
+            text = sources[fact['file']]
+            utf16 = text.encode('utf-16-le')
+            for offset, byte_offset in (('start', 'byteStart'), ('end', 'byteEnd')):
+                expected = len(utf16[:fact[offset] * 2].decode('utf-16-le').encode())
+                self.assertEqual(fact[byte_offset], expected, fact)
 
 
 if __name__ == '__main__':

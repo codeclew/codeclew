@@ -3,7 +3,20 @@
 The release workflow qualifies and packages the exact source commit, verifies
 checksums and requires successful CI before staging a GitHub **draft** release.
 It never automatically makes that draft public. Build-only candidates do not
-create a release or run the large Linux Java producer case.
+create a release. They run the large Linux Java producer case only when the
+explicit `qualify_large_java` input is true.
+
+For a correction to an existing, unpublished tag, provide its current peeled
+commit as `expected_existing_tag_commit` on the build-only dispatch. The
+candidate helper requires that both the disposable checkout and origin still
+have that target, then binds the version locally to the workflow commit.
+Build jobs have read-only repository permissions; the helper never pushes.
+This permits official candidate and large-producer acceptance before an
+explicitly authorized public tag correction. Preserve the old annotated tag
+object and all failed evidence. Do not overwrite an existing public release.
+Only after independent candidate acceptance may an authorized operator move
+the public tag, using a lease on the exact old tag object. The final tagged
+workflow still qualifies its official packages and stages a draft.
 
 For a tagged release, a fresh Linux job downloads the final official Linux
 artifact, verifies its checksum and runs the owned Java producer qualification
