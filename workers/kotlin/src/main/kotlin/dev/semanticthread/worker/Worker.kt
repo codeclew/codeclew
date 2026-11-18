@@ -218,6 +218,49 @@ private fun isCompilerPluginJar(path: Path): Boolean =
         }
     }.getOrDefault(false)
 
+private const val KAPT_GRADLE_2_2_21_JAR = "kotlin-annotation-processing-gradle-2.2.21.jar"
+// Maven Central org.jetbrains.kotlin:kotlin-annotation-processing-gradle:2.2.21.
+private const val KAPT_GRADLE_2_2_21_DIGEST = "sha256:8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718"
+private val KAPT_REGISTRARS = setOf(
+    "org.jetbrains.kotlin.kapt.KaptCompilerPluginRegistrar",
+    "org.jetbrains.kotlin.kapt.KaptComponentRegistrar",
+)
+
+private fun hasKaptRegistrar(path: Path): Boolean = ZipFile(path.toFile()).use { jar ->
+    COMPILER_PLUGIN_SERVICE_FILES.any { service ->
+        jar.getEntry(service)?.let { entry ->
+            jar.getInputStream(entry).bufferedReader().useLines { lines ->
+                lines.any { it.substringBefore('#').trim() in KAPT_REGISTRARS }
+            }
+        } == true
+    }
+}
+
+private data class SelectedGradleModel(val model: JsonObject, val nativeKapt: Path?)
+
+private fun qualifiedNativeKapt(model: JsonObject): Path? {
+    if (WORKER_COMPILER_VERSION != "2.4.10" || model["compilerVersion"].safeString() != "2.2.21" ||
+        model["gradleVersion"].safeString() != "8.14.1" || model["jvmTarget"].safeString() != "JVM_21") return null
+    val native = model["nativeKaptGeneration"] as? JsonObject ?: return null
+    val compile = model["compileTask"].safeString() ?: return null
+    if (!compile.endsWith(":compileKotlin")) return null
+    val project = compile.removeSuffix("compileKotlin")
+    val expectedTasks = listOf("${project}kaptGenerateStubsKotlin", "${project}kaptKotlin")
+    if ((native["tasks"] as? JsonArray)?.map { it.safeString() } != expectedTasks ||
+        native["kotlinGradlePlugin"].safeString() != "2.2.21-release-469" ||
+        native["normalCompilerPluginOptions"] != JsonArray(emptyList())) return null
+    val jdk = model["jdkHome"].safeString() ?: return null
+    val jdkRelease = runCatching { Files.readAllLines(Path.of(jdk).resolve("release")) }.getOrNull() ?: return null
+    val jdkVersion = jdkRelease.singleOrNull { it.startsWith("JAVA_VERSION=") }
+        ?.substringAfter('=')?.removeSurrounding("\"") ?: return null
+    if (jdkVersion.takeWhile(Char::isDigit) != "21") return null
+    return model["compilerPlugins"]?.jsonArray.orEmpty()
+        .map { Path.of(it.jsonPrimitive.content).toAbsolutePath().normalize() }
+        .distinct()
+        .singleOrNull { it.fileName.toString() == KAPT_GRADLE_2_2_21_JAR && it.isRegularFile() &&
+            runCatching { sha(Files.readAllBytes(it)) == KAPT_GRADLE_2_2_21_DIGEST }.getOrDefault(false) }
+}
+
 /**
  * Run project compiler plugins only when their ABI is compatible with this
  * exact analyzer. Gradle exposes a whole plugin classpath (including support
@@ -287,6 +330,10 @@ internal fun effectiveCompilerPluginPlan(
             declaredCompilerVersion != WORKER_COMPILER_VERSION -> throw WorkerFailure(
                 "UNSUPPORTED_COMPILER_PLUGIN_ABI",
                 "compiler plugin ${plugin.fileName} targets Kotlin $declaredCompilerVersion but analyzer is $WORKER_COMPILER_VERSION. This plugin/compiler combination is not qualified for analysis; select a supported compilation or report the plugin coordinates and both Kotlin versions to Codeclew maintainers. Do not disable a required project plugin to bypass this check.",
+            )
+            hasKaptRegistrar(plugin) -> throw WorkerFailure(
+                "UNSUPPORTED_COMPILER_PLUGIN_ABI",
+                "kapt requires a qualified Gradle generation result before analysis. The selected compilation does not provide that result.",
             )
             else -> effective.add(plugin)
         }
@@ -1977,7 +2024,7 @@ internal class Worker(
         return canonical
     }
 
-    private fun gradleModel(repo: Path, compilation: String?): JsonObject {
+    private fun gradleModel(repo: Path, compilation: String?): SelectedGradleModel {
         val wrapper = repo.resolve("gradlew"); if (!wrapper.isRegularFile()) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper is required")
         val state = stateFor(repo)
         val gradleUserHome = state.gradleUserHome
@@ -2025,11 +2072,12 @@ internal class Worker(
             if (status != 0) throw buildModelFailure(ProjectModelBuildTool.GRADLE, output)
             val line = output.lineSequence().lastOrNull { it.startsWith("__SEMANTIC_THREAD_MODEL__") }
                 ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "BUILD_MODEL_MARKER_MISSING: Gradle completed without publishing the selected compilation model. Run ./gradlew tasks --all from the repository root and verify the selected Kotlin JVM compilation; if it exists, report this code and the compilation to Codeclew maintainers.")
-            return json.parseToJsonElement(line.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
+            val model = json.parseToJsonElement(line.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
+            return SelectedGradleModel(model, qualifiedNativeKapt(model))
         } finally { Files.deleteIfExists(script) }
     }
 
-    private fun applyCompilerPluginCompatibility(model: JsonObject): JsonObject {
+    private fun applyCompilerPluginCompatibility(model: JsonObject, nativeKapt: Path? = null): JsonObject {
         val requested = model["compilerPlugins"]?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
             .orEmpty()
@@ -2038,15 +2086,32 @@ internal class Worker(
                 "UNSUPPORTED_PROJECT_CONFIGURATION",
                 "declared Kotlin compiler version is unavailable",
             )
-        val plan = effectiveCompilerPluginPlan(requested, declared)
+        // Preserve the original requested artifact. The qualified native build
+        // already generated the selected inputs, so the analyzer needs no kapt registrar.
+        val plan = effectiveCompilerPluginPlan(
+            requested.filterNot { it.toAbsolutePath().normalize() == nativeKapt }, declared,
+        )
         val existingBoundaries = model["buildModelBoundaries"]?.jsonArray
             ?.mapNotNull { it.jsonPrimitive.contentOrNull }
             .orEmpty()
         return buildJsonObject {
             model.forEach { (key, value) ->
-                if (key !in setOf("compilerPlugins", "requestedCompilerPlugins", "buildModelBoundaries")) {
+                if (key !in setOf("compilerPlugins", "requestedCompilerPlugins", "buildModelBoundaries", "nativeKaptGeneration") &&
+                    (key != "generatedSourceConfiguration" || nativeKapt == null)) {
                     put(key, value)
                 }
+            }
+            if (nativeKapt != null) {
+                val generation = checkNotNull(model["nativeKaptGeneration"]?.jsonObject)
+                putJsonObject("generatedSourceConfiguration") {
+                    model["generatedSourceConfiguration"]?.jsonObject?.forEach(::put)
+                    putJsonObject("nativeKapt") {
+                        generation.forEach(::put)
+                        put("requestedRegistrar", "org.jetbrains.kotlin:kotlin-annotation-processing-gradle:2.2.21")
+                        put("requestedRegistrarHash", KAPT_GRADLE_2_2_21_DIGEST)
+                    }
+                }
+                put("compilerPluginOptions", checkNotNull(generation["normalCompilerPluginOptions"]))
             }
             putJsonArray("requestedCompilerPlugins") {
                 requested.map(Path::toAbsolutePath).map(Path::normalize).distinct().sortedBy(Path::toString).forEach {
@@ -2057,7 +2122,8 @@ internal class Worker(
                 plan.plugins.forEach { add(JsonPrimitive(it.toString())) }
             }
             putJsonArray("buildModelBoundaries") {
-                (existingBoundaries + plan.boundaries).distinct().sorted().forEach { add(JsonPrimitive(it)) }
+                val kaptBoundary = if (nativeKapt == null) emptyList() else listOf("KOTLIN_KAPT_NATIVE_GENERATION_ANALYZER_OMISSION")
+                (existingBoundaries + plan.boundaries + kaptBoundary).distinct().sorted().forEach { add(JsonPrimitive(it)) }
             }
         }
     }
@@ -2159,17 +2225,17 @@ internal class Worker(
         if (hasGradle && hasMaven) {
             throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "mixed Gradle and Maven repositories are not supported")
         }
-        val model = when {
-            hasGradle -> gradleModel(repo, compilation).let { model ->
-                buildJsonObject {
-                    model.forEach(::put)
+        val compatible = when {
+            hasGradle -> gradleModel(repo, compilation).let { selected ->
+                val model = buildJsonObject {
+                    selected.model.forEach(::put)
                     put("buildSystem", "GRADLE")
                 }
+                applyCompilerPluginCompatibility(model, selected.nativeKapt)
             }
-            hasMaven -> MavenProjectModelExtractor(stateFor(repo)).extract(repo, compilation)
+            hasMaven -> applyCompilerPluginCompatibility(MavenProjectModelExtractor(stateFor(repo)).extract(repo, compilation))
             else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper or Maven pom.xml is required")
         }
-        val compatible = applyCompilerPluginCompatibility(model)
         val module = compilation?.substringBeforeLast('/')?.ifBlank { ":" } ?: ":"
         val composed = sourceComposedTestProjectModel(repo, compilation, compatible) {
             projectModel(repo, "$module/main")

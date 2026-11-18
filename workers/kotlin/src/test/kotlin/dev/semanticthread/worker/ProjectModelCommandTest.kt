@@ -142,6 +142,48 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun kaptRegistrarRemainsUnqualifiedWithoutExactNativeArtifact() {
+        val repo = Files.createTempDirectory("worker-kapt-unqualified").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/Entry.kt")
+            source.parent.createDirectories()
+            source.writeText("fun entry() = 1\n")
+            val kapt = repo.resolve("kotlin-annotation-processing-gradle-2.2.21.jar")
+            compilerPluginJar(kapt, "org.jetbrains.kotlin.kapt.KaptCompilerPluginRegistrar")
+            val model = buildJsonObject {
+                gradleFixtureModel(repo, source, "JVM_21").forEach(::put)
+                put("compilerVersion", "2.2.21")
+                put("gradleVersion", "8.14.1")
+                putJsonArray("compilerPlugins") { add(JsonPrimitive(kapt.toString())) }
+                putJsonObject("nativeKaptGeneration") {
+                    put("kotlinGradlePlugin", "2.2.21-release-469")
+                    putJsonArray("tasks") {
+                        add(JsonPrimitive(":kaptGenerateStubsKotlin"))
+                        add(JsonPrimitive(":kaptKotlin"))
+                    }
+                    putJsonArray("normalCompilerPluginOptions") {}
+                }
+            }
+            repo.resolve("model.json").writeText(model.toString())
+            val wrapper = repo.resolve("gradlew")
+            wrapper.writeText("#!/bin/sh\nprintf '%s' '__SEMANTIC_THREAD_MODEL__'\ncat model.json\nprintf '\\n'\n")
+            assertTrue(wrapper.toFile().setExecutable(true))
+            val request = buildJsonObject { put("repo", repo.toString()); put("compilation", ":/main") }
+                .toString().toByteArray()
+            val wrongBytes = assertFailsWith<WorkerFailure> {
+                Worker().use { it.handle(2, request) }
+            }
+            assertEquals("UNSUPPORTED_COMPILER_PLUGIN_ABI", wrongBytes.code)
+            val sameCompiler = assertFailsWith<WorkerFailure> {
+                effectiveCompilerPluginPlan(listOf(kapt), WORKER_COMPILER_VERSION)
+            }
+            assertEquals("UNSUPPORTED_COMPILER_PLUGIN_ABI", sameCompiler.code)
+        } finally {
+            repo.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun gradlePlanUsesProjectNativeEnvironmentByDefaultAndKeepsExternalModeOffline() {
         val repo = Files.createTempDirectory("worker-gradle-plan").toRealPath()
         val externalRoot = Files.createTempDirectory("worker-gradle-external-plan").toRealPath()

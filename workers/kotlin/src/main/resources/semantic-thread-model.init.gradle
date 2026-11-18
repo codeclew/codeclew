@@ -63,6 +63,49 @@ gradle.beforeProject { project ->
             return producesJavaSources && closure([task]).disjoint(blocked)
         }
     }
+    def nativeKaptGeneration = { compile, sourceFiles, javaFiles, classpath, freeArgs ->
+        // This row uses the native JVM main tasks of Kotlin Gradle 2.2.21.
+        // Keep all other producer modes behind the existing ABI boundary.
+        try {
+            if (!project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt")) return null
+            def kapt = project.tasks.findByName("kaptKotlin")
+            def stubs = project.tasks.findByName("kaptGenerateStubsKotlin")
+            if (kapt?.class?.superclass?.name != "org.jetbrains.kotlin.gradle.internal.KaptWithoutKotlincTask" ||
+                stubs?.class?.superclass?.name != "org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask") return null
+            def kgp = kapt.class.superclass.package.implementationVersion
+            if (kgp != "2.2.21-release-469" || gradle.taskGraph.hasTask(compile)) return null
+            if (!compile.taskDependencies.getDependencies(compile).contains(kapt) ||
+                !kapt.taskDependencies.getDependencies(kapt).contains(stubs)) return null
+            if (![stubs, kapt].every { task ->
+                def state = task.state
+                gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
+                    (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
+            }) return null
+            if (compile.pluginOptions.get().any { !it.allOptions().isEmpty() } ||
+                freeArgs.any { it.startsWith("-Xplugin") || it == "-P" || it.startsWith("plugin:") }) return null
+            def javaRoot = kapt.destinationDir.get().asFile.canonicalFile
+            def kotlinRoot = kapt.kotlinSourcesDestinationDir.get().asFile.canonicalFile
+            def classes = kapt.classesDir.get().asFile.canonicalFile
+            def repo = project.rootDir.canonicalFile.toPath()
+            if (![javaRoot, kotlinRoot, classes].every { it.toPath().startsWith(repo) }) return null
+            def java = project.fileTree(javaRoot).matching { include "**/*.java" }.files
+            def kotlin = project.fileTree(kotlinRoot).matching { include "**/*.kt", "**/*.kts" }.files
+            def selected = { files -> files.collect { new File(it).canonicalFile } as Set }
+            if (java.isEmpty() || !selected(javaFiles).containsAll(java) ||
+                !selected(sourceFiles).containsAll(kotlin) || !selected(classpath).contains(classes)) return null
+            return [
+                tasks: [stubs.path, kapt.path],
+                kotlinGradlePlugin: kgp,
+                normalCompilerPluginOptions: [],
+                generatedJavaRoot: repo.relativize(javaRoot.toPath()).toString(),
+                generatedKotlinRoot: repo.relativize(kotlinRoot.toPath()).toString(),
+                generatedClasses: repo.relativize(classes.toPath()).toString()
+            ]
+        } catch (Exception ignored) {
+            // An unavailable task option or generated-input provider cannot establish qualification.
+            return null
+        }
+    }
     project.tasks.register("semanticThreadModel") { modelTask ->
         // Gradle can report repository-local project artifacts in a compilation
         // classpath before those artifacts exist in a pristine checkout. Run
@@ -347,6 +390,12 @@ gradle.beforeProject { project ->
                 gradleVersion: gradle.gradleVersion,
                 jdkHome: jdkHome
             ]
+            if (gradle.gradleVersion == "8.14.1" && compilerVersion == "2.2.21" &&
+                compile.name == "compileKotlin" && jvmTarget.value == "JVM_21" &&
+                jdkHomeAvailable && pluginClasspath.available && freeCompilerArgs.available) {
+                def kapt = nativeKaptGeneration(compile, sourceFiles, javaSources.values, classpath, freeCompilerArgs.values)
+                if (kapt != null) model.nativeKaptGeneration = kapt
+            }
             println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
         }
     }

@@ -38,3 +38,17 @@ its existing total generation-fact visit ceiling. The older 32,768-relation
 ceiling rejected the self-hosting compilation after successful compiler
 analysis. The 64 MiB semantic-payload and retained-report limits still apply;
 exceeding a bound remains an explicit failure rather than a complete result.
+
+## Gradle kapt inputs
+
+The Kotlin 2.4.10 analyzer can use native kapt outputs for a main JVM
+compilation using Kotlin 2.2.21, Gradle 8.14.1, and a JDK 21 toolchain targeting
+JVM 21. Gradle prepares the selected kapt stubs and processing tasks. The model
+must retain generated Java and any generated Kotlin sources, together with the
+generated class directory on the selected compilation classpath.
+
+The input manifest records the original kapt registrar and the native tasks.
+Codeclew omits that registrar from the analyzer after confirming the official
+artifact, successful preparation and absence of compile-time plugin options for
+this row. Other compiler plugin combinations and kapt modes require separate
+qualification.
