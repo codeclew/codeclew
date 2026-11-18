@@ -15,6 +15,8 @@ supported clew launcher, exact saved snapshot, selected services, language, curr
 skill and unchanged packaged renderer. Install that renderer's locked dependencies
 using its documented npm command. Configure the existing local Codex CLI and exact
 authorized model/effort; no new credentials or hosted account are required.
+Set the job's time and repair limits, for example
+`"budget": {"wallSeconds": 900, "maxRepairs": 1}`.
 When the admitted clew state lives outside the author workspace, set author.stateRoot
 to that existing state directory so supported native lock/receipt writes are allowed.
 This grants no permission to inspect/edit private cache objects directly. The launcher is only:
@@ -84,8 +86,8 @@ rendered export checks apply.
 The raw inline response is saved with its attempt. A machine rejection can be
 repaired in the same session and scope. If the author explicitly gives a reason
 for needing more retained evidence or a richer layout, the next permitted repair
-supplies the workspace prompt. It uses the same cumulative time, token and repair
-budgets.
+supplies the workspace prompt. Both modes share the time and repair limits and
+the same cumulative token accounting.
 
 ### Workspace authoring
 
@@ -127,24 +129,25 @@ The full canonical 1.0 review remains supported, with the same evidence guards.
 
 At most two repairs receive exact machine failures and retain the same author
 session and unchanged source reads. Each attempt and failed draft stays in the run.
-Terminal usage counters are cumulative within one thread: resumed attempts count
+The runner enforces the wall time and repair allowance. Author token usage is
+recorded without a runner token cap. The deprecated `budget.maxModelTokens`
+field accepts a legacy integer or null for compatibility. Omit it in new jobs.
+
+Terminal usage counters are cumulative within one thread. Resumed attempts count
 only their deltas, and separate threads are summed once. Raw reports remain intact.
-Missing or ambiguous thread identity, changed resume identity and regressing
-counters refuse completion; unavailable usage never becomes an exact saving.
-An interrupted/nonzero/over-budget author cannot become complete through resume.
-The primary token budget is cumulative uncached input plus output:
-`input_tokens - cached_input_tokens + output_tokens`. Preserve raw input, cached
-input, output and available reasoning-output counters separately; reasoning is
+The primary usage metric is `input_tokens - cached_input_tokens + output_tokens`.
+The existing `budgetTokens` field reports that measured usage and
+`knownBudgetTokensLowerBound` reports an available lower bound. Reasoning is
 already included in output and is never added again. Total input/output footprint
-remains separate from the budget and is not a dollar-cost estimate. A missing cache
-counter makes the primary metric explicitly unavailable; invalid counters refuse
-completion. Known usage supplies a lower bound that can prove an over-budget
-failure; it cannot prove a within-budget pass. Unavailable primary usage blocks
-READY and another author invocation, preserving the draft for diagnosis.
-Counters arrive at turn completion, so a token limit is checked
-then and prevents readiness/further calls; it is not a provider billing guarantee
-or an enforceable token ceiling inside one CLI turn. Actual wall timeout is enforced.
-Missing counters remain unavailable; bytes are never presented as tokens or cost.
+remains separate from the primary usage metric and is not a dollar-cost estimate.
+Missing or ambiguous thread identity, changed resume identity and invalid or
+regressing counters refuse completion. Missing counters stay unavailable and
+prevent readiness and another author invocation.
+
+An interrupted or failed author stays stopped. Frozen runs retain the exact
+runner, package and input pins from preparation. Changing the package requires
+a fresh preparation for a new run. A historical author stopped by the former
+token cap is still a stopped attempt and never automatically resumes.
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.

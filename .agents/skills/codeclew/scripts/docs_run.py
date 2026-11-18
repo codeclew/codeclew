@@ -104,7 +104,7 @@ def token_accounting(attempts):
 
     Preserve reports verbatim, derive each turn's delta, and sum distinct threads
     only once. A historical single report needs no subtraction. Ambiguous identity
-    or missing/regressing counters cannot establish an exact within-budget result.
+    or missing/regressing counters cannot establish an exact usage total.
     """
     latest, bounds, missing, invalid, turns, reported = {}, {}, [], [], [], []
     unidentified = []
@@ -151,10 +151,6 @@ def token_accounting(attempts):
         aggregate['rawTotals'] = dict.fromkeys(aggregate['rawTotals'])
         aggregate['totalInputOutputFootprint'] = None
     return aggregate
-
-
-def budget_tokens(accounting):
-    return accounting['budgetTokens'] if accounting['budgetTokens'] is not None else accounting['knownBudgetTokensLowerBound']
 
 
 def load(path, maximum=32 * 1024 * 1024):
@@ -243,9 +239,11 @@ def validate_job(job):
         need(Path(job['author']['stateRoot']).is_absolute(), 'ABSOLUTE_LOCATOR_REQUIRED', field='author.stateRoot')
     need(Path(job['author']['executable']).is_absolute() and job['author']['model']
          and job['author']['reasoningEffort'] in ('none', 'low', 'medium', 'high', 'xhigh', 'max'), 'INVALID_AUTHOR')
-    closed(job['budget'], ('wallSeconds', 'maxModelTokens', 'maxRepairs'))
-    for key, lower, upper in (('wallSeconds', 1, 3600), ('maxModelTokens', 1, 250000), ('maxRepairs', 0, 2)):
+    closed(job['budget'], ('wallSeconds', 'maxRepairs'), ('maxModelTokens',))
+    for key, lower, upper in (('wallSeconds', 1, 3600), ('maxRepairs', 0, 2)):
         need(type(job['budget'][key]) is int and lower <= job['budget'][key] <= upper, 'INVALID_BUDGET', field=key)
+    legacy_limit = job['budget'].get('maxModelTokens')
+    need(legacy_limit is None or type(legacy_limit) is int, 'INVALID_BUDGET', field='maxModelTokens')
     if 'components' in job:
         closed(job['components'], ('path', 'digest'))
         need(Path(job['components']['path']).is_absolute(), 'ABSOLUTE_LOCATOR_REQUIRED')
@@ -1113,7 +1111,6 @@ def verify(run, *, debug=False):
         stage = 'author'; draft = run / 'workspace/draft'
         tokens = token_accounting(accounting.get('attempts', []))
         need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-        need(budget_tokens(tokens) <= job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
         need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
         last = accounting.get('attempts', [])[-1:]
         need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
@@ -1298,8 +1295,9 @@ def author(run):
     state = load(run / 'state.json'); attempts = state['attempts']
     tokens = token_accounting(attempts)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(budget_tokens(tokens) < job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXHAUSTED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
+    need(state['status'] not in ('AUTHOR_BUDGET_EXCEEDED', 'AUTHOR_FAILED', 'INTERRUPTED'),
+         'AUTHOR_NOT_COMPLETED', previousStatus=state['status'])
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
@@ -1364,7 +1362,6 @@ def author(run):
     thread_valid = len(starts) == 1 and isinstance(starts[0], str) and bool(starts[0])
     state['status'] = ('INTERRUPTED' if interrupted else 'AUTHOR_FAILED' if process.returncode != 0 or thread_changed or not thread_valid else
                        'AUTHOR_USAGE_INVALID' if tokens['status'] == 'INVALID' else
-                       'AUTHOR_BUDGET_EXCEEDED' if budget_tokens(tokens) > job['budget']['maxModelTokens'] else
                        'AUTHOR_USAGE_UNAVAILABLE' if tokens['status'] != 'MEASURED' else 'AUTHOR_COMPLETED')
     if mode == 'INLINE' and state['status'] == 'AUTHOR_COMPLETED':
         failure = materialize_inline(run, inventory, selected, response)
@@ -1377,10 +1374,7 @@ def author(run):
     need(thread_valid, 'AUTHOR_THREAD_REQUIRED')
     need(not interrupted and process.returncode == 0, 'AUTHOR_NOT_COMPLETED')
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(budget_tokens(tokens) <= job['budget']['maxModelTokens'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
-    # This is reported turn accounting, available after a turn, not a provider
-    # billing guarantee or a continuously enforceable in-turn token ceiling.
     return state
 
 

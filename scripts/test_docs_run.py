@@ -18,6 +18,7 @@ D = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run.py'))
 F = runpy.run_path(str(ROOT / 'scripts/test_author_citations.py'))
 RENDERER = Path(os.environ.get('CODECLEW_MARKDOWN_RENDERER', ROOT / 'skills/codeclew/examples/markdown-renderer'))
 REQUEST_MARKER = 'AUTHOR-INSTRUCTIONS-7C5B'
+LARGE_USAGE = {'input_tokens': 600000, 'cached_input_tokens': 200000, 'output_tokens': 33917, 'reasoning_output_tokens': 12000}
 
 
 class DocsRunTests(unittest.TestCase):
@@ -54,7 +55,13 @@ else:
  (draft/'report.json').write_text(json.dumps({{'status':'PASS','semanticTruthAssessed':True}}))
  if mode=='repair-on-resume' and 'resume' in sys.argv:
   path=draft/'original.json';path.write_text(path.read_text().replace('[Missing](absent.html)','Repaired local link.'))
-usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':2000000 if mode=='budget' else 10}}
+usage={{'input_tokens':5000 if mode=='high-cache' else 20,'cached_input_tokens':4990 if mode=='high-cache' else 10,'output_tokens':10}}
+if mode in ('high-usage','high-usage-missing-cache','high-usage-invalid-cache','repair-on-resume'):
+ usage={LARGE_USAGE!r}
+if mode=='high-usage-missing-cache':
+ usage.pop('cached_input_tokens')
+ usage['output_tokens']=433917
+if mode=='high-usage-invalid-cache': usage['cached_input_tokens']=usage['input_tokens']+1
 counter=Path.cwd()/'owned-cumulative-usage.json'
 if 'resume' in sys.argv and counter.exists():
  previous=json.loads(counter.read_text());usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
@@ -80,7 +87,7 @@ else:
                     'root': str(self.root / 'retained'), 'snapshot': F['SNAPSHOT'], 'services': [self.service], 'language': 'en',
                     'renderer': str(RENDERER), 'node': str(Path(shutil.which('node')).absolute()),
                     'author': {'executable': str(self.backend), 'model': 'owned-test-backend', 'reasoningEffort': 'max'},
-                    'budget': {'wallSeconds': 30, 'maxModelTokens': 1000, 'maxRepairs': 0}}
+                    'budget': {'wallSeconds': 30, 'maxRepairs': 0}}
         (self.root / 'retained').mkdir()
         self.job_path = self.root / 'job.json'; D['save'](self.job_path, self.job)
         coverage = {'kind': 'COVERAGE', 'revision': self.source['revision'], 'coverage': 'SYNTAX', 'boundaries': []}
@@ -587,7 +594,46 @@ else:
         self.assertEqual(result['status'], 'READY', result)
         self.assertTrue(prepared.joinpath('citations.json').is_file())
 
-    def test_high_cached_input_uses_uncached_budget_in_author_and_verify(self):
+    def test_job_without_token_cap_promotes_and_reports_large_author_usage(self):
+        self.assertNotIn('maxModelTokens', D['load'](self.run / 'inputs/job.json')['budget'])
+        self.mode.write_text('high-usage')
+        result = D['execute'](self.run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](self.run / 'state.json')
+        self.assertEqual(state['modelTokens'], 433917)
+        self.assertEqual(len(state['attempts']), 1)
+        self.assertEqual(state['attempts'][0]['usage'], LARGE_USAGE)
+        report = D['load'](self.run / 'report.json')
+        self.assertEqual(report['checks']['author']['reportedModelTokens'], 433917)
+        self.assertEqual(report['checks']['author']['tokenAccounting']['rawTotals'], LARGE_USAGE)
+        self.assertTrue((Path(result['ready']) / 'html' / 'reservations.html').is_file())
+
+    def test_numeric_legacy_token_cap_is_ignored_in_inline_run(self):
+        self.job['budget']['maxModelTokens'] = 1
+        run, receipt, _, _ = self.prepare_inline_fixture()
+        self.assertEqual(receipt['authorMode'], 'INLINE')
+        self.assertEqual(D['load'](run / 'inputs/job.json')['budget']['maxModelTokens'], 1)
+        self.mode.write_text('high-usage')
+        D['save'](self.seed / 'inline-response.json', self.inline_response())
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(state['modelTokens'], 433917)
+        self.assertEqual(len(state['attempts']), 1)
+        self.assertEqual(D['load'](run / 'report.json')['checks']['author']['reportedModelTokens'], 433917)
+
+    def test_null_legacy_token_cap_is_unlimited(self):
+        self.job['budget']['maxModelTokens'] = None
+        run, receipt, _, _ = self.prepare_inline_fixture()
+        self.assertEqual(receipt['status'], 'PREPARED')
+        self.assertIsNone(D['load'](run / 'inputs/job.json')['budget']['maxModelTokens'])
+        self.mode.write_text('high-usage')
+        D['save'](self.seed / 'inline-response.json', self.inline_response())
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        self.assertEqual(D['load'](run / 'state.json')['modelTokens'], 433917)
+
+    def test_high_cached_input_uses_uncached_metric_in_author_and_verify(self):
         self.mode.write_text('high-cache')
         state = self.generated()
         self.assertEqual(state['modelTokens'], 20)
@@ -731,9 +777,11 @@ else:
         pins=D['load'](self.run/'pins.json');pins['jobDigest']=D['digest'](job);pins['inputFiles']=D['tree'](self.run/'inputs');D['save'](self.run/'pins.json',pins)
         result=D['execute'](self.run);self.assertEqual(result['status'],'READY_PROMOTED',result)
         state=D['load'](self.run/'state.json');self.assertEqual(len(state['attempts']),2)
-        self.assertEqual(state['modelTokens'],40)
-        self.assertEqual([a['threadId'] for a in state['attempts']],['owned-test-session']*2)
-        self.assertEqual([a['budgetTokens'] for a in state['tokenAccounting']['attemptUsage']],[20,20])
+        self.assertEqual(state['modelTokens'], 867834)
+        self.assertEqual([a['threadId'] for a in state['attempts']], ['owned-test-session'] * 2)
+        self.assertEqual([a['budgetTokens'] for a in state['tokenAccounting']['attemptUsage']], [433917, 433917])
+        self.assertEqual([a['usage'] for a in state['attempts']],
+                         [LARGE_USAGE, {key: value * 2 for key, value in LARGE_USAGE.items()}])
         self.assertNotIn('resume',state['attempts'][0]['argv'])
         args=state['attempts'][1]['argv'];self.assertEqual(args[args.index('resume')+1],'owned-test-session')
         self.assertEqual((self.run/'attempts/0/prompt.txt').read_bytes(),(self.run/'prompt.txt').read_bytes())
@@ -776,13 +824,12 @@ else:
             self.assertEqual(error.exception.code,'PROMOTION_RECHECK_FAILED')
         self.assertFalse((self.run/'ready').exists())
 
-    def test_recorded_v2_usage_still_exceeds_budget_after_metric_correction(self):
+    def test_recorded_v2_usage_keeps_exact_uncached_accounting(self):
         usage = {'input_tokens':5089868, 'cached_input_tokens':4811904,
                  'output_tokens':167582, 'reasoning_output_tokens':96885, 'cache_write_input_tokens':0}
         result = D['token_accounting']([{'usage':usage}])
         self.assertEqual(result['status'], 'MEASURED')
         self.assertEqual(result['budgetTokens'], 445546)
-        self.assertGreater(D['budget_tokens'](result), 250000)
         self.assertEqual(result['totalInputOutputFootprint'], 5257450)
         self.assertEqual(result['rawTotals']['reasoning_output_tokens'], 96885)
         self.assertEqual(usage['cached_input_tokens'], 4811904)
@@ -805,29 +852,34 @@ else:
         self.assertIsNone(result['rawTotals']['cached_input_tokens'])
         self.assertIsNone(result['rawTotals']['reasoning_output_tokens'])
         self.assertEqual(result['missing'], [{'attempt':0,'fields':['cached_input_tokens']}])
-        self.assertEqual(D['budget_tokens'](result), 35)
+        self.assertEqual(result['knownBudgetTokensLowerBound'], 35)
 
-    def test_missing_cache_cannot_pass_budget_ready_or_start_another_author(self):
-        state = self.generated()
-        state['attempts'][0]['usage'].pop('cached_input_tokens')
-        D['save'](self.run / 'state.json', state)
-        result = self.check()
-        self.assertEqual(result['status'], 'BLOCKED', result)
-        self.assertEqual(result['checks']['author']['code'], 'AUTHOR_USAGE_UNAVAILABLE')
-        with self.assertRaises(D['Stop']) as raised:
-            D['author'](self.run)
-        self.assertEqual(raised.exception.code, 'AUTHOR_USAGE_UNAVAILABLE')
-        self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']), 1)
-        self.assertFalse((self.run / 'ready').exists())
-
-    def test_missing_cache_with_known_over_budget_lower_bound_still_fails(self):
-        state = self.generated()
-        state['attempts'][0]['usage'].pop('cached_input_tokens')
-        state['attempts'][0]['usage']['output_tokens'] = 1001
-        D['save'](self.run / 'state.json', state)
-        result = self.check()
-        self.assertEqual(result['status'], 'FAILED')
-        self.assertEqual(result['checks']['author']['code'], 'AUTHOR_TOKEN_BUDGET_EXCEEDED')
+    def test_missing_or_invalid_cache_blocks_ready_and_another_author(self):
+        for mode, code, status in (
+            ('high-usage-missing-cache', 'AUTHOR_USAGE_UNAVAILABLE', 'BLOCKED'),
+            ('high-usage-invalid-cache', 'AUTHOR_USAGE_INVALID', 'FAILED'),
+        ):
+            with self.subTest(mode=mode):
+                self.mode.write_text(mode)
+                with self.assertRaises(D['Stop']) as raised:
+                    self.generated_for_test_reset()
+                self.assertEqual(raised.exception.code, code)
+                state_path = self.run / 'state.json'
+                state = D['load'](state_path)
+                self.assertFalse(state['usageAvailable'])
+                self.assertIsNone(state['modelTokens'])
+                self.assertEqual(len(state['attempts']), 1)
+                if mode == 'high-usage-missing-cache':
+                    self.assertEqual(state['tokenAccounting']['knownBudgetTokensLowerBound'], 433917)
+                failure = self.check()
+                self.assertEqual(failure['status'], status)
+                self.assertEqual(failure['checks']['author']['code'], code)
+                with self.assertRaises(D['Stop']) as raised:
+                    D['execute'](self.run)
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(D['load'](state_path), state)
+                self.assertFalse((self.run / 'attempts/1').exists())
+                self.assertFalse((self.run / 'ready').exists())
 
     def test_invalid_usage_cannot_be_reported_as_measured_uncached_tokens(self):
         for cache in [-1, 101, True, '90', None]:
@@ -843,10 +895,15 @@ else:
         self.assertEqual(result['status'], 'FAILED'); self.assertEqual(result['checks']['output']['code'], 'MISSING_REQUIRED_OUTPUT')
         self.assertEqual((ready / 'current.json').read_text(), 'previous accepted output')
 
-    def test_broken_link_is_not_overridden_by_author_pass(self):
+    def test_broken_link_still_refuses_readiness_after_high_usage(self):
         self.original['pages'][0]['fragments'][1]['text'] += '\n[Missing](absent.html#lost)\n'
-        self.seed_files(); self.generated(); result = self.check()
-        self.assertEqual(result['status'], 'FAILED'); self.assertEqual(result['checks']['finalize']['status'], 'FAIL')
+        self.mode.write_text('high-usage')
+        self.seed_files()
+        result = D['execute'](self.run)
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['checks']['author']['reportedModelTokens'], 433917)
+        self.assertEqual(result['checks']['finalize']['status'], 'FAIL')
+        self.assertFalse((self.run / 'ready').exists())
 
     def test_heading_empty_or_unrelated_diagram_refuses_ready(self):
         for replacement in ['## Handler-started sequence\n\n1. Accept\n', '```clew-sequence\n{}\n```\n']:
@@ -879,16 +936,49 @@ else:
         with self.assertRaises(D['Stop']) as caught:D['promote'](self.run)
         self.assertEqual(caught.exception.code, 'ACCEPTED_OUTPUT_CHANGED')
 
-    def test_nonzero_exit_and_token_budget_cannot_be_resumed_as_completed(self):
-        for mode in ['exit-failed', 'budget']:
-            self.mode.write_text(mode)
-            with self.assertRaises(D['Stop']):self.generated_for_test_reset()
-            result = self.check(); self.assertNotEqual(result['status'], 'READY')
-            self.assertNotEqual(D['load'](self.run / 'state.json')['status'], 'AUTHOR_COMPLETED')
-            with self.assertRaises(D['Stop']):D['promote'](self.run)
-            before = len(D['load'](self.run / 'state.json')['attempts'])
-            with self.assertRaises(D['Stop']):D['execute'](self.run)
-            self.assertEqual(len(D['load'](self.run / 'state.json')['attempts']), before)
+    def test_terminal_author_failure_is_not_resumed_with_repairs_available(self):
+        job = D['load'](self.run / 'inputs/job.json')
+        job['budget']['maxRepairs'] = 1
+        D['save'](self.run / 'inputs/job.json', job)
+        pins = D['load'](self.run / 'pins.json')
+        pins.update(jobDigest=D['digest'](job), inputFiles=D['tree'](self.run / 'inputs'))
+        D['save'](self.run / 'pins.json', pins)
+        self.mode.write_text('exit-failed')
+        with self.assertRaises(D['Stop']) as raised:
+            self.generated()
+        self.assertEqual(raised.exception.code, 'AUTHOR_NOT_COMPLETED')
+        state = D['load'](self.run / 'state.json')
+        self.assertEqual(state['status'], 'AUTHOR_FAILED')
+        with self.assertRaises(D['Stop']) as raised:
+            D['execute'](self.run)
+        self.assertEqual(raised.exception.details['previousStatus'], 'AUTHOR_FAILED')
+        self.assertEqual(D['load'](self.run / 'state.json'), state)
+        self.assertFalse((self.run / 'attempts/1').exists())
+
+    def test_legacy_token_stopped_attempt_is_neither_resumed_nor_accepted(self):
+        job = D['load'](self.run / 'inputs/job.json')
+        job['budget'].update(maxRepairs=1, maxModelTokens=250000)
+        D['save'](self.run / 'inputs/job.json', job)
+        pins = D['load'](self.run / 'pins.json')
+        pins.update(jobDigest=D['digest'](job), inputFiles=D['tree'](self.run / 'inputs'))
+        D['save'](self.run / 'pins.json', pins)
+        self.mode.write_text('high-usage')
+        state = self.generated()
+        state['status'] = 'AUTHOR_BUDGET_EXCEEDED'
+        D['save'](self.run / 'state.json', state)
+        before = D['tree'](self.run / 'attempts')
+        verified = self.check()
+        self.assertEqual(verified['checks']['author']['code'], 'AUTHOR_COMPLETION_REQUIRED')
+        with self.assertRaises(D['Stop']) as raised:
+            D['promote'](self.run)
+        self.assertEqual(raised.exception.code, 'RUN_NOT_READY')
+        with self.assertRaises(D['Stop']) as raised:
+            D['execute'](self.run)
+        self.assertEqual(raised.exception.code, 'AUTHOR_NOT_COMPLETED')
+        self.assertEqual(raised.exception.details['previousStatus'], 'AUTHOR_BUDGET_EXCEEDED')
+        self.assertEqual(D['tree'](self.run / 'attempts'), before)
+        self.assertEqual(D['load'](self.run / 'state.json'), state)
+        self.assertFalse((self.run / 'ready').exists())
 
     def test_interruption_preserves_previous_ready_and_is_not_complete(self):
         job = D['load'](self.run / 'inputs/job.json'); job['budget']['wallSeconds'] = 1

@@ -20,9 +20,9 @@
       "reasoningEffort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]},
       "stateRoot": {"type": "string", "description": "Optional absolute admitted Codeclew state root needing native lock/receipt writes outside the author workspace"}
     }},
-    "budget": {"type": "object", "additionalProperties": false, "required": ["wallSeconds", "maxModelTokens", "maxRepairs"], "properties": {
+    "budget": {"type": "object", "additionalProperties": false, "required": ["wallSeconds", "maxRepairs"], "properties": {
       "wallSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
-      "maxModelTokens": {"type": "integer", "minimum": 1, "maximum": 250000, "description": "Primary budget across author and repairs: input_tokens minus cached_input_tokens plus output_tokens. Raw/cached input and reasoning-output subsets remain separately reported; unavailable cache counters do not become zero."},
+      "maxModelTokens": {"type": ["integer", "null"], "deprecated": true, "description": "Deprecated compatibility field. Omit it in new jobs. The runner ignores its value and reports token usage independently."},
       "maxRepairs": {"type": "integer", "minimum": 0, "maximum": 2}
     }},
     "components": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {
