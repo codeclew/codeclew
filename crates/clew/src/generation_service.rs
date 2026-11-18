@@ -329,6 +329,9 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
     let binding_path = session_root.join("generation.json");
+    // Live requests must still match the admitted build inputs on a cache hit.
+    // Explicit reads of a retained generation use load_session_generation.
+    let gradle_properties = session.resolve_gradle_properties()?;
     let store = CasStore::open(&state)?;
     if state.private_file_exists(&binding_path)? {
         return load_ready_set(&state, &store, &binding_path, session, false);
@@ -398,7 +401,6 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
             &binding_path,
         );
     }
-    let gradle_properties = session.resolve_gradle_properties()?;
     let repo = session.repository_path()?;
     let (snapshot, snapshot_object) = if let Some(binding) = &session.working_tree {
         (
@@ -3071,6 +3073,7 @@ pub fn ensure_candidate_generation(
     if !git_oid(candidate_revision) {
         return Err(corrupt("candidate generation revision is invalid"));
     }
+    let gradle_properties = session.resolve_gradle_properties()?;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let mut candidate = session.clone();
@@ -3161,7 +3164,7 @@ pub fn ensure_candidate_generation(
     let pool = generation_pool(&candidate)?;
     let mut workspace =
         ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &candidate.compilations)?;
-    workspace.set_gradle_properties(session.resolve_gradle_properties()?);
+    workspace.set_gradle_properties(gradle_properties);
     let lane = GenerationLaneContext {
         session: &candidate,
         repo: repository,

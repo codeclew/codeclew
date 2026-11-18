@@ -840,7 +840,7 @@ impl SessionAuthority {
             let matches = live.as_ref().map(|(head, _, object)| {
                 head == &self.base_revision && object == &binding.snapshot
             });
-            return Ok(SessionFreshness {
+            return Ok(self.with_gradle_freshness(SessionFreshness {
                 schema: "codeclew-session-freshness/2.0".into(),
                 session_id: self.session_id.clone(),
                 lifecycle_status: lifecycle.status,
@@ -869,7 +869,7 @@ impl SessionAuthority {
                 .into(),
                 retained_evidence_valid: Some(valid),
                 live_snapshot_matches: matches,
-            });
+            }));
         }
         let runs = load_session_runs(state, root, self)?;
         let expected = session_terminal_target_oid(self, &runs)?;
@@ -888,13 +888,34 @@ impl SessionAuthority {
             status_args.extend(["--", ".", ":(top,exclude)codeclew.yaml"]);
         }
         let clean = isolated_git_bytes(&repository, &status_args).map(|value| value.is_empty());
-        Ok(classify_freshness(
+        Ok(self.with_gradle_freshness(classify_freshness(
             &self.session_id,
             lifecycle.status,
             head.as_deref().map(|value| value == expected),
             target.as_deref().map(|value| value == expected),
             clean,
-        ))
+        )))
+    }
+
+    fn with_gradle_freshness(&self, mut freshness: SessionFreshness) -> SessionFreshness {
+        if freshness.status != "FRESH" {
+            return freshness;
+        }
+        if let Err(error) = self.resolve_gradle_properties() {
+            let changed = error.code == ErrorCode::InputMutated;
+            let (status, remediation) = match (self.working_tree.is_some(), changed) {
+                (false, true) => ("STALE", "OPEN_SESSION_WITH_CURRENT_GRADLE_PROPERTIES"),
+                (true, true) => (
+                    "LIVE_CHANGED",
+                    "OPEN_SESSION_WITH_CURRENT_GRADLE_PROPERTIES",
+                ),
+                (false, false) => ("UNAVAILABLE", "CHECK_GRADLE_PROJECT_PROPERTIES"),
+                (true, false) => ("LIVE_UNAVAILABLE", "CHECK_GRADLE_PROJECT_PROPERTIES"),
+            };
+            freshness.status = status.into();
+            freshness.remediation_id = remediation.into();
+        }
+        freshness
     }
 
     pub fn repository_path(&self) -> Result<PathBuf, ClewError> {

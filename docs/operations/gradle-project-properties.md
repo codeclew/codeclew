@@ -37,6 +37,12 @@ changed. An explicit older snapshot still reads the historical capture. Removing
 a declaration restores the project's inherited behavior. Keep the file local
 and untracked if its purpose is to configure Codeclew on this machine.
 
+For an open session, `clew change check-freshness --session SESSION_ID` reports
+when the declaration no longer matches. Open a new session to use the current
+properties. Reordering keys or restoring the admitted values leaves the property
+binding unchanged. Creating or expanding a context requires a matching
+declaration. Explicit reads of retained source still use the saved context.
+
 Use this interface only for nonsecret values. Trusted Gradle plugins, build
 scripts, and the same user's process inspection tools can see the actual
 arguments. Codeclew does not copy the declaration into receipts or default
