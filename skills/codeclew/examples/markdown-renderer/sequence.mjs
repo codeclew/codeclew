@@ -1,4 +1,5 @@
 // A finite presentation of an authored sequence; no source or graph inference.
+import {htmlIds} from './navigation.mjs';
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 function need(ok,path,message){if(!ok)throw new Error(`Invalid sequence ${path}: ${message}`)}
 function object(v,path,keys){need(v&&typeof v==='object'&&!Array.isArray(v),path,'expected object');need(Object.keys(v).every(k=>keys.includes(k)),path,'unknown property')}
@@ -59,8 +60,7 @@ export function checkSequenceTargets(sequences,pages){
   try{anchor=decodeURIComponent(item.target.slice(split+1))}catch{need(false,item.target,'invalid anchor encoding')}
   need(byFile.has(file),item.target,'page does not exist');
   if(split<0)continue;
-  const tags=byFile.get(file).match(/<[a-z][^>]*>/gi)||[];
-  const ids=tags.flatMap(tag=>[...tag.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].map(m=>m[1]??m[2]??m[3]));
+  const ids=htmlIds(byFile.get(file));
   need(ids.filter(id=>id===anchor).length===1,item.target,'anchor missing or ambiguous');
  }
 }

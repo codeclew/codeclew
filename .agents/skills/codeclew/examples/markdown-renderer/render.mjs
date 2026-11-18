@@ -5,7 +5,7 @@ import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
 import {validateDocsetRoutes,REGISTRY_BYTES} from './docset-routes.mjs';
 import {docsetView,routeStyle,routeWords} from './route-view.mjs';
-import {validateNavigation,navigationView,insertHub} from './navigation.mjs';
+import {htmlIds,validateNavigation,navigationView,insertHub} from './navigation.mjs';
 import {renderSequence,checkSequenceTargets,resolveCatalogSequenceLinks} from './sequence.mjs';
 import {loadSources,sourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
 const require=createRequire(import.meta.url);
@@ -21,11 +21,17 @@ function renderMarkdown(markdown,sequences,words){
   const html=renderSequence(value,words);sequences.push(value);return html;
  };
  let html=marked.parse(markdown,{gfm:true,renderer});
- const seen=new Map();
+ // Authored targets own their IDs even when the matching heading appears first.
+ const usedIds=new Set(htmlIds(html));
+ const nextSuffix=new Map();
  html=html.replace(/<h([1-6])>(.*?)<\/h\1>/gs,(_,level,title)=>{
   const base=title.replace(/<[^>]*>/g,'').toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu,'').trim().replace(/\s+/g,'-');
-  const n=seen.get(base)||0;seen.set(base,n+1);
-  return `<h${level} id="${escape(base+(n?'-'+n:''))}">${title}</h${level}>`;
+  let suffix=nextSuffix.get(base)??0;
+  let id=suffix===0?base:`${base}-${suffix}`;
+  while(usedIds.has(id))id=`${base}-${++suffix}`;
+  usedIds.add(id);
+  nextSuffix.set(base,suffix+1);
+  return `<h${level} id="${escape(id)}">${title}</h${level}>`;
  }).replace(/href="([^"#]+)\.md(#[^"]*)?"/g,(_,path,anchor)=>`href="${path}.html${anchor||''}"`);
  return html;
 }

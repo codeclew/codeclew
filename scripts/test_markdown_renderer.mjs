@@ -95,6 +95,38 @@ test('authored sequences render every step with explicit timing, conditions and 
  }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test('publisher links keep explicit anchors when headings have matching slugs',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-explicit-id-'));
+ try{
+  const input=join(root,'input');await mkdir(input);
+  const data='# Data\n\n## Events\n\n<a id="events"></a>\n\n'
+   +'<span id=events-1></span>\n\n<!-- <i id="events-2"></i> -->\n\n'
+   +'<div aria-label=" id=events-2"></div>\n\n## Events\n';
+  await writeFile(join(input,'data.md'),data);
+  for(const name of ['request-publisher','update-publisher']){
+   const target=name+'.md#handler';
+   const diagram={title:'Publish a pending event',participants:[
+    {id:'runner',title:'Runner'},{id:'handler',title:'Publisher',target},
+    {id:'broker',title:'Broker',target:'data.md#events'}],steps:[
+    {from:'runner',to:'handler',kind:'call',label:'Invoke publisher',target},
+    {from:'handler',to:'broker',kind:'await',label:'Publish the event',target:'data.md#events'}]};
+   await writeFile(join(input,name+'.md'),'# Publisher\n\n<a id="handler"></a>\n\n```clew-sequence\n'+JSON.stringify(diagram)+'\n```\n');
+  }
+  const output=join(root,'output');
+  await renderDirectory(input,output);
+  const html=await readFile(join(output,'data.html'),'utf8');
+  assert.match(html,/<a id="events"><\/a>/);
+  assert.match(html,/<h2 id="events-2">Events<\/h2>/);
+  assert.match(html,/<h2 id="events-3">Events<\/h2>/);
+  for(const name of ['request-publisher','update-publisher']){
+   const publisher=await readFile(join(output,name+'.html'),'utf8');
+   assert.match(publisher,/<a href="data.html#events">Publish the event<\/a>/);
+  }
+  await writeFile(join(input,'data.md'),data+'\n<a id="events"></a>\n');
+  await assert.rejects(renderDirectory(input,join(root,'duplicate')),/data\.md#events: anchor missing or ambiguous/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test('sequence schema rejects ambiguity, invented kinds and broken destinations before writing',async()=>{
  for(const mutate of [v=>v.participants.push(v.participants[0]),v=>v.steps[0].from='missing',v=>v.steps[0].kind='ack',v=>v.steps[0].ordered=true,v=>v.steps[0].target='https://example.org/x.md',v=>v.steps[0].condition='']){
   const v=sequence();mutate(v);assert.throws(()=>validateSequence(v),/Invalid sequence/);

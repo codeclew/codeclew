@@ -80,8 +80,12 @@ try {
    const first=selected.steps[0],target=requirement.page+'#handler';
    need(handler?.target===target&&first.to===requirement.handlerId&&first.target===target,
     'SEQUENCE_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page});
-   if(requirement.method)need(first.kind==='call'&&first.from!==first.to&&first.label===requirement.method+' '+requirement.path,
-    'SEQUENCE_HTTP_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page});
+   if(requirement.method){
+    const request=requirement.method+' '+requirement.path;
+    const matchesRequest=first.label===request||first.label.startsWith(request+' ');
+    need(first.kind==='call'&&first.from!==first.to&&matchesRequest,
+     'SEQUENCE_HTTP_ENTRY_MISMATCH',{requirement:requirement.id,page:requirement.page,expectedRequest:request});
+   }
    counts[requirement.id]={page:requirement.page,diagram:account.diagram,steps:selected.steps.length};
   }
   const checkedReturns=Object.fromEntries((value.literalReturns||[]).map(row=>[row.id,checkLiteralReturn(row,returnPages.get(row.page))]));

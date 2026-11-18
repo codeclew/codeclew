@@ -6,6 +6,19 @@ function object(value,path,keys){need(value&&typeof value==='object'&&!Array.isA
 function label(value,path){need(typeof value==='string'&&value.trim().length>0,path,'expected nonempty text');return value}
 function array(value,path){need(Array.isArray(value),path,'expected array');return value}
 
+export function htmlIds(html){
+ const ids=[];
+ const tags=/<!--[\s\S]*?-->|<[a-z][\w:-]*((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
+ const attributes=/\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+ for(const [,source] of html.matchAll(tags)){
+  if(!source)continue;
+  for(const [,name,doubleQuoted,singleQuoted,bare] of source.matchAll(attributes)){
+   if(name.toLowerCase()==='id')ids.push(doubleQuoted??singleQuoted??bare??'');
+  }
+ }
+ return ids;
+}
+
 export function localTarget(value,path,byFile){
   label(value,path);need(!/[\u0000-\u001f\\?]/u.test(value),path,'use a flat Markdown page and optional anchor');
   const split=value.indexOf('#'),file=split<0?value:value.slice(0,split),raw=split<0?'':value.slice(split+1);let fragment;
@@ -13,8 +26,8 @@ export function localTarget(value,path,byFile){
   need(!file.includes('/')&&!file.includes(':')&&file.endsWith('.md'),path,'use a flat Markdown page and optional anchor');
   need(byFile.has(file),path,'page does not exist');
   if(split>=0){
-   need(fragment.length>0,path,'empty anchor');const tags=byFile.get(file).html.match(/<[a-z][^>]*>/gi)||[];
-   const ids=tags.flatMap(tag=>[...tag.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)].map(m=>m[1]??m[2]??m[3]));
+   need(fragment.length>0,path,'empty anchor');
+   const ids=htmlIds(byFile.get(file).html);
    need(ids.filter(id=>id===fragment).length===1,path,'anchor missing or ambiguous');
   }
   return {file,fragment,href:encodeURIComponent(file.replace(/\.md$/,'.html'))+(fragment?'#'+encodeURIComponent(fragment):'')};

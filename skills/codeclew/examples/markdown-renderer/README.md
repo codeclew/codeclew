@@ -223,6 +223,9 @@ unique `id`, nonempty `title` and optional `target`. Steps have `from`, `to`,
 applies only to its own row: write else/skip/error alternatives explicitly.
 No implicit branches, returns, ACK, ordering or completion are added.
 
+Explicit HTML IDs are retained. If a Markdown heading would generate an ID
+already in use on its page, the renderer gives the heading a numeric suffix.
+
 Targets use an existing flat `.md` page with an optional unique anchor. Invalid
 targets/schema fail before output is written. A client needs no fictitious page;
 external participants should link to their local integration description. Actor

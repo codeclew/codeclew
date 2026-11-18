@@ -1193,6 +1193,44 @@ else:
         self.seed_files(); self.generated(); result = self.check()
         self.assertEqual(result['checks']['provenance']['code'], 'PROVENANCE_MISMATCH')
 
+    def test_http_first_call_checks_exact_request_before_optional_details(self):
+        page = 'place-entry.md'
+        target = page + '#handler'
+        requirement = {'id': 'create-place', 'kind': 'ENTRY', 'page': page,
+                       'handlerId': 'handler', 'method': 'POST', 'path': '/places'}
+        step = {'from': 'client', 'to': 'handler', 'kind': 'call', 'target': target}
+        diagram = {'title': 'Create a place', 'participants': [
+            {'id': 'client', 'title': 'Client'},
+            {'id': 'handler', 'title': 'Handler', 'target': target}],
+            'steps': [step]}
+        cases = [
+            ('POST /places', 'call', 'client', True),
+            ('POST /places with the city ID', 'call', 'client', True),
+            ('GET /places with the city ID', 'call', 'client', False),
+            ('POST /places-old with the city ID', 'call', 'client', False),
+            ('POST /places/extra with the city ID', 'call', 'client', False),
+            ('POST /places?city=one', 'call', 'client', False),
+            ('Send POST /places', 'call', 'client', False),
+            ('POST /places with the city ID', 'return', 'client', False),
+            ('POST /places with the city ID', 'call', 'handler', False),
+        ]
+        request = self.root / 'sequence-requests.json'
+        for label, kind, sender, accepted in cases:
+            with self.subTest(label=label, kind=kind, sender=sender):
+                step.update(label=label, kind=kind, **{'from': sender})
+                D['save'](request, {'requirements': [requirement],
+                    'accounts': [{'requirement': requirement['id'], 'diagram': 0}],
+                    'pages': {page: '```clew-sequence\n' + json.dumps(diagram) + '\n```\n'}})
+                result = subprocess.run([self.job['node'], str(ROOT / 'skills/codeclew/scripts/docs_run_sequences.mjs'),
+                                         str(RENDERER), str(request)], capture_output=True, text=True)
+                reply = json.loads(result.stdout)
+                self.assertEqual(result.returncode, 0 if accepted else 2, reply)
+                if accepted:
+                    self.assertEqual(reply['status'], 'ENTRY_SEQUENCES_CHECKED')
+                else:
+                    self.assertEqual(reply['code'], 'SEQUENCE_HTTP_ENTRY_MISMATCH')
+                    self.assertEqual(reply['details']['expectedRequest'], 'POST /places')
+
     def test_parseable_other_entry_diagram_is_rejected(self):
         fragment = self.original['pages'][0]['fragments'][1]
         fragment['text'] = fragment['text'].replace(self.entry['handlerId'], 'different-handler')

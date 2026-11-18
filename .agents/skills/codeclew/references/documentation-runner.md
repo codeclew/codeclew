@@ -94,6 +94,9 @@ the same cumulative token accounting.
 The runner provides a short author prompt and starter original/navigation files.
 The starter assigns required page names and anchors, links the overview to entry
 pages, and supplies each declared HTTP method/path and first call in its diagram.
+Keep each first HTTP call directed to the supplied handler target. Start its label
+with the exact method and path. A space after the path can introduce a short
+description of the same request.
 The author copies these files, explains the selected behavior with real citation
 handles from the source indexes, completes the remaining sequence steps, and adds
 any newly discovered starts. Every required page needs a cited explanation or a
