@@ -297,19 +297,6 @@ fn capture_local_with_diagnostics(
     )?;
     let revision = git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let service_digest = digest(service)?;
-    // Revalidate current admission and repository state even when cached bytes exist.
-    let cache_key = digest(&json!([
-        &revision,
-        &service_digest,
-        EXTRACTOR,
-        service.language,
-        runtime.runtime_key
-    ]))?;
-    let cache_path = format!(
-        ".codeclew/cache/{}-{}.json",
-        service.id,
-        cache_key.trim_start_matches("sha256:")
-    );
     let session = super::progress::run("OPEN_ANALYSIS_SESSION", || {
         SessionAuthority::open(
             &repo,
@@ -321,8 +308,49 @@ fn capture_local_with_diagnostics(
             None,
         )
     })?;
+    // Revalidate current admission and repository state even when cached bytes exist.
+    let mut cache_inputs = json!([
+        &revision,
+        &service_digest,
+        EXTRACTOR,
+        service.language,
+        runtime.runtime_key
+    ]);
+    if let Some(properties) = &session.gradle_properties {
+        cache_inputs
+            .as_array_mut()
+            .expect("cache inputs are an array")
+            .push(json!(properties.id));
+    }
+    let cache_key = digest(&cache_inputs)?;
+    let cache_path = format!(
+        ".codeclew/cache/{}-{}.json",
+        service.id,
+        cache_key.trim_start_matches("sha256:")
+    );
     let result = super::progress::run("ACQUIRE_COMPILER_EVIDENCE", || {
-        capture_session(&session, service, &service_digest, debug_output)
+        let mut evidence = capture_session(&session, service, &service_digest, debug_output)?;
+        session.resolve_gradle_properties()?;
+        if let Some(properties) = &session.gradle_properties {
+            // Keep a build-input dependency even when a different property
+            // map produces identical declarations and source bytes.
+            let id = gradle_property_observation_id(&service.id);
+            let mut normalized = properties.summary();
+            normalized["inputBinding"] = json!(digest(&(&revision, properties))?);
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "GRADLE_PROJECT_PROPERTIES".into(),
+                    service: service.id.clone(),
+                    symbol: "gradle.projectProps".into(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids: Vec::new(),
+                },
+            );
+        }
+        Ok(evidence)
     });
     // Only use supported lifecycle operations; documentation records have no session dependency.
     let cleanup = super::progress::run("CLOSE_ANALYSIS_SESSION", || {
@@ -358,10 +386,14 @@ fn capture_local_with_diagnostics(
     // on the next run) rather than silently reusable.
     super::cache::mark_non_cacheable(
         &mut manifest,
-        "Maven/external-state capture lacks complete build/settings/dependency authority",
+        "Compiler capture refreshes the project model against current native build inputs",
     );
     repository.atomic(&cache_path, &bytes(&manifest)?)?;
     Ok(evidence)
+}
+
+pub(super) fn gradle_property_observation_id(service: &str) -> String {
+    format!("gradle-project-properties:{service}")
 }
 
 fn capture_session(
@@ -4274,6 +4306,7 @@ mod tests {
         .to_string();
         let mut authority = JavaProjectModel {
             schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),
@@ -5304,6 +5337,7 @@ class UseTask {
             .to_owned();
         let mut authority = JavaProjectModel {
             schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),

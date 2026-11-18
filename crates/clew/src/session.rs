@@ -66,6 +66,8 @@ pub struct SessionAuthority {
     pub model_cache_authority: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maven_settings_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradle_properties: Option<crate::project_config::GradlePropertyBinding>,
     /// Durable support-matrix profile selected for this session. Carried through
     /// committed-context and working-tree entrypoints so generation admission
     /// (e.g. writable-then-seal) is not a documentation-only boolean.
@@ -416,6 +418,12 @@ impl SessionAuthority {
         let repo = repo.canonicalize().map_err(io_error)?;
         let state = StateAuthority::process_default()?;
         let repository = state.repository(&repo)?;
+        let gradle_properties = if gradle_repository(language, &repo) {
+            crate::project_config::gradle_properties(&repo, &state, &repository.key)?
+                .map(|properties| properties.binding)
+        } else {
+            None
+        };
         let compilations = canonical_compilations(language, compilations)?;
         if !model_cache_policy_is_valid(language, model_cache_policy) {
             return Err(invalid(
@@ -507,6 +515,7 @@ impl SessionAuthority {
             maven_settings_digest: maven_settings
                 .as_ref()
                 .map(|settings| settings.digest.clone()),
+            gradle_properties,
             profile: profile.map(str::to_owned),
             working_tree: captured.as_ref().map(|(_, binding)| binding.clone()),
             created_unix_ms: unix_ms(),
@@ -1029,6 +1038,33 @@ impl SessionAuthority {
         }
     }
 
+    /// Resolve in the owning checkout and refuse a changed declaration. The
+    /// result owns the exact values used for all compilations in this attempt.
+    pub(crate) fn resolve_gradle_properties(
+        &self,
+    ) -> Result<Option<crate::project_config::GradleProperties>, ClewError> {
+        if !matches!(
+            self.language,
+            SessionLanguage::Java | SessionLanguage::Kotlin
+        ) {
+            return Ok(None);
+        }
+        let repo = self.target_repository_path()?;
+        let selected = if gradle_repository(self.language, &repo) {
+            let state = StateAuthority::process_default()?;
+            crate::project_config::gradle_properties(&repo, &state, &self.repository_key)?
+        } else {
+            None
+        };
+        if selected.as_ref().map(|p| &p.binding) != self.gradle_properties.as_ref() {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "Gradle project properties changed since session admission. Open a new session to use the current declaration.",
+            ));
+        }
+        Ok(selected)
+    }
+
     pub fn maven_settings(&self) -> Result<Option<crate::maven::MavenSettings>, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
@@ -1377,6 +1413,12 @@ fn validate_session_authority_shape(
                         value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
                     })
             })
+        || authority.gradle_properties.as_ref().is_some_and(|binding| {
+            !matches!(
+                authority.language,
+                SessionLanguage::Java | SessionLanguage::Kotlin
+            ) || !binding.is_valid()
+        })
         || authority.session_id != expected_session_id
         || !compilations_are_canonical(authority.language, &authority.compilations)
         || !generation_jobs_are_valid(authority.generation_jobs)
@@ -2151,6 +2193,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         model_cache_policy: ModelCachePolicy::NonCacheable,
         model_cache_authority: None,
         maven_settings_digest: None,
+        gradle_properties: None,
         profile: None,
         working_tree: None,
         created_unix_ms: 1,
@@ -3481,6 +3524,12 @@ fn canonical_compilations(
     Ok(canonical)
 }
 
+fn gradle_repository(language: SessionLanguage, repo: &Path) -> bool {
+    matches!(language, SessionLanguage::Java | SessionLanguage::Kotlin)
+        && repo.join("gradlew").is_file()
+        && !repo.join("pom.xml").is_file()
+}
+
 fn model_cache_policy_is_valid(language: SessionLanguage, policy: ModelCachePolicy) -> bool {
     language == SessionLanguage::Kotlin || policy == ModelCachePolicy::NonCacheable
 }
@@ -3652,6 +3701,7 @@ mod tests {
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             maven_settings_digest: None,
+            gradle_properties: None,
             profile: None,
             working_tree: None,
             created_unix_ms: 1,
@@ -5461,6 +5511,7 @@ mod tests {
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             maven_settings_digest: None,
+            gradle_properties: None,
             profile: profile.map(str::to_owned),
             working_tree: None,
             created_unix_ms: 1,

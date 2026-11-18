@@ -223,6 +223,87 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun declaredProjectPropertiesReachGradlePluginInBothBuildStateModes() {
+        val root = Files.createTempDirectory("worker-gradle-project-props").toRealPath()
+        try {
+            val repo = root.resolve("repo").createDirectories()
+            val isolated = root.resolve("seed").createDirectories()
+            prepareFixtureBuildState(isolated)
+            val external = externalBuildStateLayout(repo, isolated)
+            val executable = Path.of(System.getProperty("codeclew.test.gradleExecutable"))
+            repo.resolve("settings.gradle").writeText("rootProject.name = 'owned-project-props'\n")
+            repo.resolve("gradle.properties").writeText("version=9.9\nprofile=from-file\n")
+            val build = repo.resolve("build.gradle")
+            val plugin = """
+                import org.gradle.api.Plugin
+                import org.gradle.api.Project
+                class OwnedPropertyProbe implements Plugin<Project> {
+                    void apply(Project project) {
+                        def props = project.gradle.startParameter.projectProperties
+                        assert props == [version: '1.1', env: 'stage ; $() & = literal', profile: 'worker profile'] ||
+                            props == [version: '1.1', env: 'stage ; $() & = literal', profile: 'worker profile',
+                                      'kotlin.project.persistent.dir': props['kotlin.project.persistent.dir']]
+                        assert project.version.toString() == '1.1'
+                        assert project.providers.gradleProperty('version').get() == '1.1'
+                        assert project.providers.gradleProperty('profile').get() == 'worker profile'
+                        assert project.providers.gradleProperty('env').get() == 'stage ; $() & = literal'
+                    }
+                }
+                apply plugin: OwnedPropertyProbe
+            """.trimIndent()
+            val init = root.resolve("model.init.gradle")
+            init.writeText("gradle.beforeProject { p -> p.tasks.register('ownedModel') }\n")
+            val args = listOf("-Pversion=1.1", "-Penv=stage ; $() & = literal", "-Pprofile=worker profile")
+            fun launch(state: BuildStateLayout?): Pair<Int, String> {
+                val home = state?.gradleUserHome ?: root.resolve("native-home").createDirectories()
+                val command = gradleModelCommand(
+                    executable, repo, home, home.resolve("project-cache"), init,
+                    "compileKotlin", ":ownedModel", preparedState = state, projectPropertyArgs = args,
+                )
+                val process = sanitizedProjectModelProcess(
+                    command, repo, state?.gradleUserHome, state?.let { ProjectModelBuildTool.GRADLE },
+                ).also { builder ->
+                    builder.environment()["ORG_GRADLE_PROJECT_version"] = "2.0"
+                    builder.environment()["ORG_GRADLE_PROJECT_env"] = "inherited"
+                    builder.environment()["GRADLE_USER_HOME"] = home.toString()
+                }.start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                return process.waitFor() to output
+            }
+            build.writeText(plugin)
+            fun git(vararg args: String) {
+                val process = ProcessBuilder(listOf("git", "-C", repo.toString()) + args)
+                    .redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                assertEquals(0, process.waitFor(), output)
+            }
+            git("init", "-q")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "--allow-empty", "-qm", "Tagless fixture")
+            for (state in listOf(null, external)) {
+                val (status, output) = launch(state)
+                assertEquals(0, status, output)
+            }
+            build.writeText(plugin + "\n" + """
+                |class RealTagRequired implements Plugin<Project> {
+                |    void apply(Project project) {
+                |        def git = new ProcessBuilder('git', 'describe', '--tags', '--exact-match')
+                |            .directory(project.rootDir).redirectErrorStream(true).start()
+                |        git.inputStream.readAllBytes()
+                |        if (git.waitFor() != 0) throw new GradleException('OWNED_REAL_GIT_TAG_REQUIRED')
+                |    }
+                |}
+                |apply plugin: RealTagRequired
+                |""".trimMargin())
+            val (status, output) = launch(external)
+            assertNotEquals(0, status)
+            assertTrue(output.contains("OWNED_REAL_GIT_TAG_REQUIRED"), output)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun gradleModelMaterializesSelectedClasspathBuildDependenciesWithoutCompilingTarget() {
         val repository = repositoryRoot()
         val root = Files.createTempDirectory("worker-gradle-project-dependency-model").toRealPath()

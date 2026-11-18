@@ -58,6 +58,7 @@ dependencies {
 
 application { mainClass.set("dev.semanticthread.worker.MainKt") }
 tasks.test {
+    systemProperty("codeclew.test.gradleExecutable", gradle.gradleHomeDir!!.resolve("bin/gradle"))
     inputs.files(pluginQualification)
     inputs.files(optionOracles.values)
     doFirst {

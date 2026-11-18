@@ -85,6 +85,8 @@ pub struct JavaDependencySourceAuthority {
 pub struct JavaProjectModel {
     pub schema: String,
     pub model_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradle_property_id: Option<uuid::Uuid>,
     pub build_system: JavaBuildSystem,
     pub compilation: String,
     pub source_files: Vec<String>,
@@ -147,6 +149,7 @@ pub(crate) fn extract_java_model_with_settings_and_diagnostics(
         settings,
         debug_output,
         extra_annotation_processors,
+        None,
     )?;
     models
         .pop()
@@ -162,6 +165,7 @@ pub(crate) fn extract_java_models_with_settings_and_diagnostics(
     settings: Option<&crate::maven::MavenSettings>,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
     extra_annotation_processors: &[String],
+    gradle_properties: Option<&crate::project_config::GradleProperties>,
 ) -> Result<Vec<JavaOperationalModel>, ClewError> {
     if compilations.is_empty() {
         return Err(invalid("Java compilation selection is empty"));
@@ -185,9 +189,12 @@ pub(crate) fn extract_java_models_with_settings_and_diagnostics(
     match (gradle, maven) {
         (true, false) if settings.is_none() => selectors
             .iter()
-            .map(|selector| extract_gradle(&repository, selector))
+            .map(|selector| extract_gradle(&repository, selector, gradle_properties))
             .collect(),
         (true, false) => Err(invalid("--maven-settings requires a Java Maven project")),
+        (false, true) if gradle_properties.is_some() => {
+            Err(invalid("Gradle property authority requires a Gradle model"))
+        }
         (false, true) => extract_maven_batch(
             &repository,
             &selectors,
@@ -275,6 +282,7 @@ impl JavaCompilationSelector {
 fn extract_gradle(
     repository: &Path,
     selector: &JavaCompilationSelector,
+    properties: Option<&crate::project_config::GradleProperties>,
 ) -> Result<JavaOperationalModel, ClewError> {
     let script = tempfile::Builder::new()
         .prefix("codeclew-java-model-")
@@ -282,30 +290,34 @@ fn extract_gradle(
         .tempfile()
         .map_err(io_error)?;
     fs::write(script.path(), GRADLE_MODEL_SCRIPT).map_err(io_error)?;
+    let mut command = Command::new(repository.join("gradlew"));
+    command.args([
+        "-p",
+        repository
+            .to_str()
+            .ok_or_else(|| unsupported("Java repository path is not UTF-8"))?,
+        "--no-daemon",
+        "--quiet",
+        // The injected metadata task reads Project at execution time.
+        // Keep the project's normal cache setting, but do not attempt
+        // to cache this one operational model request.
+        "--no-configuration-cache",
+        "-I",
+        script
+            .path()
+            .to_str()
+            .ok_or_else(|| internal("temporary model path is not UTF-8"))?,
+        &format!(
+            "-Dcodeclew.java.compileTask={}",
+            selector.gradle_compile_task()
+        ),
+    ]);
+    if let Some(properties) = properties {
+        command.args(properties.args());
+    }
     let output = bounded_output(
-        Command::new(repository.join("gradlew"))
-            .args([
-                "-p",
-                repository
-                    .to_str()
-                    .ok_or_else(|| unsupported("Java repository path is not UTF-8"))?,
-                "--no-daemon",
-                "--quiet",
-                // The injected metadata task reads Project at execution time.
-                // Keep the project's normal cache setting, but do not attempt
-                // to cache this one operational model request.
-                "--no-configuration-cache",
-                "-I",
-                script
-                    .path()
-                    .to_str()
-                    .ok_or_else(|| internal("temporary model path is not UTF-8"))?,
-                &format!(
-                    "-Dcodeclew.java.compileTask={}",
-                    selector.gradle_compile_task()
-                ),
-                &selector.gradle_model_task(),
-            ])
+        command
+            .arg(selector.gradle_model_task())
             .current_dir(repository),
         "Gradle Java model extraction failed",
         "GRADLE_MODEL",
@@ -356,7 +368,7 @@ fn extract_gradle(
         .map(PathBuf::from)
         .ok_or_else(|| unsupported("Gradle Java toolchain home is unavailable"))?;
     let compiler_options = string_values(object.get("compilerArgs"), 4_096)?;
-    canonical_model(
+    let mut model = canonical_model(
         repository,
         selector,
         JavaBuildSystem::Gradle,
@@ -368,7 +380,14 @@ fn extract_gradle(
         compiler_options,
         Vec::new(),
         Vec::new(),
-    )
+    )?;
+    if let Some(properties) = properties {
+        model.authority.gradle_property_id = Some(properties.binding.id);
+        model.authority.model_digest.clear();
+        model.authority.model_digest = canonical::hash(&model.authority).map_err(internal)?;
+        verify_model(&model.authority)?;
+    }
+    Ok(model)
 }
 
 fn maven_scope(source_set: &str) -> &'static str {
@@ -1296,6 +1315,7 @@ fn canonical_model(
     annotation_processors.dedup();
     let mut authority = JavaProjectModel {
         schema: JAVA_MODEL_SCHEMA.into(),
+        gradle_property_id: None,
         model_digest: String::new(),
         build_system,
         compilation: selector.canonical(),
@@ -1326,6 +1346,9 @@ fn canonical_model(
 
 pub fn verify_model(model: &JavaProjectModel) -> Result<(), ClewError> {
     if model.schema != JAVA_MODEL_SCHEMA
+        || model.gradle_property_id.is_some_and(|id| {
+            model.build_system != JavaBuildSystem::Gradle || id.get_version_num() != 4
+        })
         || javac_major(&model.compiler_version)
             .is_none_or(|major| validate_release(model.release, major).is_err())
         || model.source_files.is_empty()
@@ -2753,6 +2776,7 @@ esac
             Some(&settings),
             None,
             &[],
+            None,
         )
         .unwrap();
         assert_eq!(models.len(), 2);
@@ -2773,6 +2797,7 @@ esac
             Some(&settings),
             None,
             &[],
+            None,
         )
         .unwrap();
         assert_eq!(models[0].authority, repeated[0].authority);
@@ -2795,6 +2820,7 @@ esac
                 Some(&settings),
                 None,
                 &[],
+                None,
             )
             .unwrap_err();
             assert_eq!(error.code, ErrorCode::InputMutated, "{mode}: {error}");
@@ -2924,6 +2950,7 @@ esac
             Some(&settings),
             None,
             &[],
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -2951,6 +2978,7 @@ esac
             Some(&settings),
             None,
             &[],
+            None,
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);

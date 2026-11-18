@@ -5432,3 +5432,199 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
     );
     assert_eq!(fs::read(docs.join("docs/manual.html")).unwrap(), published);
 }
+
+#[cfg(unix)]
+#[test]
+fn managed_gradle_properties_change_saved_check_at_the_same_revision() {
+    use clew::documentation::{check::Check, store::Repository};
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let state = temporary.path().join("state/v2");
+    let runtime = state.join("runtimes").join("1".repeat(64));
+    fs::create_dir_all(state.join("locks")).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = fd_runtime(&runtime);
+    let lease = state
+        .join("locks")
+        .join(format!("runtime-{}.lease", "1".repeat(64)));
+    let repo = temporary.path().join("repository");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    copy_tree(
+        &workspace.join("gradle/wrapper"),
+        &repo.join("gradle/wrapper"),
+    );
+    fs::copy(workspace.join("gradlew"), repo.join("gradlew")).unwrap();
+    fs::write(
+        repo.join("settings.gradle"),
+        "rootProject.name = 'owned-properties'\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("gradle.properties"),
+        "version=9.9\nprofile=inherited\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("build.gradle"),
+        r#"
+plugins { id 'java' }
+class OwnedProbe implements Plugin<Project> {
+    void apply(Project project) {
+        def props = project.gradle.startParameter.projectProperties
+        if (props.containsKey('version')) {
+            assert ['1.1', '1.2'].contains(props.version)
+            assert project.version.toString() == props.version
+            assert project.providers.gradleProperty('version').get() == props.version
+            assert project.providers.gradleProperty('profile').get() == 'owned profile'
+            assert props.env == 'OWNED_PRIVATE_VALUE ; $() & = literal'
+            project.sourceSets.main.java.srcDirs = ['src/enabled/java']
+        } else {
+            assert project.providers.gradleProperty('profile').get() == 'inherited'
+        }
+    }
+}
+apply plugin: OwnedProbe
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+tasks.withType(JavaCompile).configureEach { options.release = 17 }
+"#,
+    )
+    .unwrap();
+    for (dir, name) in [("main", "DefaultCode"), ("enabled", "ConfiguredCode")] {
+        let sources = repo.join(format!("src/{dir}/java/example"));
+        fs::create_dir_all(&sources).unwrap();
+        fs::write(
+            sources.join(format!("{name}.java")),
+            format!(
+                "package example; public class {name} {{ public int answer() {{ return 42; }} }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/owned-properties",
+        ],
+    );
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Owned Gradle fixture",
+        ],
+    );
+    let docs = temporary.path().join("docs");
+    let run = |command: &[&str]| {
+        let out = run_managed(&binary, &state, &runtime, &lease, command, None);
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("OWNED_PRIVATE_VALUE"));
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("OWNED_PRIVATE_VALUE"));
+        let result: Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+        (out.status.success(), result)
+    };
+    let root = docs.to_str().unwrap();
+    assert!(run(&["docs", "init", "--root", root]).0);
+    let service = json!({"schema":"codeclew-documentation-service/1.0","id":"owned","title":"Owned Gradle fixture","repositoryId":"owned","repository":"https://example.invalid/owned-properties","language":"java","profile":"java-17plus-gradle-read-only","targetRef":"main","compilations":[":/main"]});
+    fs::write(
+        docs.join("catalog/services/owned.json"),
+        serde_json::to_vec(&service).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        run(&[
+            "docs",
+            "bind",
+            "--root",
+            root,
+            "--service",
+            "owned",
+            "--repo",
+            repo.to_str().unwrap()
+        ])
+        .0
+    );
+    let config = repo.join("codeclew.yaml");
+    let check = || {
+        let (_, report) = run(&["docs", "check", "--root", root]);
+        assert_eq!(report["status"], "CHECKED", "{report}");
+        report
+    };
+    let load = |report: &Value| {
+        Check::load_snapshot(
+            &Repository::open(&docs).unwrap(),
+            report["snapshot"].as_str().unwrap(),
+        )
+        .unwrap()
+    };
+    let declare = |version| {
+        fs::write(&config, format!("gradle:\n  projectProps:\n    version: '{version}'\n    env: 'OWNED_PRIVATE_VALUE ; $() & = literal'\n    profile: 'owned profile'\n")).unwrap()
+    };
+    let contains = |saved: &Check, class: &str| {
+        saved.services["owned"]
+            .sources
+            .values()
+            .any(|source| source.file.ends_with(&format!("/{class}.java")))
+    };
+    declare("1.1");
+    let first = check();
+    assert_eq!(
+        first["services"]["owned"]["gradleProjectProperties"],
+        json!({"source":"REPOSITORY_CONFIG","status":"APPLIED","count":3})
+    );
+    assert!(contains(&load(&first), "ConfiguredCode"));
+    declare("1.2");
+    let changed = check();
+    assert_eq!(
+        first["services"]["owned"]["revision"],
+        changed["services"]["owned"]["revision"]
+    );
+    assert_ne!(first["contextDigest"], changed["contextDigest"]);
+    assert!(contains(&load(&changed), "ConfiguredCode"));
+    fs::remove_file(&config).unwrap();
+    let removed = check();
+    assert_eq!(
+        changed["services"]["owned"]["revision"],
+        removed["services"]["owned"]["revision"]
+    );
+    assert_ne!(changed["contextDigest"], removed["contextDigest"]);
+    assert!(contains(&load(&removed), "DefaultCode"));
+    assert!(contains(&load(&first), "ConfiguredCode"));
+    fs::write(
+        &config,
+        "gradle:\n  projectProps: {kotlin.project.persistent.dir: OWNED_PRIVATE_VALUE}\n",
+    )
+    .unwrap();
+    let (_, rejected) = run(&["docs", "check", "--root", root]);
+    assert_eq!(
+        rejected["unresolved"]["owned"]["reason"], "INVALID_INPUT",
+        "{rejected}"
+    );
+    let bundle = temporary.path().join("bundle");
+    assert!(
+        run(&[
+            "support",
+            "collect",
+            "--root",
+            root,
+            "--snapshot",
+            first["snapshot"].as_str().unwrap(),
+            "--output",
+            bundle.to_str().unwrap()
+        ])
+        .0
+    );
+    let report = fs::read_to_string(bundle.join("report.json")).unwrap();
+    assert!(!report.contains("OWNED_PRIVATE_VALUE") && !report.contains("ConfiguredCode.java"));
+}

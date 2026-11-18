@@ -414,6 +414,7 @@ mod tests {
     fn fixture_model() -> JavaProjectModel {
         let mut m = JavaProjectModel {
             schema: JAVA_MODEL_SCHEMA.into(),
+            gradle_property_id: None,
             model_digest: String::new(),
             build_system: JavaBuildSystem::Gradle,
             compilation: ":/main".into(),

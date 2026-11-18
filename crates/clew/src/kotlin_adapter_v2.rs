@@ -242,6 +242,7 @@ pub(crate) struct ProjectNativeKotlinWorkspaceProfile {
 }
 
 pub(crate) struct ProjectNativeKotlinWorkspace {
+    gradle_properties: Option<crate::project_config::GradleProperties>,
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
     _attempt_root: Option<ManagedTemporaryDirectory>,
@@ -370,6 +371,7 @@ impl ProjectNativeKotlinWorkspace {
             store: store.clone(),
             snapshot: snapshot.clone(),
             _attempt_root: Some(attempt_root),
+            gradle_properties: None,
             repo,
             derived_mounts,
             preparation_profile,
@@ -384,6 +386,13 @@ impl ProjectNativeKotlinWorkspace {
 
     pub(crate) fn repository(&self) -> &std::path::Path {
         &self.repo
+    }
+
+    pub(crate) fn set_gradle_properties(
+        &mut self,
+        properties: Option<crate::project_config::GradleProperties>,
+    ) {
+        self.gradle_properties = properties;
     }
 
     pub(crate) fn set_allow_materialization_mutation(&mut self, allow: bool) {
@@ -480,6 +489,7 @@ impl ProjectNativeKotlinWorkspace {
                 build_state_root,
                 Some(&compiler_store),
                 &compiler_store_namespace,
+                self.gradle_properties.as_ref(),
             )?
         };
         let startup_micros = elapsed_micros(startup_started);
