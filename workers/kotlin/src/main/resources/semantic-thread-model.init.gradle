@@ -254,10 +254,14 @@ gradle.beforeProject { project ->
                 classpath.eachWithIndex { path, index ->
                     if (byFile.containsKey(path)) {
                         dependencyCoordinates.add(byFile[path])
-                        dependencyArtifacts.add([
-                            classpathIndex: index, file: path, coordinates: byFile[path],
-                            variant: variantsByFile[path] ?: [:]
-                        ])
+                        // Project class directories retain their ordered compiler input
+                        // and tree identity. Only files have portable artifact records.
+                        if (!new File(path).isDirectory()) {
+                            dependencyArtifacts.add([
+                                classpathIndex: index, file: path, coordinates: byFile[path],
+                                variant: variantsByFile[path] ?: [:]
+                            ])
+                        }
                     }
                 }
             } catch (Throwable ignored) { dependencyCoordinatesAvailable = false }
