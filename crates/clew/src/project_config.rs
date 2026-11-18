@@ -36,6 +36,7 @@ const MAX_PROPERTIES: usize = 32;
 struct GradleConfig {
     #[serde(deserialize_with = "project_props")]
     project_props: BTreeMap<String, String>,
+    git_tags: bool,
 }
 
 fn project_props<'de, D: serde::Deserializer<'de>>(
@@ -151,38 +152,8 @@ pub(crate) fn gradle_properties(
     // can leave this store; it does not allow guessing low-entropy values.
     let fingerprint =
         canonical::hash(&(&repository_key, &values)).map_err(|_| property_state_error())?;
-    let dir = state
-        .directory(Path::new("gradle-property-identities"))
+    let id = opaque_gradle_input_id(state, &fingerprint, "gradle-property-identities")
         .map_err(|_| property_state_error())?;
-    let name = fingerprint.trim_start_matches("sha256:");
-    let lock = state
-        .directory(Path::new("locks"))
-        .map_err(|_| property_state_error())?
-        .open_lock(OsStr::new("gradle-property-identities.lock"))
-        .map_err(|_| property_state_error())?;
-    #[cfg(unix)]
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(property_state_error());
-    }
-    let path = dir
-        .resolved_path()
-        .map_err(|_| property_state_error())?
-        .join(name);
-    let id = if state
-        .private_file_exists(&path)
-        .map_err(|_| property_state_error())?
-    {
-        let bytes = state
-            .read_private_file(&path, 36)
-            .map_err(|_| property_state_error())?;
-        Uuid::try_parse_ascii(&bytes).map_err(|_| property_state_error())?
-    } else {
-        let id = Uuid::new_v4();
-        state
-            .write_private_atomic(&path, id.to_string().as_bytes())
-            .map_err(|_| property_state_error())?;
-        id
-    };
     let binding = GradlePropertyBinding {
         id,
         count: values.len(),
@@ -191,6 +162,79 @@ pub(crate) fn gradle_properties(
         return Err(property_state_error());
     }
     Ok(Some(GradleProperties { binding, values }))
+}
+
+pub(crate) fn gradle_git_tags(
+    repo: &Path,
+    state: &StateAuthority,
+    repository_key: &str,
+    revision: &str,
+) -> Result<Option<crate::gradle_git_tags::LocalTags>, ClewError> {
+    if !read_config(repo)?.gradle.git_tags {
+        return Ok(None);
+    }
+    crate::gradle_git_tags::LocalTags::read(repo, revision, |hash, count| {
+        let fingerprint =
+            canonical::hash(&(repository_key, hash)).map_err(|_| tag_state_error())?;
+        let id = opaque_gradle_input_id(state, &fingerprint, "gradle-tag-identities")
+            .map_err(|_| tag_state_error())?;
+        let binding = crate::gradle_git_tags::Binding { id, count };
+        if !binding.is_valid() {
+            return Err(tag_state_error());
+        }
+        Ok(binding)
+    })
+    .map(Some)
+}
+
+fn tag_state_error() -> ClewError {
+    ClewError::new(
+        ErrorCode::StateCorrupt,
+        "Managed Gradle Git tag identity is unavailable",
+    )
+}
+
+fn opaque_gradle_input_id(
+    state: &StateAuthority,
+    fingerprint: &str,
+    namespace: &str,
+) -> Result<Uuid, ClewError> {
+    let unavailable = || {
+        ClewError::new(
+            ErrorCode::StateCorrupt,
+            "Managed Gradle input identity is unavailable",
+        )
+    };
+    let dir = state
+        .directory(Path::new(namespace))
+        .map_err(|_| unavailable())?;
+    let name = fingerprint.trim_start_matches("sha256:");
+    let lock = state
+        .directory(Path::new("locks"))
+        .map_err(|_| unavailable())?
+        .open_lock(OsStr::new(&format!("{namespace}.lock")))
+        .map_err(|_| unavailable())?;
+    #[cfg(unix)]
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(unavailable());
+    }
+    let path = dir.resolved_path().map_err(|_| unavailable())?.join(name);
+    let id = if state
+        .private_file_exists(&path)
+        .map_err(|_| unavailable())?
+    {
+        let bytes = state
+            .read_private_file(&path, 36)
+            .map_err(|_| unavailable())?;
+        Uuid::try_parse_ascii(&bytes).map_err(|_| unavailable())?
+    } else {
+        let id = Uuid::new_v4();
+        state
+            .write_private_atomic(&path, id.to_string().as_bytes())
+            .map_err(|_| unavailable())?;
+        id
+    };
+    Ok(id)
 }
 
 fn property_state_error() -> ClewError {

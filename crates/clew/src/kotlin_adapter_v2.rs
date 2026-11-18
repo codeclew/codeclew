@@ -8,7 +8,7 @@ use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::kotlin_engine::{KOTLIN_ADAPTER_CONTRACT_ID, KotlinSemanticEngine};
 use crate::repository_snapshot::{
-    RepositoryInputSnapshot, capture, capture_ignoring_derived_mounts, materialize,
+    RepositoryInputSnapshot, capture, capture_ignoring_derived_mounts,
 };
 use crate::state::{ManagedTemporaryDirectory, StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
@@ -303,13 +303,24 @@ impl DerivedStateMount {
 }
 
 impl ProjectNativeKotlinWorkspace {
+    #[cfg(test)]
     pub(crate) fn prepare(
         state: &StateAuthority,
         store: &CasStore,
         snapshot: &RepositoryInputSnapshot,
         compilations: &[String],
     ) -> Result<Self, ClewError> {
-        Self::prepare_language(state, store, snapshot, compilations, "kotlin")
+        Self::prepare_with_git_tags(state, store, snapshot, compilations, None)
+    }
+
+    pub(crate) fn prepare_with_git_tags(
+        state: &StateAuthority,
+        store: &CasStore,
+        snapshot: &RepositoryInputSnapshot,
+        compilations: &[String],
+        tags: Option<&crate::gradle_git_tags::LocalTags>,
+    ) -> Result<Self, ClewError> {
+        Self::prepare_language_with_git_tags(state, store, snapshot, compilations, "kotlin", tags)
     }
 
     pub(crate) fn prepare_language(
@@ -318,6 +329,17 @@ impl ProjectNativeKotlinWorkspace {
         snapshot: &RepositoryInputSnapshot,
         compilations: &[String],
         language: &str,
+    ) -> Result<Self, ClewError> {
+        Self::prepare_language_with_git_tags(state, store, snapshot, compilations, language, None)
+    }
+
+    fn prepare_language_with_git_tags(
+        state: &StateAuthority,
+        store: &CasStore,
+        snapshot: &RepositoryInputSnapshot,
+        compilations: &[String],
+        language: &str,
+        tags: Option<&crate::gradle_git_tags::LocalTags>,
     ) -> Result<Self, ClewError> {
         if compilations.is_empty()
             || compilations
@@ -330,15 +352,19 @@ impl ProjectNativeKotlinWorkspace {
             ));
         }
         let authorized_compilations = compilations.iter().cloned().collect::<BTreeSet<_>>();
-        let workspace_set_authority_digest = canonical::hash(&json!({
+        let mut workspace_authority = json!({
             "schema":WORKSPACE_SET_AUTHORIZATION_SCHEMA,
             "compilations":compilations,
             "language":language,
             "providerMode":"PROJECT_NATIVE_LEGACY_BRIDGE",
             "derivedOutputLayout":if language == "kotlin" { "CONTAINED_DIRECTORIES" } else { "EXTERNAL_SYMLINKS" },
             "repositorySnapshot":snapshot.snapshot_id,
-        }))
-        .map_err(internal)?;
+        });
+        if let Some(tags) = tags {
+            workspace_authority["gradleGitTagsId"] = json!(tags.binding.id);
+        }
+        let workspace_set_authority_digest =
+            canonical::hash(&workspace_authority).map_err(internal)?;
         let attempt_root = state
             .directory(std::path::Path::new("attempts"))?
             .temporary_child("kotlin-generation-set")?;
@@ -347,7 +373,7 @@ impl ProjectNativeKotlinWorkspace {
         let mut preparation_profile = ProjectNativeKotlinWorkspaceProfile::default();
         let mut operational_timing = ProjectNativeKotlinOperationalTiming::default();
         let materialization_started = Instant::now();
-        materialize(snapshot, store, &repo)?;
+        crate::repository_snapshot::materialize_with_git_tags(snapshot, store, &repo, tags)?;
         operational_timing.materialization_micros = Some(elapsed_micros(materialization_started));
         preparation_profile.materializations += 1;
         let derived_mount_started = Instant::now();
@@ -1905,7 +1931,7 @@ mod tests {
         let attempt = private.path().join("attempt");
         create_private_directory(&attempt).unwrap();
         let repo = attempt.join("repo");
-        materialize(&snapshot, &store, &repo).unwrap();
+        crate::repository_snapshot::materialize(&snapshot, &store, &repo).unwrap();
 
         let mounts = mount_project_derived_state(&attempt, &repo, &snapshot, false).unwrap();
         assert_eq!(

@@ -50,3 +50,41 @@ support reports. Gradle code controls what it writes into build outputs and
 retained source files. Use a checkout you trust and check its outputs before
 sharing them. A property can supply a version when the build supports an
 override. A plugin that requires a real Git tag can still fail.
+
+## Supply local Git tags to Kotlin Gradle capture
+
+When a trusted Kotlin Gradle build enumerates release tags during model
+configuration, opt in from the bound checkout's local `codeclew.yaml`:
+
+```yaml
+version: 1
+gradle:
+  gitTags: true
+```
+
+Run `clew docs check --root DOCS_ROOT --service SERVICE_ID` with the service's
+Kotlin Gradle compiler profile. The expected tags must already exist in the
+bound checkout. The build's sort order, filtering, and limits still apply.
+The setting also applies to Kotlin Gradle managed sessions for the checkout.
+
+The isolated Git repository receives the complete local tag namespace with
+original ref and object identities. This supports tag enumeration, default
+Git version sorting such as `git tag --sort=-v:refname`, and peeling annotated
+tags to their original commit. The sealed source checkout retains its synthetic
+HEAD. History, original trees, ancestry, and `git describe` relative to the
+original HEAD are outside this interface. Git version-sort overrides in the
+bound checkout are rejected.
+
+Codeclew admits up to 512 direct tag refs of at most 512 UTF-8 bytes each.
+Tags can point to commits or through up to eight annotations to a commit.
+Up to 1,024 unique tag and commit objects are admitted, with a 64 KiB limit
+per object and 4 MiB total. Missing objects, unsupported targets, and oversized
+inputs fail explicitly. Codeclew reads local refs and objects without fetching
+or opening the bound Git directory to Gradle.
+
+Successful Checks report the applied tag count. Their retained evidence
+binds the capture to the selected source revision and one private tag input
+identity. A same-commit tag change requires a new Check or managed session.
+Explicit historical reads still use their saved evidence. Tag names and
+annotation messages are available to the trusted build process. Check any
+build outputs before sharing them.

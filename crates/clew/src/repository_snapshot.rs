@@ -784,6 +784,15 @@ pub fn materialize(
     store: &CasStore,
     destination: &Path,
 ) -> Result<(), ClewError> {
+    materialize_with_git_tags(snapshot, store, destination, None)
+}
+
+pub(crate) fn materialize_with_git_tags(
+    snapshot: &RepositoryInputSnapshot,
+    store: &CasStore,
+    destination: &Path,
+    tags: Option<&crate::gradle_git_tags::LocalTags>,
+) -> Result<(), ClewError> {
     verify_snapshot(snapshot)?;
     if destination.exists() {
         return Err(invalid("snapshot destination already exists"));
@@ -830,6 +839,9 @@ pub fn materialize(
         }
     }
     create_synthetic_git(snapshot, store, destination)?;
+    if let Some(tags) = tags {
+        tags.import(destination)?;
+    }
     seal_tree(destination)?;
     Ok(())
 }

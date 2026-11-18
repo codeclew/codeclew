@@ -271,6 +271,7 @@ fn fixture_for_language(java: bool) -> ReuseFixture {
         model_cache_authority: None,
         maven_settings_digest: None,
         gradle_properties: None,
+        gradle_git_tags: None,
         profile: None,
         working_tree: None,
         created_unix_ms: 0,

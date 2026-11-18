@@ -68,6 +68,8 @@ pub struct SessionAuthority {
     pub maven_settings_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradle_properties: Option<crate::project_config::GradlePropertyBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gradle_git_tags: Option<crate::gradle_git_tags::Binding>,
     /// Durable support-matrix profile selected for this session. Carried through
     /// committed-context and working-tree entrypoints so generation admission
     /// (e.g. writable-then-seal) is not a documentation-only boolean.
@@ -444,6 +446,14 @@ impl SessionAuthority {
                 "session target ref must identify the checked-out base revision",
             ));
         }
+        let gradle_git_tags = if language == SessionLanguage::Kotlin
+            && gradle_repository(language, &repo)
+        {
+            crate::project_config::gradle_git_tags(&repo, &state, &repository.key, &base_revision)?
+                .map(|tags| tags.binding)
+        } else {
+            None
+        };
         let (model_cache_authority, external_build_state_path) = model_cache_authority(
             &repo,
             &compilations,
@@ -516,6 +526,7 @@ impl SessionAuthority {
                 .as_ref()
                 .map(|settings| settings.digest.clone()),
             gradle_properties,
+            gradle_git_tags,
             profile: profile.map(str::to_owned),
             working_tree: captured.as_ref().map(|(_, binding)| binding.clone()),
             created_unix_ms: unix_ms(),
@@ -901,16 +912,32 @@ impl SessionAuthority {
         if freshness.status != "FRESH" {
             return freshness;
         }
-        if let Err(error) = self.resolve_gradle_properties() {
+        let inputs = self
+            .resolve_gradle_properties()
+            .map(|_| ())
+            .map_err(|error| {
+                (
+                    error,
+                    "OPEN_SESSION_WITH_CURRENT_GRADLE_PROPERTIES",
+                    "CHECK_GRADLE_PROJECT_PROPERTIES",
+                )
+            })
+            .and_then(|_| {
+                self.resolve_gradle_git_tags().map(|_| ()).map_err(|error| {
+                    (
+                        error,
+                        "OPEN_SESSION_WITH_CURRENT_GRADLE_GIT_TAGS",
+                        "CHECK_GRADLE_GIT_TAGS",
+                    )
+                })
+            });
+        if let Err((error, changed_hint, unavailable_hint)) = inputs {
             let changed = error.code == ErrorCode::InputMutated;
             let (status, remediation) = match (self.working_tree.is_some(), changed) {
-                (false, true) => ("STALE", "OPEN_SESSION_WITH_CURRENT_GRADLE_PROPERTIES"),
-                (true, true) => (
-                    "LIVE_CHANGED",
-                    "OPEN_SESSION_WITH_CURRENT_GRADLE_PROPERTIES",
-                ),
-                (false, false) => ("UNAVAILABLE", "CHECK_GRADLE_PROJECT_PROPERTIES"),
-                (true, false) => ("LIVE_UNAVAILABLE", "CHECK_GRADLE_PROJECT_PROPERTIES"),
+                (false, true) => ("STALE", changed_hint),
+                (true, true) => ("LIVE_CHANGED", changed_hint),
+                (false, false) => ("UNAVAILABLE", unavailable_hint),
+                (true, false) => ("LIVE_UNAVAILABLE", unavailable_hint),
             };
             freshness.status = status.into();
             freshness.remediation_id = remediation.into();
@@ -1081,6 +1108,33 @@ impl SessionAuthority {
             return Err(ClewError::new(
                 ErrorCode::InputMutated,
                 "Gradle project properties changed since session admission. Open a new session to use the current declaration.",
+            ));
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn resolve_gradle_git_tags(
+        &self,
+    ) -> Result<Option<crate::gradle_git_tags::LocalTags>, ClewError> {
+        if self.language != SessionLanguage::Kotlin {
+            return Ok(None);
+        }
+        let repo = self.target_repository_path()?;
+        let selected = if gradle_repository(self.language, &repo) {
+            let state = StateAuthority::process_default()?;
+            crate::project_config::gradle_git_tags(
+                &repo,
+                &state,
+                &self.repository_key,
+                &self.base_revision,
+            )?
+        } else {
+            None
+        };
+        if selected.as_ref().map(|tags| &tags.binding) != self.gradle_git_tags.as_ref() {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "The Gradle Git tag input changed since session admission. Open a new session to use the current local refs.",
             ));
         }
         Ok(selected)
@@ -1439,6 +1493,9 @@ fn validate_session_authority_shape(
                 authority.language,
                 SessionLanguage::Java | SessionLanguage::Kotlin
             ) || !binding.is_valid()
+        })
+        || authority.gradle_git_tags.as_ref().is_some_and(|binding| {
+            authority.language != SessionLanguage::Kotlin || !binding.is_valid()
         })
         || authority.session_id != expected_session_id
         || !compilations_are_canonical(authority.language, &authority.compilations)
@@ -2215,6 +2272,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         model_cache_authority: None,
         maven_settings_digest: None,
         gradle_properties: None,
+        gradle_git_tags: None,
         profile: None,
         working_tree: None,
         created_unix_ms: 1,
@@ -3723,6 +3781,7 @@ mod tests {
             model_cache_authority: None,
             maven_settings_digest: None,
             gradle_properties: None,
+            gradle_git_tags: None,
             profile: None,
             working_tree: None,
             created_unix_ms: 1,
@@ -5533,6 +5592,7 @@ mod tests {
             model_cache_authority: None,
             maven_settings_digest: None,
             gradle_properties: None,
+            gradle_git_tags: None,
             profile: profile.map(str::to_owned),
             working_tree: None,
             created_unix_ms: 1,

@@ -1015,6 +1015,13 @@ impl Check {
             {
                 result["services"][id]["gradleProjectProperties"] = summary;
             }
+            if let Some(summary) = evidence
+                .observations
+                .get(&super::analysis::gradle_git_tags_observation_id(id))
+                .and_then(|input| crate::gradle_git_tags::safe_summary(&input.normalized))
+            {
+                result["services"][id]["gradleGitTags"] = summary;
+            }
         }
         result
     }

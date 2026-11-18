@@ -322,6 +322,12 @@ fn capture_local_with_diagnostics(
             .expect("cache inputs are an array")
             .push(json!(properties.id));
     }
+    if let Some(tags) = &session.gradle_git_tags {
+        cache_inputs
+            .as_array_mut()
+            .expect("cache inputs are an array")
+            .push(json!({"gradleGitTagsId":tags.id}));
+    }
     let cache_key = digest(&cache_inputs)?;
     let cache_path = format!(
         ".codeclew/cache/{}-{}.json",
@@ -329,8 +335,22 @@ fn capture_local_with_diagnostics(
         cache_key.trim_start_matches("sha256:")
     );
     let result = super::progress::run("ACQUIRE_COMPILER_EVIDENCE", || {
-        let mut evidence = capture_session(&session, service, &service_digest, debug_output)?;
+        let mut evidence = capture_session(&session, service, &service_digest, debug_output)
+            .map_err(|mut error| {
+                if language == SessionLanguage::Kotlin
+                    && repo.join("gradlew").is_file()
+                    && !repo.join("pom.xml").is_file()
+                    && error.code == ErrorCode::UnsupportedProjectConfiguration
+                    && error.message.starts_with("BUILD_MODEL_EXTRACTION_FAILED:")
+                {
+                    error.message.push_str(
+                        " If the Gradle build reads local Git tags, set gradle.gitTags: true in the bound checkout's codeclew.yaml. The expected tags must already exist locally and pass the build's own sorting and filtering.",
+                    );
+                }
+                error
+            })?;
         session.resolve_gradle_properties()?;
+        session.resolve_gradle_git_tags()?;
         if let Some(properties) = &session.gradle_properties {
             // Keep a build-input dependency even when a different property
             // map produces identical declarations and source bytes.
@@ -344,6 +364,27 @@ fn capture_local_with_diagnostics(
                     kind: "GRADLE_PROJECT_PROPERTIES".into(),
                     service: service.id.clone(),
                     symbol: "gradle.projectProps".into(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids: Vec::new(),
+                },
+            );
+        }
+        if let Some(tags) = &session.gradle_git_tags {
+            let id = gradle_git_tags_observation_id(&service.id);
+            let normalized = json!({
+                "source":"BOUND_LOCAL_GIT",
+                "status":"APPLIED",
+                "count":tags.count,
+                "inputBinding":digest(&(&revision, tags))?,
+            });
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "GRADLE_GIT_TAGS".into(),
+                    service: service.id.clone(),
+                    symbol: "gradle.gitTags".into(),
                     digest: digest(&normalized)?,
                     normalized,
                     source_ids: Vec::new(),
@@ -390,6 +431,10 @@ fn capture_local_with_diagnostics(
     );
     repository.atomic(&cache_path, &bytes(&manifest)?)?;
     Ok(evidence)
+}
+
+pub(super) fn gradle_git_tags_observation_id(service: &str) -> String {
+    format!("gradle-git-tags:{service}")
 }
 
 pub(super) fn gradle_property_observation_id(service: &str) -> String {

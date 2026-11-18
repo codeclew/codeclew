@@ -332,6 +332,7 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
     // Live requests must still match the admitted build inputs on a cache hit.
     // Explicit reads of a retained generation use load_session_generation.
     let gradle_properties = session.resolve_gradle_properties()?;
+    let gradle_git_tags = session.resolve_gradle_git_tags()?;
     let store = CasStore::open(&state)?;
     if state.private_file_exists(&binding_path)? {
         return load_ready_set(&state, &store, &binding_path, session, false);
@@ -452,8 +453,13 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
         SessionLanguage::Kotlin => {}
     }
     let pool = generation_pool(session)?;
-    let mut workspace =
-        ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &session.compilations)?;
+    let mut workspace = ProjectNativeKotlinWorkspace::prepare_with_git_tags(
+        &state,
+        &store,
+        &snapshot,
+        &session.compilations,
+        gradle_git_tags.as_ref(),
+    )?;
     workspace.set_gradle_properties(gradle_properties);
     // The exact selected set is authorized once. The private bridge retains
     // legacy per-compilation OpenProject calls until the post-G1 worker
@@ -488,6 +494,9 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
             .collect::<Result<Vec<_>, ClewError>>()
     });
     let (results, profile) = finish_generation_workspace(results, workspace)?;
+    if gradle_git_tags.is_some() {
+        session.resolve_gradle_git_tags()?;
+    }
     write_generation_workspace_evidence(
         &state,
         &compilation_root.join("workspace-profile.json"),
@@ -3074,6 +3083,7 @@ pub fn ensure_candidate_generation(
         return Err(corrupt("candidate generation revision is invalid"));
     }
     let gradle_properties = session.resolve_gradle_properties()?;
+    let gradle_git_tags = session.resolve_gradle_git_tags()?;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let mut candidate = session.clone();
@@ -3162,8 +3172,13 @@ pub fn ensure_candidate_generation(
         ));
     }
     let pool = generation_pool(&candidate)?;
-    let mut workspace =
-        ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &candidate.compilations)?;
+    let mut workspace = ProjectNativeKotlinWorkspace::prepare_with_git_tags(
+        &state,
+        &store,
+        &snapshot,
+        &candidate.compilations,
+        gradle_git_tags.as_ref(),
+    )?;
     workspace.set_gradle_properties(gradle_properties);
     let lane = GenerationLaneContext {
         session: &candidate,
@@ -3195,6 +3210,9 @@ pub fn ensure_candidate_generation(
             .collect::<Result<Vec<_>, ClewError>>()
     });
     let (results, profile) = finish_generation_workspace(results, workspace)?;
+    if gradle_git_tags.is_some() {
+        session.resolve_gradle_git_tags()?;
+    }
     write_generation_workspace_evidence(
         &state,
         &parent.join("staged-workspace-profile.json"),
@@ -3356,6 +3374,7 @@ fn ensure_generation(
         snapshot_object,
         compilation,
         session.gradle_properties.as_ref(),
+        session.gradle_git_tags.as_ref(),
     )?;
     let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
     if state.private_file_exists(binding_path)? {
@@ -3365,6 +3384,12 @@ fn ensure_generation(
     let compiler_namespace = match &session.gradle_properties {
         Some(properties) => {
             canonical::hash(&(&compiler_namespace, properties.id)).map_err(internal)?
+        }
+        None => compiler_namespace,
+    };
+    let compiler_namespace = match &session.gradle_git_tags {
+        Some(tags) => {
+            canonical::hash(&(&compiler_namespace, "gradleGitTags", tags.id)).map_err(internal)?
         }
         None => compiler_namespace,
     };
@@ -3865,6 +3890,7 @@ fn ensure_prepared_authority(
         snapshot_object,
         compilation,
         session.gradle_properties.as_ref(),
+        session.gradle_git_tags.as_ref(),
     )?;
     let root = repository_root.join("generations/models");
     state.directory_at(&root)?;
@@ -3876,6 +3902,7 @@ fn ensure_prepared_authority(
         snapshot_object.clone(),
         compilation,
         project,
+        session.gradle_git_tags.as_ref(),
     )?;
     if session.model_cache_policy != ModelCachePolicy::NonCacheable
         && state.private_file_exists(&path)?
@@ -3901,6 +3928,7 @@ fn project_model_key(
     snapshot: &CasObject,
     compilation: &str,
     properties: Option<&crate::project_config::GradlePropertyBinding>,
+    tags: Option<&crate::gradle_git_tags::Binding>,
 ) -> Result<String, ClewError> {
     let mut key = json!({
         "schema":"codeclew-project-native-model-key/2.0",
@@ -3910,6 +3938,9 @@ fn project_model_key(
     });
     if let Some(properties) = properties {
         key["gradlePropertyId"] = json!(properties.id);
+    }
+    if let Some(tags) = tags {
+        key["gradleGitTagsId"] = json!(tags.id);
     }
     canonical::hash(&key).map_err(internal)
 }
@@ -3921,6 +3952,7 @@ fn prepare_authority(
     snapshot_object: CasObject,
     compilation: &str,
     project: &Value,
+    tags: Option<&crate::gradle_git_tags::Binding>,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
     let analyzer_compiler_version = project
         .get("analyzerCompilerVersion")
@@ -3951,18 +3983,21 @@ fn prepare_authority(
         }))
         .map_err(internal)?,
     )?;
+    let mut model_input = json!({
+        "schema":"codeclew-project-native-model/2.0",
+        "snapshotId":snapshot.snapshot_id,
+        "compilation":compilation,
+        "projectSemantics":&project_semantics,
+        "semanticEngine":&semantic_engine,
+        "projectModelHash":project_model_hash,
+        "semanticInputManifestHash":semantic_input_manifest_hash,
+    });
+    if let Some(tags) = tags {
+        model_input["gradleGitTagsId"] = json!(tags.id);
+    }
     let model = store.put(
         "codeclew-project-native-model/2.0",
-        &canonical::bytes(&json!({
-            "schema":"codeclew-project-native-model/2.0",
-            "snapshotId":snapshot.snapshot_id,
-            "compilation":compilation,
-            "projectSemantics":&project_semantics,
-            "semanticEngine":&semantic_engine,
-            "projectModelHash":project_model_hash,
-            "semanticInputManifestHash":semantic_input_manifest_hash,
-        }))
-        .map_err(internal)?,
+        &canonical::bytes(&model_input).map_err(internal)?,
     )?;
     let descriptor = CompilationDescriptor {
         schema: COMPILATION_SCHEMA.into(),

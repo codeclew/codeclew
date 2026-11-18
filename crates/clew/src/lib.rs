@@ -18,6 +18,7 @@ pub mod explanation_render;
 pub mod explanation_service;
 pub mod generation_service;
 pub mod generation_v2;
+mod gradle_git_tags;
 pub mod incremental_v2;
 pub mod java_adapter_v2;
 pub mod java_analysis_inputs;
