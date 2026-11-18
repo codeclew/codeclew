@@ -1293,11 +1293,11 @@ def inline_cli_flags():
 def author(run):
     run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
     state = load(run / 'state.json'); attempts = state['attempts']
+    previous_status = state.get('status')
+    need(previous_status != 'AUTHOR_BUDGET_EXCEEDED', 'AUTHOR_NOT_COMPLETED', previousStatus=previous_status)
     tokens = token_accounting(attempts)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
-    need(state['status'] not in ('AUTHOR_BUDGET_EXCEEDED', 'AUTHOR_FAILED', 'INTERRUPTED'),
-         'AUTHOR_NOT_COMPLETED', previousStatus=state['status'])
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])

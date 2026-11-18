@@ -936,9 +936,9 @@ else:
         with self.assertRaises(D['Stop']) as caught:D['promote'](self.run)
         self.assertEqual(caught.exception.code, 'ACCEPTED_OUTPUT_CHANGED')
 
-    def test_terminal_author_failure_is_not_resumed_with_repairs_available(self):
+    def test_transient_author_failure_can_resume_with_valid_usage_and_an_allowed_repair(self):
         job = D['load'](self.run / 'inputs/job.json')
-        job['budget']['maxRepairs'] = 1
+        job['budget'].update(maxRepairs=1, maxModelTokens=1000)
         D['save'](self.run / 'inputs/job.json', job)
         pins = D['load'](self.run / 'pins.json')
         pins.update(jobDigest=D['digest'](job), inputFiles=D['tree'](self.run / 'inputs'))
@@ -947,13 +947,23 @@ else:
         with self.assertRaises(D['Stop']) as raised:
             self.generated()
         self.assertEqual(raised.exception.code, 'AUTHOR_NOT_COMPLETED')
-        state = D['load'](self.run / 'state.json')
-        self.assertEqual(state['status'], 'AUTHOR_FAILED')
+        initial = D['load'](self.run / 'state.json')
+        self.assertEqual(initial['status'], 'AUTHOR_FAILED')
+        self.assertEqual(self.check()['checks']['author']['code'], 'AUTHOR_COMPLETION_REQUIRED')
         with self.assertRaises(D['Stop']) as raised:
-            D['execute'](self.run)
-        self.assertEqual(raised.exception.details['previousStatus'], 'AUTHOR_FAILED')
-        self.assertEqual(D['load'](self.run / 'state.json'), state)
-        self.assertFalse((self.run / 'attempts/1').exists())
+            D['promote'](self.run)
+        self.assertEqual(raised.exception.code, 'RUN_NOT_READY')
+
+        self.mode.write_text('normal')
+        result = D['execute'](self.run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](self.run / 'state.json')
+        first, retry = state['attempts']
+        self.assertEqual(first['exitCode'], 23)
+        self.assertEqual(retry['threadId'], first['threadId'])
+        self.assertEqual(retry['argv'][retry['argv'].index('resume') + 1], first['threadId'])
+        self.assertEqual(state['modelTokens'], 40)
+        self.assertEqual([row['budgetTokens'] for row in state['tokenAccounting']['attemptUsage']], [20, 20])
 
     def test_legacy_token_stopped_attempt_is_neither_resumed_nor_accepted(self):
         job = D['load'](self.run / 'inputs/job.json')

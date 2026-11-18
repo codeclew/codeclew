@@ -144,10 +144,10 @@ Missing or ambiguous thread identity, changed resume identity and invalid or
 regressing counters refuse completion. Missing counters stay unavailable and
 prevent readiness and another author invocation.
 
-An interrupted or failed author stays stopped. Frozen runs retain the exact
-runner, package and input pins from preparation. Changing the package requires
-a fresh preparation for a new run. A historical author stopped by the former
-token cap is still a stopped attempt and never automatically resumes.
+Frozen runs retain the exact runner, package and input pins from preparation.
+Changing the package requires a fresh preparation for a new run. A historical
+author stopped by the former token cap is still a stopped attempt and never
+automatically resumes.
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.
