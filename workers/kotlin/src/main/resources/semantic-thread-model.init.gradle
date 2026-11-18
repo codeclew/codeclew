@@ -1,5 +1,7 @@
 import groovy.json.JsonOutput
 import java.security.MessageDigest
+import org.gradle.api.tasks.SourceSetContainer
+import org.gradle.api.tasks.compile.JavaCompile
 
 gradle.beforeProject { project ->
     def requestedCompileTask = System.getProperty("semantic.thread.compileTask", "compileKotlin")
@@ -23,7 +25,45 @@ gradle.beforeProject { project ->
         } catch (Throwable ignored) {}
         return null
     }
-    project.tasks.register("semanticThreadModel") {
+    def selectedJavaSourceProducers = { compile, modelTask ->
+        def sourceSets = project.extensions.findByType(SourceSetContainer)
+        def sourceSet = sourceSets?.findByName(sourceSetNameOf(compile))
+        if (sourceSet == null || sourceSet.getCompileTaskName("kotlin") != compile.name) return []
+        def javaCompile = project.tasks.findByName(sourceSet.compileJavaTaskName)
+        if (!(javaCompile instanceof JavaCompile)) return []
+
+        // Match declared outputs to source roots even when no Java files exist
+        // yet. The Java compiler itself and unrelated build work are excluded.
+        def roots = sourceSet.java.srcDirs.collect { it.toPath().toAbsolutePath().normalize() }
+        if (roots.isEmpty()) return []
+        def blocked = [compile, javaCompile, modelTask] as Set
+        def direct = new LinkedHashMap()
+        def prerequisitesOf = { task ->
+            direct.computeIfAbsent(task) { task.taskDependencies.getDependencies(task) }
+        }
+        def closure = { tasks ->
+            def pending = new ArrayDeque(tasks)
+            def visited = new LinkedHashSet()
+            while (!pending.isEmpty()) {
+                def next = pending.removeFirst()
+                if (visited.add(next) && !blocked.contains(next)) {
+                    pending.addAll(prerequisitesOf(next))
+                }
+            }
+            return visited
+        }
+        return closure(prerequisitesOf(javaCompile)).findAll { task ->
+            if (blocked.contains(task)) return false
+            def producesJavaSources = task.outputs.files.files.any { output ->
+                def path = output.toPath().toAbsolutePath().normalize()
+                roots.any { path.startsWith(it) }
+            }
+            // Do not add a producer which would schedule a selected compiler
+            // or the model extraction task again through its own prerequisite.
+            return producesJavaSources && closure([task]).disjoint(blocked)
+        }
+    }
+    project.tasks.register("semanticThreadModel") { modelTask ->
         // Gradle can report repository-local project artifacts in a compilation
         // classpath before those artifacts exist in a pristine checkout. Run
         // the selected compilation's declared prerequisites, including source
@@ -36,6 +76,7 @@ gradle.beforeProject { project ->
             def provider = selectedClasspathProvider(compile)
             def prerequisites = new LinkedHashSet(compile.taskDependencies.getDependencies(compile))
             if (provider != null) prerequisites.addAll(provider.buildDependencies.getDependencies(compile))
+            prerequisites.addAll(selectedJavaSourceProducers(compile, modelTask))
             return prerequisites.findAll { dependency ->
                 dependency.path != compile.path
             }

@@ -5,6 +5,7 @@ import java.io.File
 import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.*
 import org.jetbrains.kotlin.cli.jvm.K2JVMCompiler
@@ -227,23 +228,25 @@ class KotlinJvm25QualificationTest {
     }
 
 
+    private fun copyGeneratedJavaFixture(repository: Path, target: Path): Path {
+        val fixture = repository.resolve("fixtures/kotlin-generated-java")
+        Files.walk(fixture).use { files -> files.forEach { source ->
+            val destination = target.resolve(fixture.relativize(source))
+            if (Files.isDirectory(source)) Files.createDirectories(destination)
+            else Files.copy(source, destination, COPY_ATTRIBUTES)
+        } }
+        Files.writeString(target.resolve("gradle.properties"),
+            "org.gradle.java.installations.paths=${jdk25()}\norg.gradle.java.installations.auto-detect=false\norg.gradle.java.installations.auto-download=false\n")
+        return target
+    }
+
     @Test
     fun generatedJavaInputsResolveOnFirstCleanAnalysisAndChangesCannotReuseOldFacts() {
         val root = Files.createTempDirectory("gradle-generated-java-analysis").toRealPath()
         try {
             val repository = generateSequence(Path.of(System.getProperty("user.dir")).toAbsolutePath(), Path::getParent)
                 .first { Files.isRegularFile(it.resolve("gradlew")) }
-            val fixture = repository.resolve("fixtures/kotlin-generated-java")
-            fun copy(name: String): Path {
-                val target = Files.createDirectories(root.resolve(name))
-                Files.walk(fixture).use { files -> files.forEach { source ->
-                    val destination = target.resolve(fixture.relativize(source))
-                    if (Files.isDirectory(source)) Files.createDirectories(destination)
-                    else Files.copy(source, destination)
-                } }
-                Files.writeString(target.resolve("gradle.properties"), "org.gradle.java.installations.paths=${jdk25()}\norg.gradle.java.installations.auto-detect=false\norg.gradle.java.installations.auto-download=false\n")
-                return target
-            }
+            fun copy(name: String) = copyGeneratedJavaFixture(repository, root.resolve(name))
             val nativeRoot = copy("native")
             val analysisRoot = copy("analysis")
             val unattachedRoot = copy("unattached-generator")
@@ -290,6 +293,75 @@ class KotlinJvm25QualificationTest {
                 assertEquals("SYNTAX_DECLARATIONS", indexed["analysisMode"]!!.jsonPrimitive.content)
                 assertFalse(Files.exists(unattachedRoot.resolve("build/generator-ran.marker")), "unattached generators must not be discovered by a broad scan")
                 assertFalse(Files.exists(unattachedRoot.resolve("build/kotlin-compiled.marker")))
+            }
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun javaCompileOnlyProducerFeedsKotlinWithoutRunningCompilersOrUnrelatedWork() {
+        val root = Files.createTempDirectory("gradle-java-task-producer").toRealPath()
+        try {
+            val repository = generateSequence(Path.of(System.getProperty("user.dir")).toAbsolutePath(), Path::getParent)
+                .first { Files.isRegularFile(it.resolve("gradlew")) }
+            val javaTaskOnlyRoot = copyGeneratedJavaFixture(repository, root.resolve("analysis"))
+            val build = javaTaskOnlyRoot.resolve("build.gradle.kts")
+            Files.writeString(javaTaskOnlyRoot.resolve("build.gradle.kts"), Files.readString(build)
+                .replace("2.3.21", "2.4.10")
+                .replace("java.srcDir(generateOwnedJava)", "java.srcDir(generatedJava)") + """
+                val javaInputs by tasks.registering { dependsOn(generateOwnedJava) }
+                val unrelated by tasks.registering {
+                    outputs.file(layout.buildDirectory.file("unrelated.marker"))
+                    doLast { file("build/unrelated.marker").writeText("ran") }
+                }
+                val requiresCompiler by tasks.registering {
+                    dependsOn(tasks.named("compileKotlin"))
+                    outputs.file(generatedJava.map { it.file("RequiresCompiler.java") })
+                    doLast { generatedJava.get().file("RequiresCompiler.java").asFile.writeText("class RequiresCompiler {}") }
+                }
+                tasks.named("compileJava") {
+                    dependsOn(javaInputs, unrelated, requiresCompiler)
+                    doLast { file("build/java-compiled.marker").writeText("compiled") }
+                }
+                val generatedKotlin = layout.buildDirectory.dir("generated/sources/owned/kotlin")
+                val generateOwnedKotlin by tasks.registering {
+                    outputs.dir(generatedKotlin)
+                    doLast {
+                        val source = generatedKotlin.get().file("GeneratedPeer.kt").asFile
+                        source.parentFile.mkdirs()
+                        source.writeText("package fixture\nobject GeneratedPeer { fun label() = \"peer\" }")
+                    }
+                }
+                tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+                    source(generatedKotlin)
+                    dependsOn(generateOwnedKotlin)
+                }
+            """.trimIndent().let { "\n$it\n" })
+            Files.writeString(javaTaskOnlyRoot.resolve("src/main/kotlin/fixture/Entry.kt"),
+                Files.readString(javaTaskOnlyRoot.resolve("src/main/kotlin/fixture/Entry.kt")) +
+                    "\nfun combinedLabel(): String = generatedLabel() + GeneratedPeer.label()\n")
+            Worker().use { worker ->
+                val javaTaskRequest = buildJsonObject {
+                    put("repo", javaTaskOnlyRoot.toString())
+                    put("compilation", ":/main")
+                }.toString().toByteArray()
+                fun inspect() = Json.parseToJsonElement(worker.handle(2, javaTaskRequest)).jsonObject
+                val first = inspect()
+                val indexed = Json.parseToJsonElement(worker.handle(3, javaTaskRequest)).jsonObject
+                assertEquals("K2_SEMANTIC", indexed["analysisMode"]!!.jsonPrimitive.content,
+                    indexed.filterKeys { it != "files" && it != "declarationDescriptors" && it != "declarationRelations" }.toString())
+                val generated = javaTaskOnlyRoot.resolve("build/generated/sources/owned/main")
+                assertTrue(Files.exists(generated.resolve("fixture/generated/OwnedValue.java")))
+                assertTrue(Files.exists(javaTaskOnlyRoot.resolve("build/generated/sources/owned/kotlin/GeneratedPeer.kt")))
+                assertFalse(Files.exists(generated.resolve("RequiresCompiler.java")))
+                for (marker in listOf("java-compiled.marker", "kotlin-compiled.marker", "unrelated.marker")) {
+                    assertFalse(Files.exists(javaTaskOnlyRoot.resolve("build/$marker")), "preparation scheduled $marker")
+                }
+                Files.writeString(javaTaskOnlyRoot.resolve("input.txt"), "missing\n")
+                val refreshed = inspect()
+                assertNotEquals(first["semanticInputManifestHash"], refreshed["semanticInputManifestHash"])
+                assertFalse(Files.exists(generated.resolve("fixture/generated/OwnedValue.java")))
+                val removed = Json.parseToJsonElement(worker.handle(3, javaTaskRequest)).jsonObject
+                assertEquals("SYNTAX_DECLARATIONS", removed["analysisMode"]!!.jsonPrimitive.content)
             }
         } finally { root.toFile().deleteRecursively() }
     }
