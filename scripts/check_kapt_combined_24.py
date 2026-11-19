@@ -183,7 +183,7 @@ def verify_capture(checked, evidence, repo, revision, *, service=SERVICE, source
     require(len(occurrences) == len(calls) and all(
         any(target == f"callable:{call.target}#jvm:{call.descriptor}" and tracked[start:end] == call.expression
             for target, start, end in occurrences) for call in calls),
-            f"Export lacks both exact source-grounded generated calls: {sorted(occurrences)}")
+            f"Export lacks the expected exact source-grounded calls: {sorted(occurrences)}")
     require(len(witnesses) == 1, "Export must contain one native compilation witness")
     return sorted(occurrences), witnesses[0]
 
@@ -204,19 +204,25 @@ def verify_witness(witness, native, revision, compiler, gradle, target, *, has_k
     kapt = digests(build / "generated/source/kapt/main", "*.java", native)
     independent = digests(build / "generated/sources/independent/main", "*.java", native)
     require(has_kapt == bool(kapt) == bool(independent), "Expected separate generated inputs in the native build")
+    direct = witness.get("schema") == "codeclew-kotlin-native-fir/1"
+    all_java = dict(sorted((kapt | independent).items()))
     classes = build / "classes/kotlin/main"
     expected = {
         "revision": revision, "scope": SCOPE, "compileTask": ":compileKotlin", "outcome": "EXECUTED",
-        "requestedCompiler": compiler, "nativeGradleVersion": gradle, "nativeJdkMajor": target, "jvmTarget": str(target),
-        "analyzerCompiler": "2.4.10",
-        "comparison": "CLASS_FLAGS_INHERITANCE_METHODS_AND_JVM_CALLS_MATCH",
-        "selectedSourcesDigest": hash_json({"kotlin": src, "java": dict(sorted((kapt | independent).items()))}),
+        "requestedCompiler": compiler, "nativeGradleVersion": gradle, "jvmTarget": str(target),
+        "selectedSourcesDigest": hash_json({"kotlin": src, "java": all_java}),
         "nativeClassfilesDigest": hash_json(digests(classes, "*.class", classes)),
-        "generatedJavaSelectionDigest": hash_json(kapt),
+        "generatedJavaSelectionDigest": hash_json(all_java if direct else kapt),
         "javaSourceProducersDigest": hash_json(
             [{"task": ":generateIndependent", "selectedJavaDigests": independent}] if independent else []),
     }
-    if options is not None:
+    if direct:
+        for name in ("compilerInvocationDigest", "observerArtifactDigest", "nativeFactsDigest"):
+            require(re.fullmatch(r"sha256:[a-f0-9]{64}", witness.get(name, "")), f"Missing {name}")
+    else:
+        expected.update(nativeJdkMajor=target, analyzerCompiler="2.4.10",
+                        comparison="CLASS_FLAGS_INHERITANCE_METHODS_AND_JVM_CALLS_MATCH")
+    if options is not None and not direct:
         expected["orderedOptionsDigest"] = hash_json(options)
     mismatches = [name for name, value in expected.items() if witness.get(name) != value]
     require(not mismatches, f"Native compilation witness differs from independent :classes: {mismatches}")

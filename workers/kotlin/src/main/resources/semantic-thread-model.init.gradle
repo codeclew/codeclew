@@ -1,6 +1,8 @@
 import groovy.json.JsonOutput
 import java.security.MessageDigest
 import java.util.jar.JarFile
+import java.util.jar.JarOutputStream
+import java.util.zip.ZipEntry
 import org.gradle.api.tasks.StopExecutionException
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.compile.JavaCompile
@@ -9,7 +11,10 @@ gradle.beforeProject { project ->
     def requestedCompileTask = System.getProperty("semantic.thread.compileTask", "compileKotlin")
     def captureRevision = System.getProperty("semantic.thread.nativeCaptureRevision")
     def captureTask = System.getProperty("semantic.thread.nativeCaptureTask")
+    def observerDirectory = System.getProperty("semantic.thread.nativeObserverDirectory")?.with { new File(it) }
     def springCompile = null
+    def nativeObserver = null
+    def observerSetupFailed = false
     def capturedInputs = null
     def nativeProducers = []
     def nativeRows = [
@@ -38,7 +43,90 @@ gradle.beforeProject { project ->
         }
         "sha256:" + digest.digest().encodeHex().toString()
     }
-    def springInputs = { compile ->
+    def digestJson = { value ->
+        "sha256:" + MessageDigest.getInstance("SHA-256")
+            .digest(JsonOutput.toJson(value).getBytes("UTF-8")).encodeHex().toString()
+    }
+    def artifactDigests = { files -> files.collect { [name: it.name, digest: digestFile(it)] } }
+    def compilerClasspath = { compile ->
+        def getter = compile.class.methods.find { it.name.startsWith('getDefaultCompilerClasspath$') && it.parameterCount == 0 }
+        if (getter == null) throw new IllegalStateException("Selected task compiler classpath is unavailable")
+        getter.invoke(compile).files
+    }
+    def isKotlinJvmCompilation = { compile ->
+        for (def type = compile?.class; type != null; type = type.superclass) {
+            if (type.name == "org.jetbrains.kotlin.gradle.tasks.KotlinCompile") return true
+        }
+        return false
+    }
+    def buildObserver = { compilerFiles ->
+        def sources = new File(observerDirectory, "sources").listFiles().sort()
+        def runtime = new File(observerDirectory, "libraries").readLines().collect { new File(it) }
+        def classes = new File(observerDirectory, "classes")
+        def observer = new File(observerDirectory, "observer.jar").canonicalFile
+        def compilerPath = compilerFiles.join(File.pathSeparator)
+        def javaName = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java"
+        def command = [new File(System.getProperty("java.home"), "bin/${javaName}").path,
+            "-cp", compilerPath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+            "-no-stdlib", "-no-reflect", "-nowarn", "-jvm-target", "17",
+            "-opt-in=org.jetbrains.kotlin.K1Deprecation",
+            "-opt-in=org.jetbrains.kotlin.config.CompilerConfiguration.Internals",
+            "-classpath", (compilerFiles + runtime).join(File.pathSeparator),
+            "-d", classes.path] + sources.collect { it.path }
+        def builder = new ProcessBuilder(command.collect { it.toString() }).directory(observerDirectory)
+            .redirectErrorStream(true).redirectOutput(new File(observerDirectory, "observer-build.log"))
+        if (builder.start().waitFor() != 0) throw new IllegalStateException("Selected compiler could not build the FIR observer")
+        observer.withOutputStream { stream ->
+            new JarOutputStream(stream).withCloseable { jar ->
+                def write = { name, input ->
+                    def entry = new ZipEntry(name)
+                    entry.time = 0
+                    jar.putNextEntry(entry)
+                    input.transferTo(jar)
+                    jar.closeEntry()
+                }
+                [classes, new File(observerDirectory, "services")].each { root ->
+                    project.fileTree(root).files.sort().each { file ->
+                        def name = root.toPath().relativize(file.toPath()).toString().replace('\\', '/')
+                        file.withInputStream { write(name, it) }
+                    }
+                }
+                runtime.each { file ->
+                    new JarFile(file).withCloseable { dependency ->
+                        dependency.entries().toList().findAll { entry ->
+                            entry.name.startsWith("kotlinx/serialization/") && entry.name.endsWith(".class")
+                        }.each { entry ->
+                            dependency.getInputStream(entry).withCloseable { write(entry.name, it) }
+                        }
+                    }
+                }
+            }
+        }
+        return observer
+    }
+    def observedCompilerInputs = { compile, observation ->
+        def loader = compile.class.classLoader
+        def context = loader.loadClass('org.jetbrains.kotlin.gradle.plugin.KotlinCompilerArgumentsProducer$CreateCompilerArgumentsContext')
+        def args = compile.createCompilerArguments(context.getField("Companion").get(null).getDefault())
+        def plugins = args.pluginClasspaths.toList().collect { new File(it).canonicalFile }
+        def options = args.pluginOptions.toList()
+        if (plugins.count { it == observation.jar } != 1 ||
+            !observation.options.every { expected -> options.count { it == expected } == 1 }) {
+            throw new IllegalStateException("Selected compiler arguments do not include the requested observer")
+        }
+        args.pluginClasspaths = plugins.findAll { it != observation.jar }.collect { it.path } as String[]
+        args.pluginOptions = options.findAll { !observation.options.contains(it) } as String[]
+        def renderer = loader.loadClass("org.jetbrains.kotlin.compilerRunner.ArgumentUtils")
+        def root = project.rootDir.canonicalPath
+        def invocation = renderer.convertArgumentsToStringListNoDefaults(args).collect { it.replace(root, ".") }
+        return [
+            compilerArtifacts: artifactDigests(compilerClasspath(compile)),
+            requestedPluginArtifacts: artifactDigests(args.pluginClasspaths.collect { new File(it) }),
+            compilerInvocationDigest: digestJson(invocation),
+            observerArtifactDigest: digestFile(observation.jar),
+        ]
+    }
+    def selectedCompilationInputs = { compile ->
         def repo = project.rootDir.canonicalFile.toPath()
         def sources = [kotlin: compile.sources.files, java: compile.javaSources.files].collectEntries { kind, files ->
             [kind, files.collectEntries { file ->
@@ -179,26 +267,69 @@ gradle.beforeProject { project ->
         def configureNativeCapture = {
             def compile = project.tasks.findByName(requestedCompileTask)
             springCompile = springPlan(compile)
-            if (springCompile != null) {
-                if (row.version == "2.4.10") {
+            if (springCompile == null && observerDirectory != null && isKotlinJvmCompilation(compile)) {
+                def loader = compile.class.classLoader
+                def observer = null
+                try {
+                    observer = buildObserver(compilerClasspath(compile))
+                } catch (Exception ignored) {
+                    observerSetupFailed = true
+                }
+                if (observer != null) {
+                    def output = new File(observerDirectory, "facts.jsonl").canonicalFile
+                    def config = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.CompilerPluginConfig")
+                        .getConstructor().newInstance()
+                    def option = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.SubpluginOption")
+                        .getConstructor(String, String)
+                    def observerOptions = [output: output.path, native: "true"]
+                    observerOptions.each { name, value ->
+                        config.addPluginArgument("semantic-thread-facts", option.newInstance(name, value))
+                    }
+                    compile.pluginClasspath.from(observer)
+                    compile.pluginOptions.add(config)
+                    // A file receipt must represent the complete selected source set.
+                    compile.incremental = false
+                    nativeObserver = [jar: observer, output: output, options: observerOptions.collect { name, value ->
+                        "plugin:semantic-thread-facts:${name}=${value}".toString()
+                    }]
+                }
+            }
+            if (springCompile != null || nativeObserver != null) {
+                if (nativeObserver != null || row.version == "2.4.10") {
                     nativeProducers = selectedJavaSourceProducers(compile, project.tasks.named("semanticThreadModel").get())
                     compile.mustRunAfter(nativeProducers)
-                    project.tasks.named("kaptGenerateStubsKotlin").configure { mustRunAfter(nativeProducers) }
+                    def stem = compile.name == "compileKotlin" ? "" : compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
+                    project.tasks.findByName("kaptGenerateStubs${stem}Kotlin")?.mustRunAfter(nativeProducers)
                 }
                 compile.outputs.upToDateWhen { false }
                 compile.outputs.doNotCacheIf("Codeclew requires an executed native compilation") { true }
                 compile.doFirst {
                     def destination = compile.destinationDirectory.get().asFile.canonicalFile
-                    if (!destination.toPath().startsWith(new File(project.projectDir, "build").toPath()) ||
+                    def outputParent = nativeObserver == null ? new File(project.projectDir, "build") : project.rootDir.canonicalFile
+                    if (destination == project.rootDir.canonicalFile ||
+                        !destination.toPath().startsWith(outputParent.toPath()) ||
                         project.fileTree(destination).matching { include "**/*.class" }.files ||
-                        springCompile != springPlan(compile)) {
-                        throw new StopExecutionException("Codeclew native compilation inputs are stale")
+                        (springCompile != null && springCompile != springPlan(compile))) {
+                        if (nativeObserver == null) throw new StopExecutionException("Codeclew native compilation inputs are stale")
+                        println("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__")
+                        throw new GradleException("Codeclew requires a fresh native Kotlin compilation")
                     }
-                    capturedInputs = springInputs(compile)
+                    if (nativeObserver != null) {
+                        try {
+                            nativeObserver.inputs = observedCompilerInputs(compile, nativeObserver)
+                            capturedInputs = selectedCompilationInputs(compile)
+                        } catch (Exception failure) {
+                            println("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__")
+                            throw new GradleException("Codeclew could not seal the native Kotlin inputs", failure)
+                        }
+                    } else {
+                        capturedInputs = selectedCompilationInputs(compile)
+                    }
                 }
                 gradle.taskGraph.afterTask { task, state ->
                     if (task == compile && state.failure != null) {
-                        println "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__${row.version}"
+                        println(nativeObserver == null ? "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__${row.version}" :
+                            "__SEMANTIC_THREAD_NATIVE_FIR_COMPILE_FAILED__")
                     }
                 }
             }
@@ -218,12 +349,40 @@ gradle.beforeProject { project ->
         gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
             (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
     }
+    def observedCompileReceipt = { compile, model ->
+        if (!completed(compile) || compile.state.skipped || !compile.state.didWork ||
+            nativeObserver.inputs == null || !nativeObserver.output.isFile() ||
+            nativeObserver.inputs != observedCompilerInputs(compile, nativeObserver) ||
+            capturedInputs != selectedCompilationInputs(compile)) throw new IllegalStateException("Incomplete native observation")
+        def repo = project.rootDir.canonicalFile.toPath()
+        def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
+        def generated = capturedInputs.sources.java.findAll { path, hash ->
+            repo.resolve(path).startsWith(project.layout.buildDirectory.get().asFile.canonicalFile.toPath())
+        }
+        def producers = nativeProducers.collect { producer ->
+            def roots = producer.outputs.files.files.collect { it.canonicalFile.toPath() }
+            def sources = capturedInputs.sources.java.findAll { path, hash -> roots.any { repo.resolve(path).startsWith(it) } }
+            if (!completed(producer) || sources.isEmpty()) throw new IllegalStateException("Missing selected Java source producer output")
+            [task: producer.path, selectedJavaDigests: sources]
+        }.sort { it.task }
+        return nativeObserver.inputs + [
+            revision: captureRevision, compileTask: compile.path, outcome: "EXECUTED",
+            compilerVersion: model.compilerVersion, gradleVersion: gradle.gradleVersion,
+            jvmTarget: model.jvmTarget, sourceDigests: capturedInputs.sources,
+            classpathDigests: capturedInputs.classpath, generatedJavaDigests: generated,
+            javaSourceProducers: producers, outputRoot: repo.relativize(destination).toString(),
+            classDigests: project.fileTree(destination.toFile()).matching { include "**/*.class" }.files.collectEntries { file ->
+                [destination.relativize(file.toPath()).toString().replace('\\', '/'), digestFile(file)]
+            }.sort(),
+            factsDigest: digestFile(nativeObserver.output),
+        ]
+    }
     def compileReceipt = { compile, kaptJavaRoot, diagnostic ->
         if (!nativeCheck(diagnostic, "SPRING_COMPILE_OUTCOME", {
             gradle.taskGraph.hasTask(compile) && compile.state.executed && compile.state.didWork &&
                 compile.state.failure == null && !compile.state.skipped && capturedInputs != null
         }) || !nativeCheck(diagnostic, "SPRING_COMPILE_INPUTS", {
-            springCompile != null && springCompile == springPlan(compile) && capturedInputs == springInputs(compile)
+            springCompile != null && springCompile == springPlan(compile) && capturedInputs == selectedCompilationInputs(compile)
         })) return null
         def repo = project.rootDir.canonicalFile.toPath()
         def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
@@ -328,8 +487,8 @@ gradle.beforeProject { project ->
         // classpath before those artifacts exist in a pristine checkout. Run
         // the selected compilation's declared prerequisites, including source
         // generators attached with compile.dependsOn. Classpath dependencies
-        // alone do not describe the effective source inputs. Only the qualified
-        // Spring capture needs the selected native compiler result.
+        // alone do not describe the effective source inputs. The routes with
+        // native evidence also execute the selected compilation itself.
         dependsOn {
             def compile = project.tasks.findByName(requestedCompileTask)
             if (compile == null) return []
@@ -337,8 +496,8 @@ gradle.beforeProject { project ->
             def prerequisites = new LinkedHashSet(compile.taskDependencies.getDependencies(compile))
             if (provider != null) prerequisites.addAll(provider.buildDependencies.getDependencies(compile))
             prerequisites.addAll(selectedJavaSourceProducers(compile, modelTask))
-            if (springCompile != null) prerequisites.add(compile)
-            return prerequisites.findAll { springCompile != null || it.path != compile.path }
+            if (springCompile != null || nativeObserver != null) prerequisites.add(compile)
+            return prerequisites.findAll { springCompile != null || nativeObserver != null || it.path != compile.path }
         }
         doLast {
             def requested = requestedCompileTask
@@ -610,6 +769,21 @@ gradle.beforeProject { project ->
                 gradleVersion: gradle.gradleVersion,
                 jdkHome: jdkHome
             ]
+            if (nativeObserver != null) {
+                try {
+                    model.nativeFirCompilation = observedCompileReceipt(compile, model)
+                } catch (Exception failure) {
+                    println("__SEMANTIC_THREAD_NATIVE_FIR_RECEIPT_FAILED__")
+                    throw new GradleException("Codeclew could not seal the native Kotlin observation", failure)
+                }
+                model.compilerPlugins = pluginClasspath.values.findAll { new File(it).canonicalFile != nativeObserver.jar }
+                // Preserve actual invocation options by digest without publishing raw values.
+                model.freeCompilerArguments = []
+                model.optIns = []
+                println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
+                return
+            }
+            if (observerSetupFailed) model.nativeFirObserverBuildFailed = true
             def nativeDiagnostic = [:]
             def allOpenOnly = row != null && !row.kapt && compilerVersion == row.version &&
                 project.pluginManager.hasPlugin("org.jetbrains.kotlin.plugin.allopen")

@@ -1677,6 +1677,7 @@ internal fun gradleModelCommand(
     reuseDaemon: Boolean = false,
     projectPropertyArgs: List<String> = emptyList(),
     nativeCaptureRevision: String? = null,
+    nativeObserverDirectory: Path? = null,
 ): List<String> = buildList {
     add(wrapper.toString())
     addAll(listOf("-p", repo.toString()))
@@ -1700,6 +1701,7 @@ internal fun gradleModelCommand(
         add("-Dsemantic.thread.nativeCaptureRevision=$it")
         add("-Dsemantic.thread.nativeCaptureTask=${modelTask.removeSuffix("semanticThreadModel")}$compileTask")
     }
+    nativeObserverDirectory?.let { add("-Dsemantic.thread.nativeObserverDirectory=$it") }
     addAll(projectPropertyArgs)
     add(modelTask)
 }
@@ -1785,6 +1787,7 @@ internal class Worker(
     private var requestK2AnalysisMicros = 0L
     private var requestFirExtractionMicros = 0L
     private var nativeCapture: Triple<Path, String, String>? = null
+    private var nativeFirObservation: NativeFirObservation? = null
 
     private fun stateFor(repo: Path): BuildStateLayout {
         val canonicalRepo = repo.toRealPath()
@@ -1803,7 +1806,10 @@ internal class Worker(
         // that is intentionally outside the repository input hash. Keep its
         // in-memory cache scoped to the latest OpenProject so reopening observes
         // the current environment, including for sealed external state.
-        if (kind == 2) projectModelCache.clear()
+        if (kind == 2) {
+            projectModelCache.clear()
+            nativeFirObservation = null
+        }
         requestCacheRequests = 0
         requestCacheHits = 0
         requestPsiParseMicros = 0
@@ -1993,7 +1999,9 @@ internal class Worker(
                 .orEmpty(),
         )
         val semanticEngine = currentKotlinSemanticEngine()
-        val engineCompatibility = kotlinEngineCompatibilityDecision(projectSemantics, semanticEngine)
+        val nativeFir = buildModel["nativeFirCompileReceipt"]
+        val engineCompatibility = if (nativeFir == null) kotlinEngineCompatibilityDecision(projectSemantics, semanticEngine)
+            else KotlinEngineCompatibilityDecision("QUALIFIED", "PROJECT_NATIVE_FIR", "SELECTED_COMPILER_OBSERVED", false)
         val module = buildModel["projectPath"]?.jsonPrimitive?.contentOrNull ?: ":"
         val sourceSet = compilation?.substringAfterLast('/') ?: "main"
         val canonicalCompilation = "$module/$sourceSet"
@@ -2085,6 +2093,7 @@ internal class Worker(
             (buildModel["nativeSpringCompilation"] as? JsonObject)?.let {
                 put("nativeSpringCompileReceipt", nativeSpringReceiptSummary(it))
             }
+            nativeFir?.let { put("nativeFirCompileReceipt", it) }
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
             put("analysisJvmFingerprint", currentAnalysisJvmFingerprint)
@@ -2127,6 +2136,7 @@ internal class Worker(
             put("platform", normalized["platform"] ?: JsonNull)
             put("generatedSourceConfiguration", normalized["generatedSourceConfiguration"] ?: JsonNull)
             normalized["nativeSpringCompileReceipt"]?.let { put("nativeSpringCompileReceipt", it) }
+            normalized["nativeFirCompileReceipt"]?.let { put("nativeFirCompileReceipt", it) }
             put("buildModelBoundaries", normalized["buildModelBoundaries"] ?: JsonNull)
             put("dependencyCoordinates", normalized["dependencyCoordinates"] ?: JsonNull)
             put("resolvedDependencyArtifacts", normalized["resolvedDependencyArtifacts"] ?: JsonArray(emptyList()))
@@ -2163,11 +2173,16 @@ internal class Worker(
             gradleUserHome
         }
         val script = Files.createTempFile("semantic-thread-model", ".init.gradle")
+        var observerDirectory: Path? = null
         try {
             val resource = Worker::class.java.getResourceAsStream("/semantic-thread-model.init.gradle") ?: error("project model init script missing")
             script.writeBytes(resource.use { it.readBytes() })
             val selected = compilation ?: ":/main"
             val captureRevision = nativeCapture?.takeIf { (root, scope, _) -> root == repo && scope == selected }?.third
+            if (captureRevision != null) {
+                observerDirectory = Files.createTempDirectory("semantic-thread-native-fir")
+                prepareNativeFirObserver(observerDirectory)
+            }
             val projectPath = if ('/' in selected) selected.substringBeforeLast('/').ifBlank { ":" } else selected.substringBeforeLast(':', ":").ifBlank { ":" }
             val sourceSet = if ('/' in selected) selected.substringAfterLast('/') else if (selected.contains("compileTest", true)) "test" else "main"
             val compileTask = if ('/' in selected) if (sourceSet == "main") "compileKotlin" else "compile${sourceSet.replaceFirstChar(Char::uppercase)}Kotlin" else selected.substringAfterLast(':').ifBlank { "compileKotlin" }
@@ -2185,6 +2200,7 @@ internal class Worker(
                     reuseDaemon = !System.getenv("CODECLEW_K2_INDEX_ROOT").isNullOrBlank(),
                     projectPropertyArgs = gradleProperties?.args.orEmpty(),
                     nativeCaptureRevision = captureRevision,
+                    nativeObserverDirectory = observerDirectory,
                 ),
                 repo,
                 state.gradleUserHome.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
@@ -2201,6 +2217,14 @@ internal class Worker(
             }
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) {
+                val markers = output.lineSequence().toSet()
+                if ("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__" in markers ||
+                    "__SEMANTIC_THREAD_NATIVE_FIR_RECEIPT_FAILED__" in markers) {
+                    throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED")
+                }
+                if ("__SEMANTIC_THREAD_NATIVE_FIR_COMPILE_FAILED__" in markers) {
+                    throw nativeFirFailure("NATIVE_KOTLIN_COMPILE_FAILED")
+                }
                 val marker = "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__"
                 val compiler = output.lineSequence().filter { it.startsWith(marker) }.map { it.removePrefix(marker) }
                     .singleOrNull()?.takeIf { nativeAllOpenRow(it) != null }
@@ -2230,8 +2254,19 @@ internal class Worker(
             val line = output.lineSequence().lastOrNull { it.startsWith("__SEMANTIC_THREAD_MODEL__") }
                 ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "BUILD_MODEL_MARKER_MISSING: Gradle completed without publishing the selected compilation model. Run ./gradlew tasks --all from the repository root and verify the selected Kotlin JVM compilation; if it exists, report this code and the compilation to Codeclew maintainers.")
             val model = json.parseToJsonElement(line.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
+            if (model["nativeFirCompilation"] != null) {
+                nativeFirObservation = runCatching {
+                    readNativeFirObservation(
+                        repo, model, checkNotNull(captureRevision),
+                        checkNotNull(observerDirectory).resolve("facts.jsonl"),
+                    )
+                }.getOrElse { throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED") }
+            }
             return SelectedGradleModel(model, qualifiedNativeKapt(model, captureRevision))
-        } finally { Files.deleteIfExists(script) }
+        } finally {
+            Files.deleteIfExists(script)
+            observerDirectory?.toFile()?.deleteRecursively()
+        }
     }
 
     private fun applyCompilerPluginCompatibility(model: JsonObject, attempt: NativeKaptAttempt? = null): JsonObject {
@@ -2420,16 +2455,25 @@ internal class Worker(
         }
         val compatible = when {
             hasGradle -> gradleModel(repo, compilation).let { selected ->
+                val native = nativeFirObservation.takeIf { selected.model["nativeFirCompilation"] != null }
                 val model = buildJsonObject {
-                    selected.model.forEach(::put)
+                    selected.model.forEach { (key, value) ->
+                        if (key != "nativeFirCompilation") put(key, value)
+                    }
                     put("buildSystem", "GRADLE")
+                    native?.let {
+                        put("nativeFirCompileReceipt", it.receipt)
+                        put("requestedCompilerPlugins", selected.model.getValue("compilerPlugins"))
+                    }
                 }
-                applyCompilerPluginCompatibility(model, selected.nativeKapt)
+                if (native != null) withJavaAnalysisSources(model)
+                else applyCompilerPluginCompatibility(model, selected.nativeKapt)
             }
             hasMaven -> applyCompilerPluginCompatibility(MavenProjectModelExtractor(stateFor(repo)).extract(repo, compilation))
             else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper or Maven pom.xml is required")
         }
         val module = compilation?.substringBeforeLast('/')?.ifBlank { ":" } ?: ":"
+        if (compatible["nativeFirCompileReceipt"] != null) return compatible
         val composed = sourceComposedTestProjectModel(repo, compilation, compatible) {
             projectModel(repo, "$module/main")
         }
@@ -2621,6 +2665,13 @@ internal class Worker(
         requestCacheRequests++
         val analysisRepo = repo.toRealPath()
         val model = cachedProjectModel(analysisRepo, compilation)
+        model["nativeFirCompileReceipt"]?.let { receipt ->
+            val observed = nativeFirObservation
+            if (overrides.isNotEmpty() || observed == null || observed.receipt != receipt) {
+                throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED")
+            }
+            return K2Analysis(valid = true, facts = observed.facts, diagnostics = emptyList(), nativeCompilationWitness = observed.receipt)
+        }
         val spring = model["nativeSpringCompilation"] as? JsonObject
         fun refuseSpring(check: String): Nothing {
             val reason = nativeReplayFailureReason(model["compilerVersion"].safeString())
@@ -2650,6 +2701,9 @@ internal class Worker(
         val semanticModel = inspect(analysisRepo, compilation)
         val compatibility = semanticModel["engineCompatibility"]?.jsonObject
         if (compatibility?.get("status")?.jsonPrimitive?.contentOrNull != "QUALIFIED") {
+            if (model["nativeFirObserverBuildFailed"] == JsonPrimitive(true)) {
+                throw nativeFirFailure("NATIVE_KOTLIN_OBSERVER_BUILD_FAILED")
+            }
             throw WorkerFailure(
                 "UNSUPPORTED_PROJECT_CONFIGURATION",
                 "Kotlin semantic engine is not qualified for project analysis",

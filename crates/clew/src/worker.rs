@@ -2339,11 +2339,29 @@ impl WorkerClient {
         let mut value: Value = serde_json::from_slice(&canonical_json).map_err(internal)?;
         let json_micros = json_started.elapsed().as_micros() as u64;
         if kind == RequestKind::OpenProject {
-            let project_semantics = KotlinProjectSemantics::from_project_model(&value)?;
-            let desired = if let Some(engine) = self.qualification_engine {
-                KotlinEngineRegistry.qualify(&project_semantics, engine)?
-            } else {
-                KotlinEngineRegistry.select(&project_semantics)?
+            let desired = match value.pointer("/semanticInputManifest/nativeFirCompileReceipt") {
+                // The selected compiler already resolved these facts. This
+                // worker projects them and never rebinds project plugins.
+                Some(receipt)
+                    if self.qualification_engine.is_none()
+                        && native_fir_receipt_matches(payload, &value, receipt) =>
+                {
+                    KotlinSemanticEngine::Kotlin24
+                }
+                Some(_) => {
+                    return Err(ClewError::new(
+                        ErrorCode::WorkerProtocolMismatch,
+                        "native FIR receipt differs from OpenProject/request",
+                    ));
+                }
+                None => {
+                    let project_semantics = KotlinProjectSemantics::from_project_model(&value)?;
+                    if let Some(engine) = self.qualification_engine {
+                        KotlinEngineRegistry.qualify(&project_semantics, engine)?
+                    } else {
+                        KotlinEngineRegistry.select(&project_semantics)?
+                    }
+                }
             };
             if desired != self.engine {
                 return Err(ClewError::new(
@@ -3049,6 +3067,11 @@ fn native_compilation_witness_matches(
 ) -> bool {
     let receipt = manifest.get("nativeSpringCompileReceipt");
     let witness = index.get("nativeCompilationWitness");
+    if let Some(native) = manifest.get("nativeFirCompileReceipt") {
+        return receipt.is_none()
+            && witness == Some(native)
+            && native_fir_receipt_matches(request, project, native);
+    }
     let (Some(receipt), Some(witness)) = (receipt, witness) else {
         return receipt.is_none() && witness.is_none();
     };
@@ -3129,6 +3152,91 @@ fn native_compilation_witness_matches(
         && is_digest(&witness["comparisonDigest"])
         && witness["analyzerCompiler"] == "2.4.10"
         && is_digest(&witness["effectiveAllOpenArtifactDigest"])
+}
+
+fn native_fir_receipt_matches(request: &Value, project: &Value, receipt: &Value) -> bool {
+    let digests = [
+        "receiptDigest",
+        "nativeFactsDigest",
+        "selectedSourcesDigest",
+        "generatedJavaSelectionDigest",
+        "orderedClasspathDigest",
+        "nativeClassfilesDigest",
+        "requestedCompilerArtifactsDigest",
+        "requestedPluginArtifactsDigest",
+        "javaSourceProducersDigest",
+        "compilerInvocationDigest",
+        "observerArtifactDigest",
+    ];
+    receipt
+        .as_object()
+        .is_some_and(|fields| fields.len() == digests.len() + 7)
+        && receipt["schema"] == "codeclew-kotlin-native-fir/1"
+        && project
+            .pointer("/engineCompatibility/kind")
+            .and_then(Value::as_str)
+            == Some("PROJECT_NATIVE_FIR")
+        && request["nativeCaptureRevision"].is_string()
+        && receipt["revision"] == request["nativeCaptureRevision"]
+        && receipt["outcome"] == "EXECUTED"
+        && [
+            ("compileTask", "compileTask"),
+            ("jvmTarget", "jvmTarget"),
+            ("requestedCompiler", "projectCompilerVersion"),
+            ("nativeGradleVersion", "gradleVersion"),
+        ]
+        .into_iter()
+        .all(|(receipt_key, project_key)| {
+            project[project_key].is_string() && receipt[receipt_key] == project[project_key]
+        })
+        && digests.into_iter().all(|key| {
+            receipt[key]
+                .as_str()
+                .and_then(|value| value.strip_prefix("sha256:"))
+                .is_some_and(|hash| {
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+        })
+}
+
+#[test]
+fn native_fir_receipt_requires_the_selected_revision_and_task() {
+    let revision = "a".repeat(40);
+    let digest = format!("sha256:{}", "b".repeat(64));
+    let receipt = json!({
+        "schema":"codeclew-kotlin-native-fir/1", "revision":revision,
+        "compileTask":":compileKotlin", "outcome":"EXECUTED", "jvmTarget":"21",
+        "requestedCompiler":"2.4.20", "nativeGradleVersion":"9.6.1",
+        "receiptDigest":digest, "nativeFactsDigest":digest, "selectedSourcesDigest":digest,
+        "generatedJavaSelectionDigest":digest, "orderedClasspathDigest":digest,
+        "nativeClassfilesDigest":digest, "requestedCompilerArtifactsDigest":digest,
+        "requestedPluginArtifactsDigest":digest, "javaSourceProducersDigest":digest,
+        "compilerInvocationDigest":digest, "observerArtifactDigest":digest,
+    });
+    let request = json!({"nativeCaptureRevision":revision});
+    let mut project = json!({
+        "compileTask":":compileKotlin", "projectCompilerVersion":"2.4.20",
+        "gradleVersion":"9.6.1", "jvmTarget":"21",
+        "engineCompatibility":{"kind":"PROJECT_NATIVE_FIR"},
+    });
+    let manifest = json!({"nativeFirCompileReceipt":receipt});
+    let index = json!({"nativeCompilationWitness":receipt});
+    assert!(native_compilation_witness_matches(
+        &request, &project, &manifest, &index
+    ));
+    assert!(!native_compilation_witness_matches(
+        &json!({}),
+        &project,
+        &manifest,
+        &index
+    ));
+    project["compileTask"] = json!(":compileTestKotlin");
+    assert!(!native_compilation_witness_matches(
+        &request, &project, &manifest, &index
+    ));
 }
 
 #[test]
@@ -4255,6 +4363,15 @@ fn safe_worker_error_message_for_worker_error(
         }
         "BUILD_MODEL_MARKER_MISSING" => {
             "BUILD_MODEL_MARKER_MISSING: verify the selected compilation, rerun clew doctor, and report this category if the native build works"
+        }
+        "NATIVE_KOTLIN_COMPILE_FAILED" => {
+            "NATIVE_KOTLIN_COMPILE_FAILED: run the selected Gradle Kotlin compilation and inspect its first failure locally"
+        }
+        "NATIVE_KOTLIN_OBSERVER_BUILD_FAILED" => {
+            "NATIVE_KOTLIN_OBSERVER_BUILD_FAILED: the selected compiler could not build the FIR observer and the analyzer route could not supply facts"
+        }
+        "NATIVE_KOTLIN_RECEIPT_FAILED" => {
+            "NATIVE_KOTLIN_RECEIPT_FAILED: the selected Gradle compilation could not supply a complete, source-bound FIR receipt"
         }
         _ => safe_worker_error_message(code),
     }

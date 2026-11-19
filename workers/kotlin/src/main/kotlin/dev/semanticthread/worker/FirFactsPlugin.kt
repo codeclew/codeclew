@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.compiler.plugin.CommandLineProcessor
 import org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.CompilerConfigurationKey
+import org.jetbrains.kotlin.config.KotlinCompilerVersion
 import org.jetbrains.kotlin.diagnostics.DiagnosticReporter
 import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.analysis.checkers.MppCheckerKind
@@ -83,6 +84,7 @@ import org.jetbrains.kotlin.fir.types.classId
 import org.jetbrains.kotlin.fir.types.isMarkedNullable
 import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.fir.visitors.FirVisitorVoid
+import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.JvmStandardClassIds
 import java.security.MessageDigest
 import java.nio.file.Files
@@ -91,11 +93,13 @@ import java.nio.file.StandardOpenOption
 
 internal const val FACTS_PLUGIN_ID = "semantic-thread-facts"
 private val OUTPUT_KEY = CompilerConfigurationKey<String>("semantic thread FIR facts output")
+private val NATIVE_OBSERVATION_KEY = CompilerConfigurationKey<Boolean>("selected Gradle FIR compiler observation")
 
 class FirFactsCommandLineProcessor : CommandLineProcessor {
     override val pluginId: String = FACTS_PLUGIN_ID
     override val pluginOptions = listOf(
         CliOption("output", "path", "FIR facts JSONL output", required = true, allowMultipleOccurrences = false),
+        CliOption("native", "true", "Record the executing project compiler", required = false),
     )
 
     override fun processOption(
@@ -103,10 +107,13 @@ class FirFactsCommandLineProcessor : CommandLineProcessor {
         value: String,
         configuration: CompilerConfiguration,
     ) {
-        if (option.optionName == "output") {
-            configuration.put(OUTPUT_KEY, value)
-        } else {
-            throw CliOptionProcessingException("unknown option ${option.optionName}")
+        when (option.optionName) {
+            "output" -> configuration.put(OUTPUT_KEY, value)
+            "native" -> {
+                if (value != "true") throw CliOptionProcessingException("invalid native observation option")
+                configuration.put(NATIVE_OBSERVATION_KEY, true)
+            }
+            else -> throw CliOptionProcessingException("unknown option ${option.optionName}")
         }
     }
 }
@@ -117,6 +124,10 @@ class FirFactsCompilerPluginRegistrar : CompilerPluginRegistrar() {
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
         val output = configuration.get(OUTPUT_KEY) ?: return
+        if (configuration.get(NATIVE_OBSERVATION_KEY) == true) appendFact(output, buildJsonObject {
+            put("recordType", "FIR_NATIVE_COMPILER")
+            put("version", KotlinCompilerVersion.getVersion())
+        })
         FirExtensionRegistrarAdapter.registerExtension(FirFactsExtensionRegistrar(output))
     }
 }
@@ -152,11 +163,20 @@ private class FirFactsCheckersExtension(
                 }
             })
         override val functionCheckers: Set<FirDeclarationChecker<FirFunction>> =
-            setOf(FirFactsCfgChecker(output), FirDocumentationVariablesChecker24(output))
-        override val simpleFunctionCheckers = setOf(
-            FirFactsOverrideChecker(output),
-            FirFactsFunctionDescriptorChecker(output),
-        )
+            setOf(FirFactsCfgChecker(output), FirDocumentationVariablesChecker24(output),
+                object : FirDeclarationChecker<FirFunction>(MppCheckerKind.Common) {
+                    private val overrides = FirFactsOverrideChecker(output)
+                    private val descriptors = FirFactsFunctionDescriptorChecker(output)
+
+                    context(context: CheckerContext, reporter: DiagnosticReporter)
+                    override fun check(declaration: FirFunction) {
+                        if (declaration is FirNamedFunction) {
+                            overrides.check(declaration)
+                            descriptors.check(declaration)
+                        }
+                    }
+                },
+            )
         override val propertyCheckers = setOf(
             FirFactsPropertyChecker(output),
             FirFactsPropertyDescriptorChecker(output),
@@ -1882,13 +1902,16 @@ private class FirFactsExpressionChecker(
                         }
                         val qualifier = explicitReceiver as? org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
                         val qualifierSource = qualifier?.source
+                        val qualifierClass = qualifier?.relativeClassFqName?.let {
+                            ClassId(qualifier.packageFqName, it, false)
+                        }
                         if (relationKind == "CALLS" && function?.status?.isStatic == true
                             && (function.origin is org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin.Java
                                 || function.origin === org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin.Enhancement)
-                            && qualifier?.classId != null && qualifier.classId == compilerId?.classId
+                            && qualifierClass != null && qualifierClass == compilerId?.classId
                             && qualifierSource?.kind === KtRealSourceElementKind) {
                             put("dataStaticQualifierAuthority", "K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER")
-                            put("dataStaticQualifierClass", "class:${qualifier.classId!!.asString()}")
+                            put("dataStaticQualifierClass", "class:${qualifierClass.asString()}")
                             put("dataStaticQualifierStart", qualifierSource.startOffset)
                             put("dataStaticQualifierEnd", qualifierSource.endOffset)
                         }

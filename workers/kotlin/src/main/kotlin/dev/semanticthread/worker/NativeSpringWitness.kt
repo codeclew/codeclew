@@ -41,10 +41,10 @@ internal fun nativeAllOpenRow(compiler: String?): NativeAllOpenRow? = when (comp
 private val explicitAllOpenOption =
     Regex("plugin:org\\.jetbrains\\.kotlin\\.allopen:annotation=[A-Za-z_][A-Za-z_0-9]*(?:\\.[A-Za-z_][A-Za-z_0-9]*)+")
 
-private fun nativeHash(bytes: ByteArray) = "sha256:" +
+internal fun nativeHash(bytes: ByteArray) = "sha256:" +
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-private fun nativeHash(value: JsonElement) = nativeHash(value.toString().toByteArray())
+internal fun nativeHash(value: JsonElement) = nativeHash(value.toString().toByteArray())
 
 private fun nativeFileHash(path: Path): String {
     val digest = MessageDigest.getInstance("SHA-256")
@@ -112,7 +112,7 @@ internal fun nativeSpringReceiptSummary(receipt: JsonObject): JsonObject = build
     put("jvmTarget", row.jdk.toString())
 }
 
-internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: JsonObject): Path {
+internal fun verifyNativeCompilationInputs(repo: Path, model: JsonObject, receipt: JsonObject): Path {
     fun sourceDigests(key: String) = JsonObject(model[key]!!.jsonArray.associate { value ->
         val path = Path.of(value.jsonPrimitive.content)
         require(path.startsWith(repo) && path.toRealPath() == path && Files.isRegularFile(path, NOFOLLOW_LINKS))
@@ -120,16 +120,13 @@ internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: Js
     })
     val sources = receipt["sourceDigests"]!!.jsonObject
     require(sourceDigests("sourceFiles") == sources["kotlin"] && sourceDigests("javaSourceFiles") == sources["java"])
-    val row = checkNotNull(nativeAllOpenRow(receipt["compilerVersion"]?.jsonPrimitive?.content))
     val javaInputs = sources["java"]!!.jsonObject
     val generated = receipt["generatedJavaDigests"]!!.jsonObject
-    require((row.kaptDigest != null) == generated.isNotEmpty())
     require(generated.all { (path, digest) -> javaInputs[path] == digest })
     val producers = receipt["javaSourceProducers"]!!.jsonArray
-    val selected = generated.keys.toMutableSet()
     for (producer in producers) {
         val outputs = producer.jsonObject["selectedJavaDigests"]!!.jsonObject
-        require(outputs.isNotEmpty() && outputs.all { (path, digest) -> javaInputs[path] == digest && selected.add(path) })
+        require(outputs.isNotEmpty() && outputs.all { (path, digest) -> javaInputs[path] == digest })
     }
     val classpath = model["classpath"]!!.jsonArray.map { value ->
         val path = Path.of(value.jsonPrimitive.content)
@@ -148,6 +145,17 @@ internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: Js
     require(output.startsWith(repo) && output != repo)
     require(JsonObject(nativeClassFiles(output).mapValues { JsonPrimitive(nativeFileHash(it.value)) }) == receipt["classDigests"])
     return output
+}
+
+internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: JsonObject): Path {
+    val row = checkNotNull(nativeAllOpenRow(receipt["compilerVersion"]?.jsonPrimitive?.content))
+    val generated = receipt["generatedJavaDigests"]!!.jsonObject
+    require((row.kaptDigest != null) == generated.isNotEmpty())
+    val selected = generated.keys.toMutableSet()
+    for (producer in receipt["javaSourceProducers"]!!.jsonArray) {
+        require(producer.jsonObject["selectedJavaDigests"]!!.jsonObject.keys.all(selected::add))
+    }
+    return verifyNativeCompilationInputs(repo, model, receipt)
 }
 
 /**

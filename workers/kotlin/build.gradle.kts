@@ -57,6 +57,14 @@ dependencies {
 }
 
 application { mainClass.set("dev.semanticthread.worker.MainKt") }
+tasks.processResources {
+    // The selected project's compiler builds these sources against its own FIR ABI.
+    from("src/main/kotlin/dev/semanticthread/worker") {
+        include("FirFactsPlugin.kt", "CompilerCfgLabels.kt", "ConstructorDescriptorIdentity.kt",
+            "JvmAnnotationFacts24.kt", "JvmMethodDescriptor.kt", "KotlinValueFacts24.kt")
+        into("native-fir-observer")
+    }
+}
 tasks.test {
     systemProperty("codeclew.test.gradleExecutable", gradle.gradleHomeDir!!.resolve("bin/gradle"))
     inputs.files(pluginQualification)
