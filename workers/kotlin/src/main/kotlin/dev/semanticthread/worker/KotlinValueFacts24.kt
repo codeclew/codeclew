@@ -5,7 +5,6 @@ package dev.semanticthread.worker
 import kotlinx.serialization.json.*
 import org.jetbrains.kotlin.KtRealSourceElementKind
 import org.jetbrains.kotlin.KtSourceElement
-import org.jetbrains.kotlin.fir.declarations.FirNamedFunction
 import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.expressions.*
 import org.jetbrains.kotlin.fir.references.FirResolvedNamedReference
@@ -13,7 +12,7 @@ import org.jetbrains.kotlin.fir.symbols.FirBasedSymbol
 import java.util.IdentityHashMap
 
 /** K2 2.4 only: linear immutable locals, literal nullness and null-only Elvis. */
-internal fun kotlinValueProjection24(owner: FirNamedFunction, file: String, identity: String): JsonObject? {
+internal fun kotlinValueProjection24(owner: ObservedFunction, file: String, identity: String): JsonObject? {
     val source = owner.source ?: return null
     val definitions = IdentityHashMap<FirBasedSymbol<*>, String>()
     val nodes = sortedMapOf<String, JsonObject>()
@@ -65,7 +64,7 @@ internal fun kotlinValueProjection24(owner: FirNamedFunction, file: String, iden
         if (statements.isEmpty() || statements.size > 128) throw Unsupported()
         statements.dropLast(1).forEach { statement ->
             val local = statement as? FirProperty ?: throw Unsupported()
-            if (!local.isLocal || local.isVar || local.delegate != null) throw Unsupported()
+            if (!local.isObservedLocal || local.isVar || local.delegate != null) throw Unsupported()
             val initializer = local.initializer ?: throw Unsupported()
             val value = expression(initializer)
             definitions[local.symbol] = add(local.source, operation("COPY", mapOf("value" to value)))

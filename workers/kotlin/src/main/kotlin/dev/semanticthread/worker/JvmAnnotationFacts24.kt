@@ -17,7 +17,7 @@ import org.jetbrains.kotlin.fir.scopes.unsubstitutedScope
 import org.jetbrains.kotlin.fir.symbols.impl.FirPropertySymbol
 import org.jetbrains.kotlin.fir.types.*
 
-internal fun jvmAnnotationFacts24(function: FirNamedFunction, context: CheckerContext): JsonObject =
+internal fun jvmAnnotationFacts24(function: ObservedFunction, context: CheckerContext): JsonObject =
     JvmAnnotationReader24(context).read(function)
 
 internal fun jvmClassAnnotationFacts24(owner: FirRegularClass, context: CheckerContext): JsonObject =
@@ -32,10 +32,10 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
     private var annotationDepth = 0
     private var visits = 0
 
-    private fun identity(function: FirNamedFunction): String? = compilerJvmMethodDescriptor(function, session)
+    private fun identity(function: ObservedFunction): String? = compilerJvmMethodDescriptor(function, session)
         ?.let { "callable:${function.symbol.callableId}#jvm:$it" }
 
-    fun read(function: FirNamedFunction): JsonObject {
+    fun read(function: ObservedFunction): JsonObject {
         val id = identity(function) ?: "callable:${function.symbol.callableId}"
         val owner = function.symbol.dispatchReceiverType?.classId?.let(session::getRegularClassSymbolByClassId)?.fir
         val callable = callable(function, owner, false)
@@ -95,7 +95,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
 
     }
 
-    private fun callable(function: FirNamedFunction, owner: FirRegularClass?, inherited: Boolean): JsonObject = buildJsonObject {
+    private fun callable(function: ObservedFunction, owner: FirRegularClass?, inherited: Boolean): JsonObject = buildJsonObject {
         put("method", method(function, owner, mutableSetOf()))
         put("classes", JsonArray(hierarchy(owner).map { type -> buildJsonObject {
             put("identity", "class:${type.symbol.classId}")
@@ -123,7 +123,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
         return result
     }
 
-    private fun method(function: FirNamedFunction, owner: FirRegularClass?, seen: MutableSet<String>): JsonObject {
+    private fun method(function: ObservedFunction, owner: FirRegularClass?, seen: MutableSet<String>): JsonObject {
         val id = identity(function) ?: "callable:${function.symbol.callableId}"
         val bases = mutableListOf<JsonElement>()
         if (seen.size >= 128) boundaries += "METHOD_HIERARCHY_LIMIT"
@@ -131,7 +131,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
             val scope = owner.symbol.unsubstitutedScope(session, context.scopeSession, false, FirResolvePhase.BODY_RESOLVE)
             scope.processFunctionsByName(function.name) { }
             scope.getDirectOverriddenSafe(function.symbol).forEach { symbol ->
-                val base = symbol.fir as? FirNamedFunction ?: return@forEach
+                val base = symbol.fir as? ObservedFunction ?: return@forEach
                 val baseOwner = symbol.dispatchReceiverType?.classId?.let(session::getRegularClassSymbolByClassId)?.fir
                 bases += method(base, baseOwner, seen)
             }
@@ -201,7 +201,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
 
     private fun arguments(annotation: FirAnnotation): JsonObject = buildJsonObject {
         annotation.argumentMapping.mapping.forEach { (name, expression) ->
-            val classId = annotation.getKClassArgument(name)?.classId
+            val classId = annotation.observedKClassArgument(name, session)?.classId
             if (classId != null) {
                 session.getRegularClassSymbolByClassId(classId)?.fir?.takeIf { it.classKind == org.jetbrains.kotlin.descriptors.ClassKind.ANNOTATION_CLASS }?.let(::definition)
                 put(name.asString(), buildJsonObject { put("kind", "CLASS"); put("value", classId.asSingleFqName().asString()) })
@@ -243,9 +243,9 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
         val primitiveArrays = setOf("kotlin.BooleanArray", "kotlin.ByteArray", "kotlin.ShortArray", "kotlin.IntArray", "kotlin.LongArray", "kotlin.CharArray", "kotlin.FloatArray", "kotlin.DoubleArray")
         val container = expression.resolvedType.classId?.asSingleFqName()?.asString()
         val primitivePacked = container in primitiveArrays && container == packed?.resolvedType?.classId?.asSingleFqName()?.asString()
-        val emptyLiteral = packed is FirCollectionLiteral && packed.argumentList.arguments.isEmpty()
+        val emptyLiteral = packed is ObservedCollectionLiteral && packed.argumentList.arguments.isEmpty()
         val genericPacked = expected != null && expected.asSingleFqName().asString() != "kotlin.Array" && (expected == actual || emptyLiteral)
-        if ((primitivePacked || genericPacked) && (packed is FirCollectionLiteral || packed is FirFunctionCall && arrayFactory(packed))) {
+        if ((primitivePacked || genericPacked) && (packed is ObservedCollectionLiteral || packed is FirFunctionCall && arrayFactory(packed))) {
             return value(packed, depth + 1)
         }
         return array(expression.arguments, depth)
@@ -270,7 +270,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
             }
             is FirWrappedArgumentExpression -> return value(expression.expression, depth + 1)
             is FirVarargArgumentsExpression -> return varargValue(expression, depth)
-            is FirCollectionLiteral -> return array(expression.argumentList.arguments, depth)
+            is ObservedCollectionLiteral -> return array(expression.argumentList.arguments, depth)
             is FirAnnotation -> return annotation(expression)?.let { buildJsonObject { put("kind", "ANNOTATION"); put("value", it) } }
                 ?: unresolved("UNRESOLVED_ANNOTATION_CLASS")
             is FirLiteralExpression -> return buildJsonObject {

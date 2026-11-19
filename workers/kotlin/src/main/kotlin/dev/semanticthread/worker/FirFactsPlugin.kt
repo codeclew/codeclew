@@ -18,7 +18,6 @@ import org.jetbrains.kotlin.compiler.plugin.AbstractCliOption
 import org.jetbrains.kotlin.compiler.plugin.CliOption
 import org.jetbrains.kotlin.compiler.plugin.CliOptionProcessingException
 import org.jetbrains.kotlin.compiler.plugin.CommandLineProcessor
-import org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.CompilerConfigurationKey
 import org.jetbrains.kotlin.config.KotlinCompilerVersion
@@ -35,7 +34,6 @@ import org.jetbrains.kotlin.fir.declarations.FirAnonymousFunction
 import org.jetbrains.kotlin.fir.declarations.FirCallableDeclaration
 import org.jetbrains.kotlin.fir.declarations.FirConstructor
 import org.jetbrains.kotlin.fir.declarations.FirFunction
-import org.jetbrains.kotlin.fir.declarations.FirNamedFunction
 import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.declarations.FirRegularClass
 import org.jetbrains.kotlin.fir.declarations.FirResolvePhase
@@ -118,8 +116,7 @@ class FirFactsCommandLineProcessor : CommandLineProcessor {
     }
 }
 
-class FirFactsCompilerPluginRegistrar : CompilerPluginRegistrar() {
-    override val pluginId: String = FACTS_PLUGIN_ID
+class FirFactsCompilerPluginRegistrar : ObservedCompilerPluginRegistrar() {
     override val supportsK2: Boolean = true
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
@@ -170,7 +167,7 @@ private class FirFactsCheckersExtension(
 
                     context(context: CheckerContext, reporter: DiagnosticReporter)
                     override fun check(declaration: FirFunction) {
-                        if (declaration is FirNamedFunction) {
+                        if (declaration is ObservedFunction) {
                             overrides.check(declaration)
                             descriptors.check(declaration)
                         }
@@ -197,7 +194,7 @@ private class FirDocumentationVariablesChecker24(
 ) : FirDeclarationChecker<FirFunction>(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(declaration: FirFunction) {
-        val owner = declaration as? FirNamedFunction ?: return
+        val owner = declaration as? ObservedFunction ?: return
         val ownerId = owner.symbol.callableId ?: return
         val ownerSource = owner.source ?: return
         val descriptor = compilerJvmMethodDescriptor(owner, context.session) ?: return
@@ -276,7 +273,7 @@ private class FirDocumentationVariablesChecker24(
             val storage = documentationPropertyStorage24(property)["qualified"]?.jsonPrimitive?.boolean == true
             // Resolving a property symbol does not resolve virtual/custom accessor
             // dispatch. Retain the attempted access separately from backing storage.
-            if (property.isLocal || !property.origin.fromSource || property.origin.generated
+            if (property.isObservedLocal || !property.origin.fromSource || property.origin.generated
                 || property.receiverParameter != null || property.contextParameters.isNotEmpty()
                 || source == null || source.kind !== KtRealSourceElementKind
                 || source.startOffset < ownerSource.startOffset || source.endOffset > ownerSource.endOffset
@@ -309,7 +306,7 @@ private class FirDocumentationVariablesChecker24(
                 || source.kind !== KtRealSourceElementKind
             ) return
             val local = variable as? FirProperty
-            if (local != null && (!local.isLocal || local.delegate != null)) {
+            if (local != null && (!local.isObservedLocal || local.delegate != null)) {
                 boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", source)
                 return
             }
@@ -757,9 +754,9 @@ private fun unknownDescriptor(
 
 private class FirFactsFunctionDescriptorChecker(
     private val output: String,
-) : FirDeclarationChecker<FirNamedFunction>(MppCheckerKind.Common) {
+) : FirDeclarationChecker<ObservedFunction>(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
-    override fun check(declaration: FirNamedFunction) {
+    override fun check(declaration: ObservedFunction) {
         val source = declaration.source
         val symbol = declaration.symbol
         val callableId = symbol.callableId
@@ -843,7 +840,7 @@ private fun documentationPropertyStorage24(property: FirProperty): JsonObject {
     val getter = property.getter is FirDefaultPropertyGetter
     val setter = !property.isVar || property.setter is FirDefaultPropertySetter
     val backing = property.backingField != null
-    val ordinary = property.origin.fromSource && !property.origin.generated && !property.isLocal
+    val ordinary = property.origin.fromSource && !property.origin.generated && !property.isObservedLocal
         && property.source != null && property.symbol.callableId?.isLocal == false
         && property.delegate == null && property.receiverParameter == null && property.contextParameters.isEmpty()
         && status?.modality?.name == "FINAL" && !status.isOverride && !status.isLateInit
@@ -1142,9 +1139,9 @@ private fun resolvedArgumentMapping24(
 
 private class FirFactsOverrideChecker(
     private val output: String,
-) : FirDeclarationChecker<FirNamedFunction>(MppCheckerKind.Common) {
+) : FirDeclarationChecker<ObservedFunction>(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
-    override fun check(declaration: FirNamedFunction) {
+    override fun check(declaration: ObservedFunction) {
         if (!declaration.status.isOverride) return
         val source = declaration.source ?: return
         val containingClass = declaration.symbol.dispatchReceiverType
@@ -1395,7 +1392,7 @@ private fun cfgReaches24(
 
 /** Separate documentation occurrences; deferred captures never enter immediate dataInput. */
 private fun emitDocumentationLexicalVariables24(
-    output: String, root: FirNamedFunction, identity: String, file: String,
+    output: String, root: ObservedFunction, identity: String, file: String,
     immediate: java.util.IdentityHashMap<org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>, JsonObject>,
 ) {
     val rootSource = root.source ?: return
@@ -1427,7 +1424,7 @@ private fun emitDocumentationLexicalVariables24(
         if (bindings.containsKey(variable.symbol)) return
         val source = variable.source ?: return
         if (source.kind !== KtRealSourceElementKind || !variable.origin.fromSource || variable.origin.generated) return
-        if (variable is FirProperty && (!variable.isLocal || variable.delegate != null)) {
+        if (variable is FirProperty && (!variable.isObservedLocal || variable.delegate != null)) {
             boundaries += "LEXICAL_PROPERTY_STORAGE_OPAQUE"; return
         }
         val binding = immediate[variable.symbol] ?: buildJsonObject {
@@ -1454,7 +1451,7 @@ private fun emitDocumentationLexicalVariables24(
             override fun visitElement(element: org.jetbrains.kotlin.fir.FirElement) {
                 if (exhausted) return
                 if (depth >= 128) { exhausted = true; boundaries += "LEXICAL_VARIABLE_BUDGET"; return }
-                if (element is FirRegularClass || element is FirNamedFunction) {
+                if (element is FirRegularClass || element is ObservedFunction) {
                     boundaries += "LEXICAL_LOCAL_FUNCTION_OR_CLASS_NOT_EXPANDED"; return
                 }
                 depth++
@@ -1501,7 +1498,7 @@ private fun emitDocumentationLexicalVariables24(
 /** A compiler function object selects the scope; names/labels never select a target. */
 private fun documentationRegion24(
     function: FirFunction,
-    root: FirNamedFunction,
+    root: ObservedFunction,
     rootIdentity: String,
 ): JsonObject? {
     val source = function.source ?: return null
@@ -1511,7 +1508,7 @@ private fun documentationRegion24(
     val kind = when {
         function === root -> "NAMED_FUNCTION"
         function is FirAnonymousFunction -> "ANONYMOUS_FUNCTION"
-        function is FirNamedFunction && function.symbol.callableId.isLocal -> "LOCAL_FUNCTION"
+        function is ObservedFunction && function.symbol.callableId.isLocal -> "LOCAL_FUNCTION"
         else -> return null
     }
     return buildJsonObject {
@@ -1524,8 +1521,8 @@ private fun documentationRegion24(
     }
 }
 
-private fun documentationLexicalOwner24(context: CheckerContext): Pair<FirNamedFunction, String>? {
-    val root = context.containingElements.filterIsInstance<FirNamedFunction>().firstOrNull {
+private fun documentationLexicalOwner24(context: CheckerContext): Pair<ObservedFunction, String>? {
+    val root = context.containingElements.filterIsInstance<ObservedFunction>().firstOrNull {
         !it.symbol.callableId.isLocal && it.origin.fromSource && !it.origin.generated
     } ?: return null
     val descriptor = compilerJvmMethodDescriptor(root, context.session) ?: return null

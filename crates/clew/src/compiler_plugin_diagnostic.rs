@@ -109,6 +109,41 @@ enum Rejection {
     AllOpenNativeAuthorityRequired,
 }
 
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ObserverStage {
+    SelectApi,
+    BuildAdapter,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ObserverCause {
+    CompilerClasspathUnavailable,
+    CompilerLayoutUnsupported,
+    CompilerRejectedAdapter,
+    AdapterPreparationFailed,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Observer {
+    stage: ObserverStage,
+    cause: ObserverCause,
+}
+
+impl Observer {
+    fn consistent(&self) -> bool {
+        self.stage
+            == match self.cause {
+                ObserverCause::CompilerClasspathUnavailable
+                | ObserverCause::CompilerLayoutUnsupported => ObserverStage::SelectApi,
+                ObserverCause::CompilerRejectedAdapter
+                | ObserverCause::AdapterPreparationFailed => ObserverStage::BuildAdapter,
+            }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Native {
@@ -157,6 +192,8 @@ struct Diagnostic {
     worker_jdk_major: u8,
     matches: Matches,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    observer: Option<Observer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     gradle_jvm_major: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_jdk_major: Option<u8>,
@@ -178,6 +215,7 @@ impl Diagnostic {
             && (self.native.free_arg_classifier.is_none()
                 || (self.native.check == Check::ForbiddenFreeArgs
                     && self.native.outcome == Outcome::Failed))
+            && self.observer.as_ref().is_none_or(Observer::consistent)
             && self.worker_jdk_major > 0
             && self.gradle_jvm_major != Some(0)
             && self.project_jdk_major != Some(0)
@@ -303,6 +341,14 @@ mod tests {
         };
         let saved = parse(&wire).unwrap();
         assert_eq!(saved["diagnostic"], wire);
+        let mut observer = wire.clone();
+        observer["observer"] = json!({"stage":"BUILD_ADAPTER","cause":"COMPILER_REJECTED_ADAPTER"});
+        assert_eq!(parse(&observer).unwrap()["diagnostic"], observer);
+        let mut bad_observer = observer.clone();
+        bad_observer["observer"]["stage"] = json!("SELECT_API");
+        assert!(parse(&bad_observer).is_none());
+        observer["observer"]["cause"] = json!("/private/path/token=secret");
+        assert!(parse(&observer).is_none());
         let mut private = wire.clone();
         private["native"]["message"] = json!("/private/path/token=secret");
         assert!(parse(&private).is_none());

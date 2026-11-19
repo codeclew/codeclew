@@ -88,3 +88,19 @@ identity. A same-commit tag change requires a new Check or managed session.
 Explicit historical reads still use their saved evidence. Tag names and
 annotation messages are available to the trusted build process. Check any
 build outputs before sharing them.
+
+## Select the compilation for compiler capture
+
+For the `kotlin-jvm-gradle-analysis` profile, the service's compilation
+identifies the Gradle project and Kotlin source set. For example, `:/main`
+selects the root `:compileKotlin` task and `:payments/main` selects
+`:payments:compileKotlin`. The Gradle wrapper, build scripts, applied
+plugins and toolchain determine the actual compiler invocation. Codeclew
+can observe the selected Kotlin task and schedule qualified Java generators
+attached through `compileJava`.
+
+Compiler capture requires source, generated inputs, the selected invocation
+and a compiler observation for the selected revision. A prebuilt output
+directory can provide dependencies where supported. Existing classfiles alone
+cannot establish which inputs or compiler arguments produced them, or recover
+exact source occurrences for a compiler Check.

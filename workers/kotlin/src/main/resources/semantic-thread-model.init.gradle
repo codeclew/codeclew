@@ -14,7 +14,7 @@ gradle.beforeProject { project ->
     def observerDirectory = System.getProperty("semantic.thread.nativeObserverDirectory")?.with { new File(it) }
     def springCompile = null
     def nativeObserver = null
-    def observerSetupFailed = false
+    def observerFailure = null
     def capturedInputs = null
     def nativeProducers = []
     def nativeRows = [
@@ -59,8 +59,28 @@ gradle.beforeProject { project ->
         }
         return false
     }
+    def observerApi = { compilerFiles ->
+        def prefix = "org/jetbrains/kotlin/fir"
+        def compilers = compilerFiles.findAll { it.isFile() && it.name.endsWith(".jar") }.collect { file ->
+            new JarFile(file).withCloseable { jar ->
+                if (jar.getEntry("org/jetbrains/kotlin/cli/jvm/K2JVMCompiler.class") == null) return null
+                if (jar.getEntry("${prefix}/declarations/FirNamedFunction.class") != null &&
+                    jar.getEntry("${prefix}/expressions/FirCollectionLiteral.class") != null) return "current"
+                if (jar.getEntry("${prefix}/declarations/FirSimpleFunction.class") != null &&
+                    jar.getEntry("${prefix}/expressions/FirArrayLiteral.class") != null) return "compat"
+                return "unsupported"
+            }
+        }.findAll { it != null }
+        return compilers.size() == 1 && compilers[0] != "unsupported" ? compilers[0] : null
+    }
     def buildObserver = { compilerFiles ->
-        def sources = new File(observerDirectory, "sources").listFiles().sort()
+        def api = observerApi(compilerFiles)
+        if (api == null) {
+            observerFailure = [stage: "SELECT_API", cause: "COMPILER_LAYOUT_UNSUPPORTED"]
+            return null
+        }
+        def sources = new File(observerDirectory, "sources").listFiles().sort() +
+            [new File(observerDirectory, "${api}/FirObserverCompilerApi.kt")]
         def runtime = new File(observerDirectory, "libraries").readLines().collect { new File(it) }
         def classes = new File(observerDirectory, "classes")
         def observer = new File(observerDirectory, "observer.jar").canonicalFile
@@ -72,10 +92,15 @@ gradle.beforeProject { project ->
             "-opt-in=org.jetbrains.kotlin.K1Deprecation",
             "-opt-in=org.jetbrains.kotlin.config.CompilerConfiguration.Internals",
             "-classpath", (compilerFiles + runtime).join(File.pathSeparator),
-            "-d", classes.path] + sources.collect { it.path }
+            "-d", classes.path]
+        if (api == "compat") command.add("-Xcontext-parameters")
+        command.addAll(sources.collect { it.path })
         def builder = new ProcessBuilder(command.collect { it.toString() }).directory(observerDirectory)
             .redirectErrorStream(true).redirectOutput(new File(observerDirectory, "observer-build.log"))
-        if (builder.start().waitFor() != 0) throw new IllegalStateException("Selected compiler could not build the FIR observer")
+        if (builder.start().waitFor() != 0) {
+            observerFailure = [stage: "BUILD_ADAPTER", cause: "COMPILER_REJECTED_ADAPTER"]
+            return null
+        }
         observer.withOutputStream { stream ->
             new JarOutputStream(stream).withCloseable { jar ->
                 def write = { name, input ->
@@ -270,28 +295,43 @@ gradle.beforeProject { project ->
             if (springCompile == null && observerDirectory != null && isKotlinJvmCompilation(compile)) {
                 def loader = compile.class.classLoader
                 def observer = null
+                def compilerFiles = null
                 try {
-                    observer = buildObserver(compilerClasspath(compile))
-                } catch (Exception ignored) {
-                    observerSetupFailed = true
+                    compilerFiles = compilerClasspath(compile)
+                } catch (Exception ignored) {}
+                if (compilerFiles) {
+                    try {
+                        observer = buildObserver(compilerFiles)
+                    } catch (Exception ignored) {
+                        if (observerFailure == null) {
+                            observerFailure = [stage: "BUILD_ADAPTER", cause: "ADAPTER_PREPARATION_FAILED"]
+                        }
+                    }
+                } else {
+                    observerFailure = [stage: "SELECT_API", cause: "COMPILER_CLASSPATH_UNAVAILABLE"]
                 }
                 if (observer != null) {
-                    def output = new File(observerDirectory, "facts.jsonl").canonicalFile
-                    def config = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.CompilerPluginConfig")
-                        .getConstructor().newInstance()
-                    def option = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.SubpluginOption")
-                        .getConstructor(String, String)
-                    def observerOptions = [output: output.path, native: "true"]
-                    observerOptions.each { name, value ->
-                        config.addPluginArgument("semantic-thread-facts", option.newInstance(name, value))
+                    try {
+                        def output = new File(observerDirectory, "facts.jsonl").canonicalFile
+                        def config = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.CompilerPluginConfig")
+                            .getConstructor().newInstance()
+                        def option = loader.loadClass("org.jetbrains.kotlin.gradle.plugin.SubpluginOption")
+                            .getConstructor(String, String)
+                        def observerOptions = [output: output.path, native: "true"]
+                        observerOptions.each { name, value ->
+                            config.addPluginArgument("semantic-thread-facts", option.newInstance(name, value))
+                        }
+                        compile.pluginClasspath.from(observer)
+                        compile.pluginOptions.add(config)
+                        // A file receipt must represent the complete selected source set.
+                        compile.incremental = false
+                        nativeObserver = [jar: observer, output: output, options: observerOptions.collect { name, value ->
+                            "plugin:semantic-thread-facts:${name}=${value}".toString()
+                        }]
+                    } catch (Exception ignored) {
+                        println("__SEMANTIC_THREAD_NATIVE_FIR_ATTACH_FAILED__")
+                        throw new GradleException("Codeclew could not attach its FIR observer to the selected task")
                     }
-                    compile.pluginClasspath.from(observer)
-                    compile.pluginOptions.add(config)
-                    // A file receipt must represent the complete selected source set.
-                    compile.incremental = false
-                    nativeObserver = [jar: observer, output: output, options: observerOptions.collect { name, value ->
-                        "plugin:semantic-thread-facts:${name}=${value}".toString()
-                    }]
                 }
             }
             if (springCompile != null || nativeObserver != null) {
@@ -783,7 +823,7 @@ gradle.beforeProject { project ->
                 println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
                 return
             }
-            if (observerSetupFailed) model.nativeFirObserverBuildFailed = true
+            if (observerFailure != null) model.nativeFirObserverFailure = observerFailure
             def nativeDiagnostic = [:]
             def allOpenOnly = row != null && !row.kapt && compilerVersion == row.version &&
                 project.pluginManager.hasPlugin("org.jetbrains.kotlin.plugin.allopen")

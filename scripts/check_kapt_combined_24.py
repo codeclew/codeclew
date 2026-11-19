@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the owned Kotlin 2.4.10 combined generated-Java regression."""
+"""Run the owned Kotlin 2.4.x combined generated-Java regression."""
 
 import argparse
 from dataclasses import dataclass
@@ -38,6 +38,30 @@ CALLS = (
     Call("fixture.ServiceKt", "independentNumber", "fixture/independentNumber",
          "fixture/generated/IndependentJava.number", "()I", b"fixture.generated.IndependentJava.number()"),
 )
+CUSTOM_OPEN_CALL = Call(
+    "fixture.ExtraLabel", "label", "fixture/ExtraLabel.label",
+    "fixture/ExtraBase.label", "()Ljava/lang/String;", b"super.label()", "invokespecial",
+)
+
+
+def configure_mixed_all_open(repo):
+    build = repo / "build.gradle.kts"
+    build.write_text(build.read_text().replace('version "2.4.10"', 'version "2.4.21"')
+                     + '\nallOpen { annotation("fixture.ExtraOpen") }\n')
+    service = repo / SOURCE
+    with service.open("a") as file:
+        file.write("""
+annotation class ExtraOpen
+
+@ExtraOpen
+class ExtraBase {
+    fun label(): String = "extra"
+}
+
+class ExtraLabel : ExtraBase() {
+    override fun label(): String = super.label()
+}
+""")
 
 
 def require(condition, message):
@@ -61,9 +85,11 @@ def git(repo, *args, env=None):
     )
 
 
-def prepare_sources(output, fixture="kapt-combined-24", remote=REMOTE):
+def prepare_sources(output, fixture="kapt-combined-24", remote=REMOTE, *, configure=None):
     repo = output / "check-source"
     shutil.copytree(ROOT / "fixtures" / fixture, repo)
+    if configure is not None:
+        configure(repo)
     shutil.copyfile(ROOT / "gradlew", repo / "gradlew")
     (repo / "gradlew").chmod(0o755)
     shutil.copyfile(ROOT / "gradle/wrapper/gradle-wrapper.jar", repo / "gradle/wrapper/gradle-wrapper.jar")
@@ -80,7 +106,7 @@ def prepare_sources(output, fixture="kapt-combined-24", remote=REMOTE):
     return repo, native, revision
 
 
-def verify_native(output, native, jdk25, environment):
+def verify_native(output, native, jdk25, environment, calls=CALLS):
     tasks = subprocess.run(
         [native / "gradlew", "--no-build-cache", "--no-configuration-cache", "--console=plain", ":classes"],
         cwd=native, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300,
@@ -98,7 +124,7 @@ def verify_native(output, native, jdk25, environment):
         header = classfile.read_bytes()[:8]
         require(header.startswith(b"\xca\xfe\xba\xbe") and int.from_bytes(header[6:], "big") == 69,
                 f"{classfile.name} is not a JVM 25 class")
-    check_javap(output, kotlin_classes, jdk25, CALLS, "LabelService", "label")
+    check_javap(output, kotlin_classes, jdk25, calls, "LabelService", "label")
     return sorted(TASKS)
 
 
@@ -188,7 +214,8 @@ def verify_capture(checked, evidence, repo, revision, *, service=SERVICE, source
     return sorted(occurrences), witnesses[0]
 
 
-def verify_witness(witness, native, revision, compiler, gradle, target, *, has_kapt=False, options=None):
+def verify_witness(witness, native, revision, compiler, gradle, target,
+                   *, has_kapt=False, has_independent_java=None, options=None):
     def hash_bytes(content):
         return "sha256:" + hashlib.sha256(content).hexdigest()
 
@@ -203,7 +230,10 @@ def verify_witness(witness, native, revision, compiler, gradle, target, *, has_k
     build = native / "build"
     kapt = digests(build / "generated/source/kapt/main", "*.java", native)
     independent = digests(build / "generated/sources/independent/main", "*.java", native)
-    require(has_kapt == bool(kapt) == bool(independent), "Expected separate generated inputs in the native build")
+    if has_independent_java is None:
+        has_independent_java = has_kapt
+    require(has_kapt == bool(kapt) and has_independent_java == bool(independent),
+            "Unexpected generated inputs in the native build")
     direct = witness.get("schema") == "codeclew-kotlin-native-fir/1"
     all_java = dict(sorted((kapt | independent).items()))
     classes = build / "classes/kotlin/main"
@@ -256,16 +286,19 @@ def run(args):
     jdk21, jdk25 = args.jdk21.resolve(), args.jdk25.resolve()
     env = {**os.environ, "JAVA_HOME": str(jdk25), "JDK21_HOME": str(jdk21), "JDK25_HOME": str(jdk25),
            "CODECLEW_WORKER_JAVA_HOME": str(jdk21), "CODECLEW_HOME": str(out / "state")}
-    repo, native, revision = prepare_sources(out)
-    native_tasks = verify_native(out, native, jdk25, env)
+    mixed = args.kotlin == "2.4.21"
+    calls = CALLS + (CUSTOM_OPEN_CALL,) if mixed else CALLS
+    repo, native, revision = prepare_sources(out, configure=configure_mixed_all_open if mixed else None)
+    native_tasks = verify_native(out, native, jdk25, env, calls)
     boundary = args.expect == "abi-boundary"
     # Partial semantic coverage can set exit 3 even when every service was
     # captured. Verify CHECKED and the required exact evidence independently.
     docs, cli, checked = check_project(out, args.clew.resolve(), env, repo, SERVICE, REMOTE,
                                        exit_code=3 if boundary else (0, 3))
     snapshot = checked["snapshot"]
-    result = {"status": "PASS", "expected": args.expect, "revision": revision, "snapshot": snapshot,
-              "nativeTasks": native_tasks, "nativeCalls": [call.target + ":" + call.descriptor for call in CALLS]}
+    result = {"status": "PASS", "expected": args.expect, "compiler": args.kotlin, "revision": revision,
+              "snapshot": snapshot, "nativeTasks": native_tasks,
+              "nativeCalls": [call.target + ":" + call.descriptor for call in calls]}
     if boundary:
         report = out / "support"
         cli("collect", "support", "collect", "--root", docs, "--service", SERVICE, "--snapshot", snapshot, "--output", report)
@@ -274,10 +307,13 @@ def run(args):
         evidence = out / "evidence"
         cli("export", "docs", "evidence", "export", "--root", docs, "--service", SERVICE, "--snapshot", snapshot,
             "--output", evidence)
-        calls, witness = verify_capture(checked, evidence, repo, revision)
-        verify_witness(witness, native, revision, "2.4.10", "9.4.1", 25, has_kapt=True,
+        retained_calls, witness = verify_capture(checked, evidence, repo, revision, calls=calls)
+        if mixed:
+            require(witness.get("schema") == "codeclew-kotlin-native-fir/1",
+                    "Mixed all-open must be captured by the selected native compiler")
+        verify_witness(witness, native, revision, args.kotlin, "9.4.1", 25, has_kapt=True,
                        options=["plugin:org.jetbrains.kotlin.allopen:preset=spring"])
-        result["retainedCalls"] = calls
+        result["retainedCalls"] = retained_calls
         result["nativeCompilationWitness"] = witness
     write_json(out / "result.json", result)
     print(json.dumps(result))
@@ -290,4 +326,8 @@ if __name__ == "__main__":
     parser.add_argument("--jdk25", type=Path, required=True, help="JDK 25 home for compile toolchain and javap")
     parser.add_argument("--output", type=Path, required=True, help="New directory for logs, check and evidence")
     parser.add_argument("--expect", choices=("abi-boundary", "captured"), default="captured")
-    run(parser.parse_args())
+    parser.add_argument("--kotlin", choices=("2.4.10", "2.4.21"), default="2.4.10")
+    args = parser.parse_args()
+    if args.kotlin == "2.4.21" and args.expect != "captured":
+        parser.error("The Kotlin 2.4.21 scenario requires native FIR capture")
+    run(args)

@@ -20,6 +20,11 @@ Clew Check. It requires both native generated calls, the Spring effect, and
 both compiler-exact calls in the export. It also checks the native compilation
 witness against the independent build.
 
+Add `--kotlin 2.4.21` to qualify native FIR capture on the same JDK 25
+toolchain with both the Spring preset and an explicit all-open annotation.
+This scenario requires an exact source-bound call to the custom-open base
+method as well as both generated Java calls.
+
 For the pre-qualification package, `--expect abi-boundary` checks the historical
 `COMPILER_ROW / KAPT_NATIVE_AUTHORITY_REQUIRED` boundary and its saved support
 report.

@@ -20,6 +20,10 @@ internal fun prepareNativeFirObserver(directory: Path) {
     observerSources.forEach {
         copy("native-fir-observer/$it", directory.resolve("sources").resolve(it))
     }
+    listOf("current", "compat").forEach {
+        val api = "$it/FirObserverCompilerApi.kt"
+        copy("native-fir-observer/$api", directory.resolve(api))
+    }
     listOf("CommandLineProcessor", "CompilerPluginRegistrar").forEach {
         val resource = "META-INF/services/org.jetbrains.kotlin.compiler.plugin.$it"
         copy(resource, directory.resolve("services").resolve(resource))
@@ -33,6 +37,24 @@ internal fun prepareNativeFirObserver(directory: Path) {
 internal data class NativeFirObservation(val receipt: JsonObject, val facts: List<JsonObject>)
 
 internal fun nativeFirFailure(category: String) = WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "$category: Selected native Kotlin capture failed.")
+
+internal fun nativeFirObserverFailure(model: JsonObject): JsonObject? {
+    val failure = model["nativeFirObserverFailure"] as? JsonObject ?: return null
+    val cause = (failure["cause"] as? JsonPrimitive)?.contentOrNull ?: return null
+    val stage = when (cause) {
+        "COMPILER_CLASSPATH_UNAVAILABLE", "COMPILER_LAYOUT_UNSUPPORTED" -> "SELECT_API"
+        "COMPILER_REJECTED_ADAPTER", "ADAPTER_PREPARATION_FAILED" -> "BUILD_ADAPTER"
+        else -> return null
+    }
+    if (failure["stage"] != JsonPrimitive(stage)) return null
+    return buildJsonObject {
+        put("stage", stage)
+        put("cause", cause)
+    }
+}
+
+internal fun JsonObject.nativeFirObserverFailureMessage(): String =
+    "NATIVE_KOTLIN_OBSERVER_FAILED (${getValue("stage").jsonPrimitive.content}/${getValue("cause").jsonPrimitive.content})."
 
 internal fun readNativeFirObservation(
     repo: Path,

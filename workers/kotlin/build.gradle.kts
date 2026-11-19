@@ -64,6 +64,9 @@ tasks.processResources {
             "JvmAnnotationFacts24.kt", "JvmMethodDescriptor.kt", "KotlinValueFacts24.kt")
         into("native-fir-observer")
     }
+    from("src/main/kotlin/dev/semanticthread/worker/FirObserverCompilerApi.kt") {
+        into("native-fir-observer/current")
+    }
 }
 tasks.test {
     systemProperty("codeclew.test.gradleExecutable", gradle.gradleHomeDir!!.resolve("bin/gradle"))

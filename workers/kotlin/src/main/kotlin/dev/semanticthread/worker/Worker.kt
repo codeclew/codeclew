@@ -265,6 +265,7 @@ private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): Na
             put("effectiveCompilerRow", compilerRow(WORKER_COMPILER_VERSION))
             put("workerJdkMajor", Runtime.version().feature())
             probe?.get("gradleJvmMajor").safeInt()?.takeIf { it in 1..255 }?.let { put("gradleJvmMajor", it) }
+            nativeFirObserverFailure(model)?.let { put("observer", it) }
             jdkMajor?.let { put("projectJdkMajor", it) }
             candidates?.let { put("artifactCandidates", it) }
             digestMatches?.let { put("artifactDigestMatches", it) }
@@ -2218,6 +2219,9 @@ internal class Worker(
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) {
                 val markers = output.lineSequence().toSet()
+                if ("__SEMANTIC_THREAD_NATIVE_FIR_ATTACH_FAILED__" in markers) {
+                    throw nativeFirFailure("NATIVE_KOTLIN_OBSERVER_ATTACH_FAILED")
+                }
                 if ("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__" in markers ||
                     "__SEMANTIC_THREAD_NATIVE_FIR_RECEIPT_FAILED__" in markers) {
                     throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED")
@@ -2280,6 +2284,8 @@ internal class Worker(
                 "UNSUPPORTED_PROJECT_CONFIGURATION",
                 "declared Kotlin compiler version is unavailable",
             )
+        fun withObserverFailure(message: String): String = nativeFirObserverFailure(model)
+            ?.let { "${it.nativeFirObserverFailureMessage()} $message" } ?: message
         if (model["nativeAllOpenRequired"] == JsonPrimitive(true) && spring == null && attempt != null) {
             val reason = "ALL_OPEN_NATIVE_AUTHORITY_REQUIRED"
             val diagnostic = buildJsonObject {
@@ -2288,7 +2294,7 @@ internal class Worker(
             }
             throw WorkerFailure(
                 "UNSUPPORTED_COMPILER_PLUGIN_ABI",
-                "The selected all-open options require a qualified native Kotlin compilation.",
+                withObserverFailure("The selected all-open options require a qualified native Kotlin compilation."),
                 reason, diagnostic,
             )
         }
@@ -2306,7 +2312,7 @@ internal class Worker(
                 put("abiRejection", reason)
                 if (reason == "KAPT_NATIVE_AUTHORITY_REQUIRED") put("knownKaptRegistrar", true)
             }
-            throw WorkerFailure(failure.code, failure.message, reason, diagnostic)
+            throw WorkerFailure(failure.code, withObserverFailure(failure.message), reason, diagnostic)
         }
         val existingBoundaries = model["buildModelBoundaries"]?.jsonArray
             ?.mapNotNull { it.jsonPrimitive.contentOrNull }
@@ -2701,8 +2707,8 @@ internal class Worker(
         val semanticModel = inspect(analysisRepo, compilation)
         val compatibility = semanticModel["engineCompatibility"]?.jsonObject
         if (compatibility?.get("status")?.jsonPrimitive?.contentOrNull != "QUALIFIED") {
-            if (model["nativeFirObserverBuildFailed"] == JsonPrimitive(true)) {
-                throw nativeFirFailure("NATIVE_KOTLIN_OBSERVER_BUILD_FAILED")
+            nativeFirObserverFailure(model)?.let {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", it.nativeFirObserverFailureMessage())
             }
             throw WorkerFailure(
                 "UNSUPPORTED_PROJECT_CONFIGURATION",
