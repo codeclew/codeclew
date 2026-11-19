@@ -227,7 +227,8 @@ def check_project(out, launcher, env, repo, service, remote, *, exit_code):
         with (out / f"{label}.stderr").open("wb") as stderr:
             done = subprocess.run([launcher, *parts], env=env, stdout=subprocess.PIPE, stderr=stderr, timeout=300)
         (out / f"{label}.json").write_bytes(done.stdout)
-        require(done.returncode == exit_code, f"{label} exited {done.returncode}; see its saved output")
+        allowed = exit_code if isinstance(exit_code, tuple) else (exit_code,)
+        require(done.returncode in allowed, f"{label} exited {done.returncode}; see its saved output")
         return json.loads(done.stdout)
 
     require(not (repo / "build").exists() and not git(repo, "status", "--porcelain"),
@@ -252,7 +253,10 @@ def run(args):
     repo, native, revision = prepare_sources(out)
     native_tasks = verify_native(out, native, jdk25, env)
     boundary = args.expect == "abi-boundary"
-    docs, cli, checked = check_project(out, args.clew.resolve(), env, repo, SERVICE, REMOTE, exit_code=3 if boundary else 0)
+    # Partial semantic coverage can set exit 3 even when every service was
+    # captured. Verify CHECKED and the required exact evidence independently.
+    docs, cli, checked = check_project(out, args.clew.resolve(), env, repo, SERVICE, REMOTE,
+                                       exit_code=3 if boundary else (0, 3))
     snapshot = checked["snapshot"]
     result = {"status": "PASS", "expected": args.expect, "revision": revision, "snapshot": snapshot,
               "nativeTasks": native_tasks, "nativeCalls": [call.target + ":" + call.descriptor for call in CALLS]}

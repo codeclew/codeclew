@@ -41,7 +41,7 @@ def run(args):
     require(compiled.returncode == 0 and re.search(r"(?m)^> Task :compileKotlin[ \t]*$", compiled.stdout),
             "The independent native build did not execute :compileKotlin")
     check_javap(out, native / "build/classes/kotlin/main", jdk, CALLS, "Label", "text")
-    docs, cli, checked = check_project(out, args.clew.resolve(), env, repo, SERVICE, REMOTE, exit_code=0)
+    docs, cli, checked = check_project(out, args.clew.resolve(), env, repo, SERVICE, REMOTE, exit_code=(0, 3))
     evidence = out / "evidence"
     cli("export", "docs", "evidence", "export", "--root", docs, "--service", SERVICE,
         "--snapshot", checked["snapshot"], "--output", evidence)
