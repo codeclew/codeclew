@@ -1,10 +1,11 @@
 //! Bounded, private process diagnostics. Stderr is never a semantic authority.
 use crate::error::{ClewError, ErrorCode};
 use crate::state::StateAuthority;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStderr};
+use std::process::{Child, ChildStderr, ChildStdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -13,6 +14,56 @@ use std::time::{Duration, Instant};
 const STDERR_LIMIT: usize = 64 * 1024;
 const PREFIX: &str = "worker-process-diagnostic:";
 const SCHEMA: &str = "codeclew-worker-process-diagnostic/1.0";
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum TransportReason {
+    StdoutEofBeforeHeader,
+    FrameHeaderReadFailed,
+    FrameLengthExceedsLimit,
+    FrameBodyReadFailed,
+    InvalidProtobuf,
+    JvmHeapExhausted,
+}
+
+#[derive(Debug)]
+pub(crate) struct FrameObservation {
+    pub reason: TransportReason,
+    // "Term" can also be the first four bytes of an invalid frame length.
+    // Keep this hint in memory until the child exit and complete line agree.
+    pub possible_vm_termination: bool,
+}
+
+fn exited_with_code_three(process: &Value) -> bool {
+    process["status"] == "EXITED" && process["exitCode"] == 3 && process["signal"].is_null()
+}
+
+fn is_hotspot_heap_exit_line(stdout: &mut ChildStdout) -> bool {
+    const REMAINING_LINE: &[u8] = b"inating due to java.lang.OutOfMemoryError: Java heap space\n";
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // A descendant can still hold the pipe after the JVM has exited.
+        // Read the fixed-size suffix only when all writers have closed it.
+        let mut pipe = libc::pollfd {
+            fd: stdout.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut pipe, 1, 0) } != 1 || pipe.revents & libc::POLLHUP == 0 {
+            return false;
+        }
+        let mut suffix = [0; REMAINING_LINE.len()];
+        return stdout.read_exact(&mut suffix).is_ok()
+            && suffix == REMAINING_LINE
+            && stdout.read(&mut [0; 1]).is_ok_and(|count| count == 0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (stdout, REMAINING_LINE);
+        false
+    }
+}
 
 #[derive(Default, Clone)]
 struct Tail {
@@ -251,6 +302,7 @@ pub(crate) fn annotate_failure(
     stderr: &mut WorkerStderr,
     stage: &str,
     identity: Value,
+    frame: Option<(FrameObservation, &mut ChildStdout)>,
 ) -> ClewError {
     if !matches!(
         error.code,
@@ -263,10 +315,23 @@ pub(crate) fn annotate_failure(
     let process = termination(child);
     let tail = stderr.finish();
     let state = StateAuthority::process_default().ok();
-    let diagnostic = json!({
+    let mut diagnostic = json!({
         "schema":SCHEMA, "stage":stage, "identity":identity,
         "process":process, "stderr":persist_tail(state.as_ref(), &tail),
     });
+    if let Some((frame, stdout)) = frame {
+        let reason = if frame.possible_vm_termination
+            && exited_with_code_three(&process)
+            && is_hotspot_heap_exit_line(stdout)
+        {
+            error.code = ErrorCode::WorkerCrashed;
+            error.message = "worker JVM terminated after exhausting its Java heap".to_owned();
+            TransportReason::JvmHeapExhausted
+        } else {
+            frame.reason
+        };
+        diagnostic["transport"] = json!({"reason":reason});
+    }
     error.message.push_str(&format!(
         "; worker stage={stage}, process={}, exitCode={}, signal={}; inspect private worker-process-diagnostic evidence",
         process["status"].as_str().unwrap_or("UNAVAILABLE"),
@@ -305,6 +370,13 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
         .as_u64()
         .filter(|signal| (1..=127).contains(signal));
     let mut safe = json!({"stage":stage,"processStatus":status,"exitCode":code,"signal":signal});
+    if let Ok(reason) =
+        serde_json::from_value::<TransportReason>(value["transport"]["reason"].clone())
+        && (reason != TransportReason::JvmHeapExhausted
+            || exited_with_code_three(&value["process"]))
+    {
+        safe["transport"] = json!({"reason":reason});
+    }
     if let (Some(observed), Some(retained)) = (
         value["stderr"]["observedBytes"].as_u64(),
         value["stderr"]["retainedBytes"].as_u64(),

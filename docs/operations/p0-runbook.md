@@ -519,6 +519,14 @@ bounded observation window; `UNAVAILABLE` means no status could be established.
 A reported SIGKILL is not by itself evidence of OOM. Check the private stderr
 and host process diagnostics before attributing a cause.
 
+When transport reports `JVM_HEAP_EXHAUSTED`, the worker exited with code 3
+and sent HotSpot's complete Java heap exhaustion line where the next frame
+header was expected. The shareable Check and offline support report store
+only the reason, stage, and process status. A frame that declares a length
+above the limit reports `FRAME_LENGTH_EXCEEDS_LIMIT`, invalid frame content
+reports `INVALID_PROTOBUF`, and EOF before the header reports
+`STDOUT_EOF_BEFORE_HEADER`. These outcomes can share exit code 3.
+
 The sealed worker uses `-Xms64m -Xmx2048m`,
 `-XX:MaxMetaspaceSize=384m`, `-XX:MaxDirectMemorySize=256m`, and
 `-XX:+ExitOnOutOfMemoryError`. These are fixed worker settings, not a promise

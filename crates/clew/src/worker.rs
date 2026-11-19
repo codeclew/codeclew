@@ -7,7 +7,7 @@ use crate::proto::{
 };
 use crate::runtime::RuntimeAuthority;
 use crate::state::ManagedDirectory;
-use crate::worker_diagnostics::{self, WorkerStderr};
+use crate::worker_diagnostics::{self, FrameObservation, TransportReason, WorkerStderr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -2055,16 +2055,18 @@ impl WorkerClient {
                     &mut stderr,
                     "STARTUP",
                     identity.clone(),
+                    None,
                 )
             })?;
         drop(task_run_spawn_permit);
-        let hello = read_message(&mut stdout).map_err(|error| {
+        let (hello, _, _) = read_message_profiled(&mut stdout).map_err(|(error, frame)| {
             worker_diagnostics::annotate_failure(
                 error,
                 Some(&mut process.child),
                 &mut stderr,
                 "STARTUP",
                 identity.clone(),
+                Some((frame, &mut stdout)),
             )
         })?;
         let capabilities = match hello.payload {
@@ -2079,6 +2081,7 @@ impl WorkerClient {
                     &mut stderr,
                     "STARTUP",
                     identity,
+                    None,
                 ));
             }
         };
@@ -2094,6 +2097,7 @@ impl WorkerClient {
                 &mut stderr,
                 "STARTUP",
                 identity,
+                None,
             ));
         }
         Ok(Self {
@@ -2138,28 +2142,33 @@ impl WorkerClient {
             }
             _ => {}
         }
-        self.request_once(kind, payload).map_err(|error| {
-            if worker_diagnostics::from_evidence(&error.evidence).is_some() {
-                return error;
-            }
-            let stage = match kind {
-                RequestKind::OpenProject => "OPEN_PROJECT",
-                RequestKind::IndexFiles => "INDEX_FILES",
-                RequestKind::Shutdown => "SHUTDOWN",
-                _ => return error,
-            };
-            worker_diagnostics::annotate_failure(
-                error,
-                Some(&mut self.process.child),
-                &mut self.stderr,
-                stage,
-                worker_diagnostic_identity(
-                    self.engine,
-                    &self.trusted_distribution,
-                    &self.worker_jvm,
-                ),
-            )
-        })
+        self.request_once(kind, payload)
+            .map_err(|error| self.annotate_request_failure(kind, error, None))
+    }
+
+    fn annotate_request_failure(
+        &mut self,
+        kind: RequestKind,
+        error: ClewError,
+        frame: Option<FrameObservation>,
+    ) -> ClewError {
+        if worker_diagnostics::from_evidence(&error.evidence).is_some() {
+            return error;
+        }
+        let stage = match kind {
+            RequestKind::OpenProject => "OPEN_PROJECT",
+            RequestKind::IndexFiles => "INDEX_FILES",
+            RequestKind::Shutdown => "SHUTDOWN",
+            _ => return error,
+        };
+        worker_diagnostics::annotate_failure(
+            error,
+            Some(&mut self.process.child),
+            &mut self.stderr,
+            stage,
+            worker_diagnostic_identity(self.engine, &self.trusted_distribution, &self.worker_jvm),
+            frame.map(|frame| (frame, &mut self.stdout)),
+        )
     }
 
     fn request_once(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
@@ -2238,7 +2247,8 @@ impl WorkerClient {
             }
             _ => {}
         }
-        let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)?;
+        let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)
+            .map_err(|(error, frame)| self.annotate_request_failure(kind, error, Some(frame)))?;
         if response.request_id != request_id {
             return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
@@ -2959,6 +2969,7 @@ impl WorkerClient {
                     &self.trusted_distribution,
                     &self.worker_jvm,
                 ),
+                None,
             ))
         }
     }
@@ -3953,64 +3964,106 @@ fn write_message_profiled<M: Message>(
     Ok((encode_micros, write_started.elapsed().as_micros() as u64))
 }
 
-fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, ClewError> {
-    let mut header = [0u8; 4];
-    reader.read_exact(&mut header).map_err(|e| {
-        ClewError::new(
-            ErrorCode::WorkerCrashed,
-            format!("worker frame header failed: {e}"),
+fn read_message_profiled(
+    reader: &mut impl Read,
+) -> Result<(WorkerResponse, u64, u64), (ClewError, FrameObservation)> {
+    let failure = |code, message: String, reason| {
+        (
+            ClewError::new(code, message),
+            FrameObservation {
+                reason,
+                possible_vm_termination: false,
+            },
         )
-    })?;
-    let size = u32::from_be_bytes(header) as usize;
-    if size > MAX_WORKER_FRAME_BYTES {
-        return Err(ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "worker frame exceeds 64MiB",
-        ));
-    }
-    let mut bytes = vec![0; size];
-    reader.read_exact(&mut bytes).map_err(|e| {
-        ClewError::new(
-            ErrorCode::WorkerCrashed,
-            format!("worker frame body failed: {e}"),
-        )
-    })?;
-    WorkerResponse::decode(bytes.as_slice())
-        .map_err(|e| ClewError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))
-}
-
-fn read_message_profiled(reader: &mut impl Read) -> Result<(WorkerResponse, u64, u64), ClewError> {
+    };
     let read_started = Instant::now();
     let mut header = [0u8; 4];
-    reader.read_exact(&mut header).map_err(|e| {
-        ClewError::new(
+    let bytes_read = loop {
+        match reader.read(&mut header) {
+            Ok(count) => break Ok(count),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => break Err(e),
+        }
+    }
+    .map_err(|e| {
+        failure(
             ErrorCode::WorkerCrashed,
             format!("worker frame header failed: {e}"),
+            TransportReason::FrameHeaderReadFailed,
+        )
+    })?;
+    if bytes_read == 0 {
+        return Err(failure(
+            ErrorCode::WorkerCrashed,
+            "worker stdout closed before a frame header".to_owned(),
+            TransportReason::StdoutEofBeforeHeader,
+        ));
+    }
+    reader.read_exact(&mut header[bytes_read..]).map_err(|e| {
+        failure(
+            ErrorCode::WorkerCrashed,
+            format!("worker frame header failed: {e}"),
+            TransportReason::FrameHeaderReadFailed,
         )
     })?;
     let size = u32::from_be_bytes(header) as usize;
     if size > MAX_WORKER_FRAME_BYTES {
-        return Err(ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "worker frame exceeds 64MiB",
+        return Err((
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "worker frame exceeds 64MiB",
+            ),
+            FrameObservation {
+                reason: TransportReason::FrameLengthExceedsLimit,
+                possible_vm_termination: &header == b"Term",
+            },
         ));
     }
     let mut bytes = vec![0; size];
     reader.read_exact(&mut bytes).map_err(|e| {
-        ClewError::new(
+        failure(
             ErrorCode::WorkerCrashed,
             format!("worker frame body failed: {e}"),
+            TransportReason::FrameBodyReadFailed,
         )
     })?;
     let read_micros = read_started.elapsed().as_micros() as u64;
     let decode_started = Instant::now();
-    let response = WorkerResponse::decode(bytes.as_slice())
-        .map_err(|e| ClewError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))?;
+    let response = WorkerResponse::decode(bytes.as_slice()).map_err(|e| {
+        failure(
+            ErrorCode::WorkerProtocolMismatch,
+            e.to_string(),
+            TransportReason::InvalidProtobuf,
+        )
+    })?;
     Ok((
         response,
         read_micros,
         decode_started.elapsed().as_micros() as u64,
     ))
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn observe_test_index_transport_failure(command: &str) -> ClewError {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", command])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (error, frame) = read_message_profiled(&mut stdout).unwrap_err();
+    let error = worker_diagnostics::annotate_failure(
+        error,
+        Some(&mut child),
+        &mut stderr,
+        "INDEX_FILES",
+        json!({"engine":"test"}),
+        Some((frame, &mut stdout)),
+    );
+    child.wait().unwrap();
+    attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None)
 }
 
 fn take_worker_profiling(value: &mut Value) -> Option<Value> {
@@ -4460,7 +4513,8 @@ mod tests {
     fn verified_index_failure_preserves_only_private_worker_diagnostic_and_retryability() {
         let oversized_header = [0x04, 0x00, 0x00, 0x01];
         let mut frame = &oversized_header[..];
-        let mut error = read_message_profiled(&mut frame).unwrap_err();
+        let (mut error, observation) = read_message_profiled(&mut frame).unwrap_err();
+        assert_eq!(observation.reason, TransportReason::FrameLengthExceedsLimit);
         assert_eq!(error.code, ErrorCode::WorkerProtocolMismatch);
         assert_eq!(error.message, "worker frame exceeds 64MiB");
         error.message.push_str(
@@ -5694,33 +5748,58 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn worker_frame_eof_keeps_exit_status_without_inline_stderr() {
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", "printf 'private-token-value' >&2; exit 23"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
-        let error = read_message(&mut child.stdout.take().unwrap()).unwrap_err();
-        assert_eq!(error.code, ErrorCode::WorkerCrashed);
-        let annotated = worker_diagnostics::annotate_failure(
-            error,
-            Some(&mut child),
-            &mut stderr,
-            "STARTUP",
-            serde_json::json!({"engine":"test"}),
-        );
-        assert!(annotated.message.contains("exitCode=23"));
-        let diagnostic = worker_diagnostics::from_evidence(&annotated.evidence).unwrap();
-        assert_eq!(diagnostic["stage"], "STARTUP");
-        assert_eq!(diagnostic["process"]["exitCode"], 23);
-        assert!(
-            !serde_json::to_string(&annotated)
-                .unwrap()
-                .contains("private-token-value")
-        );
-        child.wait().unwrap();
+    fn worker_transport_distinguishes_heap_exit_frame_limit_protobuf_and_clean_exit() {
+        use TransportReason::{
+            FrameLengthExceedsLimit, InvalidProtobuf, JvmHeapExhausted, StdoutEofBeforeHeader,
+        };
+        const HEAP_LINE: &str =
+            "printf 'Terminating due to java.lang.OutOfMemoryError: Java heap space\\n'";
+        let cases = [
+            (format!("{HEAP_LINE}; exit 3"), JvmHeapExhausted, 3),
+            (format!("{HEAP_LINE}; exit 4"), FrameLengthExceedsLimit, 4),
+            (
+                format!("{HEAP_LINE}; printf x; exit 3"),
+                FrameLengthExceedsLimit,
+                3,
+            ),
+            (
+                "printf 'TermPRIVATE_TOKEN'; exit 3".into(),
+                FrameLengthExceedsLimit,
+                3,
+            ),
+            (
+                "printf '\\004\\000\\000\\001'; exit 3".into(),
+                FrameLengthExceedsLimit,
+                3,
+            ),
+            (
+                "printf '\\000\\000\\000\\001\\377'; exit 3".into(),
+                InvalidProtobuf,
+                3,
+            ),
+            ("exit 3".into(), StdoutEofBeforeHeader, 3),
+            (
+                "printf PRIVATE_TOKEN >&2; exit 23".into(),
+                StdoutEofBeforeHeader,
+                23,
+            ),
+        ];
+        for (command, expected, exit) in cases {
+            let expected_code = match expected {
+                FrameLengthExceedsLimit | InvalidProtobuf => ErrorCode::WorkerProtocolMismatch,
+                _ => ErrorCode::WorkerCrashed,
+            };
+            let result = observe_test_index_transport_failure(&command);
+            assert_eq!(result.code, expected_code);
+            let diagnostic = worker_diagnostics::from_evidence(&result.evidence).unwrap();
+            let shareable = worker_diagnostics::safe_summary(&diagnostic).unwrap();
+            assert_eq!(shareable["stage"], "INDEX_FILES");
+            assert_eq!(shareable["exitCode"], exit);
+            assert_eq!(shareable["transport"], json!({"reason":expected}));
+            let serialized = serde_json::to_string(&(result, shareable)).unwrap();
+            assert!(!serialized.contains("PRIVATE_TOKEN"));
+            assert!(!serialized.contains("Terminating due to"));
+        }
     }
 
     #[test]
