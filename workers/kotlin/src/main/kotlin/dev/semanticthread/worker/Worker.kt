@@ -1800,7 +1800,7 @@ internal class Worker(
         }.also(::recheckExternalBuildStateSeal)
     }
 
-    fun handle(kind: Int, payload: ByteArray): String {
+    fun handle(kind: Int, payload: ByteArray, indexProgress: IndexProgress? = null): String {
         IncrementalK2Runtime.reset()
         projectModelInventories.clear()
         // Project-native model extraction inherits mutable build-tool state
@@ -1833,10 +1833,15 @@ internal class Worker(
                 val selected = compilation ?: ":/main"
                 val syntaxOnly = request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true
                 val requestedFiles = request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
-                val indexed = index(repo, compilation, syntaxOnly, requestedFiles)
+                indexProgress?.let {
+                    it.requestedFiles = requestedFiles.size
+                    it.mark(IndexPhase.RESOLVE_INPUTS)
+                }
+                val indexed = index(repo, compilation, syntaxOnly, requestedFiles, indexProgress)
                 if (syntaxOnly) {
                     indexed
                 } else {
+                    indexProgress?.mark(IndexPhase.ATTACH_LOCAL_CFG)
                     val analysis = analyzeWithK2(repo, compilation = selected)
                     val results = indexed["files"]!!.jsonArray.flatMap { fileValue ->
                         val relative = fileValue.jsonObject["path"]!!.jsonPrimitive.content
@@ -1915,6 +1920,7 @@ internal class Worker(
             8 -> validateCandidate(request)
             else -> error("unsupported request kind $kind")
         }
+        indexProgress?.mark(IndexPhase.SERIALIZE_RESPONSE)
         val processingMicros = (System.nanoTime() - processingStarted) / 1_000
         val response = buildJsonObject {
             result.forEach { (key, value) -> put(key, value) }
@@ -2896,7 +2902,10 @@ internal class Worker(
         }
     }
 
-    private fun index(requestedRepo: Path, compilation: String?, syntaxOnly: Boolean = false, requestedFiles: List<String> = emptyList()): JsonObject {
+    private fun index(
+        requestedRepo: Path, compilation: String?, syntaxOnly: Boolean, requestedFiles: List<String>,
+        progress: IndexProgress?,
+    ): JsonObject {
         val repo = requestedRepo.toRealPath()
         val selected = compilation ?: ":/main"
         val model = if (syntaxOnly) null else cachedProjectModel(repo, selected)
@@ -2916,7 +2925,17 @@ internal class Worker(
             if (requested.isNotEmpty() && selectedFromModel.size != requested.size) throw WorkerFailure("INVALID_INPUT", "requested index file is outside selected compilation")
             selectedFromModel
         }
+        progress?.let {
+            it.compilationFiles = model?.get("sourceFiles")?.jsonArray?.size ?: selectedFiles.size
+            it.selectedFiles = selectedFiles.size
+            it.selectedSourceBytes = try { selectedFiles.sumOf(Files::size) } catch (_: java.io.IOException) { null }
+            it.mark(IndexPhase.COLLECT_COMPILER_FACTS)
+        }
         val attemptedAnalysis = if (syntaxOnly) K2Analysis(false, emptyList(), emptyList()) else analyzeWithK2(repo, compilation = selected)
+        progress?.let {
+            it.compilerFacts = attemptedAnalysis.facts.size
+            it.mark(IndexPhase.BUILD_INDEX)
+        }
                 val analysis = if (attemptedAnalysis.valid) attemptedAnalysis else K2Analysis(false, emptyList(), attemptedAnalysis.diagnostics)
                 val semanticAvailable = analysis.valid
                 val declarationRelations = if (semanticAvailable) declarationRelationGraph(repo, selected, false, analysis, project!!) else JsonArray(emptyList())

@@ -12,6 +12,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const STDERR_LIMIT: usize = 64 * 1024;
+pub(crate) const MAX_WORKER_FRAME_BYTES: u32 = 64 * 1024 * 1024;
+const INDEX_CHECKPOINT_LIMIT: u64 = 1024;
 const PREFIX: &str = "worker-process-diagnostic:";
 const SCHEMA: &str = "codeclew-worker-process-diagnostic/1.0";
 
@@ -34,6 +36,7 @@ pub(crate) enum TransportReason {
 #[derive(Debug)]
 pub(crate) struct TransportObservation {
     pub reason: TransportReason,
+    pub frame: Option<FrameSizes>,
     // "Term" can also be the first four bytes of an invalid frame length.
     // Keep this hint in memory until the child exit and complete line agree.
     pub possible_vm_termination: bool,
@@ -43,17 +46,59 @@ impl From<TransportReason> for TransportObservation {
     fn from(reason: TransportReason) -> Self {
         Self {
             reason,
+            frame: None,
             possible_vm_termination: false,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FrameSizes {
+    pub header_bytes_read: u8,
+    pub declared_body_bytes: Option<u32>,
+    pub body_bytes_read: u32,
+    pub body_limit_bytes: u32,
+}
+
+impl FrameSizes {
+    fn valid(&self) -> bool {
+        self.header_bytes_read <= 4
+            && self.body_limit_bytes == MAX_WORKER_FRAME_BYTES
+            && self.body_bytes_read <= self.body_limit_bytes
+            && self
+                .declared_body_bytes
+                .map_or(self.body_bytes_read == 0, |declared| {
+                    self.header_bytes_read == 4
+                        && self.body_bytes_read <= declared
+                        && (declared <= self.body_limit_bytes || self.body_bytes_read == 0)
+                })
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum LineObservation {
+    Match,
+    NoMatch,
+    Unavailable,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JvmTermination {
+    stdout: LineObservation,
+    stderr: LineObservation,
+    heap_exhaustion_observed: bool,
+}
+
+const HEAP_LINE: &[u8] = b"Terminating due to java.lang.OutOfMemoryError: Java heap space\n";
+
 fn exited_with_code_three(process: &Value) -> bool {
     process["status"] == "EXITED" && process["exitCode"] == 3 && process["signal"].is_null()
 }
 
-fn is_hotspot_heap_exit_line(stdout: &mut ChildStdout) -> bool {
-    const REMAINING_LINE: &[u8] = b"inating due to java.lang.OutOfMemoryError: Java heap space\n";
+fn observe_hotspot_stdout(stdout: &mut ChildStdout) -> LineObservation {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
@@ -65,18 +110,117 @@ fn is_hotspot_heap_exit_line(stdout: &mut ChildStdout) -> bool {
             revents: 0,
         };
         if unsafe { libc::poll(&mut pipe, 1, 0) } != 1 || pipe.revents & libc::POLLHUP == 0 {
-            return false;
+            return LineObservation::Unavailable;
         }
-        let mut suffix = [0; REMAINING_LINE.len()];
-        return stdout.read_exact(&mut suffix).is_ok()
-            && suffix == REMAINING_LINE
-            && stdout.read(&mut [0; 1]).is_ok_and(|count| count == 0);
+        let mut suffix = Vec::with_capacity(HEAP_LINE.len() - 3);
+        if stdout
+            .take(suffix.capacity() as u64)
+            .read_to_end(&mut suffix)
+            .is_err()
+        {
+            return LineObservation::Unavailable;
+        }
+        return if suffix == HEAP_LINE[4..] {
+            LineObservation::Match
+        } else {
+            LineObservation::NoMatch
+        };
     }
     #[cfg(not(unix))]
     {
-        let _ = (stdout, REMAINING_LINE);
-        false
+        let _ = stdout;
+        LineObservation::Unavailable
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum IndexPhase {
+    ReceiveRequest,
+    ResolveInputs,
+    CollectCompilerFacts,
+    BuildIndex,
+    AttachLocalCfg,
+    SerializeResponse,
+    EncodeResponse,
+    WriteResponse,
+    ResponseWritten,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IndexProgress {
+    phase: IndexPhase,
+    request_bytes: u32,
+    heap_used_bytes: u64,
+    heap_limit_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_files: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compilation_files: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_files: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_source_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiler_facts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_frame_bytes: Option<u32>,
+}
+
+impl IndexProgress {
+    fn valid(&self) -> bool {
+        self.request_bytes <= MAX_WORKER_FRAME_BYTES
+            && self.heap_limit_bytes > 0
+            && self.heap_limit_bytes <= (1 << 40)
+            && self.heap_used_bytes <= self.heap_limit_bytes
+            && self
+                .selected_source_bytes
+                .is_none_or(|bytes| bytes <= (1 << 50))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IndexCheckpoint {
+    schema: String,
+    request_id: u64,
+    progress: IndexProgress,
+}
+
+pub(crate) struct IndexContext<'a> {
+    pub root: &'a Path,
+    pub request_id: u64,
+}
+
+fn read_index_progress(context: IndexContext<'_>) -> Option<IndexProgress> {
+    let path = context.root.join("index-progress.json");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(INDEX_CHECKPOINT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > INDEX_CHECKPOINT_LIMIT {
+        return None;
+    }
+    let row: IndexCheckpoint = serde_json::from_slice(&bytes).ok()?;
+    (row.schema == "codeclew-worker-index-progress/1"
+        && row.request_id == context.request_id
+        && row.progress.valid())
+    .then_some(row.progress)
 }
 
 #[derive(Default, Clone)]
@@ -316,7 +460,8 @@ pub(crate) fn annotate_failure(
     stderr: &mut WorkerStderr,
     stage: &str,
     identity: Value,
-    observation: Option<(TransportObservation, &mut ChildStdout)>,
+    mut observation: Option<(TransportObservation, &mut ChildStdout)>,
+    index: Option<IndexContext<'_>>,
 ) -> ClewError {
     if !matches!(
         error.code,
@@ -328,23 +473,64 @@ pub(crate) fn annotate_failure(
     // describe our cleanup SIGKILL as the cause of the original protocol error.
     let process = termination(child);
     let tail = stderr.finish();
+    let stdout = match observation.as_mut() {
+        Some((observation, pipe))
+            if observation.possible_vm_termination && exited_with_code_three(&process) =>
+        {
+            observe_hotspot_stdout(pipe)
+        }
+        Some((observation, _)) if observation.reason == TransportReason::StdoutEofBeforeHeader => {
+            LineObservation::NoMatch
+        }
+        _ => LineObservation::Unavailable,
+    };
+    let stderr_line = if tail
+        .bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .any(|line| line == HEAP_LINE)
+    {
+        LineObservation::Match
+    } else if tail.read_failed || tail.total > tail.bytes.len() as u64 {
+        LineObservation::Unavailable
+    } else {
+        LineObservation::NoMatch
+    };
+    let heap_exhaustion_observed = exited_with_code_three(&process)
+        && (stdout == LineObservation::Match || stderr_line == LineObservation::Match);
     let state = StateAuthority::process_default().ok();
     let mut diagnostic = json!({
         "schema":SCHEMA, "stage":stage, "identity":identity,
         "process":process, "stderr":persist_tail(state.as_ref(), &tail),
+        "jvmTermination":JvmTermination{stdout,stderr:stderr_line,heap_exhaustion_observed},
     });
-    if let Some((observation, stdout)) = observation {
-        let reason = if observation.possible_vm_termination
-            && exited_with_code_three(&process)
-            && is_hotspot_heap_exit_line(stdout)
+    if let Some((mut observation, _)) = observation {
+        let reason = if heap_exhaustion_observed
+            && (stdout == LineObservation::Match
+                || observation.reason == TransportReason::StdoutEofBeforeHeader)
         {
             error.code = ErrorCode::WorkerCrashed;
+            error.retryable = false;
             error.message = "worker JVM terminated after exhausting its Java heap".to_owned();
+            if stdout == LineObservation::Match
+                && let Some(frame) = &mut observation.frame
+            {
+                // The four ASCII bytes were the start of a line, not a header declaration.
+                frame.declared_body_bytes = None;
+            }
             TransportReason::JvmHeapExhausted
         } else {
             observation.reason
         };
         diagnostic["transport"] = json!({"reason":reason});
+        if let Some(frame) = observation.frame {
+            diagnostic["transport"]["frame"] = json!(frame);
+        }
+    }
+    if stage == "INDEX_FILES" {
+        diagnostic["indexProgress"] = match index.and_then(read_index_progress) {
+            Some(progress) => json!({"status":"AVAILABLE","checkpoint":progress}),
+            None => json!({"status":"UNAVAILABLE"}),
+        };
     }
     error.message.push_str(&format!(
         "; worker stage={stage}, process={}, exitCode={}, signal={}; inspect private worker-process-diagnostic evidence",
@@ -390,6 +576,34 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
             || exited_with_code_three(&value["process"]))
     {
         safe["transport"] = json!({"reason":reason});
+        if let Ok(frame) = serde_json::from_value::<FrameSizes>(value["transport"]["frame"].clone())
+            && frame.valid()
+        {
+            safe["transport"]["frame"] = json!(frame);
+        }
+    }
+    if let Ok(jvm) = serde_json::from_value::<JvmTermination>(value["jvmTermination"].clone())
+        && jvm.heap_exhaustion_observed
+            == (exited_with_code_three(&value["process"])
+                && (jvm.stdout == LineObservation::Match || jvm.stderr == LineObservation::Match))
+    {
+        safe["jvmTermination"] = json!(jvm);
+    }
+    if stage == "INDEX_FILES" {
+        match value["indexProgress"]["status"].as_str() {
+            Some("AVAILABLE") => {
+                safe["indexProgress"] = match serde_json::from_value::<IndexProgress>(
+                    value["indexProgress"]["checkpoint"].clone(),
+                ) {
+                    Ok(checkpoint) if checkpoint.valid() => {
+                        json!({"status":"AVAILABLE","checkpoint":checkpoint})
+                    }
+                    _ => json!({"status":"UNAVAILABLE"}),
+                };
+            }
+            Some("UNAVAILABLE") => safe["indexProgress"] = json!({"status":"UNAVAILABLE"}),
+            _ => {}
+        }
     }
     if let (Some(observed), Some(retained)) = (
         value["stderr"]["observedBytes"].as_u64(),

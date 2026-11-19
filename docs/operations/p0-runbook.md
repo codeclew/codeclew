@@ -520,9 +520,9 @@ A reported SIGKILL is not by itself evidence of OOM. Check the private stderr
 and host process diagnostics before attributing a cause.
 
 When transport reports `JVM_HEAP_EXHAUSTED`, the worker exited with code 3
-and sent HotSpot's complete Java heap exhaustion line where the next frame
-header was expected. The shareable Check and offline support report store
-only the reason, stage, and process status. A frame that declares a length
+and Codeclew observed HotSpot's complete Java heap exhaustion line on stdout
+or stderr. The report records the matching channel and any unavailable
+channel. A frame that declares a length
 above the limit reports `FRAME_LENGTH_EXCEEDS_LIMIT`, invalid frame content
 reports `INVALID_PROTOBUF`, and EOF before the header reports
 `STDOUT_EOF_BEFORE_HEADER`. These outcomes can share exit code 3.
@@ -530,6 +530,14 @@ A decoded response can report a request ID, protocol identity, or payload
 kind mismatch separately. For later validation failures the report records
 whether the check failed while accepting the reply or while verifying the
 index evidence.
+
+For a failed `INDEX_FILES`, `transport.frame` records the header and body
+bytes read, any declared body length, and the frame limit. The optional
+`indexProgress` checkpoint records the last worker phase, available input
+counts, and a heap sample taken at that phase. A crash can prevent further
+checkpoints, so the sample is neither a peak nor an exit-time measurement.
+The Check and offline support report contain only typed metadata from these
+observations.
 
 The sealed worker uses `-Xms64m -Xmx2048m`,
 `-XX:MaxMetaspaceSize=384m`, `-XX:MaxDirectMemorySize=256m`, and

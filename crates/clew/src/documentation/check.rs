@@ -1785,6 +1785,11 @@ mod tests {
             ),
             ("decode", "printf '\\000\\000\\000\\001\\377'; exit 3"),
             ("empty", "exit 3"),
+            (
+                "heap-stderr",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: Java heap space\\n' >&2; exit 3",
+            ),
+            ("mid-index", "printf '\\000\\000\\000\\006ab'; exit 3"),
         ]);
         let decoded = BTreeMap::from([
             ("reply-id", TransportReason::ResponseRequestIdMismatch),
@@ -1797,6 +1802,19 @@ mod tests {
         for id in commands.keys().chain(decoded.keys()) {
             add_kotlin_service(&repo, id);
         }
+        let transport = temporary.path().join("transport");
+        fs::create_dir(&transport).unwrap();
+        fs::write(
+            transport.join("index-progress.json"),
+            super::super::bytes(&json!({
+                "schema":"codeclew-worker-index-progress/1","requestId":1,
+                "progress":{"phase":"BUILD_INDEX","requestBytes":180,"heapUsedBytes":1000000,
+                    "heapLimitBytes":2147483648u64,"requestedFiles":0,"compilationFiles":9,
+                    "selectedFiles":9,"selectedSourceBytes":14000,"compilerFacts":128}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let checked = capture_selected_with(
             &repo,
             &BTreeSet::new(),
@@ -1804,6 +1822,14 @@ mod tests {
             |service, _, _| {
                 Err(if let Some(reason) = decoded.get(service.id.as_str()) {
                     crate::worker::observe_test_index_reply_failure(*reason)
+                } else if service.id == "mid-index" {
+                    crate::worker::observe_test_index_failure(
+                        commands[service.id.as_str()],
+                        Some(crate::worker_diagnostics::IndexContext {
+                            root: &transport,
+                            request_id: 1,
+                        }),
+                    )
                 } else {
                     crate::worker::observe_test_index_transport_failure(
                         commands[service.id.as_str()],
@@ -1853,11 +1879,37 @@ mod tests {
                 "FRAME_LENGTH_EXCEEDS_LIMIT",
                 "INVALID_PROTOBUF",
                 "STDOUT_EOF_BEFORE_HEADER",
+                "FRAME_BODY_READ_FAILED",
                 "RESPONSE_REQUEST_ID_MISMATCH",
                 "RESPONSE_PROTOCOL_IDENTITY_MISMATCH",
                 "RESPONSE_PAYLOAD_MISMATCH",
             ]),
         );
+        let failures = report["services"].as_array().unwrap();
+        let worker_failure = |reason: &str| {
+            failures
+                .iter()
+                .map(|row| &row["failure"]["workerFailure"])
+                .find(|failure| failure["transport"]["reason"] == reason)
+                .unwrap()
+        };
+        let mid = worker_failure("FRAME_BODY_READ_FAILED");
+        assert_eq!(mid["transport"]["frame"]["declaredBodyBytes"], 6);
+        assert_eq!(mid["transport"]["frame"]["bodyBytesRead"], 2);
+        assert_eq!(mid["indexProgress"]["checkpoint"]["phase"], "BUILD_INDEX");
+        assert_eq!(mid["indexProgress"]["checkpoint"]["compilerFacts"], 128);
+        assert_eq!(mid["stderrCounts"]["observedBytes"], 0);
+        assert_eq!(
+            worker_failure("STDOUT_EOF_BEFORE_HEADER")["indexProgress"]["status"],
+            "UNAVAILABLE"
+        );
+        for channel in ["stdout", "stderr"] {
+            assert!(failures.iter().any(|row| {
+                let failure = &row["failure"]["workerFailure"];
+                failure["transport"]["reason"] == "JVM_HEAP_EXHAUSTED"
+                    && failure["jvmTermination"][channel] == "MATCH"
+            }));
+        }
         if artifacts.is_some() {
             fs::write(temporary.path().join("snapshot"), format!("{snapshot}\n")).unwrap();
             println!("Saved synthetic Check at {}", temporary.keep().display());

@@ -7,7 +7,10 @@ use crate::proto::{
 };
 use crate::runtime::RuntimeAuthority;
 use crate::state::ManagedDirectory;
-use crate::worker_diagnostics::{self, TransportObservation, TransportReason, WorkerStderr};
+use crate::worker_diagnostics::{
+    self, FrameSizes, IndexContext, MAX_WORKER_FRAME_BYTES, TransportObservation, TransportReason,
+    WorkerStderr,
+};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -160,10 +163,16 @@ pub struct WorkerClient {
     _compiler_index_root: Option<ManagedDirectory>,
     _transport_root: tempfile::TempDir,
     transport_root: PathBuf,
+    index_request: Option<IndexRequest>,
     issued_index_facts: BTreeMap<Uuid, String>,
     issued_source_syntax: BTreeMap<Uuid, String>,
     request_counters: WorkerRequestCounters,
     physical_request_counters: WorkerRequestCounters,
+}
+
+struct IndexRequest {
+    id: u64,
+    frame: Option<FrameSizes>,
 }
 
 #[derive(Clone)]
@@ -605,7 +614,6 @@ fn worker_process_group_exists(pgid: i32) -> Result<bool, ClewError> {
 
 const GRADLE_PROPERTIES_ENV: &str = "CODECLEW_WORKER_GRADLE_PROPERTIES";
 
-const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 const SEALED_WORKER_JVM_OPTIONS: &str = "-Xms64m -Xmx2048m -XX:MaxMetaspaceSize=384m -XX:MaxDirectMemorySize=256m -XX:+ExitOnOutOfMemoryError";
 
@@ -2056,10 +2064,11 @@ impl WorkerClient {
                     "STARTUP",
                     identity.clone(),
                     None,
+                    None,
                 )
             })?;
         drop(task_run_spawn_permit);
-        let (hello, _, _) = read_message_profiled(&mut stdout).map_err(|(error, frame)| {
+        let (hello, _, _, _) = read_message_profiled(&mut stdout).map_err(|(error, frame)| {
             worker_diagnostics::annotate_failure(
                 error,
                 Some(&mut process.child),
@@ -2067,6 +2076,7 @@ impl WorkerClient {
                 "STARTUP",
                 identity.clone(),
                 Some((frame, &mut stdout)),
+                None,
             )
         })?;
         let capabilities = match hello.payload {
@@ -2081,6 +2091,7 @@ impl WorkerClient {
                     &mut stderr,
                     "STARTUP",
                     identity,
+                    None,
                     None,
                 ));
             }
@@ -2097,6 +2108,7 @@ impl WorkerClient {
                 &mut stderr,
                 "STARTUP",
                 identity,
+                None,
                 None,
             ));
         }
@@ -2117,6 +2129,7 @@ impl WorkerClient {
             _compiler_index_root: compiler_index_root.cloned(),
             _transport_root: transport_root,
             transport_root: canonical_transport_root,
+            index_request: None,
             issued_index_facts: BTreeMap::new(),
             issued_source_syntax: BTreeMap::new(),
             request_counters: WorkerRequestCounters::default(),
@@ -2161,10 +2174,21 @@ impl WorkerClient {
             RequestKind::Shutdown => "SHUTDOWN",
             _ => return error,
         };
-        let observation = observation.or_else(|| {
-            (kind == RequestKind::IndexFiles && error.code == ErrorCode::WorkerProtocolMismatch)
-                .then(|| TransportReason::ResponseValidationFailed.into())
-        });
+        let index_request = self
+            .index_request
+            .as_ref()
+            .filter(|_| kind == RequestKind::IndexFiles);
+        let observation = observation
+            .or_else(|| {
+                (kind == RequestKind::IndexFiles && error.code == ErrorCode::WorkerProtocolMismatch)
+                    .then(|| TransportReason::ResponseValidationFailed.into())
+            })
+            .map(|mut observation| {
+                observation.frame = observation
+                    .frame
+                    .or_else(|| index_request.and_then(|request| request.frame));
+                observation
+            });
         worker_diagnostics::annotate_failure(
             error,
             Some(&mut self.process.child),
@@ -2172,12 +2196,22 @@ impl WorkerClient {
             stage,
             worker_diagnostic_identity(self.engine, &self.trusted_distribution, &self.worker_jvm),
             observation.map(|observation| (observation, &mut self.stdout)),
+            index_request.map(|request| IndexContext {
+                root: &self.transport_root,
+                request_id: request.id,
+            }),
         )
     }
 
     fn request_once(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
         let request_id = self.next_id;
         self.next_id += 1;
+        if kind == RequestKind::IndexFiles {
+            self.index_request = Some(IndexRequest {
+                id: request_id,
+                frame: None,
+            });
+        }
         let request_serialization_started = Instant::now();
         let schema_version = || Some(SchemaVersion { major: 1, minor: 0 });
         let repo = || json_string(payload, "repo");
@@ -2251,11 +2285,19 @@ impl WorkerClient {
             }
             _ => {}
         }
-        let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)
+        let (response, read_micros, decode_micros, frame) = read_message_profiled(&mut self.stdout)
             .map_err(|(error, frame)| self.annotate_request_failure(kind, error, Some(frame)))?;
-        validate_worker_reply(&response, kind, request_id).map_err(|(error, observation)| {
-            self.annotate_request_failure(kind, error, Some(observation))
-        })?;
+        if kind == RequestKind::IndexFiles
+            && let Some(request) = &mut self.index_request
+        {
+            request.frame = Some(frame);
+        }
+        validate_worker_reply(&response, kind, request_id).map_err(
+            |(error, mut observation)| {
+                observation.frame = Some(frame);
+                self.annotate_request_failure(kind, error, Some(observation))
+            },
+        )?;
         let canonical_json = match response.payload {
             Some(worker_response::Payload::Error(error)) => {
                 let relevant: Vec<String> = payload
@@ -2440,6 +2482,7 @@ impl WorkerClient {
         &mut self,
         payload: &Value,
     ) -> Result<VerifiedSourceSyntax, ClewError> {
+        self.index_request = None;
         self.verify_source_syntax_index(payload)
             .map_err(|error| self.annotate_index_verification_failure(error))
     }
@@ -2653,6 +2696,7 @@ impl WorkerClient {
         payload: &Value,
         project: &Value,
     ) -> Result<VerifiedIndexFacts, ClewError> {
+        self.index_request = None;
         self.verify_index_after_project(payload, project)
             .map_err(|error| self.annotate_index_verification_failure(error))
     }
@@ -2989,6 +3033,7 @@ impl WorkerClient {
                     &self.trusted_distribution,
                     &self.worker_jvm,
                 ),
+                None,
                 None,
             ))
         }
@@ -4024,66 +4069,83 @@ fn validate_worker_reply(
     ))
 }
 
+/// Keep counts even if the input closes in the middle of either frame segment.
+fn read_frame_segment(
+    reader: &mut impl Read,
+    bytes: &mut [u8],
+) -> Result<(), (std::io::Error, u32)> {
+    let mut read = 0;
+    while read < bytes.len() {
+        match reader.read(&mut bytes[read..]) {
+            Ok(0) => return Err((std::io::ErrorKind::UnexpectedEof.into(), read as u32)),
+            Ok(count) => read += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err((error, read as u32)),
+        }
+    }
+    Ok(())
+}
+
 fn read_message_profiled(
     reader: &mut impl Read,
-) -> Result<(WorkerResponse, u64, u64), (ClewError, TransportObservation)> {
-    let failure = |code, message: String, reason| {
-        (
-            ClewError::new(code, message),
-            TransportObservation::from(reason),
-        )
+) -> Result<(WorkerResponse, u64, u64, FrameSizes), (ClewError, TransportObservation)> {
+    let failure = |code, message: String, reason, frame| {
+        let mut observation = TransportObservation::from(reason);
+        observation.frame = Some(frame);
+        (ClewError::new(code, message), observation)
     };
     let read_started = Instant::now();
     let mut header = [0u8; 4];
-    let bytes_read = loop {
-        match reader.read(&mut header) {
-            Ok(count) => break Ok(count),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => break Err(e),
-        }
+    let mut frame = FrameSizes {
+        header_bytes_read: 0,
+        declared_body_bytes: None,
+        body_bytes_read: 0,
+        body_limit_bytes: MAX_WORKER_FRAME_BYTES,
+    };
+    if let Err((error, read)) = read_frame_segment(reader, &mut header) {
+        frame.header_bytes_read = read as u8;
+        return Err(
+            if read == 0 && error.kind() == std::io::ErrorKind::UnexpectedEof {
+                failure(
+                    ErrorCode::WorkerCrashed,
+                    "worker stdout closed before a frame header".to_owned(),
+                    TransportReason::StdoutEofBeforeHeader,
+                    frame,
+                )
+            } else {
+                failure(
+                    ErrorCode::WorkerCrashed,
+                    format!("worker frame header failed: {error}"),
+                    TransportReason::FrameHeaderReadFailed,
+                    frame,
+                )
+            },
+        );
     }
-    .map_err(|e| {
-        failure(
-            ErrorCode::WorkerCrashed,
-            format!("worker frame header failed: {e}"),
-            TransportReason::FrameHeaderReadFailed,
-        )
-    })?;
-    if bytes_read == 0 {
+    frame.header_bytes_read = 4;
+    let size = u32::from_be_bytes(header);
+    frame.declared_body_bytes = Some(size);
+    if size > MAX_WORKER_FRAME_BYTES {
+        let (error, mut observation) = failure(
+            ErrorCode::WorkerProtocolMismatch,
+            "worker frame exceeds 64MiB".into(),
+            TransportReason::FrameLengthExceedsLimit,
+            frame,
+        );
+        observation.possible_vm_termination = &header == b"Term";
+        return Err((error, observation));
+    }
+    let mut bytes = vec![0; size as usize];
+    if let Err((error, read)) = read_frame_segment(reader, &mut bytes) {
+        frame.body_bytes_read = read;
         return Err(failure(
             ErrorCode::WorkerCrashed,
-            "worker stdout closed before a frame header".to_owned(),
-            TransportReason::StdoutEofBeforeHeader,
-        ));
-    }
-    reader.read_exact(&mut header[bytes_read..]).map_err(|e| {
-        failure(
-            ErrorCode::WorkerCrashed,
-            format!("worker frame header failed: {e}"),
-            TransportReason::FrameHeaderReadFailed,
-        )
-    })?;
-    let size = u32::from_be_bytes(header) as usize;
-    if size > MAX_WORKER_FRAME_BYTES {
-        return Err((
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker frame exceeds 64MiB",
-            ),
-            TransportObservation {
-                reason: TransportReason::FrameLengthExceedsLimit,
-                possible_vm_termination: &header == b"Term",
-            },
-        ));
-    }
-    let mut bytes = vec![0; size];
-    reader.read_exact(&mut bytes).map_err(|e| {
-        failure(
-            ErrorCode::WorkerCrashed,
-            format!("worker frame body failed: {e}"),
+            format!("worker frame body failed: {error}"),
             TransportReason::FrameBodyReadFailed,
-        )
-    })?;
+            frame,
+        ));
+    }
+    frame.body_bytes_read = size;
     let read_micros = read_started.elapsed().as_micros() as u64;
     let decode_started = Instant::now();
     let response = WorkerResponse::decode(bytes.as_slice()).map_err(|e| {
@@ -4091,17 +4153,27 @@ fn read_message_profiled(
             ErrorCode::WorkerProtocolMismatch,
             e.to_string(),
             TransportReason::InvalidProtobuf,
+            frame,
         )
     })?;
     Ok((
         response,
         read_micros,
         decode_started.elapsed().as_micros() as u64,
+        frame,
     ))
 }
 
 #[cfg(all(test, unix))]
 pub(crate) fn observe_test_index_transport_failure(command: &str) -> ClewError {
+    observe_test_index_failure(command, None)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn observe_test_index_failure(
+    command: &str,
+    index: Option<IndexContext<'_>>,
+) -> ClewError {
     let mut child = Command::new("/bin/sh")
         .args(["-c", command])
         .stdout(Stdio::piped())
@@ -4111,7 +4183,14 @@ pub(crate) fn observe_test_index_transport_failure(command: &str) -> ClewError {
     let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let (error, observation) = read_message_profiled(&mut stdout)
-        .and_then(|(response, _, _)| validate_worker_reply(&response, RequestKind::IndexFiles, 1))
+        .and_then(|(response, _, _, frame)| {
+            validate_worker_reply(&response, RequestKind::IndexFiles, 1).map_err(
+                |(error, mut observation)| {
+                    observation.frame = Some(frame);
+                    (error, observation)
+                },
+            )
+        })
         .unwrap_err();
     let error = worker_diagnostics::annotate_failure(
         error,
@@ -4120,6 +4199,7 @@ pub(crate) fn observe_test_index_transport_failure(command: &str) -> ClewError {
         "INDEX_FILES",
         json!({"engine":"test"}),
         Some((observation, &mut stdout)),
+        index,
     );
     child.wait().unwrap();
     attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None)
@@ -5836,12 +5916,14 @@ mod tests {
     #[test]
     fn worker_transport_distinguishes_heap_exit_frame_limit_protobuf_and_clean_exit() {
         use TransportReason::{
-            FrameLengthExceedsLimit, InvalidProtobuf, JvmHeapExhausted, StdoutEofBeforeHeader,
+            FrameBodyReadFailed, FrameHeaderReadFailed, FrameLengthExceedsLimit, InvalidProtobuf,
+            JvmHeapExhausted, StdoutEofBeforeHeader,
         };
         const HEAP_LINE: &str =
             "printf 'Terminating due to java.lang.OutOfMemoryError: Java heap space\\n'";
         let cases = [
             (format!("{HEAP_LINE}; exit 3"), JvmHeapExhausted, 3),
+            (format!("{HEAP_LINE} >&2; exit 3"), JvmHeapExhausted, 3),
             (format!("{HEAP_LINE}; exit 4"), FrameLengthExceedsLimit, 4),
             (
                 format!("{HEAP_LINE}; printf x; exit 3"),
@@ -5865,6 +5947,16 @@ mod tests {
             ),
             ("exit 3".into(), StdoutEofBeforeHeader, 3),
             (
+                "printf '\\000\\001'; exit 3".into(),
+                FrameHeaderReadFailed,
+                3,
+            ),
+            (
+                "printf '\\000\\000\\000\\006ab'; exit 3".into(),
+                FrameBodyReadFailed,
+                3,
+            ),
+            (
                 "printf PRIVATE_TOKEN >&2; exit 23".into(),
                 StdoutEofBeforeHeader,
                 23,
@@ -5881,7 +5973,21 @@ mod tests {
             let shareable = worker_diagnostics::safe_summary(&diagnostic).unwrap();
             assert_eq!(shareable["stage"], "INDEX_FILES");
             assert_eq!(shareable["exitCode"], exit);
-            assert_eq!(shareable["transport"], json!({"reason":expected}));
+            assert_eq!(shareable["transport"]["reason"], json!(expected));
+            let frame = &shareable["transport"]["frame"];
+            assert_eq!(frame["bodyLimitBytes"], 64 * 1024 * 1024);
+            if expected == FrameBodyReadFailed {
+                assert_eq!(frame["declaredBodyBytes"], 6);
+                assert_eq!(frame["bodyBytesRead"], 2);
+            }
+            if expected == FrameHeaderReadFailed {
+                assert_eq!(frame["headerBytesRead"], 2);
+                assert!(frame["declaredBodyBytes"].is_null());
+            }
+            if expected == JvmHeapExhausted {
+                assert!(frame["declaredBodyBytes"].is_null());
+                assert_eq!(shareable["jvmTermination"]["heapExhaustionObserved"], true);
+            }
             let serialized = serde_json::to_string(&(result, shareable)).unwrap();
             assert!(!serialized.contains("PRIVATE_TOKEN"));
             assert!(!serialized.contains("Terminating due to"));

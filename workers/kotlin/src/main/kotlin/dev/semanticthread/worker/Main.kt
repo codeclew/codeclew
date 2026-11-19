@@ -35,14 +35,22 @@ fun main() {
                 Proto.writeFrame(System.out, response(requestId, payload = "{\"shutdown\":true}", responseField = 19))
                 break
             }
+            val indexProgress = if (kind == 3) IndexProgress.start(requestId, frame.size) else null
             val encoded = try {
-                response(requestId, payload = worker.handle(kind, decodeRequest(kind, payloadField.bytes)), responseField = kind + 9)
+                val payload = worker.handle(kind, decodeRequest(kind, payloadField.bytes), indexProgress)
+                indexProgress?.mark(IndexPhase.ENCODE_RESPONSE)
+                response(requestId, payload = payload, responseField = kind + 9)
             } catch (e: WorkerFailure) {
                 response(requestId, errorCode = e.code, errorMessage = e.message, compilerPluginDiagnostic = e.compilerPluginDiagnostic)
             } catch (e: Throwable) {
                 response(requestId, errorCode = "INCOMPLETE_SEMANTIC_ANALYSIS", errorMessage = e.message ?: e::class.simpleName.orEmpty())
             }
+            indexProgress?.let {
+                it.responseFrameBytes = encoded.size
+                it.mark(IndexPhase.WRITE_RESPONSE)
+            }
             Proto.writeFrame(System.out, encoded)
+            indexProgress?.mark(IndexPhase.RESPONSE_WRITTEN)
         }
     }
 }
