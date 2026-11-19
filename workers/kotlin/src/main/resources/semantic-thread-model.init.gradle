@@ -11,6 +11,24 @@ gradle.beforeProject { project ->
     def captureTask = System.getProperty("semantic.thread.nativeCaptureTask")
     def springCompile = null
     def capturedInputs = null
+    def nativeProducers = []
+    def nativeRows = [
+        "8.14.1": [version: "2.2.21", kgp: "2.2.21-release-469", jdk: 21, kapt: true,
+            compiler: "9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295",
+            allOpen: "18b6d84f93899f09daffc7b104f8c4333cd78fe0b8d8ac58434c93d9f4e77e47",
+            scripting: "d934b9d0c246bc09624b7068af58ad57cef11dbe2addbc7b19d250cce42de1c9",
+            kaptDigest: "8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718"],
+        "9.4.1": [version: "2.4.10", kgp: "2.4.10-release-377", jdk: 25, kapt: true,
+            compiler: "9309638a2ee03e6bde9ef4b7444055a94b84ab906563675d71ff9aecb64da913",
+            allOpen: "89f477877229a98d0c9aac7f23ce965ffdb0fb782a9af9dca9f40fcadf7ed572",
+            scripting: "156c68ff816251c9d297c90d77e7e8e513eaad594277cee50a36faeddbe88935",
+            kaptDigest: "9b48f56404afc57c8498c7a9a9e678ea5954693e9550b185573de46fba22052e"],
+        "9.6.1": [version: "2.4.20", kgp: "2.4.20", jdk: 21, kapt: false,
+            compiler: "cf97161430683fb9af96dc6a7017ffae1fe8737b80d12eee11f2fe3e76f8ded8",
+            allOpen: "8851ff52fe7d6efdd0d08ca418f29b9a4deae8c85afdfccc9b62a63374bddff0",
+            scripting: "6eb8ce1d73b89107804b3bdf295791f52c0394cbe18bcdfb90103aee955ea1c5"]
+    ]
+    def row = nativeRows[gradle.gradleVersion]
     def digestFile = { File file ->
         def digest = MessageDigest.getInstance("SHA-256")
         file.withInputStream { stream ->
@@ -38,22 +56,22 @@ gradle.beforeProject { project ->
         }]
     }
     def springPlan = { compile ->
-        if (!(captureRevision ==~ /(?:[a-f0-9]{40}|[a-f0-9]{64})/) || gradle.gradleVersion != "8.14.1" ||
+        if (!(captureRevision ==~ /(?:[a-f0-9]{40}|[a-f0-9]{64})/) || row == null ||
             compile?.name != "compileKotlin" || compile.path != captureTask ||
-            !project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt") ||
-            !project.pluginManager.hasPlugin("org.jetbrains.kotlin.plugin.spring")) return null
+            project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt") != row.kapt ||
+            !project.pluginManager.hasPlugin(row.kapt ? "org.jetbrains.kotlin.plugin.spring" : "org.jetbrains.kotlin.plugin.allopen")) return null
         try {
             if (compile.class.superclass.name != "org.jetbrains.kotlin.gradle.tasks.KotlinCompile" ||
-                compile.class.superclass.package.implementationVersion != "2.2.21-release-469" ||
-                compile.compilerOptions.jvmTarget.get().target != "21" ||
-                Runtime.version().feature() != 21 ||
+                compile.class.superclass.package.implementationVersion != row.kgp ||
+                compile.compilerOptions.jvmTarget.get().target != row.jdk.toString() ||
+                Runtime.version().feature() != row.jdk ||
                 !compile.compilerOptions.freeCompilerArgs.get().isEmpty()) return null
             def toolchain = compile.kotlinJavaToolchainProvider.get()
             def getters = toolchain.class.methods.findAll { method -> method.parameterCount == 0 &&
                 (method.name == "getJavaExecutable" || method.name.startsWith('getJavaExecutable$')) }
             if (getters.size() != 1) return null
             def release = new File(getters[0].invoke(toolchain).get().asFile.canonicalFile.parentFile.parentFile, "release")
-            if (!release.readLines().any { it ==~ /JAVA_VERSION="21(?:[.+-][^"]*)?"/ }) return null
+            if (!release.readLines().any { it ==~ /JAVA_VERSION="${row.jdk}(?:[.+-][^"]*)?"/ }) return null
             def options = compile.pluginOptions.get().collectMany { container ->
                 container.allOptions().collectMany { id, entries ->
                     entries.collect { option ->
@@ -64,12 +82,15 @@ gradle.beforeProject { project ->
                     }
                 }
             }
-            if (options != ["plugin:org.jetbrains.kotlin.allopen:preset=spring"]) return null
+            if (row.kapt ? options != ["plugin:org.jetbrains.kotlin.allopen:preset=spring"] :
+                options.isEmpty() || !options.every {
+                    it ==~ /plugin:org\.jetbrains\.kotlin\.allopen:annotation=[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)+/
+                }) return null
             def knownRegistrars = [
-                "kotlin-allopen-compiler-plugin-embeddable-2.2.21.jar": "sha256:18b6d84f93899f09daffc7b104f8c4333cd78fe0b8d8ac58434c93d9f4e77e47",
-                "kotlin-annotation-processing-gradle-2.2.21.jar": "sha256:8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718",
-                "kotlin-scripting-compiler-embeddable-2.2.21.jar": "sha256:d934b9d0c246bc09624b7068af58ad57cef11dbe2addbc7b19d250cce42de1c9",
+                ("kotlin-allopen-compiler-plugin-embeddable-${row.version}.jar".toString()): "sha256:" + row.allOpen,
+                ("kotlin-scripting-compiler-embeddable-${row.version}.jar".toString()): "sha256:" + row.scripting,
             ]
+            if (row.kapt) knownRegistrars["kotlin-annotation-processing-gradle-${row.version}.jar".toString()] = "sha256:" + row.kaptDigest
             def registrars = [:]
             def plugins = compile.pluginClasspath.files.collect { file ->
                 def hash = digestFile(file)
@@ -88,35 +109,13 @@ gradle.beforeProject { project ->
             def compilerPaths = compile.properties.findAll { key, value -> key.startsWith('defaultCompilerClasspath$') }
             if (compilerPaths.size() != 1) return null
             def compiler = compilerPaths.values().first().files.collect { [name: it.name, digest: digestFile(it)] }
-            if (!compiler || compiler[0] != [name: "kotlin-compiler-embeddable-2.2.21.jar",
-                digest: "sha256:9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295"]) return null
-            return [revision: captureRevision, compileTask: compile.path, options: options,
+            def compilerJar = compiler.findAll { it.name.startsWith("kotlin-compiler-embeddable-") }
+            def compilerName = "kotlin-compiler-embeddable-${row.version}.jar".toString()
+            if (compilerJar != [[name: compilerName, digest: "sha256:" + row.compiler]]) return null
+            return [revision: captureRevision, compileTask: compile.path, options: options, compilerVersion: row.version,
+                gradleVersion: gradle.gradleVersion, jdkMajor: row.jdk,
                 requestedPluginArtifacts: plugins, compilerArtifacts: compiler]
         } catch (Exception ignored) { return null }
-    }
-    if (captureTask != null && captureTask == (project.path == ":" ? ":${requestedCompileTask}" : "${project.path}:${requestedCompileTask}")) {
-        gradle.projectsEvaluated {
-            def compile = project.tasks.findByName(requestedCompileTask)
-            springCompile = springPlan(compile)
-            if (springCompile != null) {
-                compile.outputs.upToDateWhen { false }
-                compile.outputs.doNotCacheIf("Codeclew requires an executed native compilation") { true }
-                compile.doFirst {
-                    def destination = compile.destinationDirectory.get().asFile.canonicalFile
-                    if (!destination.toPath().startsWith(new File(project.projectDir, "build").toPath()) ||
-                        project.fileTree(destination).matching { include "**/*.class" }.files ||
-                        springCompile != springPlan(compile)) {
-                        throw new StopExecutionException("Codeclew native compilation inputs are stale")
-                    }
-                    capturedInputs = springInputs(compile)
-                }
-                gradle.taskGraph.afterTask { task, state ->
-                    if (task == compile && state.failure != null) {
-                        println "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__"
-                    }
-                }
-            }
-        }
     }
     def sourceSetNameOf = { compile ->
         if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
@@ -176,14 +175,89 @@ gradle.beforeProject { project ->
             return producesJavaSources && closure([task]).disjoint(blocked)
         }
     }
-    def nativeKaptGeneration = { compile, sourceFiles, javaFiles, classpath, freeArgs, diagnostic ->
-        // Preserve evaluation order and retain only typed progress if authority is unavailable.
-        def check = { name, test ->
-            diagnostic.check = name
-            def passed = test()
-            diagnostic.outcome = passed ? "PASSED" : "FAILED"
-            return passed
+    if (captureTask != null && captureTask == (project.path == ":" ? ":${requestedCompileTask}" : "${project.path}:${requestedCompileTask}")) {
+        def configureNativeCapture = {
+            def compile = project.tasks.findByName(requestedCompileTask)
+            springCompile = springPlan(compile)
+            if (springCompile != null) {
+                if (row.version == "2.4.10") {
+                    nativeProducers = selectedJavaSourceProducers(compile, project.tasks.named("semanticThreadModel").get())
+                    compile.mustRunAfter(nativeProducers)
+                    project.tasks.named("kaptGenerateStubsKotlin").configure { mustRunAfter(nativeProducers) }
+                }
+                compile.outputs.upToDateWhen { false }
+                compile.outputs.doNotCacheIf("Codeclew requires an executed native compilation") { true }
+                compile.doFirst {
+                    def destination = compile.destinationDirectory.get().asFile.canonicalFile
+                    if (!destination.toPath().startsWith(new File(project.projectDir, "build").toPath()) ||
+                        project.fileTree(destination).matching { include "**/*.class" }.files ||
+                        springCompile != springPlan(compile)) {
+                        throw new StopExecutionException("Codeclew native compilation inputs are stale")
+                    }
+                    capturedInputs = springInputs(compile)
+                }
+                gradle.taskGraph.afterTask { task, state ->
+                    if (task == compile && state.failure != null) {
+                        println "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__${row.version}"
+                    }
+                }
+            }
         }
+        // KGP completes compiler options during project evaluation. Keep
+        // configuration resolution under this project's lock on Gradle 9.
+        project.afterEvaluate { project.afterEvaluate { configureNativeCapture() } }
+    }
+    def nativeCheck = { diagnostic, name, test ->
+        diagnostic.check = name
+        def passed = test()
+        diagnostic.outcome = passed ? "PASSED" : "FAILED"
+        return passed
+    }
+    def completed = { task ->
+        def state = task.state
+        gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
+            (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
+    }
+    def compileReceipt = { compile, kaptJavaRoot, diagnostic ->
+        if (!nativeCheck(diagnostic, "SPRING_COMPILE_OUTCOME", {
+            gradle.taskGraph.hasTask(compile) && compile.state.executed && compile.state.didWork &&
+                compile.state.failure == null && !compile.state.skipped && capturedInputs != null
+        }) || !nativeCheck(diagnostic, "SPRING_COMPILE_INPUTS", {
+            springCompile != null && springCompile == springPlan(compile) && capturedInputs == springInputs(compile)
+        })) return null
+        def repo = project.rootDir.canonicalFile.toPath()
+        def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
+        if (!nativeCheck(diagnostic, "SPRING_COMPILE_OUTPUTS", {
+            destination.startsWith(repo) && destination.toFile().isDirectory()
+        })) return null
+        def producers = []
+        if (!nativeCheck(diagnostic, "JAVA_PRODUCER_OUTPUTS", {
+            nativeProducers.every { producer ->
+                def outputs = producer.outputs.files.files.collect { it.canonicalFile.toPath() }
+                def selected = capturedInputs.sources.java.findAll { path, hash ->
+                    outputs.any { repo.resolve(path).startsWith(it) }
+                }
+                if (!completed(producer) || selected.isEmpty()) return false
+                producers.add([task: producer.path, selectedJavaDigests: selected])
+                return true
+            }
+        })) return null
+        return springCompile + [
+            sourceDigests: capturedInputs.sources,
+            generatedJavaDigests: kaptJavaRoot == null ? [:] : capturedInputs.sources.java.findAll { path, hash ->
+                path.startsWith(kaptJavaRoot + "/")
+            },
+            javaSourceProducers: producers.sort { it.task },
+            classpathDigests: capturedInputs.classpath,
+            outputRoot: repo.relativize(destination).toString(),
+            classDigests: project.fileTree(destination.toFile()).matching { include "**/*.class" }.files.collectEntries { file ->
+                [destination.relativize(file.toPath()).toString().replace('\\', '/'), digestFile(file)]
+            }.sort(),
+            outcome: "EXECUTED",
+        ]
+    }
+    def nativeKaptGeneration = { compile, sourceFiles, javaFiles, classpath, freeArgs, diagnostic ->
+        def check = { name, test -> nativeCheck(diagnostic, name, test) }
         try {
             if (!check("KAPT_PLUGIN", { project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt") })) return null
             diagnostic.check = "KAPT_TASK_PROVIDER"
@@ -194,7 +268,7 @@ gradle.beforeProject { project ->
                 !check("STUBS_TASK_TYPE", { stubs?.class?.superclass?.name == "org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask" })) return null
             diagnostic.check = "KGP_ROW"
             def kgp = kapt.class.superclass.package.implementationVersion
-            if (!check("KGP_ROW", { diagnostic.kgp = kgp == "2.2.21-release-469" })) return null
+            if (!check("KGP_ROW", { diagnostic.kgp = kgp == row.kgp })) return null
             if (springCompile == null) {
                 if (!check("COMPILE_NOT_IN_GRAPH", { !gradle.taskGraph.hasTask(compile) })) return null
             } else if (!check("SPRING_COMPILE_OUTCOME", {
@@ -203,11 +277,6 @@ gradle.beforeProject { project ->
             })) return null
             if (!check("COMPILE_DEPENDS_ON_KAPT", { compile.taskDependencies.getDependencies(compile).contains(kapt) }) ||
                 !check("KAPT_DEPENDS_ON_STUBS", { kapt.taskDependencies.getDependencies(kapt).contains(stubs) })) return null
-            def completed = { task ->
-                def state = task.state
-                gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
-                    (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
-            }
             if (!check("STUBS_TASK_OUTCOME", { completed(stubs) }) ||
                 !check("KAPT_TASK_OUTCOME", { completed(kapt) })) return null
             if (!check("NORMAL_PLUGIN_OPTIONS", {
@@ -245,21 +314,8 @@ gradle.beforeProject { project ->
                 generatedClasses: repo.relativize(classes.toPath()).toString()
             ]
             if (springCompile != null) {
-                def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
-                if (!check("SPRING_COMPILE_INPUTS", { capturedInputs == springInputs(compile) })) return null
-                if (!check("SPRING_COMPILE_OUTPUTS", { destination.startsWith(repo) && destination.toFile().isDirectory() })) return null
-                generation.springCompilation = springCompile + [
-                    sourceDigests: capturedInputs.sources,
-                    generatedJavaDigests: capturedInputs.sources.java.findAll { path, hash ->
-                        path.startsWith(generation.generatedJavaRoot + "/")
-                    },
-                    classpathDigests: capturedInputs.classpath,
-                    outputRoot: repo.relativize(destination).toString(),
-                    classDigests: project.fileTree(destination.toFile()).matching { include "**/*.class" }.files.collectEntries { file ->
-                        [destination.relativize(file.toPath()).toString().replace('\\', '/'), digestFile(file)]
-                    }.sort(),
-                    outcome: "EXECUTED",
-                ]
+                generation.springCompilation = compileReceipt(compile, generation.generatedJavaRoot, diagnostic)
+                if (generation.springCompilation == null) return null
             }
             return generation
         } catch (Exception ignored) {
@@ -555,18 +611,34 @@ gradle.beforeProject { project ->
                 jdkHome: jdkHome
             ]
             def nativeDiagnostic = [:]
+            def allOpenOnly = row != null && !row.kapt && compilerVersion == row.version &&
+                project.pluginManager.hasPlugin("org.jetbrains.kotlin.plugin.allopen")
+            if (allOpenOnly) model.nativeAllOpenRequired = true
             def firstGate = [
-                ["GRADLE_ROW", { gradle.gradleVersion == "8.14.1" }, "FAILED"],
-                ["COMPILER_ROW", { compilerVersion == "2.2.21" }, "FAILED"],
+                ["GRADLE_ROW", { row != null }, "FAILED"],
+                ["COMPILER_ROW", { compilerVersion == row.version }, "FAILED"],
                 ["MAIN_COMPILE_TASK", { nativeDiagnostic.mainCompileTask = compile.name == "compileKotlin" }, "FAILED"],
-                ["JVM_TARGET", { jvmTarget.value == "JVM_21" }, jvmTarget.available ? "FAILED" : "UNAVAILABLE"],
+                ["JVM_TARGET", { jvmTarget.value == "JVM_${row.jdk}" }, jvmTarget.available ? "FAILED" : "UNAVAILABLE"],
                 ["JDK_PROVIDER", { jdkHomeAvailable }, "UNAVAILABLE"],
                 ["ARTIFACT_PROVIDER", { pluginClasspath.available }, "UNAVAILABLE"],
                 ["FREE_ARGS_PROVIDER", { freeCompilerArgs.available }, "UNAVAILABLE"],
             ].find { !it[1]() }
             if (firstGate == null) {
-                def kapt = nativeKaptGeneration(compile, sourceFiles, javaSources.values, classpath, freeCompilerArgs.values, nativeDiagnostic)
-                if (kapt != null) model.nativeKaptGeneration = kapt
+                if (row.kapt) {
+                    def kapt = nativeKaptGeneration(compile, sourceFiles, javaSources.values, classpath, freeCompilerArgs.values, nativeDiagnostic)
+                    if (kapt != null) model.nativeKaptGeneration = kapt
+                } else if (allOpenOnly) {
+                    nativeDiagnostic.check = "NORMAL_PLUGIN_OPTIONS"
+                    nativeDiagnostic.outcome = "FAILED"
+                    if (springCompile != null) {
+                        try {
+                            def receipt = compileReceipt(compile, null, nativeDiagnostic)
+                            if (receipt != null) model.nativeAllOpenCompilation = receipt
+                        } catch (Exception ignored) {
+                            nativeDiagnostic.outcome = "UNAVAILABLE"
+                        }
+                    }
+                }
             } else {
                 nativeDiagnostic.check = firstGate[0]
                 nativeDiagnostic.outcome = firstGate[2]

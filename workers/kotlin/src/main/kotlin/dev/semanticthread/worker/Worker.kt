@@ -218,9 +218,6 @@ private fun isCompilerPluginJar(path: Path): Boolean =
         }
     }.getOrDefault(false)
 
-private const val KAPT_GRADLE_2_2_21_JAR = "kotlin-annotation-processing-gradle-2.2.21.jar"
-// Maven Central org.jetbrains.kotlin:kotlin-annotation-processing-gradle:2.2.21.
-private const val KAPT_GRADLE_2_2_21_DIGEST = "sha256:8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718"
 private val KAPT_REGISTRARS = setOf(
     "org.jetbrains.kotlin.kapt.KaptCompilerPluginRegistrar",
     "org.jetbrains.kotlin.kapt.KaptComponentRegistrar",
@@ -238,21 +235,29 @@ private fun hasKaptRegistrar(path: Path): Boolean = ZipFile(path.toFile()).use {
 
 private data class SelectedGradleModel(val model: JsonObject, val nativeKapt: NativeKaptAttempt)
 
-private data class NativeKaptAttempt(val plugin: Path?, val diagnostic: JsonObject)
+private data class NativeKaptAttempt(val plugin: Path?, val diagnostic: JsonObject, val compilation: JsonObject?)
+
+private fun nativeReplayFailureReason(compiler: String?) = when (compiler) {
+    "2.4.20" -> "ALL_OPEN_NATIVE_AUTHORITY_REQUIRED"
+    "2.4.10" -> "KAPT_NATIVE_AUTHORITY_REQUIRED"
+    else -> "COMPILER_VERSION_MISMATCH"
+}
 
 private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): NativeKaptAttempt {
     val compiler = model["compilerVersion"].safeString()
+    val row = nativeAllOpenRow(compiler)
     val gradle = model["gradleVersion"].safeString()
     val probe = model["nativeKaptDiagnostic"] as? JsonObject
     val checks = linkedMapOf<String, JsonPrimitive>()
     var jdkMajor: Int? = null
     var candidates: Int? = null
     var digestMatches: Int? = null
-    fun result(check: String, outcome: String = "FAILED", plugin: Path? = null, classifier: String? = null) =
+    fun result(check: String, outcome: String = "FAILED", plugin: Path? = null, classifier: String? = null,
+               compilation: JsonObject? = null) =
         NativeKaptAttempt(plugin, buildJsonObject {
             put("schema", "codeclew-compiler-plugin-diagnostic/1")
             fun compilerRow(value: String?) = when (value) {
-                "2.1.21", "2.2.21", "2.4.10" -> value
+                "2.1.21", "2.2.21", "2.4.10", "2.4.20" -> value
                 null -> "UNAVAILABLE"
                 else -> "OTHER"
             }
@@ -269,19 +274,20 @@ private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): Na
                 classifier?.let { put("freeArgClassifier", it) }
             }
             put("matches", JsonObject(checks))
-        })
+        }, compilation)
     fun matches(key: String, value: Boolean): Boolean {
         checks[key] = JsonPrimitive(value)
         return value
     }
 
     if (!matches("worker", WORKER_COMPILER_VERSION == "2.4.10")) return result("WORKER_ROW")
-    if (!matches("compiler", compiler == "2.2.21")) return result("COMPILER_ROW", if (compiler == null) "UNAVAILABLE" else "FAILED")
-    if (!matches("gradle", gradle == "8.14.1")) return result("GRADLE_ROW", if (gradle == null) "UNAVAILABLE" else "FAILED")
+    if (!matches("compiler", row != null) || row == null) return result("COMPILER_ROW", if (compiler == null) "UNAVAILABLE" else "FAILED")
+    if (!matches("gradle", gradle == row.gradle)) return result("GRADLE_ROW", if (gradle == null) "UNAVAILABLE" else "FAILED")
     val target = model["jvmTarget"].safeString()
-    if (!matches("jvmTarget", target == "JVM_21")) return result("JVM_TARGET", if (target == null) "UNAVAILABLE" else "FAILED")
+    if (!matches("jvmTarget", target == "JVM_${row.jdk}")) return result("JVM_TARGET", if (target == null) "UNAVAILABLE" else "FAILED")
     val native = model["nativeKaptGeneration"] as? JsonObject
-    if (native == null) {
+    val allOpenOnly = model["nativeAllOpenCompilation"] as? JsonObject
+    if (native == null && allOpenOnly == null) {
         val check = probe?.get("check").safeString()
         val outcome = probe?.get("outcome").safeString()
         if (check in KAPT_PROBE_CHECKS && outcome in setOf("FAILED", "UNAVAILABLE")) {
@@ -298,17 +304,6 @@ private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): Na
     }
     val compile = model["compileTask"].safeString() ?: return result("MAIN_COMPILE_TASK", "UNAVAILABLE")
     if (!matches("mainCompileTask", compile.endsWith(":compileKotlin"))) return result("MAIN_COMPILE_TASK")
-    val project = compile.removeSuffix("compileKotlin")
-    val expectedTasks = listOf("${project}kaptGenerateStubsKotlin", "${project}kaptKotlin")
-    if ((native["tasks"] as? JsonArray)?.map { it.safeString() } != expectedTasks) return result("NATIVE_TASK_IDENTITIES")
-    if (!matches("kgp", native["kotlinGradlePlugin"].safeString() == "2.2.21-release-469")) return result("KGP_ROW")
-    val options = native["normalCompilerPluginOptions"]
-    if (options != JsonArray(emptyList())) {
-        matches("pluginOptionsEmpty", false)
-        val receipt = native["springCompilation"] as? JsonObject
-        if (options != springCompilerOptions || receipt == null) return result("NORMAL_PLUGIN_OPTIONS")
-        if (!isSpringCompileReceipt(receipt, captureRevision, compile)) return result("SPRING_COMPILE_IDENTITY")
-    }
     val jdk = model["jdkHome"].safeString() ?: return result("JDK_PROVIDER", "UNAVAILABLE")
     val jdkRelease = runCatching { Files.readAllLines(Path.of(jdk).resolve("release")) }.getOrNull()
         ?: return result("JDK_RELEASE", "UNAVAILABLE")
@@ -316,16 +311,34 @@ private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): Na
         ?.substringAfter('=')?.removeSurrounding("\"") ?: return result("JDK_RELEASE", "UNAVAILABLE")
     val major = jdkVersion.takeWhile(Char::isDigit)
     jdkMajor = major.toIntOrNull()?.takeIf { it in 1..255 }
-    if (!matches("jdk", major == "21")) return result("JDK_MAJOR")
+    if (!matches("jdk", jdkMajor == row.jdk)) return result("JDK_MAJOR")
+    if (allOpenOnly != null) {
+        if (native != null || row.kaptDigest != null || !isSpringCompileReceipt(allOpenOnly, captureRevision, compile, row)) {
+            return result("SPRING_COMPILE_IDENTITY")
+        }
+        return result("QUALIFIED_NATIVE_ALL_OPEN", "PASSED", compilation = allOpenOnly)
+    }
+    checkNotNull(native)
+    val project = compile.removeSuffix("compileKotlin")
+    val expectedTasks = listOf("${project}kaptGenerateStubsKotlin", "${project}kaptKotlin")
+    if ((native["tasks"] as? JsonArray)?.map { it.safeString() } != expectedTasks) return result("NATIVE_TASK_IDENTITIES")
+    if (!matches("kgp", native["kotlinGradlePlugin"].safeString() == row.kgp)) return result("KGP_ROW")
+    val options = native["normalCompilerPluginOptions"]
+    val receipt = native["springCompilation"] as? JsonObject
+    if (options != JsonArray(emptyList()) || row.compiler != "2.2.21") {
+        matches("pluginOptionsEmpty", false)
+        if (options != springCompilerOptions || receipt == null) return result("NORMAL_PLUGIN_OPTIONS")
+        if (!isSpringCompileReceipt(receipt, captureRevision, compile, row)) return result("SPRING_COMPILE_IDENTITY")
+    }
     var namedCount = 0
     var digestUnavailable = false
     val selected = model["compilerPlugins"]?.jsonArray.orEmpty()
         .map { Path.of(it.jsonPrimitive.content).toAbsolutePath().normalize() }
         .distinct()
         .filter { artifact ->
-            artifact.fileName.toString() == KAPT_GRADLE_2_2_21_JAR && artifact.isRegularFile() && run {
+            artifact.fileName.toString() == row.kaptArtifact && artifact.isRegularFile() && run {
                 namedCount++
-                val verified = runCatching { sha(Files.readAllBytes(artifact)) == KAPT_GRADLE_2_2_21_DIGEST }.getOrNull()
+                val verified = runCatching { sha(Files.readAllBytes(artifact)) == row.kaptDigest }.getOrNull()
                 if (verified == null) digestUnavailable = true
                 verified == true
             }
@@ -334,7 +347,7 @@ private fun qualifiedNativeKapt(model: JsonObject, captureRevision: String?): Na
     digestMatches = selected.size.coerceAtMost(65535)
     val plugin = selected.singleOrNull()
     return when {
-        plugin != null -> result("QUALIFIED_NATIVE_KAPT", "PASSED", plugin)
+        plugin != null -> result("QUALIFIED_NATIVE_KAPT", "PASSED", plugin, compilation = receipt)
         namedCount == 0 -> result("KAPT_ARTIFACT_PRESENT")
         selected.isEmpty() && digestUnavailable -> result("KAPT_ARTIFACT_DIGEST", "UNAVAILABLE")
         selected.isEmpty() -> result("KAPT_ARTIFACT_DIGEST")
@@ -348,7 +361,7 @@ private val KAPT_PROBE_CHECKS = setOf(
     "COMPILE_DEPENDS_ON_KAPT", "KAPT_DEPENDS_ON_STUBS", "STUBS_TASK_OUTCOME", "KAPT_TASK_OUTCOME",
     "NORMAL_PLUGIN_OPTIONS", "FORBIDDEN_FREE_ARGS", "OUTPUT_ROOTS", "GENERATED_JAVA_PRESENT",
     "GENERATED_JAVA_SELECTED", "GENERATED_KOTLIN_SELECTED", "GENERATED_CLASSES_SELECTED",
-    "SPRING_COMPILE_OUTCOME", "SPRING_COMPILE_INPUTS", "SPRING_COMPILE_OUTPUTS",
+    "SPRING_COMPILE_OUTCOME", "SPRING_COMPILE_INPUTS", "SPRING_COMPILE_OUTPUTS", "JAVA_PRODUCER_OUTPUTS",
 )
 
 private val KAPT_PROBE_MATCHES = listOf(
@@ -2188,13 +2201,18 @@ internal class Worker(
             }
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) {
-                if (captureRevision != null && output.lineSequence().any { it == "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__" }) {
+                val marker = "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__"
+                val compiler = output.lineSequence().filter { it.startsWith(marker) }.map { it.removePrefix(marker) }
+                    .singleOrNull()?.takeIf { nativeAllOpenRow(it) != null }
+                if (captureRevision != null && compiler != null) {
+                    val reason = nativeReplayFailureReason(compiler)
                     val diagnostic = buildJsonObject {
                         put("schema", "codeclew-compiler-plugin-diagnostic/1")
-                        put("requestedCompilerRow", "2.2.21")
+                        put("requestedCompilerRow", compiler)
                         put("effectiveCompilerRow", WORKER_COMPILER_VERSION)
                         put("workerJdkMajor", Runtime.version().feature())
-                        put("abiRejection", "COMPILER_VERSION_MISMATCH")
+                        put("abiRejection", reason)
+                        if (reason == "KAPT_NATIVE_AUTHORITY_REQUIRED") put("knownKaptRegistrar", true)
                         putJsonObject("native") {
                             put("check", "SPRING_COMPILE_OUTCOME")
                             put("outcome", "FAILED")
@@ -2204,7 +2222,7 @@ internal class Worker(
                     throw WorkerFailure(
                         "UNSUPPORTED_COMPILER_PLUGIN_ABI",
                         "The selected native Kotlin compilation failed before analyzer replay.",
-                        "COMPILER_VERSION_MISMATCH", diagnostic,
+                        reason, diagnostic,
                     )
                 }
                 throw buildModelFailure(ProjectModelBuildTool.GRADLE, output)
@@ -2218,6 +2236,7 @@ internal class Worker(
 
     private fun applyCompilerPluginCompatibility(model: JsonObject, attempt: NativeKaptAttempt? = null): JsonObject {
         val nativeKapt = attempt?.plugin
+        val spring = attempt?.compilation
         val requested = model["compilerPlugins"]?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
             .orEmpty()
@@ -2226,6 +2245,18 @@ internal class Worker(
                 "UNSUPPORTED_PROJECT_CONFIGURATION",
                 "declared Kotlin compiler version is unavailable",
             )
+        if (model["nativeAllOpenRequired"] == JsonPrimitive(true) && spring == null && attempt != null) {
+            val reason = "ALL_OPEN_NATIVE_AUTHORITY_REQUIRED"
+            val diagnostic = buildJsonObject {
+                attempt.diagnostic.forEach(::put)
+                put("abiRejection", reason)
+            }
+            throw WorkerFailure(
+                "UNSUPPORTED_COMPILER_PLUGIN_ABI",
+                "The selected all-open options require a qualified native Kotlin compilation.",
+                reason, diagnostic,
+            )
+        }
         // Preserve the original requested artifact. The qualified native build
         // already generated the selected inputs, so the analyzer needs no kapt registrar.
         val plan = try {
@@ -2246,31 +2277,34 @@ internal class Worker(
             ?.mapNotNull { it.jsonPrimitive.contentOrNull }
             .orEmpty()
         val generation = model["nativeKaptGeneration"] as? JsonObject
-        val spring = generation?.get("springCompilation") as? JsonObject
+        val excluded = setOf("compilerPlugins", "requestedCompilerPlugins", "buildModelBoundaries", "nativeKaptGeneration",
+            "nativeKaptDiagnostic", "nativeAllOpenCompilation", "nativeAllOpenRequired")
         return buildJsonObject {
             model.forEach { (key, value) ->
-                if (key !in setOf("compilerPlugins", "requestedCompilerPlugins", "buildModelBoundaries", "nativeKaptGeneration", "nativeKaptDiagnostic") &&
+                if (key !in excluded &&
                     (key != "generatedSourceConfiguration" || nativeKapt == null)) {
                     put(key, value)
                 }
             }
             if (nativeKapt != null) {
                 val qualifiedGeneration = checkNotNull(generation)
+                val row = checkNotNull(nativeAllOpenRow(declared))
                 putJsonObject("generatedSourceConfiguration") {
                     model["generatedSourceConfiguration"]?.jsonObject?.forEach(::put)
                     putJsonObject("nativeKapt") {
                         qualifiedGeneration.forEach { (key, value) ->
                             if (key != "springCompilation") put(key, value)
                         }
-                        put("requestedRegistrar", "org.jetbrains.kotlin:kotlin-annotation-processing-gradle:2.2.21")
-                        put("requestedRegistrarHash", KAPT_GRADLE_2_2_21_DIGEST)
+                        put("requestedRegistrar", "org.jetbrains.kotlin:kotlin-annotation-processing-gradle:${row.compiler}")
+                        put("requestedRegistrarHash", checkNotNull(row.kaptDigest))
                     }
                 }
-                put("compilerPluginOptions", checkNotNull(qualifiedGeneration["normalCompilerPluginOptions"]))
-                spring?.let {
-                    put("nativeSpringCompilation", it)
-                    put("nativeSpringDiagnostic", checkNotNull(attempt).diagnostic)
-                }
+                if (spring == null) put("compilerPluginOptions", checkNotNull(qualifiedGeneration["normalCompilerPluginOptions"]))
+            }
+            if (spring != null) {
+                put("compilerPluginOptions", checkNotNull(spring["options"]))
+                put("nativeSpringCompilation", spring)
+                put("nativeSpringDiagnostic", checkNotNull(attempt).diagnostic)
             }
             putJsonArray("requestedCompilerPlugins") {
                 requested.map(Path::toAbsolutePath).map(Path::normalize).distinct().sortedBy(Path::toString).forEach {
@@ -2589,18 +2623,20 @@ internal class Worker(
         val model = cachedProjectModel(analysisRepo, compilation)
         val spring = model["nativeSpringCompilation"] as? JsonObject
         fun refuseSpring(check: String): Nothing {
+            val reason = nativeReplayFailureReason(model["compilerVersion"].safeString())
             val diagnostic = buildJsonObject {
                 (model["nativeSpringDiagnostic"] as JsonObject).forEach(::put)
                 putJsonObject("native") {
                     put("check", check)
                     put("outcome", "FAILED")
                 }
-                put("abiRejection", "COMPILER_VERSION_MISMATCH")
+                put("abiRejection", reason)
+                if (reason == "KAPT_NATIVE_AUTHORITY_REQUIRED") put("knownKaptRegistrar", true)
             }
             throw WorkerFailure(
                 "UNSUPPORTED_COMPILER_PLUGIN_ABI",
                 "The selected native compilation could not authorize analyzer replay ($check).",
-                "COMPILER_VERSION_MISMATCH", diagnostic,
+                reason, diagnostic,
             )
         }
         val nativeOutput = spring?.let {
@@ -2734,7 +2770,7 @@ internal class Worker(
             val factsFile = temp.resolve("facts.jsonl"); val outputDir = temp.resolve("classes").also(Path::createDirectories)
             val classpath = model["classpath"]?.jsonArray?.joinToString(File.pathSeparator) { it.jsonPrimitive.content }.orEmpty()
             val command = mutableListOf("-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
-            val springDefaultVersion = if (spring != null) "2.2" else null
+            val springDefaultVersion = spring?.get("compilerVersion").safeString()?.substringBeforeLast('.')
             kotlinAnalysisLanguageVersion(model["languageVersion"]?.jsonPrimitive?.contentOrNull ?: springDefaultVersion)?.let { command += listOf("-language-version", it) }
             kotlinAnalysisLanguageVersion(model["apiVersion"]?.jsonPrimitive?.contentOrNull ?: springDefaultVersion)?.let { command += listOf("-api-version", it) }
             val friendPaths = model["friendPaths"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
@@ -2773,7 +2809,7 @@ internal class Worker(
                 if (status != 0) refuseSpring("SPRING_REPLAY_MISMATCH")
                 runCatching {
                     verifyNativeSpringInputs(analysisRepo, model, it)
-                    sealSpringReplay(it, springClassShape(checkNotNull(nativeOutput)), outputDir.toRealPath())
+                    sealSpringReplay(it, checkNotNull(nativeOutput), outputDir.toRealPath())
                 }.getOrNull() ?: refuseSpring("SPRING_REPLAY_MISMATCH")
             }
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics, springWitness)

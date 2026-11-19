@@ -11,6 +11,8 @@ enum Row {
     Kotlin22,
     #[serde(rename = "2.4.10")]
     Kotlin24,
+    #[serde(rename = "2.4.20")]
+    Kotlin2420,
     #[serde(rename = "OTHER")]
     Other,
     #[serde(rename = "UNAVAILABLE")]
@@ -23,6 +25,7 @@ impl Row {
             "2.1.21" => Self::Kotlin21,
             "2.2.21" => Self::Kotlin22,
             "2.4.10" => Self::Kotlin24,
+            "2.4.20" => Self::Kotlin2420,
             _ => Self::Other,
         }
     }
@@ -75,7 +78,9 @@ enum Check {
     SpringCompileOutputs,
     SpringCompileIdentity,
     SpringReplayMismatch,
+    JavaProducerOutputs,
     QualifiedNativeKapt,
+    QualifiedNativeAllOpen,
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +106,7 @@ enum Rejection {
     AnalyzerPluginUnavailable,
     CompilerVersionMismatch,
     KaptNativeAuthorityRequired,
+    AllOpenNativeAuthorityRequired,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -165,7 +171,10 @@ struct Diagnostic {
 impl Diagnostic {
     fn consistent(&self) -> bool {
         (self.native.outcome == Outcome::Passed)
-            == (self.native.check == Check::QualifiedNativeKapt)
+            == matches!(
+                self.native.check,
+                Check::QualifiedNativeKapt | Check::QualifiedNativeAllOpen
+            )
             && (self.native.free_arg_classifier.is_none()
                 || (self.native.check == Check::ForbiddenFreeArgs
                     && self.native.outcome == Outcome::Failed))

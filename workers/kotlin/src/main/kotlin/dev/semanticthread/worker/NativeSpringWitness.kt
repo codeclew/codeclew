@@ -13,9 +13,33 @@ import org.jetbrains.org.objectweb.asm.Opcodes
 
 internal val springCompilerOptions = JsonArray(listOf(JsonPrimitive("plugin:org.jetbrains.kotlin.allopen:preset=spring")))
 
-private const val ALL_OPEN_ARTIFACT = "kotlin-allopen-compiler-plugin-embeddable-2.2.21.jar"
-private const val ALL_OPEN_DIGEST = "sha256:18b6d84f93899f09daffc7b104f8c4333cd78fe0b8d8ac58434c93d9f4e77e47"
 private const val ANALYZER_ALL_OPEN_DIGEST = "sha256:89f477877229a98d0c9aac7f23ce965ffdb0fb782a9af9dca9f40fcadf7ed572"
+
+internal data class NativeAllOpenRow(
+    val compiler: String,
+    val gradle: String,
+    val jdk: Int,
+    val kgp: String,
+    val allOpenDigest: String,
+    val kaptDigest: String? = null,
+) {
+    val allOpenArtifact = "kotlin-allopen-compiler-plugin-embeddable-$compiler.jar"
+    val kaptArtifact = kaptDigest?.let { "kotlin-annotation-processing-gradle-$compiler.jar" }
+}
+
+internal fun nativeAllOpenRow(compiler: String?): NativeAllOpenRow? = when (compiler) {
+    "2.2.21" -> NativeAllOpenRow(compiler, "8.14.1", 21, "2.2.21-release-469",
+        "sha256:18b6d84f93899f09daffc7b104f8c4333cd78fe0b8d8ac58434c93d9f4e77e47",
+        "sha256:8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718")
+    "2.4.10" -> NativeAllOpenRow(compiler, "9.4.1", 25, "2.4.10-release-377", ANALYZER_ALL_OPEN_DIGEST,
+        "sha256:9b48f56404afc57c8498c7a9a9e678ea5954693e9550b185573de46fba22052e")
+    "2.4.20" -> NativeAllOpenRow(compiler, "9.6.1", 21, "2.4.20",
+        "sha256:8851ff52fe7d6efdd0d08ca418f29b9a4deae8c85afdfccc9b62a63374bddff0")
+    else -> null
+}
+
+private val explicitAllOpenOption =
+    Regex("plugin:org\\.jetbrains\\.kotlin\\.allopen:annotation=[A-Za-z_][A-Za-z_0-9]*(?:\\.[A-Za-z_][A-Za-z_0-9]*)+")
 
 private fun nativeHash(bytes: ByteArray) = "sha256:" +
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -51,15 +75,23 @@ internal fun isSpringCompileReceipt(
     receipt: JsonObject,
     revision: String?,
     compileTask: String,
-): Boolean = revision != null && receipt["revision"] == JsonPrimitive(revision) &&
-    receipt["compileTask"] == JsonPrimitive(compileTask) && receipt["outcome"] == JsonPrimitive("EXECUTED") &&
-    receipt["options"] == springCompilerOptions &&
-    (receipt["requestedPluginArtifacts"] as? JsonArray)?.count {
+    row: NativeAllOpenRow,
+): Boolean {
+    val options = receipt["options"] as? JsonArray ?: return false
+    val understood = if (row.kaptDigest != null) options == springCompilerOptions else
+        options.isNotEmpty() && options.all { it is JsonPrimitive && it.isString && explicitAllOpenOption.matches(it.content) }
+    return revision != null && receipt["revision"] == JsonPrimitive(revision) &&
+        receipt["compileTask"] == JsonPrimitive(compileTask) && receipt["outcome"] == JsonPrimitive("EXECUTED") &&
+        receipt["compilerVersion"] == JsonPrimitive(row.compiler) && receipt["gradleVersion"] == JsonPrimitive(row.gradle) &&
+        receipt["jdkMajor"] == JsonPrimitive(row.jdk) && understood &&
+        (receipt["requestedPluginArtifacts"] as? JsonArray)?.count {
         val artifact = it as? JsonObject
-        artifact?.get("name") == JsonPrimitive(ALL_OPEN_ARTIFACT) && artifact["digest"] == JsonPrimitive(ALL_OPEN_DIGEST)
+        artifact?.get("name") == JsonPrimitive(row.allOpenArtifact) && artifact["digest"] == JsonPrimitive(row.allOpenDigest)
     } == 1
+}
 
 internal fun nativeSpringReceiptSummary(receipt: JsonObject): JsonObject = buildJsonObject {
+    val row = checkNotNull(nativeAllOpenRow(receipt["compilerVersion"]?.jsonPrimitive?.content))
     put("schema", "codeclew-kotlin-native-compilation/1")
     put("revision", checkNotNull(receipt["revision"]))
     put("compileTask", checkNotNull(receipt["compileTask"]))
@@ -69,12 +101,15 @@ internal fun nativeSpringReceiptSummary(receipt: JsonObject): JsonObject = build
     put("generatedJavaSelectionDigest", nativeHash(checkNotNull(receipt["generatedJavaDigests"])))
     put("orderedClasspathDigest", nativeHash(checkNotNull(receipt["classpathDigests"])))
     put("nativeClassfilesDigest", nativeHash(checkNotNull(receipt["classDigests"])))
-    put("requestedCompiler", "2.2.21")
+    put("requestedCompiler", row.compiler)
     put("requestedCompilerArtifactsDigest", nativeHash(checkNotNull(receipt["compilerArtifacts"])))
     put("requestedPluginArtifactsDigest", nativeHash(checkNotNull(receipt["requestedPluginArtifacts"])))
-    put("requestedAllOpenArtifactDigest", ALL_OPEN_DIGEST)
-    put("orderedOptionsDigest", nativeHash(springCompilerOptions))
-    put("jvmTarget", "21")
+    put("requestedAllOpenArtifactDigest", row.allOpenDigest)
+    put("orderedOptionsDigest", nativeHash(checkNotNull(receipt["options"])))
+    put("javaSourceProducersDigest", nativeHash(checkNotNull(receipt["javaSourceProducers"])))
+    put("nativeGradleVersion", row.gradle)
+    put("nativeJdkMajor", row.jdk)
+    put("jvmTarget", row.jdk.toString())
 }
 
 internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: JsonObject): Path {
@@ -85,8 +120,17 @@ internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: Js
     })
     val sources = receipt["sourceDigests"]!!.jsonObject
     require(sourceDigests("sourceFiles") == sources["kotlin"] && sourceDigests("javaSourceFiles") == sources["java"])
+    val row = checkNotNull(nativeAllOpenRow(receipt["compilerVersion"]?.jsonPrimitive?.content))
+    val javaInputs = sources["java"]!!.jsonObject
     val generated = receipt["generatedJavaDigests"]!!.jsonObject
-    require(generated.isNotEmpty() && generated.all { (path, digest) -> sources["java"]!!.jsonObject[path] == digest })
+    require((row.kaptDigest != null) == generated.isNotEmpty())
+    require(generated.all { (path, digest) -> javaInputs[path] == digest })
+    val producers = receipt["javaSourceProducers"]!!.jsonArray
+    val selected = generated.keys.toMutableSet()
+    for (producer in producers) {
+        val outputs = producer.jsonObject["selectedJavaDigests"]!!.jsonObject
+        require(outputs.isNotEmpty() && outputs.all { (path, digest) -> javaInputs[path] == digest && selected.add(path) })
+    }
     val classpath = model["classpath"]!!.jsonArray.map { value ->
         val path = Path.of(value.jsonPrimitive.content)
         if (Files.isRegularFile(path, NOFOLLOW_LINKS)) {
@@ -111,7 +155,7 @@ internal fun verifyNativeSpringInputs(repo: Path, model: JsonObject, receipt: Js
  * JVM descriptors, and direct static/super calls. Other bytecode differences
  * between supported compiler patches are outside this witness.
  */
-internal fun springClassShape(root: Path): Map<String, List<String>> = nativeClassFiles(root).mapValues { (_, path) ->
+internal fun springClassShape(root: Path, compareVirtualCalls: Boolean = false): Map<String, List<String>> = nativeClassFiles(root).mapValues { (_, path) ->
     require(Files.size(path) <= 16 * 1024 * 1024)
     val entries = mutableListOf<String>()
     val visibility = Opcodes.ACC_PUBLIC or Opcodes.ACC_PRIVATE or Opcodes.ACC_PROTECTED
@@ -129,7 +173,8 @@ internal fun springClassShape(root: Path): Map<String, List<String>> = nativeCla
             var ordinal = 0
             return object : MethodVisitor(Opcodes.ASM9) {
                 override fun visitMethodInsn(opcode: Int, owner: String, name: String, descriptor: String, isInterface: Boolean) {
-                    if (opcode == Opcodes.INVOKESTATIC || opcode == Opcodes.INVOKESPECIAL) {
+                    if (opcode == Opcodes.INVOKESTATIC || opcode == Opcodes.INVOKESPECIAL ||
+                        compareVirtualCalls && (opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE)) {
                         entries += "$method:call:${ordinal++}:$opcode:$owner:$name:$descriptor:$isInterface"
                     }
                 }
@@ -141,13 +186,16 @@ internal fun springClassShape(root: Path): Map<String, List<String>> = nativeCla
 
 internal fun sealSpringReplay(
     receipt: JsonObject,
-    nativeShape: Map<String, List<String>>,
+    nativeRoot: Path,
     replayRoot: Path,
 ): JsonObject? {
-    if (nativeShape != springClassShape(replayRoot)) return null
+    val compareVirtualCalls = receipt["compilerVersion"] != JsonPrimitive("2.2.21")
+    val nativeShape = springClassShape(nativeRoot, compareVirtualCalls)
+    if (nativeShape != springClassShape(replayRoot, compareVirtualCalls)) return null
     return buildJsonObject {
         nativeSpringReceiptSummary(receipt).forEach(::put)
-        put("comparison", "CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH")
+        put("comparison", if (compareVirtualCalls) "CLASS_FLAGS_INHERITANCE_METHODS_AND_JVM_CALLS_MATCH"
+            else "CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH")
         put("comparisonDigest", nativeHash(JsonObject(nativeShape.mapValues { (_, value) ->
             JsonArray(value.map(::JsonPrimitive))
         })))

@@ -3068,6 +3068,7 @@ fn native_compilation_witness_matches(
         "requestedPluginArtifactsDigest",
         "requestedAllOpenArtifactDigest",
         "orderedOptionsDigest",
+        "javaSourceProducersDigest",
     ];
     let is_digest = |value: &Value| {
         value
@@ -3080,7 +3081,29 @@ fn native_compilation_witness_matches(
                         .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
             })
     };
-    receipt.len() == required_digests.len() + 6
+    let (gradle, jdk, target, comparison) =
+        match receipt.get("requestedCompiler").and_then(Value::as_str) {
+            Some("2.2.21") => (
+                "8.14.1",
+                21,
+                "21",
+                "CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH",
+            ),
+            Some("2.4.10") => (
+                "9.4.1",
+                25,
+                "25",
+                "CLASS_FLAGS_INHERITANCE_METHODS_AND_JVM_CALLS_MATCH",
+            ),
+            Some("2.4.20") => (
+                "9.6.1",
+                21,
+                "21",
+                "CLASS_FLAGS_INHERITANCE_METHODS_AND_JVM_CALLS_MATCH",
+            ),
+            _ => return false,
+        };
+    receipt.len() == required_digests.len() + 8
         && required_digests
             .into_iter()
             .all(|key| receipt.get(key).is_some_and(is_digest))
@@ -3090,15 +3113,19 @@ fn native_compilation_witness_matches(
         && project["compileTask"].is_string()
         && receipt.get("compileTask") == project.get("compileTask")
         && receipt.get("outcome").and_then(Value::as_str) == Some("EXECUTED")
-        && receipt.get("requestedCompiler").and_then(Value::as_str) == Some("2.2.21")
-        && receipt.get("jvmTarget").and_then(Value::as_str) == Some("21")
+        && receipt.get("requestedCompiler") == project.get("projectCompilerVersion")
+        && receipt.get("nativeGradleVersion").and_then(Value::as_str) == Some(gradle)
+        && project["gradleVersion"] == gradle
+        && receipt.get("nativeJdkMajor").and_then(Value::as_u64) == Some(jdk)
+        && receipt.get("jvmTarget").and_then(Value::as_str) == Some(target)
+        && project["jvmTarget"] == target
         && witness
             .as_object()
             .is_some_and(|obj| obj.len() == receipt.len() + 4)
         && receipt
             .iter()
             .all(|(key, value)| witness.get(key) == Some(value))
-        && witness["comparison"] == "CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH"
+        && witness["comparison"] == comparison
         && is_digest(&witness["comparisonDigest"])
         && witness["analyzerCompiler"] == "2.4.10"
         && is_digest(&witness["effectiveAllOpenArtifactDigest"])
@@ -3115,7 +3142,8 @@ fn native_compilation_witness_is_bound_to_the_requested_revision_and_task() {
         "generatedJavaSelectionDigest":digest,"orderedClasspathDigest":digest,
         "nativeClassfilesDigest":digest,"requestedCompilerArtifactsDigest":digest,
         "requestedPluginArtifactsDigest":digest,"requestedAllOpenArtifactDigest":digest,
-        "orderedOptionsDigest":digest
+        "orderedOptionsDigest":digest,"javaSourceProducersDigest":digest,
+        "nativeGradleVersion":"8.14.1","nativeJdkMajor":21
     });
     let manifest = json!({"nativeSpringCompileReceipt":receipt});
     let mut witness = receipt;
@@ -3124,7 +3152,7 @@ fn native_compilation_witness_is_bound_to_the_requested_revision_and_task() {
     witness["analyzerCompiler"] = json!("2.4.10");
     witness["effectiveAllOpenArtifactDigest"] = json!(digest);
     let index = json!({"nativeCompilationWitness":witness});
-    let project = json!({"compileTask":":compileKotlin"});
+    let project = json!({"compileTask":":compileKotlin","projectCompilerVersion":"2.2.21","gradleVersion":"8.14.1","jvmTarget":"21"});
     let request = json!({"nativeCaptureRevision":revision});
     assert!(native_compilation_witness_matches(
         &request, &project, &manifest, &index
@@ -3143,7 +3171,7 @@ fn native_compilation_witness_is_bound_to_the_requested_revision_and_task() {
     ));
     assert!(!native_compilation_witness_matches(
         &request,
-        &json!({"compileTask":":compileTestKotlin"}),
+        &json!({ "compileTask":":compileTestKotlin","projectCompilerVersion":"2.2.21","gradleVersion":"8.14.1","jvmTarget":"21"}),
         &manifest,
         &index
     ));

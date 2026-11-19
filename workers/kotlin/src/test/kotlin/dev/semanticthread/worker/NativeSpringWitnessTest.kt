@@ -28,12 +28,14 @@ class NativeSpringWitnessTest {
                 putJsonArray("classpath") {}
             }
             val receipt = buildJsonObject {
+                put("compilerVersion", "2.2.21")
                 put("outputRoot", "classes")
                 putJsonObject("sourceDigests") {
                     putJsonObject("kotlin") {}
                     put("java", selected)
                 }
                 put("generatedJavaDigests", selected)
+                putJsonArray("javaSourceProducers") {}
                 putJsonArray("classpathDigests") {}
                 putJsonObject("classDigests") { put("Service.class", digest(Files.readAllBytes(compiled))) }
             }
