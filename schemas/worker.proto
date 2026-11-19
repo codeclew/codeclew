@@ -20,7 +20,7 @@ enum RequestKind {
   SHUTDOWN = 9;
 }
 
-message OpenProjectRequest { SchemaVersion schema_version = 1; string repo = 2; optional string compilation = 3; }
+message OpenProjectRequest { SchemaVersion schema_version = 1; string repo = 2; optional string compilation = 3; optional string native_capture_revision = 4; }
 message IndexFilesRequest { SchemaVersion schema_version = 1; string repo = 2; optional string compilation = 3; bool syntax_only = 4; repeated string relative_files = 5; }
 message ShutdownRequest { SchemaVersion schema_version = 1; }
 

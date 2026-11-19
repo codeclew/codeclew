@@ -183,6 +183,7 @@ private fun decodeRequest(kind: Int, bytes: ByteArray): ByteArray {
     val request = when (kind) {
         2, 3 -> buildJsonObject {
             put("repo", string(2)); optionalString(3)?.let { put("compilation", it) }
+            if (kind == 2) optionalString(4)?.let { put("nativeCaptureRevision", it) }
             if (kind == 3) put("syntaxOnly", (fields.firstOrNull { it.number == 4 }?.value ?: 0) != 0L)
             if (kind == 3) putJsonArray("files") { fields.filter { it.number == 5 }.map { it.bytes.decodeToString() }.sorted().forEach(::add) }
         }

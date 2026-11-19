@@ -10,7 +10,7 @@ use crate::state::ManagedDirectory;
 use crate::worker_diagnostics::{self, WorkerStderr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::ffi::OsString;
@@ -2174,6 +2174,7 @@ impl WorkerClient {
                 schema_version: schema_version(),
                 repo: repo(),
                 compilation: compilation(),
+                native_capture_revision: json_optional_string(payload, "nativeCaptureRevision"),
             }),
             RequestKind::IndexFiles => worker_request::Payload::IndexFiles(IndexFilesRequest {
                 schema_version: schema_version(),
@@ -2595,10 +2596,11 @@ impl WorkerClient {
             .and_then(Value::as_str)
             .unwrap_or(":/main")
             .to_owned();
-        self.request(
-            RequestKind::OpenProject,
-            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
-        )
+        let mut request = serde_json::json!({"repo":repo,"compilation":requested_compilation});
+        if let Some(revision) = payload.get("nativeCaptureRevision").and_then(Value::as_str) {
+            request["nativeCaptureRevision"] = json!(revision);
+        }
+        self.request(RequestKind::OpenProject, &request)
     }
 
     /// Execute one live OpenProject followed by IndexFiles and return both the
@@ -2712,6 +2714,7 @@ impl WorkerClient {
                 .and_then(Value::as_str)
                 != Some(semantic_input_manifest_hash.as_str())
             || facts.get("semanticInputManifest") != project.get("semanticInputManifest")
+            || !native_compilation_witness_matches(payload, project, manifest, &facts)
         {
             return Err(attach_verified_index_failure(
                 ClewError::new(
@@ -3036,6 +3039,120 @@ fn validate_typed_bool(canonical: &[u8], pointer: &str, typed: bool) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn native_compilation_witness_matches(
+    request: &Value,
+    project: &Value,
+    manifest: &Value,
+    index: &Value,
+) -> bool {
+    let receipt = manifest.get("nativeSpringCompileReceipt");
+    let witness = index.get("nativeCompilationWitness");
+    let (Some(receipt), Some(witness)) = (receipt, witness) else {
+        return receipt.is_none() && witness.is_none();
+    };
+    let Some(receipt) = receipt.as_object() else {
+        return false;
+    };
+    let Some(revision) = request["nativeCaptureRevision"].as_str() else {
+        return false;
+    };
+    let required_digests = [
+        "receiptDigest",
+        "selectedSourcesDigest",
+        "generatedJavaSelectionDigest",
+        "orderedClasspathDigest",
+        "nativeClassfilesDigest",
+        "requestedCompilerArtifactsDigest",
+        "requestedPluginArtifactsDigest",
+        "requestedAllOpenArtifactDigest",
+        "orderedOptionsDigest",
+    ];
+    let is_digest = |value: &Value| {
+        value
+            .as_str()
+            .and_then(|v| v.strip_prefix("sha256:"))
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            })
+    };
+    receipt.len() == required_digests.len() + 6
+        && required_digests
+            .into_iter()
+            .all(|key| receipt.get(key).is_some_and(is_digest))
+        && receipt.get("schema").and_then(Value::as_str)
+            == Some("codeclew-kotlin-native-compilation/1")
+        && receipt.get("revision").and_then(Value::as_str) == Some(revision)
+        && project["compileTask"].is_string()
+        && receipt.get("compileTask") == project.get("compileTask")
+        && receipt.get("outcome").and_then(Value::as_str) == Some("EXECUTED")
+        && receipt.get("requestedCompiler").and_then(Value::as_str) == Some("2.2.21")
+        && receipt.get("jvmTarget").and_then(Value::as_str) == Some("21")
+        && witness
+            .as_object()
+            .is_some_and(|obj| obj.len() == receipt.len() + 4)
+        && receipt
+            .iter()
+            .all(|(key, value)| witness.get(key) == Some(value))
+        && witness["comparison"] == "CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH"
+        && is_digest(&witness["comparisonDigest"])
+        && witness["analyzerCompiler"] == "2.4.10"
+        && is_digest(&witness["effectiveAllOpenArtifactDigest"])
+}
+
+#[test]
+fn native_compilation_witness_is_bound_to_the_requested_revision_and_task() {
+    let revision = "a".repeat(40);
+    let digest = format!("sha256:{}", "b".repeat(64));
+    let receipt = json!({
+        "schema":"codeclew-kotlin-native-compilation/1","revision":revision,
+        "compileTask":":compileKotlin","outcome":"EXECUTED","jvmTarget":"21",
+        "requestedCompiler":"2.2.21","receiptDigest":digest,"selectedSourcesDigest":digest,
+        "generatedJavaSelectionDigest":digest,"orderedClasspathDigest":digest,
+        "nativeClassfilesDigest":digest,"requestedCompilerArtifactsDigest":digest,
+        "requestedPluginArtifactsDigest":digest,"requestedAllOpenArtifactDigest":digest,
+        "orderedOptionsDigest":digest
+    });
+    let manifest = json!({"nativeSpringCompileReceipt":receipt});
+    let mut witness = receipt;
+    witness["comparison"] = json!("CLASS_FLAGS_INHERITANCE_METHODS_AND_STATIC_SUPER_CALLS_MATCH");
+    witness["comparisonDigest"] = json!(digest);
+    witness["analyzerCompiler"] = json!("2.4.10");
+    witness["effectiveAllOpenArtifactDigest"] = json!(digest);
+    let index = json!({"nativeCompilationWitness":witness});
+    let project = json!({"compileTask":":compileKotlin"});
+    let request = json!({"nativeCaptureRevision":revision});
+    assert!(native_compilation_witness_matches(
+        &request, &project, &manifest, &index
+    ));
+    assert!(!native_compilation_witness_matches(
+        &json!({}),
+        &project,
+        &manifest,
+        &index
+    ));
+    assert!(!native_compilation_witness_matches(
+        &json!({"nativeCaptureRevision":"c".repeat(40)}),
+        &project,
+        &manifest,
+        &index
+    ));
+    assert!(!native_compilation_witness_matches(
+        &request,
+        &json!({"compileTask":":compileTestKotlin"}),
+        &manifest,
+        &index
+    ));
+    assert!(!native_compilation_witness_matches(
+        &request,
+        &project,
+        &manifest,
+        &json!({})
+    ));
 }
 
 fn index_response_body(

@@ -1,10 +1,123 @@
 import groovy.json.JsonOutput
 import java.security.MessageDigest
+import java.util.jar.JarFile
+import org.gradle.api.tasks.StopExecutionException
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.compile.JavaCompile
 
 gradle.beforeProject { project ->
     def requestedCompileTask = System.getProperty("semantic.thread.compileTask", "compileKotlin")
+    def captureRevision = System.getProperty("semantic.thread.nativeCaptureRevision")
+    def captureTask = System.getProperty("semantic.thread.nativeCaptureTask")
+    def springCompile = null
+    def capturedInputs = null
+    def digestFile = { File file ->
+        def digest = MessageDigest.getInstance("SHA-256")
+        file.withInputStream { stream ->
+            byte[] buffer = new byte[65536]
+            int count
+            while ((count = stream.read(buffer)) != -1) digest.update(buffer, 0, count)
+        }
+        "sha256:" + digest.digest().encodeHex().toString()
+    }
+    def springInputs = { compile ->
+        def repo = project.rootDir.canonicalFile.toPath()
+        def sources = [kotlin: compile.sources.files, java: compile.javaSources.files].collectEntries { kind, files ->
+            [kind, files.collectEntries { file ->
+                def path = file.canonicalFile.toPath()
+                if (!path.startsWith(repo) || !file.isFile()) throw new IllegalStateException("Unavailable compilation source")
+                [repo.relativize(path).toString().replace('\\', '/'), digestFile(file)]
+            }.sort()]
+        }
+        return [sources: sources, classpath: compile.libraries.files.collect { file ->
+            if (file.isFile()) return digestFile(file)
+            if (!file.isDirectory()) throw new IllegalStateException("Unavailable native classpath")
+            return project.fileTree(file).files.collectEntries { child ->
+                [file.toPath().relativize(child.toPath()).toString(), digestFile(child)]
+            }.sort()
+        }]
+    }
+    def springPlan = { compile ->
+        if (!(captureRevision ==~ /(?:[a-f0-9]{40}|[a-f0-9]{64})/) || gradle.gradleVersion != "8.14.1" ||
+            compile?.name != "compileKotlin" || compile.path != captureTask ||
+            !project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt") ||
+            !project.pluginManager.hasPlugin("org.jetbrains.kotlin.plugin.spring")) return null
+        try {
+            if (compile.class.superclass.name != "org.jetbrains.kotlin.gradle.tasks.KotlinCompile" ||
+                compile.class.superclass.package.implementationVersion != "2.2.21-release-469" ||
+                compile.compilerOptions.jvmTarget.get().target != "21" ||
+                Runtime.version().feature() != 21 ||
+                !compile.compilerOptions.freeCompilerArgs.get().isEmpty()) return null
+            def toolchain = compile.kotlinJavaToolchainProvider.get()
+            def getters = toolchain.class.methods.findAll { method -> method.parameterCount == 0 &&
+                (method.name == "getJavaExecutable" || method.name.startsWith('getJavaExecutable$')) }
+            if (getters.size() != 1) return null
+            def release = new File(getters[0].invoke(toolchain).get().asFile.canonicalFile.parentFile.parentFile, "release")
+            if (!release.readLines().any { it ==~ /JAVA_VERSION="21(?:[.+-][^"]*)?"/ }) return null
+            def options = compile.pluginOptions.get().collectMany { container ->
+                container.allOptions().collectMany { id, entries ->
+                    entries.collect { option ->
+                        if (option.class.name != "org.jetbrains.kotlin.gradle.plugin.SubpluginOption") {
+                            throw new IllegalStateException("Unsupported plugin option type")
+                        }
+                        "plugin:${id}:${option.key}=${option.value}".toString()
+                    }
+                }
+            }
+            if (options != ["plugin:org.jetbrains.kotlin.allopen:preset=spring"]) return null
+            def knownRegistrars = [
+                "kotlin-allopen-compiler-plugin-embeddable-2.2.21.jar": "sha256:18b6d84f93899f09daffc7b104f8c4333cd78fe0b8d8ac58434c93d9f4e77e47",
+                "kotlin-annotation-processing-gradle-2.2.21.jar": "sha256:8007c7ba142d8e0623e3cc3ec0f6191cb0f83c8c67d4384caedf977b3c5e7718",
+                "kotlin-scripting-compiler-embeddable-2.2.21.jar": "sha256:d934b9d0c246bc09624b7068af58ad57cef11dbe2addbc7b19d250cce42de1c9",
+            ]
+            def registrars = [:]
+            def plugins = compile.pluginClasspath.files.collect { file ->
+                def hash = digestFile(file)
+                new JarFile(file).withCloseable { jar ->
+                    if (["CompilerPluginRegistrar", "ComponentRegistrar", "CommandLineProcessor"].any { name ->
+                        jar.getJarEntry("META-INF/services/org.jetbrains.kotlin.compiler.plugin." + name) != null
+                    }) {
+                        if (knownRegistrars[file.name] != hash || registrars.put(file.name, hash) != null) {
+                            throw new IllegalStateException("Unqualified plugin artifact")
+                        }
+                    }
+                }
+                [name: file.name, digest: hash]
+            }
+            if (registrars != knownRegistrars) return null
+            def compilerPaths = compile.properties.findAll { key, value -> key.startsWith('defaultCompilerClasspath$') }
+            if (compilerPaths.size() != 1) return null
+            def compiler = compilerPaths.values().first().files.collect { [name: it.name, digest: digestFile(it)] }
+            if (!compiler || compiler[0] != [name: "kotlin-compiler-embeddable-2.2.21.jar",
+                digest: "sha256:9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295"]) return null
+            return [revision: captureRevision, compileTask: compile.path, options: options,
+                requestedPluginArtifacts: plugins, compilerArtifacts: compiler]
+        } catch (Exception ignored) { return null }
+    }
+    if (captureTask != null && captureTask == (project.path == ":" ? ":${requestedCompileTask}" : "${project.path}:${requestedCompileTask}")) {
+        gradle.projectsEvaluated {
+            def compile = project.tasks.findByName(requestedCompileTask)
+            springCompile = springPlan(compile)
+            if (springCompile != null) {
+                compile.outputs.upToDateWhen { false }
+                compile.outputs.doNotCacheIf("Codeclew requires an executed native compilation") { true }
+                compile.doFirst {
+                    def destination = compile.destinationDirectory.get().asFile.canonicalFile
+                    if (!destination.toPath().startsWith(new File(project.projectDir, "build").toPath()) ||
+                        project.fileTree(destination).matching { include "**/*.class" }.files ||
+                        springCompile != springPlan(compile)) {
+                        throw new StopExecutionException("Codeclew native compilation inputs are stale")
+                    }
+                    capturedInputs = springInputs(compile)
+                }
+                gradle.taskGraph.afterTask { task, state ->
+                    if (task == compile && state.failure != null) {
+                        println "__SEMANTIC_THREAD_NATIVE_COMPILE_FAILED__"
+                    }
+                }
+            }
+        }
+    }
     def sourceSetNameOf = { compile ->
         if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
             def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
@@ -81,8 +194,13 @@ gradle.beforeProject { project ->
                 !check("STUBS_TASK_TYPE", { stubs?.class?.superclass?.name == "org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask" })) return null
             diagnostic.check = "KGP_ROW"
             def kgp = kapt.class.superclass.package.implementationVersion
-            if (!check("KGP_ROW", { diagnostic.kgp = kgp == "2.2.21-release-469" }) ||
-                !check("COMPILE_NOT_IN_GRAPH", { !gradle.taskGraph.hasTask(compile) })) return null
+            if (!check("KGP_ROW", { diagnostic.kgp = kgp == "2.2.21-release-469" })) return null
+            if (springCompile == null) {
+                if (!check("COMPILE_NOT_IN_GRAPH", { !gradle.taskGraph.hasTask(compile) })) return null
+            } else if (!check("SPRING_COMPILE_OUTCOME", {
+                gradle.taskGraph.hasTask(compile) && compile.state.executed && compile.state.didWork &&
+                    compile.state.failure == null && !compile.state.skipped && capturedInputs != null
+            })) return null
             if (!check("COMPILE_DEPENDS_ON_KAPT", { compile.taskDependencies.getDependencies(compile).contains(kapt) }) ||
                 !check("KAPT_DEPENDS_ON_STUBS", { kapt.taskDependencies.getDependencies(kapt).contains(stubs) })) return null
             def completed = { task ->
@@ -92,7 +210,10 @@ gradle.beforeProject { project ->
             }
             if (!check("STUBS_TASK_OUTCOME", { completed(stubs) }) ||
                 !check("KAPT_TASK_OUTCOME", { completed(kapt) })) return null
-            if (!check("NORMAL_PLUGIN_OPTIONS", { diagnostic.pluginOptionsEmpty = !compile.pluginOptions.get().any { !it.allOptions().isEmpty() } }) ||
+            if (!check("NORMAL_PLUGIN_OPTIONS", {
+                    diagnostic.pluginOptionsEmpty = !compile.pluginOptions.get().any { !it.allOptions().isEmpty() }
+                    diagnostic.pluginOptionsEmpty || springCompile != null && springCompile == springPlan(compile)
+                }) ||
                 !check("FORBIDDEN_FREE_ARGS", {
                     !freeArgs.any { arg ->
                         def classifier = arg.startsWith("-Xplugin") ? "XPLUGIN" :
@@ -115,14 +236,32 @@ gradle.beforeProject { project ->
                 !check("GENERATED_JAVA_SELECTED", { diagnostic.generatedJavaSelected = selected(javaFiles).containsAll(java) }) ||
                 !check("GENERATED_KOTLIN_SELECTED", { diagnostic.generatedKotlinSelected = selected(sourceFiles).containsAll(kotlin) }) ||
                 !check("GENERATED_CLASSES_SELECTED", { diagnostic.generatedClassesSelected = selected(classpath).contains(classes) })) return null
-            return [
+            def generation = [
                 tasks: [stubs.path, kapt.path],
                 kotlinGradlePlugin: kgp,
-                normalCompilerPluginOptions: [],
+                normalCompilerPluginOptions: springCompile?.options ?: [],
                 generatedJavaRoot: repo.relativize(javaRoot.toPath()).toString(),
                 generatedKotlinRoot: repo.relativize(kotlinRoot.toPath()).toString(),
                 generatedClasses: repo.relativize(classes.toPath()).toString()
             ]
+            if (springCompile != null) {
+                def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
+                if (!check("SPRING_COMPILE_INPUTS", { capturedInputs == springInputs(compile) })) return null
+                if (!check("SPRING_COMPILE_OUTPUTS", { destination.startsWith(repo) && destination.toFile().isDirectory() })) return null
+                generation.springCompilation = springCompile + [
+                    sourceDigests: capturedInputs.sources,
+                    generatedJavaDigests: capturedInputs.sources.java.findAll { path, hash ->
+                        path.startsWith(generation.generatedJavaRoot + "/")
+                    },
+                    classpathDigests: capturedInputs.classpath,
+                    outputRoot: repo.relativize(destination).toString(),
+                    classDigests: project.fileTree(destination.toFile()).matching { include "**/*.class" }.files.collectEntries { file ->
+                        [destination.relativize(file.toPath()).toString().replace('\\', '/'), digestFile(file)]
+                    }.sort(),
+                    outcome: "EXECUTED",
+                ]
+            }
+            return generation
         } catch (Exception ignored) {
             diagnostic.outcome = "UNAVAILABLE"
             return null
@@ -133,8 +272,8 @@ gradle.beforeProject { project ->
         // classpath before those artifacts exist in a pristine checkout. Run
         // the selected compilation's declared prerequisites, including source
         // generators attached with compile.dependsOn. Classpath dependencies
-        // alone do not describe the effective source inputs. Do not execute
-        // the selected compiler task merely to extract its model.
+        // alone do not describe the effective source inputs. Only the qualified
+        // Spring capture needs the selected native compiler result.
         dependsOn {
             def compile = project.tasks.findByName(requestedCompileTask)
             if (compile == null) return []
@@ -142,9 +281,8 @@ gradle.beforeProject { project ->
             def prerequisites = new LinkedHashSet(compile.taskDependencies.getDependencies(compile))
             if (provider != null) prerequisites.addAll(provider.buildDependencies.getDependencies(compile))
             prerequisites.addAll(selectedJavaSourceProducers(compile, modelTask))
-            return prerequisites.findAll { dependency ->
-                dependency.path != compile.path
-            }
+            if (springCompile != null) prerequisites.add(compile)
+            return prerequisites.findAll { springCompile != null || it.path != compile.path }
         }
         doLast {
             def requested = requestedCompileTask

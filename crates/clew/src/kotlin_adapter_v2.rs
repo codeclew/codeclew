@@ -254,6 +254,7 @@ pub(crate) struct ProjectNativeKotlinWorkspace {
     model_extraction_gate: Mutex<()>,
     legacy_open_project_calls: AtomicU64,
     allow_materialization_mutation: bool,
+    native_capture_revision: Option<String>,
     operational_timing: Arc<Mutex<ProjectNativeKotlinOperationalTiming>>,
 }
 
@@ -406,6 +407,7 @@ impl ProjectNativeKotlinWorkspace {
             model_extraction_gate: Mutex::new(()),
             legacy_open_project_calls: AtomicU64::new(0),
             allow_materialization_mutation: false,
+            native_capture_revision: None,
             operational_timing: Arc::new(Mutex::new(operational_timing)),
         })
     }
@@ -419,6 +421,10 @@ impl ProjectNativeKotlinWorkspace {
         properties: Option<crate::project_config::GradleProperties>,
     ) {
         self.gradle_properties = properties;
+    }
+
+    pub(crate) fn set_native_capture_revision(&mut self, revision: &str) {
+        self.native_capture_revision = Some(revision.to_owned());
     }
 
     pub(crate) fn set_allow_materialization_mutation(&mut self, allow: bool) {
@@ -519,11 +525,14 @@ impl ProjectNativeKotlinWorkspace {
             )?
         };
         let startup_micros = elapsed_micros(startup_started);
-        let request = json!({
+        let mut request = json!({
             "repo":self.repo,
             "compilation":native_compilation,
             "syntaxOnly":false,
         });
+        if let Some(revision) = &self.native_capture_revision {
+            request["nativeCaptureRevision"] = json!(revision);
+        }
         let open_project_started = Instant::now();
         let project = worker.open_project_verified(&request)?;
         let open_project_wall_micros = elapsed_micros(open_project_started);
@@ -1011,7 +1020,7 @@ pub(crate) fn translate_facts(
 ) -> Result<Vec<FactRecord>, ClewError> {
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
     let mut pending = Vec::new();
-    let metadata = json!({
+    let mut metadata = json!({
         "schema":"codeclew-kotlin-index-metadata/2.4",
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
@@ -1031,6 +1040,9 @@ pub(crate) fn translate_facts(
         "publicationDeclarations":index.get("publicationDeclarations"),
         "binaryCallTargets":index.get("binaryCallTargets"),
     });
+    if let Some(witness) = index.get("nativeCompilationWitness") {
+        metadata["nativeCompilationWitness"] = witness.clone();
+    }
     push_fact(&capability, "metadata", &metadata, &mut pending)?;
     for (category, pointer) in [
         ("file", "/files"),

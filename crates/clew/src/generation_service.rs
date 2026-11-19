@@ -461,6 +461,9 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
         gradle_git_tags.as_ref(),
     )?;
     workspace.set_gradle_properties(gradle_properties);
+    if session.working_tree.is_none() {
+        workspace.set_native_capture_revision(&session.base_revision);
+    }
     // The exact selected set is authorized once. The private bridge retains
     // legacy per-compilation OpenProject calls until the post-G1 worker
     // protocol cutover; no caller can bypass or widen the set authority.

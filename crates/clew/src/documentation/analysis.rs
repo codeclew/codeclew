@@ -2159,6 +2159,37 @@ fn project_indexed_with_progress(
         if raw_fact["schema"] == "codeclew-kotlin-index-metadata/2.4" {
             let scope = resolve_scope_key(&raw_fact["scope"], known)?;
             super::library_artifacts::project(&mut evidence, raw_fact, binding, &scope)?;
+            if let Some(witness) = raw_fact.get("nativeCompilationWitness") {
+                if witness["revision"].as_str() != Some(revision)
+                    || raw_fact["compilation"].as_str() != Some(scope.as_str())
+                {
+                    return Err(invalid(
+                        "Kotlin native compilation witness differs from Check scope",
+                    ));
+                }
+                let mut normalized = witness.clone();
+                normalized["scope"] = json!(scope);
+                normalized["semanticInputManifestHash"] =
+                    raw_fact["semanticInputManifestHash"].clone();
+                normalized["evidenceBinding"] = json!(binding);
+                let id = dependency_id(
+                    &service.id,
+                    "native-compilation",
+                    &scoped_identity(&scope, revision),
+                )?;
+                evidence.observations.insert(
+                    id.clone(),
+                    Observation {
+                        id,
+                        kind: "NATIVE_COMPILATION".into(),
+                        service: service.id.clone(),
+                        symbol: scope,
+                        digest: digest(&normalized)?,
+                        normalized,
+                        source_ids: Vec::new(),
+                    },
+                );
+            }
             continue;
         }
         if csharp_sources::project_file(&mut evidence, service, sources, known, raw_fact, binding)?

@@ -70,6 +70,11 @@ enum Check {
     KaptArtifactPresent,
     KaptArtifactDigest,
     KaptArtifactUnique,
+    SpringCompileOutcome,
+    SpringCompileInputs,
+    SpringCompileOutputs,
+    SpringCompileIdentity,
+    SpringReplayMismatch,
     QualifiedNativeKapt,
 }
 
