@@ -174,10 +174,14 @@ class ProjectModelCommandTest {
                 Worker().use { it.handle(2, request) }
             }
             assertEquals("UNSUPPORTED_COMPILER_PLUGIN_ABI", wrongBytes.code)
+            assertEquals("COMPILER_VERSION_MISMATCH", wrongBytes.abiReason)
+            assertEquals("KAPT_ARTIFACT_DIGEST", wrongBytes.compilerPluginDiagnostic
+                ?.get("native")?.jsonObject?.get("check")?.jsonPrimitive?.content)
             val sameCompiler = assertFailsWith<WorkerFailure> {
                 effectiveCompilerPluginPlan(listOf(kapt), WORKER_COMPILER_VERSION)
             }
             assertEquals("UNSUPPORTED_COMPILER_PLUGIN_ABI", sameCompiler.code)
+            assertEquals("KAPT_NATIVE_AUTHORITY_REQUIRED", sameCompiler.abiReason)
         } finally {
             repo.toFile().deleteRecursively()
         }

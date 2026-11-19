@@ -1416,6 +1416,13 @@ impl Check {
 /// packages remain in the stored Check and are not copied into reader errors.
 fn capture_failure(error: &ClewError) -> Value {
     let mut record = json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message});
+    if error.code == crate::error::ErrorCode::UnsupportedCompilerPluginAbi
+        && let Some(diagnostic) = error.details.as_deref().and_then(|value| {
+            crate::compiler_plugin_diagnostic::saved_summary(&value["compilerPluginDiagnostic"])
+        })
+    {
+        record["compilerPluginDiagnostic"] = diagnostic;
+    }
     if let Some(diagnostic) = super::cache::budget_diagnostic(error) {
         record["objectBudget"] = diagnostic;
     }
@@ -1677,6 +1684,81 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn compiler_plugin_diagnostic_is_saved_and_collected_without_replacing_original_runtime() {
+        let temporary = tempfile::tempdir().unwrap();
+        let docs = temporary.path().join("docs");
+        Repository::init(&docs, "Diagnostic fixture").unwrap();
+        let repo = Repository::open(&docs).unwrap();
+        for id in ["recorded", "legacy", "malformed"] {
+            add_kotlin_service(&repo, id);
+        }
+        let diagnostic = json!({
+            "diagnostic":{
+                "schema":"codeclew-compiler-plugin-diagnostic/1",
+                "native":{"check":"GENERATED_JAVA_PRESENT","outcome":"FAILED"},
+                "abiRejection":"COMPILER_VERSION_MISMATCH",
+                "requestedCompilerRow":"2.2.21","effectiveCompilerRow":"2.4.10",
+                "workerJdkMajor":21,"matches":{"worker":true,"compiler":true,"gradle":true,"jvmTarget":true}
+            },
+            "originalFailure":{"cliVersion":"0.15.11","workerVersion":"0.1.0",
+                "workerDistributionDigest":format!("sha256:{}", "a".repeat(64)),
+                "runtimeKey":format!("sha256:{}", "b".repeat(64))}
+        });
+        let checked = capture_selected_with(
+            &repo,
+            &BTreeSet::new(),
+            repo.inputs().unwrap(),
+            |service, _, _| {
+                let mut error = ClewError::new(
+                    crate::error::ErrorCode::UnsupportedCompilerPluginAbi,
+                    "PRIVATE_SENTINEL",
+                );
+                if service.id != "legacy" {
+                    let mut value = diagnostic.clone();
+                    if service.id == "malformed" {
+                        value["diagnostic"]["native"]["check"] =
+                            json!("/private/build/PRIVATE_SENTINEL");
+                    }
+                    error.details = Some(Box::new(json!({"compilerPluginDiagnostic":value})));
+                }
+                Err(error)
+            },
+        )
+        .unwrap();
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        drop(repo);
+        let output = temporary.path().join("support");
+        super::super::support_collect::collect(&docs, Some(&snapshot), None, &output, false)
+            .unwrap();
+        let public = fs::read_to_string(output.join("report.json")).unwrap();
+        assert!(!public.contains("PRIVATE_SENTINEL"));
+        let report: Value = serde_json::from_str(&public).unwrap();
+        let records: Vec<_> = report["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| &entry["failure"]["compilerPluginDiagnostic"])
+            .collect();
+        let recorded = records
+            .iter()
+            .find(|item| item["status"] == "RECORDED")
+            .unwrap();
+        assert_eq!(recorded["diagnostic"], diagnostic["diagnostic"]);
+        assert_eq!(recorded["originalFailure"], diagnostic["originalFailure"]);
+        assert_ne!(
+            report["runtime"]["version"],
+            recorded["originalFailure"]["cliVersion"]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["status"] == "UNAVAILABLE")
+                .count(),
+            2
+        );
     }
 
     #[test]

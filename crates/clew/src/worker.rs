@@ -2265,8 +2265,22 @@ impl WorkerClient {
                     .into_iter()
                     .collect();
                 let code = parse_worker_code(&error.code);
+                let details = if code == ErrorCode::UnsupportedCompilerPluginAbi {
+                    crate::compiler_plugin_diagnostic::from_worker(
+                        &error.compiler_plugin_diagnostic_json,
+                        &self.capabilities.compiler_version,
+                        &self.capabilities.worker_version,
+                        &self.trusted_distribution.tree_hash,
+                        self.worker_jvm.major,
+                    )
+                    .map(|diagnostic| {
+                        Box::new(serde_json::json!({"compilerPluginDiagnostic":diagnostic}))
+                    })
+                } else {
+                    None
+                };
                 let failure = ClewError {
-                    details: None,
+                    details,
                     message: safe_worker_error_message_for_worker_error(&code, &error.message)
                         .into(),
                     code,

@@ -49,6 +49,7 @@ message WorkerError {
   string message = 2;
   bool retryable = 3;
   repeated string evidence = 4;
+  bytes compiler_plugin_diagnostic_json = 5;
 }
 message OpenProjectResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string project_model_hash = 4; string compiler_version = 5; string compilation = 6; }
 message IndexFilesResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string index_hash = 4; string project_model_hash = 5; string compilation = 6; uint64 file_count = 7; bool partial = 8; }

@@ -63,36 +63,58 @@ gradle.beforeProject { project ->
             return producesJavaSources && closure([task]).disjoint(blocked)
         }
     }
-    def nativeKaptGeneration = { compile, sourceFiles, javaFiles, classpath, freeArgs ->
-        // This row uses the native JVM main tasks of Kotlin Gradle 2.2.21.
-        // Keep all other producer modes behind the existing ABI boundary.
+    def nativeKaptGeneration = { compile, sourceFiles, javaFiles, classpath, freeArgs, diagnostic ->
+        // Preserve evaluation order and retain only typed progress if authority is unavailable.
+        def check = { name, test ->
+            diagnostic.check = name
+            def passed = test()
+            diagnostic.outcome = passed ? "PASSED" : "FAILED"
+            return passed
+        }
         try {
-            if (!project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt")) return null
+            if (!check("KAPT_PLUGIN", { project.pluginManager.hasPlugin("org.jetbrains.kotlin.kapt") })) return null
+            diagnostic.check = "KAPT_TASK_PROVIDER"
             def kapt = project.tasks.findByName("kaptKotlin")
+            diagnostic.check = "STUBS_TASK_PROVIDER"
             def stubs = project.tasks.findByName("kaptGenerateStubsKotlin")
-            if (kapt?.class?.superclass?.name != "org.jetbrains.kotlin.gradle.internal.KaptWithoutKotlincTask" ||
-                stubs?.class?.superclass?.name != "org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask") return null
+            if (!check("KAPT_TASK_TYPE", { kapt?.class?.superclass?.name == "org.jetbrains.kotlin.gradle.internal.KaptWithoutKotlincTask" }) ||
+                !check("STUBS_TASK_TYPE", { stubs?.class?.superclass?.name == "org.jetbrains.kotlin.gradle.internal.KaptGenerateStubsTask" })) return null
+            diagnostic.check = "KGP_ROW"
             def kgp = kapt.class.superclass.package.implementationVersion
-            if (kgp != "2.2.21-release-469" || gradle.taskGraph.hasTask(compile)) return null
-            if (!compile.taskDependencies.getDependencies(compile).contains(kapt) ||
-                !kapt.taskDependencies.getDependencies(kapt).contains(stubs)) return null
-            if (![stubs, kapt].every { task ->
+            if (!check("KGP_ROW", { diagnostic.kgp = kgp == "2.2.21-release-469" }) ||
+                !check("COMPILE_NOT_IN_GRAPH", { !gradle.taskGraph.hasTask(compile) })) return null
+            if (!check("COMPILE_DEPENDS_ON_KAPT", { compile.taskDependencies.getDependencies(compile).contains(kapt) }) ||
+                !check("KAPT_DEPENDS_ON_STUBS", { kapt.taskDependencies.getDependencies(kapt).contains(stubs) })) return null
+            def completed = { task ->
                 def state = task.state
                 gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
                     (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
-            }) return null
-            if (compile.pluginOptions.get().any { !it.allOptions().isEmpty() } ||
-                freeArgs.any { it.startsWith("-Xplugin") || it == "-P" || it.startsWith("plugin:") }) return null
+            }
+            if (!check("STUBS_TASK_OUTCOME", { completed(stubs) }) ||
+                !check("KAPT_TASK_OUTCOME", { completed(kapt) })) return null
+            if (!check("NORMAL_PLUGIN_OPTIONS", { diagnostic.pluginOptionsEmpty = !compile.pluginOptions.get().any { !it.allOptions().isEmpty() } }) ||
+                !check("FORBIDDEN_FREE_ARGS", {
+                    !freeArgs.any { arg ->
+                        def classifier = arg.startsWith("-Xplugin") ? "XPLUGIN" :
+                            arg == "-P" ? "P_OPTION" : arg.startsWith("plugin:") ? "PLUGIN_PREFIX" : null
+                        if (classifier != null) diagnostic.freeArgClassifier = classifier
+                        classifier != null
+                    }
+                })) return null
+            diagnostic.check = "OUTPUT_ROOTS"
             def javaRoot = kapt.destinationDir.get().asFile.canonicalFile
             def kotlinRoot = kapt.kotlinSourcesDestinationDir.get().asFile.canonicalFile
             def classes = kapt.classesDir.get().asFile.canonicalFile
             def repo = project.rootDir.canonicalFile.toPath()
-            if (![javaRoot, kotlinRoot, classes].every { it.toPath().startsWith(repo) }) return null
+            if (!check("OUTPUT_ROOTS", { [javaRoot, kotlinRoot, classes].every { it.toPath().startsWith(repo) } })) return null
+            diagnostic.check = "GENERATED_JAVA_PRESENT"
             def java = project.fileTree(javaRoot).matching { include "**/*.java" }.files
             def kotlin = project.fileTree(kotlinRoot).matching { include "**/*.kt", "**/*.kts" }.files
             def selected = { files -> files.collect { new File(it).canonicalFile } as Set }
-            if (java.isEmpty() || !selected(javaFiles).containsAll(java) ||
-                !selected(sourceFiles).containsAll(kotlin) || !selected(classpath).contains(classes)) return null
+            if (!check("GENERATED_JAVA_PRESENT", { diagnostic.generatedJavaPresent = !java.isEmpty() }) ||
+                !check("GENERATED_JAVA_SELECTED", { diagnostic.generatedJavaSelected = selected(javaFiles).containsAll(java) }) ||
+                !check("GENERATED_KOTLIN_SELECTED", { diagnostic.generatedKotlinSelected = selected(sourceFiles).containsAll(kotlin) }) ||
+                !check("GENERATED_CLASSES_SELECTED", { diagnostic.generatedClassesSelected = selected(classpath).contains(classes) })) return null
             return [
                 tasks: [stubs.path, kapt.path],
                 kotlinGradlePlugin: kgp,
@@ -102,7 +124,7 @@ gradle.beforeProject { project ->
                 generatedClasses: repo.relativize(classes.toPath()).toString()
             ]
         } catch (Exception ignored) {
-            // An unavailable task option or generated-input provider cannot establish qualification.
+            diagnostic.outcome = "UNAVAILABLE"
             return null
         }
     }
@@ -394,12 +416,25 @@ gradle.beforeProject { project ->
                 gradleVersion: gradle.gradleVersion,
                 jdkHome: jdkHome
             ]
-            if (gradle.gradleVersion == "8.14.1" && compilerVersion == "2.2.21" &&
-                compile.name == "compileKotlin" && jvmTarget.value == "JVM_21" &&
-                jdkHomeAvailable && pluginClasspath.available && freeCompilerArgs.available) {
-                def kapt = nativeKaptGeneration(compile, sourceFiles, javaSources.values, classpath, freeCompilerArgs.values)
+            def nativeDiagnostic = [:]
+            def firstGate = [
+                ["GRADLE_ROW", { gradle.gradleVersion == "8.14.1" }, "FAILED"],
+                ["COMPILER_ROW", { compilerVersion == "2.2.21" }, "FAILED"],
+                ["MAIN_COMPILE_TASK", { nativeDiagnostic.mainCompileTask = compile.name == "compileKotlin" }, "FAILED"],
+                ["JVM_TARGET", { jvmTarget.value == "JVM_21" }, jvmTarget.available ? "FAILED" : "UNAVAILABLE"],
+                ["JDK_PROVIDER", { jdkHomeAvailable }, "UNAVAILABLE"],
+                ["ARTIFACT_PROVIDER", { pluginClasspath.available }, "UNAVAILABLE"],
+                ["FREE_ARGS_PROVIDER", { freeCompilerArgs.available }, "UNAVAILABLE"],
+            ].find { !it[1]() }
+            if (firstGate == null) {
+                def kapt = nativeKaptGeneration(compile, sourceFiles, javaSources.values, classpath, freeCompilerArgs.values, nativeDiagnostic)
                 if (kapt != null) model.nativeKaptGeneration = kapt
+            } else {
+                nativeDiagnostic.check = firstGate[0]
+                nativeDiagnostic.outcome = firstGate[2]
             }
+            nativeDiagnostic.gradleJvmMajor = JavaVersion.current().majorVersion.toInteger()
+            model.nativeKaptDiagnostic = nativeDiagnostic
             println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
         }
     }

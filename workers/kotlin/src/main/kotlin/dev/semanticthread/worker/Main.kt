@@ -38,7 +38,7 @@ fun main() {
             val encoded = try {
                 response(requestId, payload = worker.handle(kind, decodeRequest(kind, payloadField.bytes)), responseField = kind + 9)
             } catch (e: WorkerFailure) {
-                response(requestId, errorCode = e.code, errorMessage = e.message)
+                response(requestId, errorCode = e.code, errorMessage = e.message, compilerPluginDiagnostic = e.compilerPluginDiagnostic)
             } catch (e: Throwable) {
                 response(requestId, errorCode = "INCOMPLETE_SEMANTIC_ANALYSIS", errorMessage = e.message ?: e::class.simpleName.orEmpty())
             }
@@ -56,7 +56,7 @@ private fun processRequest(worker: Worker, frame: ByteArray): ByteArray {
     return try {
         response(requestId, payload = worker.handle(kind, decodeRequest(kind, payload.bytes)), responseField = kind + 9)
     } catch (e: WorkerFailure) {
-        response(requestId, errorCode = e.code, errorMessage = e.message)
+        response(requestId, errorCode = e.code, errorMessage = e.message, compilerPluginDiagnostic = e.compilerPluginDiagnostic)
     } catch (e: Throwable) {
         response(requestId, errorCode = "INCOMPLETE_SEMANTIC_ANALYSIS", errorMessage = e.message ?: e::class.simpleName.orEmpty())
     }
@@ -81,11 +81,15 @@ private fun capabilities(): ByteArray {
     )
 }
 
-private fun response(requestId: Long, payload: String? = null, capabilities: Boolean = false, errorCode: String? = null, errorMessage: String = "", responseField: Int = 0): ByteArray {
+private fun response(requestId: Long, payload: String? = null, capabilities: Boolean = false, errorCode: String? = null, errorMessage: String = "", responseField: Int = 0, compilerPluginDiagnostic: JsonObject? = null): ByteArray {
     val fields = mutableListOf(Proto.uint(1, requestId), Proto.bytes(2, version()))
     if (capabilities) fields += Proto.bytes(10, capabilities())
     if (payload != null) fields += Proto.bytes(responseField, typedResponsePayload(responseField, payload))
-    if (errorCode != null) fields += Proto.bytes(18, Proto.message(Proto.string(1, errorCode), Proto.string(2, errorMessage), Proto.uint(3, 0)))
+    if (errorCode != null) {
+        val error = mutableListOf(Proto.string(1, errorCode), Proto.string(2, errorMessage), Proto.uint(3, 0))
+        compilerPluginDiagnostic?.let { error += Proto.bytes(5, it.toString().toByteArray()) }
+        fields += Proto.bytes(18, Proto.message(*error.toTypedArray()))
+    }
     return Proto.message(*fields.toTypedArray())
 }
 
