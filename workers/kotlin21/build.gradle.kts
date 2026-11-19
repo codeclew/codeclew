@@ -47,6 +47,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
         element.file.name == "SpringAnnotationFacts24.kt" ||
         element.file.name == "JvmAnnotationFacts24.kt" ||
         element.file.name == "KotlinValueFacts24.kt" ||
+        element.file.name == "FirObserverCompilerApi.kt" ||
         element.file.absolutePath == file("../kotlin/src/main/kotlin/dev/semanticthread/worker/FirFactsPlugin.kt").absolutePath
     }
 }
