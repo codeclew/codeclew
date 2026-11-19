@@ -1789,6 +1789,26 @@ mod tests {
                 "heap-stderr",
                 "printf 'Terminating due to java.lang.OutOfMemoryError: Java heap space\\n' >&2; exit 3",
             ),
+            (
+                "metaspace",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: Metaspace\\n'; exit 3",
+            ),
+            (
+                "metaspace-stderr",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: Metaspace\\n' >&2; exit 3",
+            ),
+            (
+                "gc",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: GC overhead limit exceeded\\n'; exit 3",
+            ),
+            (
+                "class-space",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: Compressed class space\\n' >&2; exit 3",
+            ),
+            (
+                "other-oom",
+                "printf 'Terminating due to java.lang.OutOfMemoryError: PRIVATE_OOM_DETAIL\\n'; exit 3",
+            ),
             ("mid-index", "printf '\\000\\000\\000\\006ab'; exit 3"),
         ]);
         let decoded = BTreeMap::from([
@@ -1845,10 +1865,12 @@ mod tests {
             .unwrap();
         let public = fs::read_to_string(output.join("report.json")).unwrap();
         assert!(!public.contains("PRIVATE_STDOUT"));
+        assert!(!public.contains("PRIVATE_OOM_DETAIL"));
         assert!(!public.contains("Terminating due to"));
         assert!(!public.contains(temporary.path().to_str().unwrap()));
         let private = fs::read_to_string(output.join("PRIVATE_SAVED_DETAILS.json")).unwrap();
         assert!(!private.contains("PRIVATE_STDOUT"));
+        assert!(!private.contains("PRIVATE_OOM_DETAIL"));
         assert!(!private.contains("Terminating due to"));
         let report: Value = serde_json::from_str(&public).unwrap();
         // The test process has no admitted package runtime. The saved Check
@@ -1876,6 +1898,10 @@ mod tests {
             reasons,
             BTreeSet::from([
                 "JVM_HEAP_EXHAUSTED",
+                "JVM_METASPACE_EXHAUSTED",
+                "JVM_GC_OVERHEAD_LIMIT",
+                "JVM_COMPRESSED_CLASS_SPACE_EXHAUSTED",
+                "OTHER_JVM_OOM",
                 "FRAME_LENGTH_EXCEEDS_LIMIT",
                 "INVALID_PROTOBUF",
                 "STDOUT_EOF_BEFORE_HEADER",
@@ -1904,11 +1930,14 @@ mod tests {
             "UNAVAILABLE"
         );
         for channel in ["stdout", "stderr"] {
-            assert!(failures.iter().any(|row| {
-                let failure = &row["failure"]["workerFailure"];
-                failure["transport"]["reason"] == "JVM_HEAP_EXHAUSTED"
-                    && failure["jvmTermination"][channel] == "MATCH"
-            }));
+            for reason in ["JVM_HEAP_EXHAUSTED", "JVM_METASPACE_EXHAUSTED"] {
+                assert!(failures.iter().any(|row| {
+                    let failure = &row["failure"]["workerFailure"];
+                    failure["transport"]["reason"] == reason
+                        && failure["jvmTermination"]["oomReason"] == reason
+                        && failure["jvmTermination"][channel] == "MATCH"
+                }));
+            }
         }
         if artifacts.is_some() {
             fs::write(temporary.path().join("snapshot"), format!("{snapshot}\n")).unwrap();

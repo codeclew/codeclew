@@ -519,10 +519,11 @@ bounded observation window; `UNAVAILABLE` means no status could be established.
 A reported SIGKILL is not by itself evidence of OOM. Check the private stderr
 and host process diagnostics before attributing a cause.
 
-When transport reports `JVM_HEAP_EXHAUSTED`, the worker exited with code 3
-and Codeclew observed HotSpot's complete Java heap exhaustion line on stdout
-or stderr. The report records the matching channel and any unavailable
-channel. A frame that declares a length
+Codeclew records a JVM out-of-memory reason when exit code 3 agrees with
+HotSpot's complete termination line on stdout or stderr. It recognizes Java
+heap space, Metaspace, GC overhead and Compressed class space. Other complete
+HotSpot out-of-memory lines report `OTHER_JVM_OOM`. The report records the
+matching channel and any unavailable channel. A frame that declares a length
 above the limit reports `FRAME_LENGTH_EXCEEDS_LIMIT`, invalid frame content
 reports `INVALID_PROTOBUF`, and EOF before the header reports
 `STDOUT_EOF_BEFORE_HEADER`. These outcomes can share exit code 3.

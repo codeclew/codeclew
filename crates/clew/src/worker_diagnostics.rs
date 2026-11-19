@@ -26,11 +26,28 @@ pub(crate) enum TransportReason {
     FrameBodyReadFailed,
     InvalidProtobuf,
     JvmHeapExhausted,
+    JvmMetaspaceExhausted,
+    JvmGcOverheadLimit,
+    JvmCompressedClassSpaceExhausted,
+    OtherJvmOom,
     ResponseRequestIdMismatch,
     ResponseProtocolIdentityMismatch,
     ResponsePayloadMismatch,
     ResponseValidationFailed,
     VerifiedIndexValidationFailed,
+}
+
+impl TransportReason {
+    fn is_jvm_oom(self) -> bool {
+        matches!(
+            self,
+            Self::JvmHeapExhausted
+                | Self::JvmMetaspaceExhausted
+                | Self::JvmGcOverheadLimit
+                | Self::JvmCompressedClassSpaceExhausted
+                | Self::OtherJvmOom
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -90,15 +107,39 @@ struct JvmTermination {
     stdout: LineObservation,
     stderr: LineObservation,
     heap_exhaustion_observed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    oom_reason: Option<TransportReason>,
 }
 
-const HEAP_LINE: &[u8] = b"Terminating due to java.lang.OutOfMemoryError: Java heap space\n";
+const HOTSPOT_OOM_PREFIX: &[u8] = b"Terminating due to java.lang.OutOfMemoryError: ";
+const MAX_HOTSPOT_OOM_LINE_BYTES: usize = 192;
+
+fn hotspot_oom_line(line: &[u8]) -> Option<TransportReason> {
+    if line.len() > MAX_HOTSPOT_OOM_LINE_BYTES {
+        return None;
+    }
+    let cause = line.strip_suffix(b"\n")?.strip_prefix(HOTSPOT_OOM_PREFIX)?;
+    let cause = cause.strip_suffix(b"\r").unwrap_or(cause);
+    if cause.is_empty()
+        || cause.iter().all(|byte| *byte == b' ')
+        || !cause.iter().all(|byte| (b' '..=b'~').contains(byte))
+    {
+        return None;
+    }
+    Some(match cause {
+        b"Java heap space" => TransportReason::JvmHeapExhausted,
+        b"Metaspace" => TransportReason::JvmMetaspaceExhausted,
+        b"GC overhead limit exceeded" => TransportReason::JvmGcOverheadLimit,
+        b"Compressed class space" => TransportReason::JvmCompressedClassSpaceExhausted,
+        _ => TransportReason::OtherJvmOom,
+    })
+}
 
 fn exited_with_code_three(process: &Value) -> bool {
     process["status"] == "EXITED" && process["exitCode"] == 3 && process["signal"].is_null()
 }
 
-fn observe_hotspot_stdout(stdout: &mut ChildStdout) -> LineObservation {
+fn observe_hotspot_stdout(stdout: &mut ChildStdout) -> (LineObservation, Option<TransportReason>) {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
@@ -110,26 +151,34 @@ fn observe_hotspot_stdout(stdout: &mut ChildStdout) -> LineObservation {
             revents: 0,
         };
         if unsafe { libc::poll(&mut pipe, 1, 0) } != 1 || pipe.revents & libc::POLLHUP == 0 {
-            return LineObservation::Unavailable;
+            return (LineObservation::Unavailable, None);
         }
-        let mut suffix = Vec::with_capacity(HEAP_LINE.len() - 3);
+        let mut line = Vec::from(&HOTSPOT_OOM_PREFIX[..4]);
         if stdout
-            .take(suffix.capacity() as u64)
-            .read_to_end(&mut suffix)
+            .take((MAX_HOTSPOT_OOM_LINE_BYTES - 3) as u64)
+            .read_to_end(&mut line)
             .is_err()
         {
-            return LineObservation::Unavailable;
+            return (LineObservation::Unavailable, None);
         }
-        return if suffix == HEAP_LINE[4..] {
-            LineObservation::Match
+        return if let Some(reason) = hotspot_oom_line(&line) {
+            (LineObservation::Match, Some(reason))
         } else {
-            LineObservation::NoMatch
+            (LineObservation::NoMatch, None)
         };
     }
     #[cfg(not(unix))]
     {
         let _ = stdout;
-        LineObservation::Unavailable
+        (LineObservation::Unavailable, None)
+    }
+}
+
+fn merge_oom_reasons(left: TransportReason, right: TransportReason) -> TransportReason {
+    if left == right {
+        left
+    } else {
+        TransportReason::OtherJvmOom
     }
 }
 
@@ -473,51 +522,62 @@ pub(crate) fn annotate_failure(
     // describe our cleanup SIGKILL as the cause of the original protocol error.
     let process = termination(child);
     let tail = stderr.finish();
-    let stdout = match observation.as_mut() {
+    let (stdout, stdout_oom) = match observation.as_mut() {
         Some((observation, pipe))
             if observation.possible_vm_termination && exited_with_code_three(&process) =>
         {
             observe_hotspot_stdout(pipe)
         }
         Some((observation, _)) if observation.reason == TransportReason::StdoutEofBeforeHeader => {
-            LineObservation::NoMatch
+            (LineObservation::NoMatch, None)
         }
-        _ => LineObservation::Unavailable,
+        _ => (LineObservation::Unavailable, None),
     };
-    let stderr_line = if tail
+    let truncated = tail.total > tail.bytes.len() as u64;
+    let stderr_oom = tail
         .bytes
         .split_inclusive(|byte| *byte == b'\n')
-        .any(|line| line == HEAP_LINE)
-    {
+        // The first retained segment may start in the middle of a line.
+        .skip(usize::from(truncated))
+        .filter_map(hotspot_oom_line)
+        .reduce(merge_oom_reasons);
+    let stderr_line = if stderr_oom.is_some() {
         LineObservation::Match
-    } else if tail.read_failed || tail.total > tail.bytes.len() as u64 {
+    } else if tail.read_failed || truncated {
         LineObservation::Unavailable
     } else {
         LineObservation::NoMatch
     };
-    let heap_exhaustion_observed = exited_with_code_three(&process)
-        && (stdout == LineObservation::Match || stderr_line == LineObservation::Match);
+    let oom_reason = if exited_with_code_three(&process) {
+        stdout_oom
+            .into_iter()
+            .chain(stderr_oom)
+            .reduce(merge_oom_reasons)
+    } else {
+        None
+    };
     let state = StateAuthority::process_default().ok();
     let mut diagnostic = json!({
         "schema":SCHEMA, "stage":stage, "identity":identity,
         "process":process, "stderr":persist_tail(state.as_ref(), &tail),
-        "jvmTermination":JvmTermination{stdout,stderr:stderr_line,heap_exhaustion_observed},
+        "jvmTermination":JvmTermination{stdout,stderr:stderr_line,
+            heap_exhaustion_observed:oom_reason == Some(TransportReason::JvmHeapExhausted),oom_reason},
     });
     if let Some((mut observation, _)) = observation {
-        let reason = if heap_exhaustion_observed
+        let reason = if let Some(oom_reason) = oom_reason
             && (stdout == LineObservation::Match
                 || observation.reason == TransportReason::StdoutEofBeforeHeader)
         {
             error.code = ErrorCode::WorkerCrashed;
             error.retryable = false;
-            error.message = "worker JVM terminated after exhausting its Java heap".to_owned();
+            error.message = "worker JVM reported out-of-memory termination".to_owned();
             if stdout == LineObservation::Match
                 && let Some(frame) = &mut observation.frame
             {
                 // The four ASCII bytes were the start of a line, not a header declaration.
                 frame.declared_body_bytes = None;
             }
-            TransportReason::JvmHeapExhausted
+            oom_reason
         } else {
             observation.reason
         };
@@ -572,8 +632,7 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
     let mut safe = json!({"stage":stage,"processStatus":status,"exitCode":code,"signal":signal});
     if let Ok(reason) =
         serde_json::from_value::<TransportReason>(value["transport"]["reason"].clone())
-        && (reason != TransportReason::JvmHeapExhausted
-            || exited_with_code_three(&value["process"]))
+        && (!reason.is_jvm_oom() || exited_with_code_three(&value["process"]))
     {
         safe["transport"] = json!({"reason":reason});
         if let Ok(frame) = serde_json::from_value::<FrameSizes>(value["transport"]["frame"].clone())
@@ -582,12 +641,21 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
             safe["transport"]["frame"] = json!(frame);
         }
     }
-    if let Ok(jvm) = serde_json::from_value::<JvmTermination>(value["jvmTermination"].clone())
-        && jvm.heap_exhaustion_observed
-            == (exited_with_code_three(&value["process"])
-                && (jvm.stdout == LineObservation::Match || jvm.stderr == LineObservation::Match))
-    {
-        safe["jvmTermination"] = json!(jvm);
+    if let Ok(jvm) = serde_json::from_value::<JvmTermination>(value["jvmTermination"].clone()) {
+        let signature_confirmed = exited_with_code_three(&value["process"])
+            && (jvm.stdout == LineObservation::Match || jvm.stderr == LineObservation::Match);
+        let valid = match jvm.oom_reason {
+            Some(reason) => {
+                signature_confirmed
+                    && reason.is_jvm_oom()
+                    && jvm.heap_exhaustion_observed == (reason == TransportReason::JvmHeapExhausted)
+            }
+            // Older records used the Boolean for the heap-only signature.
+            None => jvm.heap_exhaustion_observed == signature_confirmed,
+        };
+        if valid {
+            safe["jvmTermination"] = json!(jvm);
+        }
     }
     if stage == "INDEX_FILES" {
         match value["indexProgress"]["status"].as_str() {
@@ -621,6 +689,34 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn worker_transport_oom_signature_requires_a_complete_bounded_hotspot_line() {
+        fn check(tail: &[u8]) -> Option<TransportReason> {
+            hotspot_oom_line(&[HOTSPOT_OOM_PREFIX, tail].concat())
+        }
+        assert_eq!(
+            check(b"Metaspace\n"),
+            Some(TransportReason::JvmMetaspaceExhausted)
+        );
+        assert_eq!(
+            check(b"Requested array size exceeds VM limit\n"),
+            Some(TransportReason::OtherJvmOom)
+        );
+        for tail in [
+            b"Metaspace".as_slice(),
+            b"\n",
+            b"\t\n",
+            b"Metaspace\nextra\n",
+            b"Metaspace\x00\n",
+        ] {
+            assert_eq!(check(tail), None);
+        }
+        assert_eq!(
+            check(&[vec![b'x'; MAX_HOTSPOT_OOM_LINE_BYTES], vec![b'\n']].concat()),
+            None
+        );
+    }
 
     #[test]
     fn compiler_messages_are_opt_in_private_bounded_and_never_inline() {
