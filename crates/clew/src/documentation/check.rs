@@ -1764,6 +1764,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn worker_transport_diagnostic_survives_a_failed_check_and_offline_support_collect() {
+        use crate::worker_diagnostics::TransportReason;
         let artifacts = std::env::var_os("CODECLEW_TEST_WORKER_TRANSPORT_ARTIFACTS");
         let temporary = match &artifacts {
             Some(directory) => tempfile::tempdir_in(directory),
@@ -1785,7 +1786,15 @@ mod tests {
             ("decode", "printf '\\000\\000\\000\\001\\377'; exit 3"),
             ("empty", "exit 3"),
         ]);
-        for id in commands.keys() {
+        let decoded = BTreeMap::from([
+            ("reply-id", TransportReason::ResponseRequestIdMismatch),
+            (
+                "reply-version",
+                TransportReason::ResponseProtocolIdentityMismatch,
+            ),
+            ("reply-payload", TransportReason::ResponsePayloadMismatch),
+        ]);
+        for id in commands.keys().chain(decoded.keys()) {
             add_kotlin_service(&repo, id);
         }
         let checked = capture_selected_with(
@@ -1793,9 +1802,13 @@ mod tests {
             &BTreeSet::new(),
             repo.inputs().unwrap(),
             |service, _, _| {
-                Err(crate::worker::observe_test_index_transport_failure(
-                    commands[service.id.as_str()],
-                ))
+                Err(if let Some(reason) = decoded.get(service.id.as_str()) {
+                    crate::worker::observe_test_index_reply_failure(*reason)
+                } else {
+                    crate::worker::observe_test_index_transport_failure(
+                        commands[service.id.as_str()],
+                    )
+                })
             },
         )
         .unwrap();
@@ -1813,13 +1826,13 @@ mod tests {
         assert!(!private.contains("Terminating due to"));
         let report: Value = serde_json::from_str(&public).unwrap();
         // The test process has no admitted package runtime. The saved Check
-        // and its four failed services must still be read completely.
+        // and its failed services must still be read completely.
         assert_eq!(
             report["issues"],
             json!([{"code":"RUNTIME_METADATA_UNAVAILABLE"}])
         );
         assert_eq!(report["checkStatus"], "UNRESOLVED");
-        assert_eq!(report["counts"]["reported"], 4);
+        assert_eq!(report["counts"]["reported"], commands.len() + decoded.len());
         assert_eq!(report["snapshot"], snapshot);
         let reasons: BTreeSet<_> = report["services"]
             .as_array()
@@ -1839,7 +1852,10 @@ mod tests {
                 "JVM_HEAP_EXHAUSTED",
                 "FRAME_LENGTH_EXCEEDS_LIMIT",
                 "INVALID_PROTOBUF",
-                "STDOUT_EOF_BEFORE_HEADER"
+                "STDOUT_EOF_BEFORE_HEADER",
+                "RESPONSE_REQUEST_ID_MISMATCH",
+                "RESPONSE_PROTOCOL_IDENTITY_MISMATCH",
+                "RESPONSE_PAYLOAD_MISMATCH",
             ]),
         );
         if artifacts.is_some() {

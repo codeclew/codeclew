@@ -7,7 +7,7 @@ use crate::proto::{
 };
 use crate::runtime::RuntimeAuthority;
 use crate::state::ManagedDirectory;
-use crate::worker_diagnostics::{self, FrameObservation, TransportReason, WorkerStderr};
+use crate::worker_diagnostics::{self, TransportObservation, TransportReason, WorkerStderr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -2150,7 +2150,7 @@ impl WorkerClient {
         &mut self,
         kind: RequestKind,
         error: ClewError,
-        frame: Option<FrameObservation>,
+        observation: Option<TransportObservation>,
     ) -> ClewError {
         if worker_diagnostics::from_evidence(&error.evidence).is_some() {
             return error;
@@ -2161,13 +2161,17 @@ impl WorkerClient {
             RequestKind::Shutdown => "SHUTDOWN",
             _ => return error,
         };
+        let observation = observation.or_else(|| {
+            (kind == RequestKind::IndexFiles && error.code == ErrorCode::WorkerProtocolMismatch)
+                .then(|| TransportReason::ResponseValidationFailed.into())
+        });
         worker_diagnostics::annotate_failure(
             error,
             Some(&mut self.process.child),
             &mut self.stderr,
             stage,
             worker_diagnostic_identity(self.engine, &self.trusted_distribution, &self.worker_jvm),
-            frame.map(|frame| (frame, &mut self.stdout)),
+            observation.map(|observation| (observation, &mut self.stdout)),
         )
     }
 
@@ -2249,22 +2253,9 @@ impl WorkerClient {
         }
         let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)
             .map_err(|(error, frame)| self.annotate_request_failure(kind, error, Some(frame)))?;
-        if response.request_id != request_id {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker response request_id mismatch",
-            ));
-        }
-        if response
-            .protocol_version
-            .as_ref()
-            .is_none_or(|version| version.major != 1 || version.minor != 0)
-        {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker response protocol identity mismatch",
-            ));
-        }
+        validate_worker_reply(&response, kind, request_id).map_err(|(error, observation)| {
+            self.annotate_request_failure(kind, error, Some(observation))
+        })?;
         let canonical_json = match response.payload {
             Some(worker_response::Payload::Error(error)) => {
                 let relevant: Vec<String> = payload
@@ -2446,6 +2437,14 @@ impl WorkerClient {
     /// model. The capability proves only the current file/declaration payload;
     /// compiler-semantic consumers cannot accept this distinct type.
     pub fn index_files_source_syntax_verified(
+        &mut self,
+        payload: &Value,
+    ) -> Result<VerifiedSourceSyntax, ClewError> {
+        self.verify_source_syntax_index(payload)
+            .map_err(|error| self.annotate_index_verification_failure(error))
+    }
+
+    fn verify_source_syntax_index(
         &mut self,
         payload: &Value,
     ) -> Result<VerifiedSourceSyntax, ClewError> {
@@ -2650,6 +2649,27 @@ impl WorkerClient {
     /// without a second native Maven/Gradle model extraction. The supplied model
     /// must still match the worker's live snapshot and the IndexFiles response.
     pub fn index_files_verified_after_project(
+        &mut self,
+        payload: &Value,
+        project: &Value,
+    ) -> Result<VerifiedIndexFacts, ClewError> {
+        self.verify_index_after_project(payload, project)
+            .map_err(|error| self.annotate_index_verification_failure(error))
+    }
+
+    fn annotate_index_verification_failure(&mut self, error: ClewError) -> ClewError {
+        if error.code == ErrorCode::WorkerProtocolMismatch {
+            self.annotate_request_failure(
+                RequestKind::IndexFiles,
+                error,
+                Some(TransportReason::VerifiedIndexValidationFailed.into()),
+            )
+        } else {
+            error
+        }
+    }
+
+    fn verify_index_after_project(
         &mut self,
         payload: &Value,
         project: &Value,
@@ -3964,16 +3984,53 @@ fn write_message_profiled<M: Message>(
     Ok((encode_micros, write_started.elapsed().as_micros() as u64))
 }
 
+fn validate_worker_reply(
+    response: &WorkerResponse,
+    kind: RequestKind,
+    request_id: u64,
+) -> Result<(), (ClewError, TransportObservation)> {
+    use worker_response::Payload;
+    let (message, reason) = if response.request_id != request_id {
+        (
+            "worker response request_id mismatch",
+            TransportReason::ResponseRequestIdMismatch,
+        )
+    } else if response
+        .protocol_version
+        .as_ref()
+        .is_none_or(|version| version.major != 1 || version.minor != 0)
+    {
+        (
+            "worker response protocol identity mismatch",
+            TransportReason::ResponseProtocolIdentityMismatch,
+        )
+    } else if !matches!(
+        (kind, &response.payload),
+        (_, Some(Payload::Error(_)))
+            | (RequestKind::OpenProject, Some(Payload::OpenProject(_)))
+            | (RequestKind::IndexFiles, Some(Payload::IndexFiles(_)))
+            | (RequestKind::Shutdown, Some(Payload::Shutdown(_)))
+    ) {
+        (
+            "worker response has unexpected payload",
+            TransportReason::ResponsePayloadMismatch,
+        )
+    } else {
+        return Ok(());
+    };
+    Err((
+        ClewError::new(ErrorCode::WorkerProtocolMismatch, message),
+        reason.into(),
+    ))
+}
+
 fn read_message_profiled(
     reader: &mut impl Read,
-) -> Result<(WorkerResponse, u64, u64), (ClewError, FrameObservation)> {
+) -> Result<(WorkerResponse, u64, u64), (ClewError, TransportObservation)> {
     let failure = |code, message: String, reason| {
         (
             ClewError::new(code, message),
-            FrameObservation {
-                reason,
-                possible_vm_termination: false,
-            },
+            TransportObservation::from(reason),
         )
     };
     let read_started = Instant::now();
@@ -4013,7 +4070,7 @@ fn read_message_profiled(
                 ErrorCode::WorkerProtocolMismatch,
                 "worker frame exceeds 64MiB",
             ),
-            FrameObservation {
+            TransportObservation {
                 reason: TransportReason::FrameLengthExceedsLimit,
                 possible_vm_termination: &header == b"Term",
             },
@@ -4053,17 +4110,46 @@ pub(crate) fn observe_test_index_transport_failure(command: &str) -> ClewError {
         .unwrap();
     let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
     let mut stdout = child.stdout.take().unwrap();
-    let (error, frame) = read_message_profiled(&mut stdout).unwrap_err();
+    let (error, observation) = read_message_profiled(&mut stdout)
+        .and_then(|(response, _, _)| validate_worker_reply(&response, RequestKind::IndexFiles, 1))
+        .unwrap_err();
     let error = worker_diagnostics::annotate_failure(
         error,
         Some(&mut child),
         &mut stderr,
         "INDEX_FILES",
         json!({"engine":"test"}),
-        Some((frame, &mut stdout)),
+        Some((observation, &mut stdout)),
     );
     child.wait().unwrap();
     attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn observe_test_index_reply_failure(reason: TransportReason) -> ClewError {
+    let mut response = WorkerResponse {
+        request_id: 1,
+        protocol_version: Some(ProtocolVersion { major: 1, minor: 0 }),
+        payload: Some(worker_response::Payload::IndexFiles(Default::default())),
+    };
+    validate_worker_reply(&response, RequestKind::IndexFiles, 1).unwrap();
+    match reason {
+        TransportReason::ResponseRequestIdMismatch => response.request_id = 2,
+        TransportReason::ResponseProtocolIdentityMismatch => {
+            response.protocol_version.as_mut().unwrap().minor = 1;
+        }
+        TransportReason::ResponsePayloadMismatch => {
+            response.payload = Some(worker_response::Payload::Shutdown(Default::default()));
+        }
+        _ => unreachable!("test requires a decoded reply mismatch"),
+    }
+    let mut frame = Vec::new();
+    write_message_profiled(&mut frame, &response).unwrap();
+    let octets = frame
+        .iter()
+        .map(|byte| format!("\\{byte:03o}"))
+        .collect::<String>();
+    observe_test_index_transport_failure(&format!("printf '{octets}'; exit 3"))
 }
 
 fn take_worker_profiling(value: &mut Value) -> Option<Value> {

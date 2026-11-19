@@ -526,6 +526,10 @@ only the reason, stage, and process status. A frame that declares a length
 above the limit reports `FRAME_LENGTH_EXCEEDS_LIMIT`, invalid frame content
 reports `INVALID_PROTOBUF`, and EOF before the header reports
 `STDOUT_EOF_BEFORE_HEADER`. These outcomes can share exit code 3.
+A decoded response can report a request ID, protocol identity, or payload
+kind mismatch separately. For later validation failures the report records
+whether the check failed while accepting the reply or while verifying the
+index evidence.
 
 The sealed worker uses `-Xms64m -Xmx2048m`,
 `-XX:MaxMetaspaceSize=384m`, `-XX:MaxDirectMemorySize=256m`, and

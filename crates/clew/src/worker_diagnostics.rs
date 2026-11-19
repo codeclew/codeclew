@@ -24,14 +24,28 @@ pub(crate) enum TransportReason {
     FrameBodyReadFailed,
     InvalidProtobuf,
     JvmHeapExhausted,
+    ResponseRequestIdMismatch,
+    ResponseProtocolIdentityMismatch,
+    ResponsePayloadMismatch,
+    ResponseValidationFailed,
+    VerifiedIndexValidationFailed,
 }
 
 #[derive(Debug)]
-pub(crate) struct FrameObservation {
+pub(crate) struct TransportObservation {
     pub reason: TransportReason,
     // "Term" can also be the first four bytes of an invalid frame length.
     // Keep this hint in memory until the child exit and complete line agree.
     pub possible_vm_termination: bool,
+}
+
+impl From<TransportReason> for TransportObservation {
+    fn from(reason: TransportReason) -> Self {
+        Self {
+            reason,
+            possible_vm_termination: false,
+        }
+    }
 }
 
 fn exited_with_code_three(process: &Value) -> bool {
@@ -302,7 +316,7 @@ pub(crate) fn annotate_failure(
     stderr: &mut WorkerStderr,
     stage: &str,
     identity: Value,
-    frame: Option<(FrameObservation, &mut ChildStdout)>,
+    observation: Option<(TransportObservation, &mut ChildStdout)>,
 ) -> ClewError {
     if !matches!(
         error.code,
@@ -319,8 +333,8 @@ pub(crate) fn annotate_failure(
         "schema":SCHEMA, "stage":stage, "identity":identity,
         "process":process, "stderr":persist_tail(state.as_ref(), &tail),
     });
-    if let Some((frame, stdout)) = frame {
-        let reason = if frame.possible_vm_termination
+    if let Some((observation, stdout)) = observation {
+        let reason = if observation.possible_vm_termination
             && exited_with_code_three(&process)
             && is_hotspot_heap_exit_line(stdout)
         {
@@ -328,7 +342,7 @@ pub(crate) fn annotate_failure(
             error.message = "worker JVM terminated after exhausting its Java heap".to_owned();
             TransportReason::JvmHeapExhausted
         } else {
-            frame.reason
+            observation.reason
         };
         diagnostic["transport"] = json!({"reason":reason});
     }
