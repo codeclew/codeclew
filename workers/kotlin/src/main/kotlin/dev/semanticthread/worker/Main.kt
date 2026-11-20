@@ -1,6 +1,5 @@
 package dev.semanticthread.worker
 
-import dev.semanticthread.worker.typedResponsePayload
 import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
@@ -32,12 +31,12 @@ fun main() {
             }
             val kind = payloadField.number - 8
             if (kind == 9) {
-                Proto.writeFrame(System.out, response(requestId, payload = "{\"shutdown\":true}", responseField = 19))
+                Proto.writeFrame(System.out, response(requestId, payload = buildJsonObject { put("shutdown", true) }, responseField = 19))
                 break
             }
             val indexProgress = if (kind == 3) IndexProgress.start(requestId, frame.size) else null
             val encoded = try {
-                val payload = worker.handle(kind, decodeRequest(kind, payloadField.bytes), indexProgress)
+                val payload = worker.handleJson(kind, decodeRequest(kind, payloadField.bytes), indexProgress)
                 indexProgress?.mark(IndexPhase.ENCODE_RESPONSE)
                 response(requestId, payload = payload, responseField = kind + 9)
             } catch (e: WorkerFailure) {
@@ -62,7 +61,7 @@ private fun processRequest(worker: Worker, frame: ByteArray): ByteArray {
         ?: return response(requestId, errorCode = "WORKER_PROTOCOL_MISMATCH", errorMessage = "unknown or unsupported batch item")
     val kind = payload.number - 8
     return try {
-        response(requestId, payload = worker.handle(kind, decodeRequest(kind, payload.bytes)), responseField = kind + 9)
+        response(requestId, payload = worker.handleJson(kind, decodeRequest(kind, payload.bytes)), responseField = kind + 9)
     } catch (e: WorkerFailure) {
         response(requestId, errorCode = e.code, errorMessage = e.message, compilerPluginDiagnostic = e.compilerPluginDiagnostic)
     } catch (e: Throwable) {
@@ -89,7 +88,7 @@ private fun capabilities(): ByteArray {
     )
 }
 
-private fun response(requestId: Long, payload: String? = null, capabilities: Boolean = false, errorCode: String? = null, errorMessage: String = "", responseField: Int = 0, compilerPluginDiagnostic: JsonObject? = null): ByteArray {
+private fun response(requestId: Long, payload: JsonObject? = null, capabilities: Boolean = false, errorCode: String? = null, errorMessage: String = "", responseField: Int = 0, compilerPluginDiagnostic: JsonObject? = null): ByteArray {
     val fields = mutableListOf(Proto.uint(1, requestId), Proto.bytes(2, version()))
     if (capabilities) fields += Proto.bytes(10, capabilities())
     if (payload != null) fields += Proto.bytes(responseField, typedResponsePayload(responseField, payload))
@@ -103,54 +102,18 @@ private fun response(requestId: Long, payload: String? = null, capabilities: Boo
 
 internal fun typedResponsePayload(
     responseField: Int,
-    payload: String,
+    value: JsonObject,
     transportRoot: java.nio.file.Path? = System.getenv("CODECLEW_WORKER_TRANSPORT_ROOT")?.takeIf(String::isNotBlank)?.let(java.nio.file.Path::of),
     inlineLimitBytes: Int = 32 * 1024 * 1024,
     maximumBlobBytes: Int = 256 * 1024 * 1024,
 ): ByteArray {
     require(inlineLimitBytes in 1 until 64 * 1024 * 1024)
     require(maximumBlobBytes >= inlineLimitBytes)
-    val value = Json.parseToJsonElement(payload).jsonObject
-    val payloadBytes = payload.toByteArray()
     val fields = mutableListOf(Proto.bytes(1, schemaVersion()))
-    if (responseField == 12 && payloadBytes.size > inlineLimitBytes) {
-        if (payloadBytes.size > maximumBlobBytes) throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "IndexFiles response exceeds the bounded transport body limit")
-        val requestedRoot = transportRoot?.toAbsolutePath()?.normalize()
-            ?: throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "large IndexFiles response has no private transport root")
-        if (!requestedRoot.isAbsolute || java.nio.file.Files.isSymbolicLink(requestedRoot) || !java.nio.file.Files.isDirectory(requestedRoot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport root is not a real directory")
-        }
-        val canonicalRoot = requestedRoot.toRealPath()
-        if (canonicalRoot != requestedRoot) throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport root identity changed")
-        val digestHex = MessageDigest.getInstance("SHA-256").digest(payloadBytes).joinToString("") { "%02x".format(it) }
-        val contentHash = "sha256:$digestHex"
-        val directory = canonicalRoot.resolve("sha256")
-        if (!java.nio.file.Files.exists(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS)) java.nio.file.Files.createDirectory(directory)
-        if (java.nio.file.Files.isSymbolicLink(directory) || !java.nio.file.Files.isDirectory(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS) || directory.toRealPath().parent != canonicalRoot) {
-            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport CAS directory is unsafe")
-        }
-        val relative = "sha256/$digestHex"
-        val target = canonicalRoot.resolve(relative)
-        if (!java.nio.file.Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-            val temporary = java.nio.file.Files.createTempFile(directory, ".response-", ".tmp")
-            try {
-                java.nio.file.Files.write(temporary, payloadBytes)
-                try {
-                    java.nio.file.Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-                    try { java.nio.file.Files.move(temporary, target) } catch (_: java.nio.file.FileAlreadyExistsException) { }
-                } catch (_: java.nio.file.FileAlreadyExistsException) { }
-            } finally {
-                java.nio.file.Files.deleteIfExists(temporary)
-            }
-        }
-        if (java.nio.file.Files.isSymbolicLink(target) || !java.nio.file.Files.isRegularFile(target, java.nio.file.LinkOption.NOFOLLOW_LINKS) || java.nio.file.Files.size(target) != payloadBytes.size.toLong() || !java.nio.file.Files.readAllBytes(target).contentEquals(payloadBytes)) {
-            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport CAS object differs from its content authority")
-        }
-        fields += Proto.bytes(2, byteArrayOf())
-        fields += Proto.bytes(3, Proto.message(Proto.string(1, contentHash), Proto.string(2, relative), Proto.uint(3, payloadBytes.size.toLong())))
+    if (responseField == 12) {
+        fields += indexResponseBody(value, transportRoot, inlineLimitBytes, maximumBlobBytes)
     } else {
-        fields += Proto.bytes(2, payloadBytes)
+        fields += Proto.bytes(2, value.toString().toByteArray())
     }
     fun string(number: Int, pointer: String) { value[pointer]?.jsonPrimitive?.contentOrNull?.let { fields += Proto.string(number, it) } }
     value["sourceBlob"]?.jsonObject?.let { blob ->

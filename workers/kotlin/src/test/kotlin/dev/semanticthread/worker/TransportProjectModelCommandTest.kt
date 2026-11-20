@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -13,11 +15,18 @@ import kotlin.test.assertTrue
 
 class TransportProjectModelCommandTest {
     @Test
+    fun canonicalIndexDigestMatchesExistingJsonForEscapedAndMultibyteValues() {
+        val value = Json.parseToJsonElement("""{"z":null,"b":[{"last":"⚙️","a":"line\nquoted \"value\""}],"a":42}""")
+        assertEquals(nativeHash(canonicalJson(value).toByteArray()), canonicalIndexJsonDigest(value))
+    }
+
+    @Test
     fun largeIndexBodySpillsToOneVerifiedPrivateCasObject() {
         val root = Files.createTempDirectory("worker-response-transport").toRealPath()
         try {
             val payload = """{"indexHash":"index","projectModelHash":"project","compilation":":/main","files":[],"partial":false,"padding":"${"x".repeat(4096)}"}"""
-            val encoded = typedResponsePayload(12, payload, root, inlineLimitBytes = 256, maximumBlobBytes = 8192)
+            val value = Json.parseToJsonElement(payload).jsonObject
+            val encoded = typedResponsePayload(12, value, root, inlineLimitBytes = 256, maximumBlobBytes = 8192)
             val fields = Proto.fields(encoded)
             assertContentEquals(byteArrayOf(), fields.single { it.number == 2 }.bytes)
             val blob = Proto.fields(fields.single { it.number == 3 }.bytes)
@@ -28,13 +37,15 @@ class TransportProjectModelCommandTest {
             assertEquals(payload.toByteArray().size.toLong(), blob.single { it.number == 3 }.value)
             assertContentEquals(payload.toByteArray(), root.resolve(relative).readBytes())
 
-            val inline = typedResponsePayload(12, payload, root, inlineLimitBytes = payload.toByteArray().size, maximumBlobBytes = 8192)
+            val inline = typedResponsePayload(12, value, root, inlineLimitBytes = payload.toByteArray().size, maximumBlobBytes = 8192)
             val inlineFields = Proto.fields(inline)
             assertContentEquals(payload.toByteArray(), inlineFields.single { it.number == 2 }.bytes)
             assertTrue(inlineFields.none { it.number == 3 })
+            assertFailsWith<WorkerFailure> { typedResponsePayload(12, value, root, inlineLimitBytes = 128, maximumBlobBytes = 256) }
+            assertTrue(Files.list(root).use { entries -> entries.noneMatch { it.fileName.toString().endsWith(".tmp") } })
 
             Files.writeString(root.resolve(relative), "tampered")
-            assertFailsWith<WorkerFailure> { typedResponsePayload(12, payload, root, inlineLimitBytes = 256, maximumBlobBytes = 8192) }
+            assertFailsWith<WorkerFailure> { typedResponsePayload(12, value, root, inlineLimitBytes = 256, maximumBlobBytes = 8192) }
         } finally {
             root.toFile().deleteRecursively()
         }

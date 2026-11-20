@@ -2,6 +2,9 @@ package dev.semanticthread.worker
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.DigestInputStream
+import java.security.MessageDigest
+import java.util.HexFormat
 import kotlinx.serialization.SerialFormat
 import kotlinx.serialization.json.*
 import kotlin.io.path.*
@@ -70,12 +73,23 @@ internal fun readNativeFirObservation(
     require(receipt["gradleVersion"] == model["gradleVersion"])
     require(receipt["jvmTarget"] == model["jvmTarget"])
     verifyNativeCompilationInputs(repo, model, receipt)
-    val bytes = factsFile.readBytes()
-    require(receipt["factsDigest"] == JsonPrimitive(nativeHash(bytes)))
     val selected = model.getValue("sourceFiles").jsonArray.map { Path.of(it.jsonPrimitive.content) }
-    val rows = parseCompilerFactLines(bytes.decodeToString().lineSequence().toList())
-    val (compiler, facts) = rows.partition { it["recordType"] == JsonPrimitive("FIR_NATIVE_COMPILER") }
-    require(compiler.isNotEmpty() && compiler.all { it["version"] == receipt["compilerVersion"] })
+    val digest = MessageDigest.getInstance("SHA-256")
+    val pool = CompilerJsonPool()
+    val facts = ArrayList<JsonObject>()
+    var compilerFound = false
+    DigestInputStream(Files.newInputStream(factsFile), digest).bufferedReader(Charsets.UTF_8).useLines { lines ->
+        compilerFactRows(lines).forEach { row ->
+            if (row["recordType"] == JsonPrimitive("FIR_NATIVE_COMPILER")) {
+                require(row["version"] == receipt["compilerVersion"])
+                compilerFound = true
+            } else {
+                facts.add(pool.row(row))
+            }
+        }
+    }
+    require(receipt["factsDigest"] == JsonPrimitive("sha256:" + HexFormat.of().formatHex(digest.digest())))
+    require(compilerFound)
     val sealedFacts = validateDirectK2ReceiptClosure(repo, selected, selected, facts)
     val summary = buildJsonObject {
         put("schema", "codeclew-kotlin-native-fir/1")

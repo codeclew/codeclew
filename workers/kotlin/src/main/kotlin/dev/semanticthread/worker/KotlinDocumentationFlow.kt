@@ -16,7 +16,7 @@ internal class KotlinDocumentationSource(
     descriptors: List<JsonObject>,
     relations: List<JsonObject>,
     private val dataFacts: List<JsonObject> = emptyList(),
-    private val storageDescriptors: List<JsonObject> = descriptors,
+    private val storageDescriptors: Map<JsonElement?, List<JsonObject>> = descriptors.groupBy { it["symbolIdentity"] },
 ) {
     private val dataCalls = relations
     private val sourceDigest = "sha256:" + MessageDigest.getInstance("SHA-256")
@@ -27,7 +27,9 @@ internal class KotlinDocumentationSource(
         KtPsiFactory(source.project, markGenerated = false).createFile(source.name, compilerLineNormalizedText(originalSource))
     } else source
     private val inputCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
-    private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, documentationSource.text)
+    private val documentationText = documentationSource.text
+    private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, documentationText)
+    private val lineStarts = listOf(0) + documentationText.indices.filter { documentationText[it] == '\n' }.map { it + 1 }
     private val functions = PsiTreeUtil.collectElementsOfType(documentationSource, KtNamedFunction::class.java)
         .groupBy { function -> psiCoordinates?.range(function.textRange.startOffset, function.textRange.endOffset)?.let { it.first to it.last + 1 } }
     private val compilerCoordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(originalSource)
@@ -48,7 +50,7 @@ internal class KotlinDocumentationSource(
             it["declarationKind"]?.jsonPrimitive?.content == "FUNCTION"
         } ?: return row
         val identity = descriptor["symbolIdentity"]?.jsonPrimitive?.content ?: return row
-        val flow = KotlinDocumentationFlow(file, documentationSource, sourceDigest, compilationScope, descriptor, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
+        val flow = KotlinDocumentationFlow(file, documentationSource, sourceDigest, compilationScope, descriptor, coordinates, lineStarts, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
             (it["start"]!!.jsonPrimitive.int >= range.first) && (it["end"]!!.jsonPrimitive.int <= range.last + 1)
         }).read(function, descriptor)
         val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
@@ -77,12 +79,12 @@ private class KotlinDocumentationFlow(
     private val compilationScope: String,
     private val descriptor: JsonObject,
     private val coordinates: CompilerUtf16ToUtf8ByteMap,
+    private val lineStarts: List<Int>,
     relations: List<JsonObject>,
 ) : KtTreeVisitorVoid() {
     private val events = mutableListOf<JsonObject>()
     private val boundaries = sortedSetOf<String>()
     private val calls = relations.groupBy { it["start"]?.jsonPrimitive?.intOrNull to it["end"]?.jsonPrimitive?.intOrNull }
-    private val lineStarts = listOf(0) + source.text.indices.filter { source.text[it] == '\n' }.map { it + 1 }
     private var depth = 0
     private val structures = mutableListOf<JsonObject>()
     private val structureStack = mutableListOf<Int>()

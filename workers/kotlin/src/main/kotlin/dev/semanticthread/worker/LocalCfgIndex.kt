@@ -427,8 +427,9 @@ internal fun attachCompilerLocalCfgSnapshot(
             }
         }
     }
-    val sortedGraphs = graphs.sortedBy(::canonicalLocalCfgJson)
-    val sortedBoundaries = boundaries.distinctBy(::canonicalLocalCfgJson).sortedBy(::canonicalLocalCfgJson)
+    val sortedGraphs = graphs.map { it to canonicalLocalCfgJson(it) }.sortedBy { it.second }.map { it.first }
+    val sortedBoundaries = boundaries.map { it to canonicalLocalCfgJson(it) }
+        .distinctBy { it.second }.sortedBy { it.second }.map { it.first }
     val snapshot = buildJsonObject {
         putJsonArray("graphs") { sortedGraphs.forEach(::add) }
         putJsonArray("boundaries") { sortedBoundaries.forEach(::add) }
@@ -439,6 +440,6 @@ internal fun attachCompilerLocalCfgSnapshot(
         }
         putJsonArray("localCfgs") { sortedGraphs.forEach(::add) }
         putJsonArray("localCfgBoundaries") { sortedBoundaries.forEach(::add) }
-        put("localCfgHash", localCfgDigest(snapshot))
+        put("localCfgHash", canonicalIndexJsonDigest(snapshot))
     }
 }

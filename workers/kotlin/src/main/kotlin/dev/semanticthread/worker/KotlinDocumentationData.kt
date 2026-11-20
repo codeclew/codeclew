@@ -16,7 +16,7 @@ internal class KotlinDocumentationData(
     private val compiler: CompilerUtf16ToUtf8ByteMap?,
     facts: List<JsonObject>,
     calls: List<JsonObject>,
-    private val descriptors: List<JsonObject>,
+    private val descriptors: Map<JsonElement?, List<JsonObject>>,
 ) {
     private val owner = descriptor["symbolIdentity"]!!.jsonPrimitive.content
     private val ownerStart = descriptor["start"]!!.jsonPrimitive.int
@@ -89,8 +89,8 @@ internal class KotlinDocumentationData(
                             || row["authority"]?.jsonPrimitive?.content != authority
                             || row["resolution"]?.jsonPrimitive?.content != "COMPILER_EXACT"
                             || compilerRange(row, "ownerStart", "ownerEnd") != ownerStart to ownerEnd) throw Unavailable()
-                        val property = descriptors.singleOrNull { it["symbolIdentity"] == row["propertyIdentity"]
-                            && if (constant) it["documentationStringConstant"]?.jsonObject?.get("value") == row["stringConstant"]
+                        val property = descriptors[row["propertyIdentity"]].orEmpty().singleOrNull {
+                            if (constant) it["documentationStringConstant"]?.jsonObject?.get("value") == row["stringConstant"]
                             else it["documentationStorage"]?.jsonObject?.get("qualified")?.jsonPrimitive?.boolean == !accessor
                             } ?: continue
                         val span = compilerRange(row, "start", "end")

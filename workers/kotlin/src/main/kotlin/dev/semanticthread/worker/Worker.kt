@@ -1094,7 +1094,10 @@ private fun rawContainsUnresolvedCompilerType(raw: JsonObject): Boolean {
     return unresolved(JsonObject(raw.filterKeys { it != "jvmAnnotations" }))
 }
 
-internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> = lines
+internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> =
+    compilerFactRows(lines.asSequence()).toList()
+
+internal fun compilerFactRows(lines: Sequence<String>): Sequence<JsonObject> = lines
     .filter(String::isNotBlank)
     .flatMap { line ->
         runCatching {
@@ -1800,7 +1803,9 @@ internal class Worker(
         }.also(::recheckExternalBuildStateSeal)
     }
 
-    fun handle(kind: Int, payload: ByteArray, indexProgress: IndexProgress? = null): String {
+    fun handle(kind: Int, payload: ByteArray): String = handleJson(kind, payload).toString()
+
+    fun handleJson(kind: Int, payload: ByteArray, indexProgress: IndexProgress? = null): JsonObject {
         IncrementalK2Runtime.reset()
         projectModelInventories.clear()
         // Project-native model extraction inherits mutable build-tool state
@@ -1830,19 +1835,17 @@ internal class Worker(
             3 -> {
                 val repo = Path.of(request.requiredString("repo")).toRealPath()
                 val compilation = request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content
-                val selected = compilation ?: ":/main"
                 val syntaxOnly = request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true
                 val requestedFiles = request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
                 indexProgress?.let {
                     it.requestedFiles = requestedFiles.size
                     it.mark(IndexPhase.RESOLVE_INPUTS)
                 }
-                val indexed = index(repo, compilation, syntaxOnly, requestedFiles, indexProgress)
+                val (indexed, analysis) = index(repo, compilation, syntaxOnly, requestedFiles, indexProgress)
                 if (syntaxOnly) {
                     indexed
                 } else {
                     indexProgress?.mark(IndexPhase.ATTACH_LOCAL_CFG)
-                    val analysis = analyzeWithK2(repo, compilation = selected)
                     val results = indexed["files"]!!.jsonArray.flatMap { fileValue ->
                         val relative = fileValue.jsonObject["path"]!!.jsonPrimitive.content
                         val path = repo.resolve(relative).normalize().toRealPath()
@@ -1934,7 +1937,7 @@ internal class Worker(
             }
         }
         val incremental = IncrementalK2Runtime.takeProfiling()
-        return IncrementalK2Runtime.mergeProfiling(response, incremental).toString()
+        return IncrementalK2Runtime.mergeProfiling(response, incremental)
     }
 
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
@@ -2905,7 +2908,7 @@ internal class Worker(
     private fun index(
         requestedRepo: Path, compilation: String?, syntaxOnly: Boolean, requestedFiles: List<String>,
         progress: IndexProgress?,
-    ): JsonObject {
+    ): Pair<JsonObject, K2Analysis> {
         val repo = requestedRepo.toRealPath()
         val selected = compilation ?: ":/main"
         val model = if (syntaxOnly) null else cachedProjectModel(repo, selected)
@@ -2942,13 +2945,15 @@ internal class Worker(
                 val declarationDescriptors = if (semanticAvailable) declarationDescriptorGraph(repo, selected, false, analysis, project!!, module, sourceSet) else JsonArray(emptyList())
         val documentationDescriptors = (declarationDescriptors as? JsonObject)?.get("descriptors")?.jsonArray.orEmpty()
             .map { it.jsonObject }.groupBy { it["file"]?.jsonPrimitive?.content }
+        val allDocumentationDescriptors = documentationDescriptors.values.flatten()
+        val storageDescriptors = allDocumentationDescriptors.groupBy { it["symbolIdentity"] }
         val documentationCalls = analysis.facts.filter { it["recordType"].safeString() == "DOCUMENTATION_CALL" }
             .groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val binaryTargets = if (semanticAvailable) libraryBinaryTargets(
             model!!,
             project!!["resolvedDependencyArtifacts"]?.jsonArray ?: JsonArray(emptyList()),
             documentationCalls.values.flatten(),
-            documentationDescriptors.values.flatten().mapNotNull { it["symbolIdentity"]?.jsonPrimitive?.contentOrNull }.toSet(),
+            allDocumentationDescriptors.mapNotNull { it["symbolIdentity"]?.jsonPrimitive?.contentOrNull }.toSet(),
         ) else JsonArray(emptyList())
         val documentationData = analysis.facts.filter { it["recordType"].safeString() in setOf(
             "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY", "PORTABLE_VALUE_PROJECTION",
@@ -2965,7 +2970,7 @@ internal class Worker(
                 documentationDescriptors[relative].orEmpty(),
                 documentationCalls[relative].orEmpty(),
                 documentationData[relative].orEmpty(),
-                documentationDescriptors.values.flatten(),
+                storageDescriptors,
             )
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
@@ -2990,12 +2995,12 @@ internal class Worker(
             }
         }
         val canonical = JsonArray(files)
-        return buildJsonObject {
-            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requestedFiles.isNotEmpty()); put("analysisMode", if (semanticAvailable) "K2_SEMANTIC" else "SYNTAX_DECLARATIONS"); put("files", canonical); put("indexHash", sha(canonicalJson(canonical).toByteArray()))
+        val response = buildJsonObject {
+            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requestedFiles.isNotEmpty()); put("analysisMode", if (semanticAvailable) "K2_SEMANTIC" else "SYNTAX_DECLARATIONS"); put("files", canonical); put("indexHash", canonicalIndexJsonDigest(canonical))
             put("declarationRelations", declarationRelations)
-            put("declarationRelationHash", sha(canonicalJson(declarationRelations).toByteArray()))
+            put("declarationRelationHash", canonicalIndexJsonDigest(declarationRelations))
             put("declarationDescriptors", declarationDescriptors)
-            put("declarationDescriptorHash", sha(canonicalJson(declarationDescriptors).toByteArray()))
+            put("declarationDescriptorHash", canonicalIndexJsonDigest(declarationDescriptors))
             if (project == null) {
                             val syntaxManifest = buildJsonObject {
                                 put("schema", "kotlin-syntax-input-manifest/0.1")
@@ -3044,6 +3049,7 @@ internal class Worker(
                 }
             }
         }
+        return response to attemptedAnalysis
     }
 
     private fun declarationRelationGraph(
@@ -3243,8 +3249,7 @@ internal class Worker(
                 }
                 normalized
             }
-            .distinctBy(::canonicalJson)
-            .sortedBy(::canonicalJson)
+            .let(::distinctCanonicalIndexRows)
         val compilerBoundaries = analysis.facts
             .filter { it["recordType"].safeString() == "DECLARATION_RELATION_BOUNDARY" }
             .map { raw ->
@@ -3276,8 +3281,7 @@ internal class Worker(
             }
         val boundaries = (listOfNotNull(missingCompilerFactsRelationBoundary(analysis.facts)) +
             compilerBoundaries + generatedBoundaries)
-            .distinctBy(::canonicalJson)
-            .sortedBy(::canonicalJson)
+            .let(::distinctCanonicalIndexRows)
         return canonicalJsonValue(buildJsonObject {
             put("schema", "declaration-relation-graph/0.1")
             put("compilation", compilation)
@@ -3401,8 +3405,7 @@ internal class Worker(
                 }
                 normalized
             }
-            .distinctBy(::canonicalJson)
-            .sortedBy(::canonicalJson)
+            .let(::distinctCanonicalIndexRows)
         val compilerBoundaries = analysis.facts
             .filter { it["recordType"].safeString() == "DECLARATION_DESCRIPTOR_BOUNDARY" }
             .map { raw ->
@@ -3436,8 +3439,7 @@ internal class Worker(
                 }
             }
         val boundaries = (compilerBoundaries + generatedBoundaries)
-            .distinctBy(::canonicalJson)
-            .sortedBy(::canonicalJson)
+            .let(::distinctCanonicalIndexRows)
         return canonicalJsonValue(buildJsonObject {
             put("schema", "declaration-descriptor-graph/0.1")
             put("compilation", compilation)
