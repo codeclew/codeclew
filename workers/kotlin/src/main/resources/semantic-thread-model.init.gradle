@@ -390,10 +390,12 @@ gradle.beforeProject { project ->
             def compile = project.tasks.findByName(requestedCompileTask)
             if (compile == null) return
             def model = project.tasks.named("semanticThreadModel").get()
-            preparation = new CodeclewGradlePrepare(project)
+            // The worker appends the factory only for the combined script.
+            // Standalone model consumers don't opt into preparation.
+            preparation = newCodeclewGradlePrepare(project)
             def sourceSet = project.extensions.findByType(SourceSetContainer)?.findByName(sourceSetNameOf(compile))
             def javaCompile = sourceSet == null ? null : project.tasks.findByName(sourceSet.compileJavaTaskName)
-            if (!(compile.name ==~ /compile.*Kotlin/)) CodeclewGradlePrepare.refused("COMPILATION_INPUTS_UNAVAILABLE")
+            if (!(compile.name ==~ /compile.*Kotlin/)) preparation.refused("COMPILATION_INPUTS_UNAVAILABLE")
             def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
             def stubs = project.tasks.findByName("kaptGenerateStubs${stem}Kotlin")
             preparation.wire(model, compile, [javaCompile, stubs], [compile, stubs])
@@ -767,13 +769,13 @@ gradle.beforeProject { project ->
             def preparedOutputs = null
             if (preparation != null) {
                 if (!sourceFilesAvailable || (!libraries.available && !sourceSetClasspathAvailable)) {
-                    CodeclewGradlePrepare.refused("COMPILATION_INPUTS_UNAVAILABLE")
+                    preparation.refused("COMPILATION_INPUTS_UNAVAILABLE")
                 }
                 preparedOutputs = preparation.receipt(
                     (sourceFiles + javaSources.values).collect { new File(it) },
                     classpath.collect { new File(it) })
                 if (preparationReceipt != null && preparationReceipt != preparedOutputs) {
-                    CodeclewGradlePrepare.refused("OUTPUT_CHANGED_DURING_COMPILATION")
+                    preparation.refused("OUTPUT_CHANGED_DURING_COMPILATION")
                 }
             }
             def buildModelBoundaries = []

@@ -140,3 +140,8 @@ class CodeclewGradlePrepare {
         }
     }
 }
+
+// Called dynamically by the Kotlin init script when preparation is requested.
+def newCodeclewGradlePrepare(project) {
+    new CodeclewGradlePrepare(project)
+}

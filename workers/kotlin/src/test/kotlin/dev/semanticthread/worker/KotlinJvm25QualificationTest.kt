@@ -253,7 +253,8 @@ class KotlinJvm25QualificationTest {
             val unattachedBuild = unattachedRoot.resolve("build.gradle.kts")
             Files.writeString(unattachedBuild, Files.readString(unattachedBuild)
                 .replace("java.srcDir(generateOwnedJava)", "java.srcDir(generatedJava)"))
-            val native = run(nativeRoot, listOf(repository.resolve("gradlew").toString(), "--no-daemon", "--offline", "-p", nativeRoot.toString(), "compileKotlin"))
+            // A fresh CI job may not have downloaded this fixture's Kotlin plugin yet.
+            val native = run(nativeRoot, listOf(repository.resolve("gradlew").toString(), "--no-daemon", "-p", nativeRoot.toString(), "compileKotlin"))
             assertEquals(0, native.first, native.second)
             assertTrue(Files.exists(nativeRoot.resolve("build/kotlin-compiled.marker")))
             assertFalse(Files.exists(analysisRoot.resolve("build")))
