@@ -161,11 +161,11 @@ fn observe_hotspot_stdout(stdout: &mut ChildStdout) -> (LineObservation, Option<
         {
             return (LineObservation::Unavailable, None);
         }
-        return if let Some(reason) = hotspot_oom_line(&line) {
+        if let Some(reason) = hotspot_oom_line(&line) {
             (LineObservation::Match, Some(reason))
         } else {
             (LineObservation::NoMatch, None)
-        };
+        }
     }
     #[cfg(not(unix))]
     {

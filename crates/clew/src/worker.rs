@@ -2070,7 +2070,7 @@ impl WorkerClient {
         drop(task_run_spawn_permit);
         let (hello, _, _, _) = read_message_profiled(&mut stdout).map_err(|(error, frame)| {
             worker_diagnostics::annotate_failure(
-                error,
+                *error,
                 Some(&mut process.child),
                 &mut stderr,
                 "STARTUP",
@@ -2286,7 +2286,7 @@ impl WorkerClient {
             _ => {}
         }
         let (response, read_micros, decode_micros, frame) = read_message_profiled(&mut self.stdout)
-            .map_err(|(error, frame)| self.annotate_request_failure(kind, error, Some(frame)))?;
+            .map_err(|(error, frame)| self.annotate_request_failure(kind, *error, Some(frame)))?;
         if kind == RequestKind::IndexFiles
             && let Some(request) = &mut self.index_request
         {
@@ -2295,7 +2295,7 @@ impl WorkerClient {
         validate_worker_reply(&response, kind, request_id).map_err(
             |(error, mut observation)| {
                 observation.frame = Some(frame);
-                self.annotate_request_failure(kind, error, Some(observation))
+                self.annotate_request_failure(kind, *error, Some(observation))
             },
         )?;
         let canonical_json = match response.payload {
@@ -4029,11 +4029,13 @@ fn write_message_profiled<M: Message>(
     Ok((encode_micros, write_started.elapsed().as_micros() as u64))
 }
 
+type TransportFailure = (Box<ClewError>, TransportObservation);
+
 fn validate_worker_reply(
     response: &WorkerResponse,
     kind: RequestKind,
     request_id: u64,
-) -> Result<(), (ClewError, TransportObservation)> {
+) -> Result<(), TransportFailure> {
     use worker_response::Payload;
     let (message, reason) = if response.request_id != request_id {
         (
@@ -4064,7 +4066,7 @@ fn validate_worker_reply(
         return Ok(());
     };
     Err((
-        ClewError::new(ErrorCode::WorkerProtocolMismatch, message),
+        Box::new(ClewError::new(ErrorCode::WorkerProtocolMismatch, message)),
         reason.into(),
     ))
 }
@@ -4088,11 +4090,11 @@ fn read_frame_segment(
 
 fn read_message_profiled(
     reader: &mut impl Read,
-) -> Result<(WorkerResponse, u64, u64, FrameSizes), (ClewError, TransportObservation)> {
+) -> Result<(WorkerResponse, u64, u64, FrameSizes), TransportFailure> {
     let failure = |code, message: String, reason, frame| {
         let mut observation = TransportObservation::from(reason);
         observation.frame = Some(frame);
-        (ClewError::new(code, message), observation)
+        (Box::new(ClewError::new(code, message)), observation)
     };
     let read_started = Instant::now();
     let mut header = [0u8; 4];
@@ -4193,7 +4195,7 @@ pub(crate) fn observe_test_index_failure(
         })
         .unwrap_err();
     let error = worker_diagnostics::annotate_failure(
-        error,
+        *error,
         Some(&mut child),
         &mut stderr,
         "INDEX_FILES",
@@ -4702,7 +4704,7 @@ mod tests {
             .push("unrelated-private-evidence-marker".into());
         let original_message_hash = crate::canonical::hash_bytes(error.message.as_bytes());
 
-        let result = attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None);
+        let result = attach_verified_index_failure(*error, "RAW_SCHEMA_HASH", None);
 
         assert_eq!(result.code, ErrorCode::WorkerProtocolMismatch);
         assert!(result.retryable);
