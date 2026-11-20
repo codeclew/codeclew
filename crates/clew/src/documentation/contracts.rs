@@ -354,6 +354,65 @@ pub(super) fn capture_with_store(
     enrich(evidence)
 }
 
+pub(super) fn capture_working_tree(
+    service: &Service,
+    evidence: &mut ServiceEvidence,
+    snapshot: &crate::repository_snapshot::RepositoryInputSnapshot,
+    cas: &CasStore,
+) -> Result<(), ClewError> {
+    if service.contract_files.is_empty() {
+        return Ok(());
+    }
+    if service.contract_files.len() > 128 {
+        return Err(invalid(
+            "working-tree contract capture exceeds the contract file limit",
+        ));
+    }
+    let mut files = BTreeMap::new();
+    let mut total = 0u64;
+    for entry in &snapshot.worktree {
+        if entry.kind != crate::repository_snapshot::WorktreeKind::Regular
+            || !service.contract_files.contains(&entry.path)
+        {
+            continue;
+        }
+        let content = entry
+            .content
+            .as_ref()
+            .ok_or_else(|| invalid("working-tree contract file has no content"))?;
+        total += content.size;
+        if total > 16 * 1024 * 1024 {
+            return Err(invalid(
+                "working-tree contract capture exceeds the contract byte limit",
+            ));
+        }
+        let bytes = cas.read(content, MAX_FILE)?;
+        if let Ok(text) = std::str::from_utf8(bytes.bytes()) {
+            files.insert(entry.path.clone(), text.to_owned());
+        } else {
+            evidence
+                .boundaries
+                .push(format!("NON_UTF8_CONTRACT:{}", entry.path));
+        }
+    }
+    import(service, evidence, &files)?;
+    for (path, text) in &files {
+        let id = analysis::source_id(&service.id, &format!("contract/{path}"))?;
+        if let Some(source) = evidence.sources.get_mut(&id) {
+            let blob = canonical::hash_bytes(text.as_bytes());
+            source.evidence_digest = digest(&(&snapshot.snapshot_id, &blob, 0, text.len()))?;
+            source.occurrence = Some(SourceOccurrence {
+                generated_origin: None,
+                snapshot: snapshot.snapshot_id.clone(),
+                blob,
+                start_byte: 0,
+                end_byte: text.len(),
+            });
+        }
+    }
+    enrich(evidence)
+}
+
 /// Also used by the sealed JVM projection with already admitted file contents.
 pub fn import(
     service: &Service,

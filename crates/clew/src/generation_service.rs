@@ -317,7 +317,7 @@ pub fn ensure_session_generation(
             .map(|binding| binding.profile_id.as_str())
     });
     let writable_then_seal = profile.map(wants_writable_then_seal).unwrap_or(false);
-    ensure_session_generation_with_diagnostics(session, None, writable_then_seal, &[])
+    ensure_session_generation_with_diagnostics(session, None, writable_then_seal, &[], false)
 }
 
 pub(crate) fn ensure_session_generation_with_diagnostics(
@@ -325,6 +325,7 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
     debug_output: Option<&DebugOutput>,
     writable_then_seal: bool,
     extra_annotation_processors: &[String],
+    native_working_tree: bool,
 ) -> Result<ReadyGenerationSet, ClewError> {
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
@@ -463,6 +464,15 @@ pub(crate) fn ensure_session_generation_with_diagnostics(
     workspace.set_gradle_properties(gradle_properties);
     if session.working_tree.is_none() {
         workspace.set_native_capture_revision(&session.base_revision);
+    } else if native_working_tree {
+        // The native worker accepts a 64-hex input identity. Use the exact
+        // saved snapshot rather than attributing these bytes to the Git base.
+        workspace.set_native_capture_revision(
+            snapshot
+                .snapshot_id
+                .strip_prefix("sha256:")
+                .ok_or_else(|| corrupt("working-tree snapshot identity has no SHA-256 digest"))?,
+        );
     }
     // The exact selected set is authorized once. The private bridge retains
     // legacy per-compilation OpenProject calls until the post-G1 worker

@@ -162,6 +162,22 @@ fn capture_local_with_diagnostics(
     service: &Service,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<ServiceEvidence, ClewError> {
+    capture_local_selected(repository, service, debug_output, false)
+}
+
+pub(super) fn capture_working_tree(
+    repository: &Repository,
+    service: &Service,
+) -> Result<ServiceEvidence, ClewError> {
+    capture_local_selected(repository, service, None, true)
+}
+
+fn capture_local_selected(
+    repository: &Repository,
+    service: &Service,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    working_tree: bool,
+) -> Result<ServiceEvidence, ClewError> {
     let repo = bound_repository(repository, service)?;
     if service.profile == "source-syntax" {
         // Pure syntax can reuse this deterministic key. An enabled semantic
@@ -261,44 +277,13 @@ fn capture_local_with_diagnostics(
         "rust" => SessionLanguage::Rust,
         _ => SessionLanguage::Java,
     };
-    super::progress::run_counted_if_active(
-        "SOURCE_ADMISSION",
-        super::progress::Counts {
-            compilations_total: Some(compilations.len()),
-            ..Default::default()
-        },
-        || {
-            let readiness = operations::doctor(
-                &runtime,
-                DoctorScope::Task,
-                Some(&repo),
-                Some(&service.target_ref),
-                Some(DoctorTask {
-                    language,
-                    profile_id: &service.profile,
-                    operation: DoctorOperation::Analysis,
-                    compilations: &compilations,
-                    committed: false,
-                    working_tree: false,
-                    maven_settings: None,
-                }),
-            )?;
-            if readiness["status"] != "PASS" {
-                let action = readiness["nextAction"]
-                    .as_str()
-                    .unwrap_or("RUN_TASK_DOCTOR");
-                return Err(ClewError::new(
-                    ErrorCode::PreconditionFailed,
-                    format!("documentation source admission requires action: {action}"),
-                ));
-            }
-            Ok(())
-        },
-    )?;
+    if !working_tree {
+        admit_source(&runtime, &repo, service, language, &compilations, false)?;
+    }
     let revision = git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let service_digest = digest(service)?;
     let session = super::progress::run("OPEN_ANALYSIS_SESSION", || {
-        SessionAuthority::open(
+        SessionAuthority::open_with_source(
             &repo,
             &service.target_ref,
             language,
@@ -306,6 +291,7 @@ fn capture_local_with_diagnostics(
             None,
             ModelCachePolicy::NonCacheable,
             None,
+            working_tree.then_some(service.profile.as_str()),
         )
     })?;
     // Revalidate current admission and repository state even when cached bytes exist.
@@ -328,6 +314,12 @@ fn capture_local_with_diagnostics(
             .expect("cache inputs are an array")
             .push(json!({"gradleGitTagsId":tags.id}));
     }
+    if let Some(binding) = &session.working_tree {
+        cache_inputs
+            .as_array_mut()
+            .expect("cache inputs are an array")
+            .push(json!({"workingTree": binding.snapshot}));
+    }
     let cache_key = digest(&cache_inputs)?;
     let cache_path = format!(
         ".codeclew/cache/{}-{}.json",
@@ -335,6 +327,33 @@ fn capture_local_with_diagnostics(
         cache_key.trim_start_matches("sha256:")
     );
     let result = super::progress::run("ACQUIRE_COMPILER_EVIDENCE", || {
+        if working_tree {
+            let frozen = session.repository_path()?;
+            if frozen.join("pom.xml").is_file() {
+                return Err(invalid(
+                    "docs check --working-tree requires an unambiguous Gradle wrapper project",
+                ));
+            }
+            admit_source(&runtime, &frozen, service, language, &compilations, true)?;
+            // The local configuration can be independently admitted when it is
+            // ignored by Git. When it is a snapshot input, require the two
+            // references to agree as well.
+            if frozen.join("codeclew.yaml").is_file() {
+                let state = StateAuthority::process_default()?;
+                let binding = crate::project_config::gradle_properties(
+                    &frozen,
+                    &state,
+                    &session.repository_key,
+                )?
+                .map(|properties| properties.binding);
+                if binding != session.gradle_properties {
+                    return Err(ClewError::new(
+                        ErrorCode::InputMutated,
+                        "Local Gradle configuration differs from the saved working-tree snapshot. Retry the Check.",
+                    ));
+                }
+            }
+        }
         let mut evidence = capture_session(&session, service, &service_digest, debug_output)
             .map_err(|mut error| {
                 if language == SessionLanguage::Kotlin
@@ -407,7 +426,9 @@ fn capture_local_with_diagnostics(
             return Err(error);
         }
     };
-    super::contracts::capture(service, &repo, &mut evidence)?;
+    if !working_tree {
+        super::contracts::capture(service, &repo, &mut evidence)?;
+    }
     super::modules::attach(service, &mut evidence)?;
     cleanup?;
     if git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])? != revision {
@@ -435,6 +456,101 @@ fn capture_local_with_diagnostics(
     Ok(evidence)
 }
 
+fn admit_source(
+    runtime: &RuntimeAuthority,
+    repo: &Path,
+    service: &Service,
+    language: SessionLanguage,
+    compilations: &[String],
+    working_tree: bool,
+) -> Result<(), ClewError> {
+    super::progress::run_counted_if_active(
+        "SOURCE_ADMISSION",
+        super::progress::Counts {
+            compilations_total: Some(compilations.len()),
+            ..Default::default()
+        },
+        || {
+            let readiness = operations::doctor(
+                runtime,
+                DoctorScope::Task,
+                Some(repo),
+                (!working_tree).then_some(service.target_ref.as_str()),
+                Some(DoctorTask {
+                    language,
+                    profile_id: &service.profile,
+                    operation: DoctorOperation::Analysis,
+                    compilations,
+                    committed: false,
+                    working_tree,
+                    maven_settings: None,
+                }),
+            )?;
+            if readiness["status"] != "PASS" {
+                let action = readiness["nextAction"]
+                    .as_str()
+                    .unwrap_or("RUN_TASK_DOCTOR");
+                return Err(ClewError::new(
+                    ErrorCode::PreconditionFailed,
+                    if action == "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE"
+                        && service.profile == "kotlin-jvm-gradle-analysis"
+                    {
+                        format!(
+                            "Saved local edits need an explicit source selection. From the documentation root, run clew docs check --working-tree --root . --service {}",
+                            service.id,
+                        )
+                    } else {
+                        format!("documentation source admission requires action: {action}")
+                    },
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
+pub(super) const WORKING_TREE_SOURCE: &str = "WORKING_TREE_SOURCE";
+
+fn working_tree_selection(base_revision: &str, snapshot: &str) -> Value {
+    json!({"kind":"WORKING_TREE", "baseRevision":base_revision, "snapshotDigest":snapshot})
+}
+
+fn attach_working_tree_selection(
+    evidence: &mut ServiceEvidence,
+    snapshot: &str,
+) -> Result<(), ClewError> {
+    let id = format!("working-tree-source:{}", evidence.service);
+    let normalized = working_tree_selection(&evidence.revision, snapshot);
+    evidence.observations.insert(
+        id.clone(),
+        Observation {
+            id,
+            kind: WORKING_TREE_SOURCE.into(),
+            service: evidence.service.clone(),
+            symbol: evidence.service.clone(),
+            digest: digest(&normalized)?,
+            normalized,
+            source_ids: Vec::new(),
+        },
+    );
+    evidence.boundaries.push(WORKING_TREE_SOURCE.into());
+    evidence.boundaries.sort();
+    evidence.boundaries.dedup();
+    for source in evidence.sources.values_mut() {
+        source.url = None;
+        source.text_origin = None;
+    }
+    Ok(())
+}
+
+pub(super) fn working_tree_source_selection(evidence: &ServiceEvidence) -> Option<&Value> {
+    evidence
+        .observations
+        .get(&format!("working-tree-source:{}", evidence.service))
+        .filter(|row| row.kind == WORKING_TREE_SOURCE)
+        .map(|row| &row.normalized)
+}
+
 pub(super) fn gradle_git_tags_observation_id(service: &str) -> String {
     format!("gradle-git-tags:{service}")
 }
@@ -455,6 +571,7 @@ fn capture_session(
             debug_output,
             generation_service::wants_writable_then_seal(&service.profile),
             &service.annotation_processor_paths,
+            session.working_tree.is_some(),
         )
     })?;
     let state = StateAuthority::process_default()?;
@@ -600,10 +717,15 @@ fn capture_session(
         contents.insert(scope.clone(), table);
         transformed_map.insert(scope, compilation.transformed_source.is_some());
     }
+    let working_tree_snapshot = session
+        .working_tree
+        .as_ref()
+        .map(|_| snapshot.snapshot_id.clone());
     let sources = CompilationSource {
         contents,
         transformed: transformed_map,
         contracts,
+        working_tree_snapshot,
     };
     let mut evidence = project_indexed(
         service,
@@ -643,7 +765,11 @@ fn capture_session(
             })
             .collect::<Result<Vec<_>, ClewError>>()?;
         let id = format!("gradle-prepare-tasks:{}", service.id);
-        let normalized = json!({"revision": session.base_revision, "compilations": results});
+        let mut normalized = json!({"revision": session.base_revision, "compilations": results});
+        if let Some(snapshot) = &sources.working_tree_snapshot {
+            normalized["sourceSelection"] =
+                working_tree_selection(&session.base_revision, snapshot);
+        }
         evidence.observations.insert(
             id.clone(),
             Observation {
@@ -694,6 +820,10 @@ fn capture_session(
         &snapshot_text,
         source_repository.as_deref(),
     )?;
+    if let Some(snapshot_id) = &sources.working_tree_snapshot {
+        super::contracts::capture_working_tree(service, &mut evidence, &snapshot, &store)?;
+        attach_working_tree_selection(&mut evidence, snapshot_id)?;
+    }
     verify_evidence(&evidence)?;
     Ok(evidence)
 }
@@ -779,6 +909,7 @@ pub fn source_link(
 /// compilations sharing a relative path with different transformed text keep
 /// both. Unscoped syntax projection uses the empty scope key.
 pub(crate) struct CompilationSource {
+    pub(crate) working_tree_snapshot: Option<String>,
     contents: BTreeMap<String, Arc<SourceTable>>,
     transformed: BTreeMap<String, bool>,
     contracts: BTreeMap<String, String>,
@@ -1555,6 +1686,7 @@ pub fn project(
         contents,
         transformed: transformed_map,
         contracts: files.clone(),
+        working_tree_snapshot: None,
     };
     project_scoped(
         service,
@@ -2204,7 +2336,12 @@ fn project_indexed_with_progress(
             let scope = resolve_scope_key(&raw_fact["scope"], known)?;
             super::library_artifacts::project(&mut evidence, raw_fact, binding, &scope)?;
             if let Some(witness) = raw_fact.get("nativeCompilationWitness") {
-                if witness["revision"].as_str() != Some(revision)
+                let source_identity = sources
+                    .working_tree_snapshot
+                    .as_deref()
+                    .and_then(|digest| digest.strip_prefix("sha256:"))
+                    .unwrap_or(revision);
+                if witness["revision"].as_str() != Some(source_identity)
                     || raw_fact["compilation"].as_str() != Some(scope.as_str())
                 {
                     return Err(invalid(
@@ -2213,13 +2350,16 @@ fn project_indexed_with_progress(
                 }
                 let mut normalized = witness.clone();
                 normalized["scope"] = json!(scope);
+                if let Some(snapshot) = &sources.working_tree_snapshot {
+                    normalized["sourceSelection"] = working_tree_selection(revision, snapshot);
+                }
                 normalized["semanticInputManifestHash"] =
                     raw_fact["semanticInputManifestHash"].clone();
                 normalized["evidenceBinding"] = json!(binding);
                 let id = dependency_id(
                     &service.id,
                     "native-compilation",
-                    &scoped_identity(&scope, revision),
+                    &scoped_identity(&scope, source_identity),
                 )?;
                 evidence.observations.insert(
                     id.clone(),
@@ -3441,6 +3581,30 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
     {
         return Err(invalid("portable evidence version or revision is invalid"));
     }
+    let working_tree = working_tree_source_selection(e);
+    if e.boundaries
+        .iter()
+        .any(|boundary| boundary == WORKING_TREE_SOURCE)
+        != working_tree.is_some()
+        || working_tree.is_some_and(|selection| {
+            selection["snapshotDigest"]
+                .as_str()
+                .and_then(|digest| digest.strip_prefix("sha256:"))
+                .is_none_or(|hex| {
+                    hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                || selection["kind"] != "WORKING_TREE"
+                || selection["baseRevision"] != e.revision
+                || e.sources.values().any(|source| {
+                    source.library_origin.is_none()
+                        && (source.url.is_some() || source.text_origin.is_some())
+                })
+        })
+    {
+        return Err(invalid(
+            "working-tree evidence source provenance is inconsistent",
+        ));
+    }
     let variable_sources: BTreeSet<_> = e
         .observations
         .values()
@@ -3882,6 +4046,7 @@ mod tests {
             contents,
             transformed,
             contracts,
+            working_tree_snapshot: None,
         }
     }
 
@@ -3897,6 +4062,7 @@ mod tests {
             ]),
             transformed: BTreeMap::from([(":a/main".into(), false), (":b/main".into(), false)]),
             contracts: BTreeMap::new(),
+            working_tree_snapshot: None,
         };
 
         assert!(Arc::ptr_eq(

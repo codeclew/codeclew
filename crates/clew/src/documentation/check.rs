@@ -189,6 +189,36 @@ pub(crate) fn run_and_save_selected(
     Ok((checked, snapshot))
 }
 
+pub(super) fn run_and_save_working_tree(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+) -> Result<(Check, String), ClewError> {
+    let _run_lock = acquire_repository_run_lock(repository)?;
+    let inputs = repository.inputs()?;
+    if selected.len() != 1 {
+        return Err(invalid(
+            "docs check --working-tree requires exactly one --service ID",
+        ));
+    }
+    let service = inputs
+        .services
+        .get(selected.first().expect("one selected service"))
+        .ok_or_else(|| invalid("selected documentation service does not exist"))?;
+    if service.language != "kotlin" || service.profile != "kotlin-jvm-gradle-analysis" {
+        return Err(invalid(
+            "docs check --working-tree requires a locally bound Kotlin service with profile kotlin-jvm-gradle-analysis. Run docs check without --working-tree for other profiles.",
+        ));
+    }
+    let mut checked = capture_selected_with(repository, selected, inputs, |service, _, _| {
+        // This live source selection can never be satisfied by an imported
+        // committed package or by a previous capture at the same HEAD.
+        analysis::capture_working_tree(repository, service)
+    })?;
+    attach_retained_annotations(repository, &mut checked)?;
+    let snapshot = checked.save_snapshot(repository)?;
+    Ok((checked, snapshot))
+}
+
 fn run_selected_unlocked(
     repository: &Repository,
     selected: &BTreeSet<String>,
@@ -1021,6 +1051,11 @@ impl Check {
                 .and_then(|input| crate::gradle_git_tags::safe_summary(&input.normalized))
             {
                 result["services"][id]["gradleGitTags"] = summary;
+            }
+            if let Some(selection) = super::analysis::working_tree_source_selection(evidence) {
+                result["services"][id]["sourceSelection"] = selection.clone();
+                result["services"][id]["sourceLinkNextAction"] =
+                    json!("Read the saved source from this Check snapshot.");
             }
             if let Some(observed) = evidence
                 .observations

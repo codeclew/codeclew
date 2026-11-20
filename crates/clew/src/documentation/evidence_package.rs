@@ -1008,6 +1008,15 @@ fn check_expected_with(
     package: &Package,
 ) -> Result<(), ClewError> {
     validate_policy(policy, service)?;
+    if package
+        .evidence
+        .as_ref()
+        .is_some_and(|evidence| analysis::working_tree_source_selection(evidence).is_some())
+    {
+        return Err(invalid(
+            "working-tree evidence is local to its saved Check. Use a committed Check for a revision-based evidence import.",
+        ));
+    }
     if policy.repository_id != service.repository_id
         || policy.service_digest != digest(service)?
         || package.manifest.service != service.clone()

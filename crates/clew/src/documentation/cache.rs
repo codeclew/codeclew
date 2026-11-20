@@ -382,7 +382,12 @@ pub fn store_capture(
         cacheability: REUSABLE.into(),
         reason: None,
     };
-    if evidence
+    if super::analysis::working_tree_source_selection(evidence).is_some() {
+        mark_non_cacheable(
+            &mut manifest,
+            "Saved working-tree evidence requires explicit source selection for a new Check",
+        );
+    } else if evidence
         .boundaries
         .iter()
         .any(|b| b == super::evidence_package::HISTORICAL_BOUNDARY)

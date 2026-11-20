@@ -296,6 +296,7 @@ mod tests {
         transformed: bool,
     ) -> CompilationSource {
         CompilationSource {
+            working_tree_snapshot: None,
             contents: BTreeMap::from([(
                 scope.into(),
                 source_table_from_text(

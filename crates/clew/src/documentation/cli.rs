@@ -176,6 +176,9 @@ pub struct CheckArgs {
     /// Capture selected services; retain compatible saved siblings without source revalidation.
     #[arg(long = "service")]
     pub services: Vec<String>,
+    /// Capture saved local edits for one locally bound Kotlin/JVM Gradle compiler service.
+    #[arg(long, requires = "services", conflicts_with_all = ["cursor", "debug_output"])]
+    pub working_tree: bool,
     /// Existing caller-owned 0700 directory for private Maven failure output.
     #[arg(long)]
     pub debug_output: Option<PathBuf>,
@@ -471,8 +474,11 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                     }
                 })
                 .transpose()?;
-            let (checked, snapshot) =
-                check::run_and_save_selected(&repo, &requested_services, debug_output.as_ref())?;
+            let (checked, snapshot) = if request.working_tree {
+                check::run_and_save_working_tree(&repo, &requested_services)?
+            } else {
+                check::run_and_save_selected(&repo, &requested_services, debug_output.as_ref())?
+            };
             let mut value = checked.summary();
             value["freshness"] = super::bindings::freshness(
                 super::bindings::baseline(&repo)?.as_ref().map(|(_, b)| b),
@@ -3415,6 +3421,7 @@ mod tests {
                 limit: 1,
             },
             services: vec!["svc-a".into()],
+            working_tree: false,
             debug_output: Some(missing_debug.clone()),
         }))
         .unwrap();
@@ -3430,6 +3437,7 @@ mod tests {
                     limit: 1,
                 },
                 services: vec!["svc-b".into()],
+                working_tree: false,
                 debug_output: None,
             }))
             .is_err()
@@ -3454,6 +3462,7 @@ mod tests {
                     limit: 1,
                 },
                 services: vec!["svc-a".into()],
+                working_tree: false,
                 debug_output: None,
             }))
             .is_err()
@@ -3481,6 +3490,7 @@ mod tests {
                     limit: 1,
                 },
                 services: vec!["svc-a".into()],
+                working_tree: false,
                 debug_output: None,
             }))
             .is_err()
