@@ -12,6 +12,8 @@ gradle.beforeProject { project ->
     def captureRevision = System.getProperty("semantic.thread.nativeCaptureRevision")
     def captureTask = System.getProperty("semantic.thread.nativeCaptureTask")
     def observerDirectory = System.getProperty("semantic.thread.nativeObserverDirectory")?.with { new File(it) }
+    def preparation = null
+    def preparationReceipt = null
     def springCompile = null
     def nativeObserver = null
     def observerFailure = null
@@ -354,6 +356,10 @@ gradle.beforeProject { project ->
                         println("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__")
                         throw new GradleException("Codeclew requires a fresh native Kotlin compilation")
                     }
+                    if (preparation != null) {
+                        preparationReceipt = preparation.receipt(
+                            compile.sources.files + compile.javaSources.files, compile.libraries.files)
+                    }
                     if (nativeObserver != null) {
                         try {
                             nativeObserver.inputs = observedCompilerInputs(compile, nativeObserver)
@@ -377,6 +383,21 @@ gradle.beforeProject { project ->
         // KGP completes compiler options during project evaluation. Keep
         // configuration resolution under this project's lock on Gradle 9.
         project.afterEvaluate { project.afterEvaluate { configureNativeCapture() } }
+    }
+    if (System.getProperty("codeclew.gradle.prepareModelTask") ==
+        (project.path == ":" ? ":semanticThreadModel" : project.path + ":semanticThreadModel")) {
+        gradle.projectsEvaluated {
+            def compile = project.tasks.findByName(requestedCompileTask)
+            if (compile == null) return
+            def model = project.tasks.named("semanticThreadModel").get()
+            preparation = new CodeclewGradlePrepare(project)
+            def sourceSet = project.extensions.findByType(SourceSetContainer)?.findByName(sourceSetNameOf(compile))
+            def javaCompile = sourceSet == null ? null : project.tasks.findByName(sourceSet.compileJavaTaskName)
+            if (!(compile.name ==~ /compile.*Kotlin/)) CodeclewGradlePrepare.refused("COMPILATION_INPUTS_UNAVAILABLE")
+            def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
+            def stubs = project.tasks.findByName("kaptGenerateStubs${stem}Kotlin")
+            preparation.wire(model, compile, [javaCompile, stubs], [compile, stubs])
+        }
     }
     def nativeCheck = { diagnostic, name, test ->
         diagnostic.check = name
@@ -743,6 +764,18 @@ gradle.beforeProject { project ->
                     jdkHomeAuthority = "AVAILABLE_COMPILE_TOOLCHAIN"
                 }
             } catch (Throwable ignored) {}
+            def preparedOutputs = null
+            if (preparation != null) {
+                if (!sourceFilesAvailable || (!libraries.available && !sourceSetClasspathAvailable)) {
+                    CodeclewGradlePrepare.refused("COMPILATION_INPUTS_UNAVAILABLE")
+                }
+                preparedOutputs = preparation.receipt(
+                    (sourceFiles + javaSources.values).collect { new File(it) },
+                    classpath.collect { new File(it) })
+                if (preparationReceipt != null && preparationReceipt != preparedOutputs) {
+                    CodeclewGradlePrepare.refused("OUTPUT_CHANGED_DURING_COMPILATION")
+                }
+            }
             def buildModelBoundaries = []
             if (!sourceFilesAvailable) buildModelBoundaries.add("GRADLE_SOURCE_FILES_UNAVAILABLE_REFLECTION")
             if (!sourceSetClasspathAvailable) buildModelBoundaries.add("GRADLE_SOURCE_SET_CLASSPATH_UNAVAILABLE_REFLECTION")
@@ -809,6 +842,7 @@ gradle.beforeProject { project ->
                 gradleVersion: gradle.gradleVersion,
                 jdkHome: jdkHome
             ]
+            if (preparedOutputs != null) model.gradlePrepareTasks = preparedOutputs
             if (nativeObserver != null) {
                 try {
                     model.nativeFirCompilation = observedCompileReceipt(compile, model)

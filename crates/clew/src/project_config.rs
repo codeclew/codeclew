@@ -2,7 +2,7 @@
 use crate::error::{ClewError, ErrorCode};
 use crate::maven::MavenSettings;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -30,6 +30,7 @@ struct MavenConfig {
 }
 
 const MAX_PROPERTIES: usize = 32;
+pub(crate) const MAX_PREPARE_TASKS: usize = 16;
 
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -37,6 +38,8 @@ struct GradleConfig {
     #[serde(deserialize_with = "project_props")]
     project_props: BTreeMap<String, String>,
     git_tags: bool,
+    #[serde(deserialize_with = "prepare_tasks")]
+    prepare_tasks: Vec<String>,
 }
 
 fn project_props<'de, D: serde::Deserializer<'de>>(
@@ -68,6 +71,40 @@ fn project_props<'de, D: serde::Deserializer<'de>>(
         .collect()
 }
 
+fn prepare_tasks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    use serde::de::Error;
+    let tasks = Vec::<String>::deserialize(deserializer)?;
+    if tasks.len() > MAX_PREPARE_TASKS
+        || tasks.iter().any(|path| !valid_prepare_task(path))
+        || tasks.iter().collect::<BTreeSet<_>>().len() != tasks.len()
+    {
+        return Err(D::Error::custom(
+            "expected distinct absolute Gradle task paths",
+        ));
+    }
+    Ok(tasks)
+}
+
+pub(crate) fn valid_prepare_task(path: &str) -> bool {
+    path.len() <= 256
+        && path.strip_prefix(':').is_some_and(|path| {
+            path.split(':').all(|part| {
+                part.as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                    && part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+            })
+        })
+}
+
+fn zero(count: &usize) -> bool {
+    *count == 0
+}
+
 fn project_property_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     key.len() <= 128
@@ -94,11 +131,16 @@ fn project_property_key(key: &str) -> bool {
 pub struct GradlePropertyBinding {
     pub id: Uuid,
     pub count: usize,
+    #[serde(default, skip_serializing_if = "zero")]
+    pub prepare_task_count: usize,
 }
 
 impl GradlePropertyBinding {
     pub(crate) fn is_valid(&self) -> bool {
-        self.id.get_version_num() == 4 && (1..=MAX_PROPERTIES).contains(&self.count)
+        self.id.get_version_num() == 4
+            && self.count <= MAX_PROPERTIES
+            && self.prepare_task_count <= MAX_PREPARE_TASKS
+            && (self.count != 0 || self.prepare_task_count != 0)
     }
 
     pub(crate) fn summary(&self) -> serde_json::Value {
@@ -129,6 +171,7 @@ pub(crate) fn safe_gradle_property_summary(value: &serde_json::Value) -> Option<
 pub(crate) struct GradleProperties {
     pub binding: GradlePropertyBinding,
     values: BTreeMap<String, String>,
+    pub(crate) prepare_tasks: Vec<String>,
 }
 
 impl GradleProperties {
@@ -144,24 +187,44 @@ pub(crate) fn gradle_properties(
     state: &StateAuthority,
     repository_key: &str,
 ) -> Result<Option<GradleProperties>, ClewError> {
-    let values = read_config(repo)?.gradle.project_props;
-    if values.is_empty() {
+    let config = read_config(repo)?.gradle;
+    let values = config.project_props;
+    let prepare_tasks = config.prepare_tasks;
+    if values.is_empty() && prepare_tasks.is_empty() {
         return Ok(None);
     }
     // Keep the lookup digest private. A random opaque identifier is all that
     // can leave this store; it does not allow guessing low-entropy values.
-    let fingerprint =
-        canonical::hash(&(&repository_key, &values)).map_err(|_| property_state_error())?;
+    let fingerprint = if prepare_tasks.is_empty() {
+        canonical::hash(&(&repository_key, &values))
+    } else {
+        canonical::hash(&(
+            "gradle-prepare-tasks/1",
+            &repository_key,
+            &values,
+            &prepare_tasks,
+        ))
+    }
+    .map_err(|_| property_state_error())?;
     let id = opaque_gradle_input_id(state, &fingerprint, "gradle-property-identities")
         .map_err(|_| property_state_error())?;
     let binding = GradlePropertyBinding {
         id,
         count: values.len(),
+        prepare_task_count: prepare_tasks.len(),
     };
     if !binding.is_valid() {
         return Err(property_state_error());
     }
-    Ok(Some(GradleProperties { binding, values }))
+    Ok(Some(GradleProperties {
+        binding,
+        values,
+        prepare_tasks,
+    }))
+}
+
+pub(crate) fn has_gradle_prepare_tasks(repo: &Path) -> Result<bool, ClewError> {
+    Ok(!read_config(repo)?.gradle.prepare_tasks.is_empty())
 }
 
 pub(crate) fn gradle_git_tags(
@@ -267,7 +330,7 @@ fn read_config(repository: &Path) -> Result<ProjectConfig, ClewError> {
             }
             let config: ProjectConfig = serde_yaml_ng::from_slice(&bytes).map_err(|error| {
                 let position = error.location().map(|location| format!(" at line {}, column {}", location.line(), location.column())).unwrap_or_default();
-                invalid(format!("Invalid codeclew.yaml{position}; expected optional version: 1, maven.settings, and gradle.projectProps with validated string keys and values. Unknown and duplicate keys are rejected."))
+                invalid(format!("Invalid codeclew.yaml{position}; expected optional version: 1, maven.settings, and gradle with gitTags, projectProps, and prepareTasks. Unknown and duplicate keys are rejected."))
             })?;
             if config.version.is_some_and(|version| version != 1) {
                 return Err(invalid(
@@ -392,6 +455,46 @@ mod tests {
         assert_ne!(first.binding, read().unwrap().binding);
         fs::remove_file(&config).unwrap();
         assert!(read().is_none());
+    }
+
+    #[test]
+    fn prepare_tasks_bind_exact_absolute_paths_without_requiring_properties() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temp.path().join("v2")).unwrap();
+        let config = temp.path().join("codeclew.yaml");
+        let read = || gradle_properties(temp.path(), &state, "owned-repository");
+        fs::write(&config, "gradle: {prepareTasks: []}").unwrap();
+        assert!(read().unwrap().is_none());
+        fs::write(
+            &config,
+            "gradle: {prepareTasks: [':app:generate', ':audit']}",
+        )
+        .unwrap();
+        let first = read().unwrap().unwrap();
+        assert_eq!(first.binding.count, 0);
+        assert_eq!(first.binding.prepare_task_count, 2);
+        assert_eq!(first.prepare_tasks, [":app:generate", ":audit"]);
+        assert_eq!(first.args().count(), 0);
+        fs::write(
+            &config,
+            "gradle: {prepareTasks: [':audit', ':app:generate']}",
+        )
+        .unwrap();
+        assert_ne!(first.binding, read().unwrap().unwrap().binding);
+        for declaration in [
+            "['private-marker']",
+            "['--private-marker']",
+            "[':private-marker', ':private-marker']",
+            "[':app::private-marker']",
+            "[':app:../private-marker']",
+            "':private-marker'",
+            "[null]",
+        ] {
+            fs::write(&config, format!("gradle: {{prepareTasks: {declaration}}}")).unwrap();
+            let error = read().err().expect(declaration);
+            assert_eq!(error.code, ErrorCode::InvalidInput);
+            assert!(!error.message.contains("private-marker"));
+        }
     }
 
     #[test]

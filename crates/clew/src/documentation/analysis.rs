@@ -351,7 +351,9 @@ fn capture_local_with_diagnostics(
             })?;
         session.resolve_gradle_properties()?;
         session.resolve_gradle_git_tags()?;
-        if let Some(properties) = &session.gradle_properties {
+        if let Some(properties) = &session.gradle_properties
+            && properties.count > 0
+        {
             // Keep a build-input dependency even when a different property
             // map produces identical declarations and source bytes.
             let id = gradle_property_observation_id(&service.id);
@@ -613,6 +615,48 @@ fn capture_session(
         &sources,
         &known,
     )?;
+    if let Some(properties) = session.resolve_gradle_properties()?
+        && !properties.prepare_tasks.is_empty()
+    {
+        let results = ready
+            .compilations
+            .iter()
+            .map(|compilation| {
+                let lease =
+                    store.read(&compilation.derived_input_manifest, MAX_EVIDENCE as usize)?;
+                let manifest: crate::derived_manifest::DerivedAnalysisInputManifest =
+                    serde_json::from_slice(lease.bytes()).map_err(io_error)?;
+                let [provider] = manifest.provider_models.as_slice() else {
+                    return Err(crate::gradle_prepare::invalid_receipt());
+                };
+                let lease = store.read(&provider.build_model.model, MAX_EVIDENCE as usize)?;
+                let model: Value = serde_json::from_slice(lease.bytes()).map_err(io_error)?;
+                let tasks = crate::gradle_prepare::read(&model["gradlePrepareTasks"])?;
+                if tasks
+                    .iter()
+                    .map(|task| &task.task)
+                    .ne(&properties.prepare_tasks)
+                {
+                    return Err(crate::gradle_prepare::invalid_receipt());
+                }
+                Ok(json!({"compilation": compilation.compilation, "tasks": tasks}))
+            })
+            .collect::<Result<Vec<_>, ClewError>>()?;
+        let id = format!("gradle-prepare-tasks:{}", service.id);
+        let normalized = json!({"revision": session.base_revision, "compilations": results});
+        evidence.observations.insert(
+            id.clone(),
+            Observation {
+                id,
+                kind: "GRADLE_PREPARE_TASKS".into(),
+                service: service.id.clone(),
+                symbol: "gradle.prepareTasks".into(),
+                digest: digest(&normalized)?,
+                normalized,
+                source_ids: Vec::new(),
+            },
+        );
+    }
     csharp_sources::bind_snapshot(&mut evidence, &snapshot)?;
     let source_repository = session.target_repository_path().ok();
     // Static resources use regular versioned files from this immutable snapshot;
@@ -4383,6 +4427,7 @@ mod tests {
         let mut authority = JavaProjectModel {
             schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
             gradle_property_id: None,
+            gradle_prepare_tasks: Vec::new(),
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),
@@ -5414,6 +5459,7 @@ class UseTask {
         let mut authority = JavaProjectModel {
             schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
             gradle_property_id: None,
+            gradle_prepare_tasks: Vec::new(),
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),

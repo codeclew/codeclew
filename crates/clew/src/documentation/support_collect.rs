@@ -227,6 +227,13 @@ fn safe_failure(value: &Value) -> Value {
         result["reason"] = json!("UNKNOWN_FAILURE_CODE");
         result["remediationId"] = json!("INSPECT_PRIVATE_DIAGNOSTICS");
     }
+    if value["reason"] == "UNSUPPORTED_PROJECT_CONFIGURATION"
+        && let Some(code) = value["nextAction"]
+            .as_str()
+            .and_then(crate::gradle_prepare::public_failure_code)
+    {
+        result["gradlePrepareFailure"] = json!(code);
+    }
     let compiler_plugin = crate::compiler_plugin_diagnostic::report(value);
     if !compiler_plugin.is_null() {
         result["compilerPluginDiagnostic"] = compiler_plugin;

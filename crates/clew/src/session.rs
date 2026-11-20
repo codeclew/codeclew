@@ -423,6 +423,12 @@ impl SessionAuthority {
         let gradle_properties = if gradle_repository(language, &repo) {
             crate::project_config::gradle_properties(&repo, &state, &repository.key)?
                 .map(|properties| properties.binding)
+        } else if matches!(language, SessionLanguage::Java | SessionLanguage::Kotlin)
+            && crate::project_config::has_gradle_prepare_tasks(&repo)?
+        {
+            return Err(invalid(
+                "gradle.prepareTasks requires a managed Gradle compiler profile",
+            ));
         } else {
             None
         };
@@ -1101,13 +1107,17 @@ impl SessionAuthority {
         let selected = if gradle_repository(self.language, &repo) {
             let state = StateAuthority::process_default()?;
             crate::project_config::gradle_properties(&repo, &state, &self.repository_key)?
+        } else if crate::project_config::has_gradle_prepare_tasks(&repo)? {
+            return Err(invalid(
+                "gradle.prepareTasks requires a managed Gradle compiler profile",
+            ));
         } else {
             None
         };
         if selected.as_ref().map(|p| &p.binding) != self.gradle_properties.as_ref() {
             return Err(ClewError::new(
                 ErrorCode::InputMutated,
-                "Gradle project properties changed since session admission. Open a new session to use the current declaration.",
+                "Local Gradle properties or preparation tasks changed since session admission. Open a new session to use the current declaration.",
             ));
         }
         Ok(selected)

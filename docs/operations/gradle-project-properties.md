@@ -104,3 +104,46 @@ and a compiler observation for the selected revision. A prebuilt output
 directory can provide dependencies where supported. Existing classfiles alone
 cannot establish which inputs or compiler arguments produced them, or recover
 exact source occurrences for a compiler Check.
+
+## Run explicit preparation tasks before compiler capture
+
+Use `gradle.prepareTasks` when the build requires a separate invocation of a
+generator before compiling. For example, a service registers a generated
+directory as a source root but its compile task has no dependency on the
+generator.
+
+```yaml
+version: 1
+gradle:
+  projectProps:
+    profile: 'preview'
+  prepareTasks:
+    - ':app:generateAvroJava'
+    - ':app:prepareApiTypes'
+```
+
+Use up to 16 distinct absolute task paths. Codeclew runs the requested tasks
+with the selected revision and the same Gradle properties as compiler capture,
+inside the disposable source checkout. Gradle still controls the order between
+preparation tasks via its dependency graph. Tasks that require the selected
+compiler, or the paired `compileJava` in a Kotlin capture, can cause a cycle and
+are refused. Configure the producer that creates the sources instead.
+
+In the output of `clew docs check`, open
+`services.<service>.gradlePrepareTasks`. Each compilation lists the requested
+tasks and their declared outputs. Each observed regular file has a
+repository-relative path, a SHA-256 digest and a selection status.
+`SOURCE` denotes an exact source input. `CLASSPATH` denotes a file on the
+classpath or under one of its admitted directories. `NOT_SELECTED` denotes
+an observed output outside both selections. `CHANGED_AFTER_TASK` means the
+observed bytes changed or disappeared before input selection. A task with
+observed outputs but no selected files reports `NO_SELECTED_OUTPUTS`. A
+skipped task with no observation reports `UNAVAILABLE`.
+
+Output paths must stay inside the disposable checkout and use regular files
+and directories. Codeclew refuses unsafe or oversized output observations.
+Task failures stop the Check. Edit the local declaration and run a fresh
+Check to add, remove or change tasks. Source-syntax Checks do not invoke
+these tasks. The detailed inventory is in local Check output and retained
+evidence. Default support reports include a fixed failure code when available
+and omit task names, paths and Gradle properties.

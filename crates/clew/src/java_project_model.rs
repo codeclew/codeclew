@@ -19,11 +19,14 @@ const MAX_CLASSPATH_ENTRIES: usize = 4_096;
 const MAX_CLASSPATH_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CLASSPATH_DIRECTORY_FILES: usize = 65_536;
 
+const GRADLE_PREPARE_SCRIPT: &str =
+    include_str!("../../../workers/kotlin/src/main/resources/codeclew-gradle-prepare.gradle");
 const GRADLE_MODEL_SCRIPT: &str = r#"
 import groovy.json.JsonOutput
 import org.gradle.api.tasks.compile.JavaCompile
 
 gradle.beforeProject { project ->
+    def preparation = null
     project.tasks.register("codeclewJavaModel") {
         doLast {
             def requested = System.getProperty("codeclew.java.compileTask", "compileJava")
@@ -49,7 +52,21 @@ gradle.beforeProject { project ->
                 jdkLanguageVersion: compiler.metadata.languageVersion.asInt(),
                 generatedSourcesDirectory: compile.options.generatedSourceOutputDirectory.orNull?.asFile?.absolutePath,
             ]
+            if (preparation != null) {
+                model.gradlePrepareTasks = preparation.receipt(compile.source.files, compile.classpath.files)
+            }
             println("__CODECLEW_JAVA_MODEL__" + JsonOutput.toJson(model))
+        }
+    }
+    if (System.getProperty("codeclew.gradle.prepareModelTask") ==
+        (project.path == ":" ? ":codeclewJavaModel" : project.path + ":codeclewJavaModel")) {
+        gradle.projectsEvaluated {
+            def compile = project.tasks.findByName(System.getProperty("codeclew.java.compileTask", "compileJava"))
+            if (!(compile instanceof JavaCompile)) CodeclewGradlePrepare.refused("COMPILATION_INPUTS_UNAVAILABLE")
+            def model = project.tasks.named("codeclewJavaModel").get()
+            preparation = new CodeclewGradlePrepare(project)
+            preparation.wire(model, compile, [], [])
+            model.dependsOn { compile.taskDependencies.getDependencies(compile) }
         }
     }
 }
@@ -87,6 +104,8 @@ pub struct JavaProjectModel {
     pub model_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradle_property_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gradle_prepare_tasks: Vec<crate::gradle_prepare::TaskReceipt>,
     pub build_system: JavaBuildSystem,
     pub compilation: String,
     pub source_files: Vec<String>,
@@ -289,7 +308,11 @@ fn extract_gradle(
         .suffix(".init.gradle")
         .tempfile()
         .map_err(io_error)?;
-    fs::write(script.path(), GRADLE_MODEL_SCRIPT).map_err(io_error)?;
+    fs::write(
+        script.path(),
+        format!("{GRADLE_MODEL_SCRIPT}\n{GRADLE_PREPARE_SCRIPT}"),
+    )
+    .map_err(io_error)?;
     let mut command = Command::new(repository.join("gradlew"));
     command.args([
         "-p",
@@ -314,6 +337,18 @@ fn extract_gradle(
     ]);
     if let Some(properties) = properties {
         command.args(properties.args());
+        if !properties.prepare_tasks.is_empty() {
+            command.args([
+                format!(
+                    "-Dcodeclew.gradle.prepareTasks={}",
+                    properties.prepare_tasks.join(",")
+                ),
+                format!(
+                    "-Dcodeclew.gradle.prepareModelTask={}",
+                    selector.gradle_model_task()
+                ),
+            ]);
+        }
     }
     let output = bounded_output(
         command
@@ -383,6 +418,17 @@ fn extract_gradle(
     )?;
     if let Some(properties) = properties {
         model.authority.gradle_property_id = Some(properties.binding.id);
+        if !properties.prepare_tasks.is_empty() {
+            let report = crate::gradle_prepare::read(&value["gradlePrepareTasks"])?;
+            if report
+                .iter()
+                .map(|task| &task.task)
+                .ne(&properties.prepare_tasks)
+            {
+                return Err(crate::gradle_prepare::invalid_receipt());
+            }
+            model.authority.gradle_prepare_tasks = report;
+        }
         model.authority.model_digest.clear();
         model.authority.model_digest = canonical::hash(&model.authority).map_err(internal)?;
         verify_model(&model.authority)?;
@@ -1316,6 +1362,7 @@ fn canonical_model(
     let mut authority = JavaProjectModel {
         schema: JAVA_MODEL_SCHEMA.into(),
         gradle_property_id: None,
+        gradle_prepare_tasks: Vec::new(),
         model_digest: String::new(),
         build_system,
         compilation: selector.canonical(),
@@ -1349,6 +1396,9 @@ pub fn verify_model(model: &JavaProjectModel) -> Result<(), ClewError> {
         || model.gradle_property_id.is_some_and(|id| {
             model.build_system != JavaBuildSystem::Gradle || id.get_version_num() != 4
         })
+        || (!model.gradle_prepare_tasks.is_empty()
+            && (model.gradle_property_id.is_none()
+                || !crate::gradle_prepare::valid(&model.gradle_prepare_tasks)))
         || javac_major(&model.compiler_version)
             .is_none_or(|major| validate_release(model.release, major).is_err())
         || model.source_files.is_empty()
@@ -1786,6 +1836,14 @@ fn run_build_command_inner(
         stdout.retained.len()
     );
     if !status.success() {
+        if stage == "GRADLE_MODEL"
+            && let Some(message) = String::from_utf8_lossy(&stdout.retained)
+                .lines()
+                .filter_map(|line| line.strip_prefix("__CODECLEW_GRADLE_PREPARE__"))
+                .find_map(crate::gradle_prepare::failure_message)
+        {
+            return Err(unsupported(message));
+        }
         let error = build_command_failure(
             message,
             "BUILD_COMMAND_FAILED",

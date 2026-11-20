@@ -762,12 +762,15 @@ fn ensure_java_generation_set(
     extra_annotation_processors: &[String],
     gradle_properties: Option<&crate::project_config::GradleProperties>,
 ) -> Result<ReadyGenerationSet, ClewError> {
+    let prepare = gradle_properties.is_some_and(|p| !p.prepare_tasks.is_empty());
+    let persist_effective = writable_then_seal || prepare;
     let mut workspace = ProjectNativeKotlinWorkspace::prepare_language(
         state,
         store,
         snapshot,
         &session.compilations,
         "java",
+        prepare,
     )?;
     if writable_then_seal {
         crate::repository_snapshot::make_files_writable(workspace.repository())?;
@@ -800,7 +803,7 @@ fn ensure_java_generation_set(
             .map_err(internal)?,
         )?
         .to_owned();
-        let (source_content_digests, before_digests, changed_files) = if writable_then_seal {
+        let (source_content_digests, before_digests, changed_files) = if persist_effective {
             let after = transformed_java_source_digests(
                 workspace.repository(),
                 &model.authority.source_files,
@@ -818,6 +821,18 @@ fn ensure_java_generation_set(
                         .map(|a| (path.clone(), d.clone(), a.clone()))
                 })
                 .collect::<Vec<_>>();
+            if prepare {
+                if !changed.is_empty() {
+                    return Err(ClewError::new(
+                        ErrorCode::InputMutated,
+                        "Gradle preparation changed files from the repository snapshot",
+                    ));
+                }
+                crate::gradle_prepare::verify_sources(
+                    &model.authority.gradle_prepare_tasks,
+                    |path| after.get(path).map(String::as_str),
+                )?;
+            }
             (after, Some(before), changed)
         } else {
             let digests = java_source_content_digests(store, &sources, &model)?;
@@ -885,7 +900,7 @@ fn ensure_java_generation_set(
             JavaPreparedInputsResult::Eligible(inputs) => (Some(inputs.as_ref()), "ELIGIBLE"),
             JavaPreparedInputsResult::Refused(reason) => (None, reason.code()),
         };
-        if writable_then_seal {
+        if persist_effective {
             // The sealed tree must still match the captured transformed state;
             // otherwise a transform mutated sources after capture and the index
             // would be attributed to bytes it never analyzed.
@@ -921,7 +936,7 @@ fn ensure_java_generation_set(
                     source_content_digests,
                     &compilation,
                     &binding_path,
-                    writable_then_seal,
+                    persist_effective,
                     before_digests.as_ref(),
                     &changed_files,
                     debug_output,
@@ -3236,7 +3251,17 @@ pub fn ensure_candidate_generation(
 fn generation_pool(session: &SessionAuthority) -> Result<rayon::ThreadPool, ClewError> {
     let resources = HostResources::detect()?;
     let admitted = admitted_generation_jobs(resources, session.compilations.len());
-    let jobs = session.generation_jobs.unwrap_or(admitted);
+    let jobs = if session
+        .gradle_properties
+        .as_ref()
+        .is_some_and(|binding| binding.prepare_task_count > 0)
+    {
+        // Explicit producers can share outputs across selected compilations.
+        // Keep each model and index paired before another invocation runs.
+        1
+    } else {
+        session.generation_jobs.unwrap_or(admitted)
+    };
     if jobs > admitted {
         return Err(ClewError::new(
             ErrorCode::ResourceLimit,
@@ -3997,6 +4022,24 @@ fn prepare_authority(
     });
     if let Some(tags) = tags {
         model_input["gradleGitTagsId"] = json!(tags.id);
+    }
+    let manifest = &project["semanticInputManifest"];
+    if let Some(value) = project.get("gradlePrepareTasks") {
+        let report = crate::gradle_prepare::read(value)?;
+        let report_digest = canonical::hash(value).map_err(internal)?;
+        if report.is_empty()
+            || manifest["gradlePrepareTasksDigest"].as_str() != Some(report_digest.as_str())
+        {
+            return Err(crate::gradle_prepare::invalid_receipt());
+        }
+        let sources: BTreeMap<_, _> = manifest["analysisSourceFiles"]["files"]
+            .as_array()
+            .ok_or_else(crate::gradle_prepare::invalid_receipt)?
+            .iter()
+            .filter_map(|file| Some((file["path"].as_str()?, file["hash"].as_str()?)))
+            .collect();
+        crate::gradle_prepare::verify_sources(&report, |path| sources.get(path).copied())?;
+        model_input["gradlePrepareTasks"] = value.clone();
     }
     let model = store.put(
         "codeclew-project-native-model/2.0",
@@ -5639,6 +5682,7 @@ mod tests {
             authority: JavaProjectModel {
                 schema: JAVA_MODEL_SCHEMA.into(),
                 gradle_property_id: None,
+                gradle_prepare_tasks: Vec::new(),
                 model_digest: String::new(),
                 build_system: JavaBuildSystem::Maven,
                 compilation: "java:maven:module:main".into(),

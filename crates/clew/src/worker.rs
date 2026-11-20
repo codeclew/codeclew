@@ -2014,6 +2014,7 @@ impl WorkerClient {
                 serde_json::to_string(&serde_json::json!({
                     "id": properties.binding.id,
                     "args": properties.args().collect::<Vec<_>>(),
+                    "prepareTasks": properties.prepare_tasks,
                 }))
                 .map_err(|_| internal("cannot encode Gradle project property arguments"))?,
             );
@@ -4556,6 +4557,12 @@ fn safe_worker_error_message_for_worker_error(
         return safe_worker_error_message(code);
     }
 
+    if let Some(message) = worker_message
+        .strip_prefix("GRADLE_PREPARE_")
+        .and_then(crate::gradle_prepare::failure_message)
+    {
+        return message;
+    }
     let Some((category, _)) = worker_message.split_once(':') else {
         return safe_worker_error_message(code);
     };
@@ -5849,6 +5856,23 @@ mod tests {
             assert!(!actual.contains('\n'));
             assert!(!actual.contains('\u{1b}'));
         }
+    }
+
+    #[test]
+    fn prepare_task_refusals_keep_a_safe_reason_without_worker_text() {
+        let code = ErrorCode::UnsupportedProjectConfiguration;
+        let refusal = "GRADLE_PREPARE_COMPILATION_TASK_DEPENDENCY";
+        let message = safe_worker_error_message_for_worker_error(&code, refusal);
+        assert_eq!(
+            crate::gradle_prepare::public_failure_code(message),
+            Some(refusal)
+        );
+        let private = format!("{refusal}: :privateTask");
+        assert_eq!(
+            safe_worker_error_message_for_worker_error(&code, &private),
+            safe_worker_error_message(&code),
+        );
+        assert_eq!(crate::gradle_prepare::public_failure_code(&private), None);
     }
 
     #[test]

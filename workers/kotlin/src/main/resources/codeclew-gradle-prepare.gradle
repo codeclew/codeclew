@@ -1,0 +1,142 @@
+// Shared by the Kotlin worker and Java model extractor. Only the selected
+// managed model task configures this graph.
+class CodeclewGradlePrepare {
+    private static final int FILE_LIMIT = 2048
+    private static final long BYTE_LIMIT = 128L * 1024 * 1024
+    private final def project
+    private final java.nio.file.Path repository
+    private final List<String> requested
+    private final Map observed = [:]
+    private List tasks = []
+    private int filesRead = 0
+    private long bytesRead = 0
+
+    CodeclewGradlePrepare(project) {
+        this.project = project
+        this.repository = project.rootDir.canonicalFile.toPath()
+        this.requested = System.getProperty("codeclew.gradle.prepareTasks", "").split(",").findAll { it }
+    }
+
+    boolean enabled() { !requested.isEmpty() }
+
+    static void refused(String code) {
+        println("__CODECLEW_GRADLE_PREPARE__" + code)
+        throw new org.gradle.api.GradleException("Codeclew Gradle preparation refused: " + code)
+    }
+
+    void wire(model, compile, blocked, consumers) {
+        tasks = requested.collect { path ->
+            def split = path.lastIndexOf(':')
+            def owner = project.rootProject.findProject(split == 0 ? ':' : path.substring(0, split))
+            def task = owner?.tasks?.findByName(path.substring(split + 1))
+            if (task == null || task.path != path) refused("TASK_NOT_FOUND")
+            task
+        }
+        def forbidden = ([model, compile] + blocked).findAll { it != null } as Set
+        if (tasks.any { forbidden.contains(it) }) refused("COMPILATION_TASK_DEPENDENCY")
+        project.gradle.taskGraph.whenReady { graph ->
+            if (!graph.hasTask(model)) return
+            def visited = new LinkedHashSet()
+            def pending = new ArrayDeque(tasks)
+            while (!pending.isEmpty()) {
+                def task = pending.removeFirst()
+                if (forbidden.contains(task)) refused("COMPILATION_TASK_DEPENDENCY")
+                if (!visited.add(task)) continue
+                if (visited.size() > 16384) refused("TASK_GRAPH_BUDGET")
+                pending.addAll(graph.getDependencies(task))
+            }
+        }
+        model.dependsOn(tasks)
+        consumers.findAll { it != null }.each { it.mustRunAfter(tasks) }
+        project.gradle.taskGraph.afterTask { task, state ->
+            if (state.failure != null && tasks.contains(task)) println("__CODECLEW_GRADLE_PREPARE__TASK_FAILED")
+        }
+        tasks.each { task ->
+            task.outputs.doNotCacheIf("Codeclew observes native task outputs in this checkout") { true }
+            task.doFirst {
+                // A declared output cannot point into a caller checkout, the
+                // repository root or Git internals.
+                task.outputs.files.files.each { relativeOutput(it) }
+            }
+            task.doLast { observed[task.path] = outputs(task) }
+        }
+    }
+
+    private String relativeOutput(File file) {
+        def literal = file.toPath().toAbsolutePath().normalize()
+        def real = file.canonicalFile.toPath()
+        if (literal != real || !real.startsWith(repository) || real == repository ||
+            real.startsWith(repository.resolve('.git'))) refused("OUTPUT_OUTSIDE_CHECKOUT")
+        repository.relativize(real).toString().replace('\\', '/')
+    }
+
+    private String digest(File file) {
+        def size = file.length()
+        if (++filesRead > FILE_LIMIT || (bytesRead += size) > BYTE_LIMIT) refused("OUTPUT_OBSERVATION_BUDGET")
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        file.withInputStream { stream ->
+            byte[] buffer = new byte[65536]
+            int count
+            while ((count = stream.read(buffer)) != -1) digest.update(buffer, 0, count)
+        }
+        "sha256:" + digest.digest().encodeHex().toString()
+    }
+
+    private List outputs(task) {
+        def declared = task.outputs.files.files.collect { file -> [file, relativeOutput(file)] }.sort { it[1] }
+        if (declared.size() > 256) refused("OUTPUT_OBSERVATION_BUDGET")
+        declared.collect { pair ->
+            def file = pair[0]
+            def path = pair[1]
+            if (!file.exists()) return [path: path, kind: "MISSING", files: []]
+            if (file.isFile()) return [path: path, kind: "FILE", files: [[path: path, digest: digest(file)]]]
+            if (!file.isDirectory()) refused("OUTPUT_NOT_REGULAR")
+            def children = []
+            java.nio.file.Files.walk(file.toPath()).withCloseable { walk ->
+                def entries = walk.iterator()
+                int visited = 0
+                while (entries.hasNext()) {
+                    def child = entries.next()
+                    if (++visited > 8192) refused("OUTPUT_OBSERVATION_BUDGET")
+                    if (java.nio.file.Files.isSymbolicLink(child)) refused("OUTPUT_NOT_REGULAR")
+                    if (java.nio.file.Files.isDirectory(child)) continue
+                    if (!java.nio.file.Files.isRegularFile(child)) refused("OUTPUT_NOT_REGULAR")
+                    children.add([path: relativeOutput(child.toFile()), digest: digest(child.toFile())])
+                }
+            }
+            [path: path, kind: "DIRECTORY", files: children.sort { it.path }]
+        }
+    }
+
+    List receipt(sourceFiles, classpath) {
+        def sources = sourceFiles.collect { it.canonicalFile.toPath() } as Set
+        def binaries = classpath.findAll { it.isFile() }.collect { it.canonicalFile.toPath() } as Set
+        def directories = classpath.findAll { it.isDirectory() }.collect { it.canonicalFile.toPath() }
+        filesRead = 0
+        bytesRead = 0
+        tasks.collect { task ->
+            def state = task.state
+            def executed = state.executed && state.failure == null && !state.skipped && state.didWork
+            def reused = state.executed && state.failure == null && state.upToDate
+            def produced = executed ? observed[task.path] : (reused ? outputs(task) : null)
+            def seen = produced ?: []
+            def outputRows = seen.collect { output ->
+                [path: output.path, kind: output.kind, files: output.files.collect { row ->
+                    def file = repository.resolve(row.path).toFile()
+                    def path = file.toPath()
+                    def use = sources.contains(path) ? "SOURCE" : (
+                        binaries.contains(path) || directories.any { path.startsWith(it) } ? "CLASSPATH" : "NOT_SELECTED")
+                    if (!file.isFile() || relativeOutput(file) != row.path || digest(file) != row.digest) {
+                        use = "CHANGED_AFTER_TASK"
+                    }
+                    [path: row.path, digest: row.digest, selection: use]
+                }]
+            }
+            def selected = outputRows.any { it.files.any { it.selection in ["SOURCE", "CLASSPATH"] } }
+            [task: task.path,
+             execution: executed ? "EXECUTED" : (reused ? "UP_TO_DATE" : "NOT_EXECUTED"),
+             selection: produced == null ? "UNAVAILABLE" : (selected ? "SELECTED" : "NO_SELECTED_OUTPUTS"),
+             outputs: outputRows]
+        }
+    }
+}

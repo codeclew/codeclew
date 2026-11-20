@@ -1650,7 +1650,7 @@ internal fun repoOwnedStateDirectory(repo: Path, vararg components: String): Pat
 
 private const val GRADLE_PROPERTIES_ENV = "CODECLEW_WORKER_GRADLE_PROPERTIES"
 
-private class GradleProjectProperties(val id: String, val args: List<String>) {
+private class GradleProjectProperties(val id: String, val args: List<String>, val prepareTasks: List<String>) {
     companion object {
         fun fromLaunchEnvironment(): GradleProjectProperties? {
             val raw = System.getenv(GRADLE_PROPERTIES_ENV) ?: return null
@@ -1659,6 +1659,7 @@ private class GradleProjectProperties(val id: String, val args: List<String>) {
                 return GradleProjectProperties(
                     config.getValue("id").jsonPrimitive.content,
                     config.getValue("args").jsonArray.map { it.jsonPrimitive.content },
+                    config["prepareTasks"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content },
                 )
             } catch (_: IllegalArgumentException) {
                 error("Invalid managed Gradle project property transport")
@@ -1680,6 +1681,7 @@ internal fun gradleModelCommand(
     preparedState: BuildStateLayout? = null,
     reuseDaemon: Boolean = false,
     projectPropertyArgs: List<String> = emptyList(),
+    prepareTasks: List<String> = emptyList(),
     nativeCaptureRevision: String? = null,
     nativeObserverDirectory: Path? = null,
 ): List<String> = buildList {
@@ -1706,6 +1708,10 @@ internal fun gradleModelCommand(
         add("-Dsemantic.thread.nativeCaptureTask=${modelTask.removeSuffix("semanticThreadModel")}$compileTask")
     }
     nativeObserverDirectory?.let { add("-Dsemantic.thread.nativeObserverDirectory=$it") }
+    if (prepareTasks.isNotEmpty()) {
+        add("-Dcodeclew.gradle.prepareTasks=" + prepareTasks.joinToString(","))
+        add("-Dcodeclew.gradle.prepareModelTask=$modelTask")
+    }
     addAll(projectPropertyArgs)
     add(modelTask)
 }
@@ -2104,6 +2110,7 @@ internal class Worker(
                 put("nativeSpringCompileReceipt", nativeSpringReceiptSummary(it))
             }
             nativeFir?.let { put("nativeFirCompileReceipt", it) }
+            buildModel["gradlePrepareTasks"]?.let { put("gradlePrepareTasks", it) }
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
             put("analysisJvmFingerprint", currentAnalysisJvmFingerprint)
@@ -2147,6 +2154,7 @@ internal class Worker(
             put("generatedSourceConfiguration", normalized["generatedSourceConfiguration"] ?: JsonNull)
             normalized["nativeSpringCompileReceipt"]?.let { put("nativeSpringCompileReceipt", it) }
             normalized["nativeFirCompileReceipt"]?.let { put("nativeFirCompileReceipt", it) }
+            normalized["gradlePrepareTasks"]?.let { put("gradlePrepareTasksDigest", canonicalIndexJsonDigest(it)) }
             put("buildModelBoundaries", normalized["buildModelBoundaries"] ?: JsonNull)
             put("dependencyCoordinates", normalized["dependencyCoordinates"] ?: JsonNull)
             put("resolvedDependencyArtifacts", normalized["resolvedDependencyArtifacts"] ?: JsonArray(emptyList()))
@@ -2186,7 +2194,10 @@ internal class Worker(
         var observerDirectory: Path? = null
         try {
             val resource = Worker::class.java.getResourceAsStream("/semantic-thread-model.init.gradle") ?: error("project model init script missing")
-            script.writeBytes(resource.use { it.readBytes() })
+            val preparation = Worker::class.java.getResourceAsStream("/codeclew-gradle-prepare.gradle")
+                ?: error("Gradle preparation script missing")
+            script.writeText(resource.bufferedReader().use { it.readText() } +
+                "\n" + preparation.bufferedReader().use { it.readText() })
             val selected = compilation ?: ":/main"
             val captureRevision = nativeCapture?.takeIf { (root, scope, _) -> root == repo && scope == selected }?.third
             if (captureRevision != null) {
@@ -2209,6 +2220,7 @@ internal class Worker(
                     preparedState = state,
                     reuseDaemon = !System.getenv("CODECLEW_K2_INDEX_ROOT").isNullOrBlank(),
                     projectPropertyArgs = gradleProperties?.args.orEmpty(),
+                    prepareTasks = gradleProperties?.prepareTasks.orEmpty(),
                     nativeCaptureRevision = captureRevision,
                     nativeObserverDirectory = observerDirectory,
                 ),
@@ -2227,6 +2239,16 @@ internal class Worker(
             }
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) {
+                if (gradleProperties?.prepareTasks?.isNotEmpty() == true) {
+                    val prefix = "__CODECLEW_GRADLE_PREPARE__"
+                    val known = setOf("TASK_NOT_FOUND", "COMPILATION_TASK_DEPENDENCY", "TASK_GRAPH_BUDGET",
+                        "OUTPUT_OUTSIDE_CHECKOUT", "OUTPUT_OBSERVATION_BUDGET", "OUTPUT_NOT_REGULAR",
+                        "COMPILATION_INPUTS_UNAVAILABLE", "OUTPUT_CHANGED_DURING_COMPILATION", "TASK_FAILED")
+                    val refusal = output.lineSequence().filter { it.startsWith(prefix) }
+                        .map { it.removePrefix(prefix) }.firstOrNull { it in known }
+                    if (refusal != null) throw WorkerFailure(
+                        "UNSUPPORTED_PROJECT_CONFIGURATION", "GRADLE_PREPARE_$refusal")
+                }
                 val markers = output.lineSequence().toSet()
                 if ("__SEMANTIC_THREAD_NATIVE_FIR_ATTACH_FAILED__" in markers) {
                     throw nativeFirFailure("NATIVE_KOTLIN_OBSERVER_ATTACH_FAILED")
@@ -2267,6 +2289,11 @@ internal class Worker(
             val line = output.lineSequence().lastOrNull { it.startsWith("__SEMANTIC_THREAD_MODEL__") }
                 ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "BUILD_MODEL_MARKER_MISSING: Gradle completed without publishing the selected compilation model. Run ./gradlew tasks --all from the repository root and verify the selected Kotlin JVM compilation; if it exists, report this code and the compilation to Codeclew maintainers.")
             val model = json.parseToJsonElement(line.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
+            if (gradleProperties?.prepareTasks?.isNotEmpty() == true &&
+                model["gradlePrepareTasks"]?.jsonArray?.map { it.jsonObject["task"]?.jsonPrimitive?.content } !=
+                    gradleProperties.prepareTasks) {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "GRADLE_PREPARE_OBSERVATION_UNAVAILABLE")
+            }
             if (model["nativeFirCompilation"] != null) {
                 nativeFirObservation = runCatching {
                     readNativeFirObservation(

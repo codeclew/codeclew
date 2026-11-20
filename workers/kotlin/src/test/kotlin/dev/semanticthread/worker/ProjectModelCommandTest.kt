@@ -222,6 +222,18 @@ class ProjectModelCommandTest {
             assertFalse(command.contains("--gradle-user-home"))
             assertFalse(command.contains("--project-cache-dir"))
             assertFalse(command.any { it.startsWith("-Duser.home=") })
+            assertFalse(command.any { it.startsWith("-Dcodeclew.gradle.prepare") })
+            val preparedCommand = gradleModelCommand(
+                wrapper, repo, home, home, init, "compileKotlin", ":app:semanticThreadModel",
+                projectPropertyArgs = listOf("-Pmode=preview"),
+                prepareTasks = listOf(":app:generate", ":audit"),
+            )
+            assertEquals(
+                listOf("-Dcodeclew.gradle.prepareTasks=:app:generate,:audit",
+                    "-Dcodeclew.gradle.prepareModelTask=:app:semanticThreadModel",
+                    "-Pmode=preview", ":app:semanticThreadModel"),
+                preparedCommand.takeLast(4),
+            )
             assertFalse(Files.exists(home))
             assertFalse(Files.exists(repo.resolve(".semantic-thread")))
             val internalKeys = listOf("CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT")

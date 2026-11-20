@@ -321,7 +321,15 @@ impl ProjectNativeKotlinWorkspace {
         compilations: &[String],
         tags: Option<&crate::gradle_git_tags::LocalTags>,
     ) -> Result<Self, ClewError> {
-        Self::prepare_language_with_git_tags(state, store, snapshot, compilations, "kotlin", tags)
+        Self::prepare_language_with_git_tags(
+            state,
+            store,
+            snapshot,
+            compilations,
+            "kotlin",
+            true,
+            tags,
+        )
     }
 
     pub(crate) fn prepare_language(
@@ -330,8 +338,17 @@ impl ProjectNativeKotlinWorkspace {
         snapshot: &RepositoryInputSnapshot,
         compilations: &[String],
         language: &str,
+        contained_outputs: bool,
     ) -> Result<Self, ClewError> {
-        Self::prepare_language_with_git_tags(state, store, snapshot, compilations, language, None)
+        Self::prepare_language_with_git_tags(
+            state,
+            store,
+            snapshot,
+            compilations,
+            language,
+            contained_outputs,
+            None,
+        )
     }
 
     fn prepare_language_with_git_tags(
@@ -340,6 +357,7 @@ impl ProjectNativeKotlinWorkspace {
         snapshot: &RepositoryInputSnapshot,
         compilations: &[String],
         language: &str,
+        contained_outputs: bool,
         tags: Option<&crate::gradle_git_tags::LocalTags>,
     ) -> Result<Self, ClewError> {
         if compilations.is_empty()
@@ -358,7 +376,7 @@ impl ProjectNativeKotlinWorkspace {
             "compilations":compilations,
             "language":language,
             "providerMode":"PROJECT_NATIVE_LEGACY_BRIDGE",
-            "derivedOutputLayout":if language == "kotlin" { "CONTAINED_DIRECTORIES" } else { "EXTERNAL_SYMLINKS" },
+            "derivedOutputLayout":if contained_outputs { "CONTAINED_DIRECTORIES" } else { "EXTERNAL_SYMLINKS" },
             "repositorySnapshot":snapshot.snapshot_id,
         });
         if let Some(tags) = tags {
@@ -379,7 +397,7 @@ impl ProjectNativeKotlinWorkspace {
         preparation_profile.materializations += 1;
         let derived_mount_started = Instant::now();
         let derived_mounts =
-            mount_project_derived_state(&attempt_path, &repo, snapshot, language == "kotlin")?;
+            mount_project_derived_state(&attempt_path, &repo, snapshot, contained_outputs)?;
         operational_timing.derived_mount_micros = Some(elapsed_micros(derived_mount_started));
         preparation_profile.derived_mount_sets += 1;
         preparation_profile.workspace_set_authority_digest = workspace_set_authority_digest;

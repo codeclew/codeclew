@@ -719,6 +719,7 @@ mod tests {
         let mut model = JavaProjectModel {
             schema: JAVA_MODEL_SCHEMA.into(),
             gradle_property_id: None,
+            gradle_prepare_tasks: Vec::new(),
             model_digest: String::new(),
             build_system: JavaBuildSystem::Gradle,
             compilation: ":/main".into(),

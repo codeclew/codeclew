@@ -71,6 +71,7 @@ impl Fixture {
         let mut authority = JavaProjectModel {
             schema: clew::java_project_model::JAVA_MODEL_SCHEMA.into(),
             gradle_property_id: None,
+            gradle_prepare_tasks: Vec::new(),
             model_digest: String::new(),
             build_system: JavaBuildSystem::Maven,
             compilation: ":/main".into(),

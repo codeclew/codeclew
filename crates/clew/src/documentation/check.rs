@@ -1022,6 +1022,12 @@ impl Check {
             {
                 result["services"][id]["gradleGitTags"] = summary;
             }
+            if let Some(observed) = evidence
+                .observations
+                .get(&format!("gradle-prepare-tasks:{id}"))
+            {
+                result["services"][id]["gradlePrepareTasks"] = observed.normalized.clone();
+            }
         }
         result
     }

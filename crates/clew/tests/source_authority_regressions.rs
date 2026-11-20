@@ -363,6 +363,7 @@ fn semantic_generation_key_distinguishes_noop_writable_from_readonly() {
     // and flows into canonical_options -> derived manifest -> generation key.
     let model = clew::java_project_model::JavaProjectModel {
         gradle_property_id: None,
+        gradle_prepare_tasks: Vec::new(),
         schema: clew::java_project_model::JAVA_MODEL_SCHEMA.into(),
         model_digest: String::new(),
         build_system: clew::java_project_model::JavaBuildSystem::Maven,
@@ -742,6 +743,7 @@ fn native_failing_processor_error_is_sanitized() {
 fn processor_option_and_artifact_digest_participate_in_authority() {
     let model = clew::java_project_model::JavaProjectModel {
         gradle_property_id: None,
+        gradle_prepare_tasks: Vec::new(),
         schema: clew::java_project_model::JAVA_MODEL_SCHEMA.into(),
         model_digest: String::new(),
         build_system: clew::java_project_model::JavaBuildSystem::Maven,
