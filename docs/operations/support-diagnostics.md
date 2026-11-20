@@ -38,6 +38,13 @@ An atomic record above 128 MiB cannot be repaired by repeating unchanged capture
 or omitting modules. Preserve the failed run and share this metadata for a
 bounded producer-record fix; collection itself does not capture sources again.
 
+A Kotlin flow owner failure can include `kotlinFlowOwner`. It records whether
+the producer supplied an explicit owner, the part of the binding that failed,
+and a count bucket of zero, one, or multiple matches. Range failures can also
+report how many declarations matched the same scope, file, and symbol before
+checking the range. The diagnostic omits names, paths, and offsets. Earlier
+Check snapshots may lack this field.
+
 The default latest manifest is read once and pinned by its exact bytes. Collection
 reads only that Check manifest and the source-selection envelope. It does not
 open source checkouts, run compilers, call doctor, contact a model or network,

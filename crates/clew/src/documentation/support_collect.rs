@@ -237,6 +237,12 @@ fn safe_failure(value: &Value) -> Value {
     if let Some(safe) = crate::maven_diagnostics::saved_summary(&value["mavenFailure"]) {
         result["mavenFailure"] = safe;
     }
+    if value["reason"] == "INVALID_INPUT"
+        && let Some(safe) = super::kotlin::flow_owner::summary(&value["kotlinFlowOwner"])
+    {
+        result["kotlinFlowOwner"] = safe;
+        result["remediationId"] = json!("INSPECT_KOTLIN_FLOW_OWNER_BINDING");
+    }
     if let Some(safe) = super::cache::budget_summary(&value["objectBudget"]) {
         result["objectBudget"] = safe;
         result["remediationId"] = json!("INSPECT_CAPTURE_OBJECT_BUDGET");

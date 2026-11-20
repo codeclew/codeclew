@@ -1,4 +1,5 @@
 //! Project retained K2 descriptors and compiler-linked PSI flow into documentation.
+pub(super) mod flow_owner;
 mod semantic_inputs;
 use super::local_cfg::{LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA, LocalCfgBoundaryEvidence};
 use super::{digest, invalid};
@@ -13,12 +14,17 @@ type CallOccurrence = (String, String, u64, u64);
 type DeclarationOccurrence = (String, String, String, u64, u64);
 
 fn declaration_occurrence(fact: &Value) -> Option<DeclarationOccurrence> {
+    let start = fact["start"].as_u64()?;
+    let end = fact["end"].as_u64()?;
+    if start >= end {
+        return None;
+    }
     Some((
         fact_scope(fact),
         fact["file"].as_str()?.into(),
         fact["symbolIdentity"].as_str()?.into(),
-        fact["start"].as_u64().unwrap_or(0),
-        fact["end"].as_u64().unwrap_or(0),
+        start,
+        end,
     ))
 }
 
@@ -229,80 +235,7 @@ pub(super) fn project_facts(
     let compiler = facts.iter().find(|(fact, _)| fact["schema"].as_str().is_some_and(|s| s.starts_with("codeclew-kotlin-index-metadata/")))
         .map(|(fact, _)| json!({"projectCompilerVersion":fact["projectCompilerVersion"],"analyzerCompilerVersion":fact["analyzerCompilerVersion"],
             "projectSemantics":fact["kotlinProjectSemantics"],"semanticEngine":fact["kotlinSemanticEngine"]}));
-    let mut descriptor_occurrences = BTreeSet::new();
-    let mut symbol_occurrences: BTreeMap<(String, String), BTreeSet<DeclarationOccurrence>> =
-        BTreeMap::new();
-    for (fact, _) in &facts {
-        if fact["schema"] == "declaration-descriptor/0.1"
-            && fact.get("attributeCoverage").is_none()
-            && fact.get("sourceRowHash").is_none()
-            && let Some(key) = declaration_occurrence(fact)
-        {
-            if !descriptor_occurrences.insert(key.clone()) {
-                return Err(invalid(
-                    "Kotlin documentation repeats an exact compiler declaration occurrence",
-                ));
-            }
-            symbol_occurrences
-                .entry((key.0.clone(), key.2.clone()))
-                .or_default()
-                .insert(key);
-        }
-    }
-    let ambiguous: BTreeSet<_> = symbol_occurrences
-        .iter()
-        .filter(|(_, occurrences)| occurrences.len() > 1)
-        .map(|(identity, _)| identity.clone())
-        .collect();
-    let mut flows = BTreeMap::new();
-    for (fact, binding) in &facts {
-        if let Some(declarations) = fact["declarations"].as_array() {
-            for declaration in declarations {
-                if let (Some(symbol), Some(flow)) = (
-                    declaration["documentationSymbol"].as_str(),
-                    declaration.get("documentation"),
-                ) {
-                    let scope = fact_scope(fact);
-                    let file = declaration["file"]
-                        .as_str()
-                        .or_else(|| fact["path"].as_str());
-                    let owner = &declaration["documentationOwner"];
-                    if declaration.get("documentationOwner").is_some() && !owner.is_object()
-                        || fact["path"]
-                            .as_str()
-                            .zip(declaration["file"].as_str())
-                            .is_some_and(|(a, b)| a != b)
-                    {
-                        return Err(invalid(
-                            "Kotlin documentation flow has an invalid file/owner binding",
-                        ));
-                    }
-                    let key = if owner.is_object() {
-                        let file = owner["file"].as_str().filter(|value| file.is_none_or(|file| file==*value));
-                        let exact = file.zip(owner["byteStart"].as_u64()).zip(owner["byteEnd"].as_u64())
-                            .filter(|_|owner["symbolIdentity"]==symbol)
-                            .map(|((file,start),end)|(scope.clone(),file.to_owned(),symbol.to_owned(),start,end));
-                        exact.and_then(|key|descriptor_occurrences.get(&key)).cloned()
-                    } else {
-                        // Legacy producer rows have no explicit owner range. Limit
-                        // uniqueness checks to their indexed callable family.
-                        let candidates: Vec<_> = symbol_occurrences.get(&(scope,symbol.to_owned()))
-                            .into_iter().flatten().filter(|key|file.is_none_or(|file|key.1==file)).take(2).collect();
-                        match candidates.as_slice() { [key]=>Some((**key).clone()), _=>None }
-                    }.ok_or_else(||invalid("Kotlin documentation flow lacks one exact scope/file/declaration owner"))?;
-                    if let Some(metadata) = flow.get("semanticInputs") {
-                        semantic_inputs::validate(metadata, &key, fact["contentHash"].as_str())?;
-                        semantic_inputs::validate_event_carriers(flow)?;
-                    }
-                    if flows.insert(key, (flow.clone(), binding.clone())).is_some() {
-                        return Err(invalid(
-                            "Kotlin documentation repeats a compiler declaration flow owner",
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    let (mut flows, ambiguous) = flow_owner::collect(&facts)?;
     let mut function_descriptors =
         BTreeMap::<(String, String, String), Vec<FunctionDescriptor>>::new();
     for (fact, descriptor_binding) in &facts {
@@ -923,11 +856,10 @@ mod tests {
         let mut duplicate = conflicting[0].clone();
         duplicate.0["returnType"] = json!("kotlin/String");
         conflicting.push(duplicate);
-        assert!(
-            project_facts(conflicting)
-                .unwrap_err()
-                .message
-                .contains("exact compiler declaration occurrence")
+        let duplicate = project_facts(conflicting).unwrap_err();
+        assert_eq!(
+            duplicate.details.unwrap()["kotlinFlowOwner"],
+            json!({"mode":"EXPLICIT","keyPart":"OCCURRENCE","matches":"MULTIPLE"})
         );
         let mut wrong = facts;
         wrong[1].0["declarations"][0]["documentationOwner"]["file"] = json!("Two.kt");
@@ -936,6 +868,145 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("exact scope/file/declaration owner")
+        );
+    }
+
+    #[test]
+    fn kotlin_flow_binds_validated_core_occurrence_without_promoting_attributes() {
+        let mut facts = documented_declaration("p/reader", "One.kt", ":/main", 1);
+        let (descriptor, _) = &mut facts[0];
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "typeParameters",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+        ] {
+            descriptor.as_object_mut().unwrap().remove(field);
+        }
+        descriptor["attributeCoverage"] = json!("PARTIAL");
+        descriptor["sourceRowHash"] = json!(format!("sha256:{}", "3".repeat(64)));
+        facts.push((
+            json!({"schema":"declaration-descriptor-boundary/0.1",
+            "code":"UNRESOLVED_DESCRIPTOR_TYPE"}),
+            "attribute-boundary".into(),
+        ));
+
+        let output = project_facts(facts.clone()).unwrap();
+        let row = output
+            .iter()
+            .find(|(row, _)| row["kind"] == "DECLARATION")
+            .unwrap();
+        assert_eq!(row.0["attributeCoverage"], "PARTIAL");
+        assert!(row.0.get("returnType").is_none());
+        assert_eq!(row.0["documentation"]["events"][0]["value"], 1);
+        assert!(
+            output
+                .iter()
+                .any(|(row, _)| row["code"] == "UNRESOLVED_DESCRIPTOR_TYPE")
+        );
+
+        facts[1].0["declarations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("documentationOwner");
+        let legacy = project_facts(facts.clone()).unwrap_err();
+        assert_eq!(
+            legacy.details.unwrap()["kotlinFlowOwner"],
+            json!({"mode":"LEGACY","keyPart":"OCCURRENCE","matches":"ONE"})
+        );
+
+        let bad_symbol = "callable:p/reader#jvm:()opaque";
+        facts[0].0["symbolIdentity"] = json!(bad_symbol);
+        facts[0].0["jvmDescriptor"] = json!("()opaque");
+        facts[1].0["declarations"][0]["documentationSymbol"] = json!(bad_symbol);
+        facts[1].0["declarations"][0]["documentationOwner"] = json!({"file":"One.kt","symbolIdentity":bad_symbol,
+                "byteStart":facts[0].0["start"],"byteEnd":facts[0].0["end"]});
+        let opaque = project_facts(facts).unwrap_err();
+        assert_eq!(
+            opaque.details.unwrap()["kotlinFlowOwner"],
+            json!({"mode":"EXPLICIT","keyPart":"OCCURRENCE","matches":"ONE"})
+        );
+    }
+
+    #[test]
+    fn kotlin_flow_refuses_missing_and_ambiguous_bindings_without_replacing_explicit_owner() {
+        let facts = documented_declaration("p/reader", "One.kt", ":/main", 1);
+        let diagnostic =
+            |rows| project_facts(rows).unwrap_err().details.unwrap()["kotlinFlowOwner"].clone();
+        assert_eq!(
+            diagnostic(vec![facts[1].clone()]),
+            json!({
+                "mode":"EXPLICIT","keyPart":"SYMBOL","matches":"ZERO"
+            })
+        );
+        let mut legacy = facts.clone();
+        legacy[1].0["declarations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("documentationOwner");
+        assert!(
+            project_facts(legacy.clone())
+                .unwrap()
+                .iter()
+                .any(|(row, _)| row["documentation"].is_object())
+        );
+        legacy.push(function_descriptor(
+            "p/reader", "()I", "One.kt", 100, 150, ":/main",
+        ));
+        assert_eq!(
+            diagnostic(legacy),
+            json!({
+                "mode":"LEGACY","keyPart":"OCCURRENCE","matches":"MULTIPLE"
+            })
+        );
+
+        let mut wrong = facts.clone();
+        wrong[1].0["declarations"][0]["documentationOwner"]["byteStart"] = json!(1);
+        assert_eq!(
+            diagnostic(wrong),
+            json!({
+                "mode":"EXPLICIT","keyPart":"RANGE","matches":"ZERO","sameFileCandidates":"ONE"
+            })
+        );
+        let mut wrong = facts.clone();
+        wrong[1].0["scope"]["compilation"] = json!(":/test");
+        assert_eq!(
+            diagnostic(wrong),
+            json!({
+                "mode":"EXPLICIT","keyPart":"SCOPE","matches":"ZERO"
+            })
+        );
+        let mut wrong = facts.clone();
+        wrong[1].0["declarations"][0]["documentationOwner"] = Value::Null;
+        assert_eq!(
+            diagnostic(wrong),
+            json!({
+                "mode":"EXPLICIT","keyPart":"OWNER","matches":"ZERO"
+            })
+        );
+
+        // A syntactically valid explicit range must not steal a flow whose
+        // independent semantic carrier names a different declaration.
+        let mut stolen = facts;
+        let metadata = json!({"compilationScope":":/main","file":"One.kt",
+            "ownerSymbolIdentity":"callable:p/reader#jvm:()I",
+            "ownerByteStart":stolen[0].0["start"],"ownerByteEnd":stolen[0].0["end"]});
+        stolen[1].0["declarations"][0]["documentation"]["semanticInputs"] = metadata;
+        stolen[1].0["declarations"][0]["documentationOwner"]["byteStart"] = json!(100);
+        stolen[1].0["declarations"][0]["documentationOwner"]["byteEnd"] = json!(150);
+        stolen.push(function_descriptor(
+            "p/reader", "()I", "One.kt", 100, 150, ":/main",
+        ));
+        assert_eq!(
+            diagnostic(stolen),
+            json!({
+                "mode":"EXPLICIT","keyPart":"RANGE","matches":"ONE"
+            })
         );
     }
 
@@ -2148,10 +2219,22 @@ mod tests {
             };
             store::validate_service(&service).unwrap();
             let symbol = "callable:example/Importer.importStock#jvm:()V";
-            let declaration = json!({"schema":"declaration-descriptor/0.1", "symbolIdentity":symbol,
-                "compilerCallableId":"example/Importer.importStock", "ownerIdentity":"class:example/Importer",
-                "file":"Importer.kt", "startLine":1, "endLine":1, "jvmDescriptor":"()V"});
-            let file = json!({"declarations":[{"documentationSymbol":symbol,"documentation":{
+            let source = "fun importStock() { send() }";
+            let (mut declaration, _) = function_descriptor(
+                "example/Importer.importStock",
+                "()V",
+                "Importer.kt",
+                0,
+                source.len() as u64,
+                ":/main",
+            );
+            declaration["ownerIdentity"] = json!("class:example/Importer");
+            declaration["containment"] = json!(["class:example/Importer"]);
+            declaration["startLine"] = json!(1);
+            declaration["endLine"] = json!(1);
+            declaration["lineProvenance"] = json!("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE");
+            let file = json!({"path":"Importer.kt","scope":{"compilation":":/main"},
+                "declarations":[{"documentationSymbol":symbol,"documentation":{
                 "parameterTypes":[], "events":[{"kind":"CALL","target":target,"file":"Importer.kt","startLine":1,"endLine":1,
                     "kafka":{"topic":"stock-import"}}], "boundaries":[]}}]});
             let facts = vec![
@@ -2166,7 +2249,7 @@ mod tests {
                 "DEVELOPMENT",
                 "PARTIAL",
                 projected,
-                &BTreeMap::from([("Importer.kt".into(), "fun importStock() { send() }".into())]),
+                &BTreeMap::from([("Importer.kt".into(), source.into())]),
                 false,
             )
             .unwrap();

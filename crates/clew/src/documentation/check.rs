@@ -1423,6 +1423,14 @@ fn capture_failure(error: &ClewError) -> Value {
     {
         record["compilerPluginDiagnostic"] = diagnostic;
     }
+    if error.code == crate::error::ErrorCode::InvalidInput
+        && let Some(value) = error
+            .details
+            .as_deref()
+            .and_then(|details| super::kotlin::flow_owner::summary(&details["kotlinFlowOwner"]))
+    {
+        record["kotlinFlowOwner"] = value;
+    }
     if let Some(diagnostic) = super::cache::budget_diagnostic(error) {
         record["objectBudget"] = diagnostic;
     }
@@ -1453,6 +1461,11 @@ pub(super) fn unresolved_summary(record: &Value) -> Value {
         .and_then(crate::maven_diagnostics::saved_summary)
     {
         summary.insert("mavenFailure".into(), value);
+    }
+    if record["reason"] == "INVALID_INPUT"
+        && let Some(value) = super::kotlin::flow_owner::summary(&record["kotlinFlowOwner"])
+    {
+        summary.insert("kotlinFlowOwner".into(), value);
     }
     if let Some(value) = record
         .get("objectBudget")
@@ -1523,6 +1536,66 @@ mod tests {
             assert_eq!(saved["reason"], serde_json::to_value(&error.code).unwrap());
             assert_eq!(saved["compilerOutput"], expected);
             assert!(!support.to_string().contains("compiler diagnostic"));
+        }
+    }
+
+    #[test]
+    fn kotlin_flow_owner_diagnostic_survives_saved_checkout_free_support() {
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Owned flow failure").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        add_kotlin_service(&repo, "owned");
+        let error = super::super::kotlin::project_facts(vec![(json!({
+            "path":"private-path.kt","scope":{"compilation":":/main"},"declarations":[{
+                "documentationSymbol":"callable:private-symbol#jvm:()V",
+                "documentationOwner":{"file":"private-path.kt","symbolIdentity":"callable:private-symbol#jvm:()V",
+                    "byteStart":12345,"byteEnd":45678},
+                "documentation":{"events":[{"value":"private-source"}]}
+            }]
+        }), "private-binding".into())]).unwrap_err();
+        let expected = json!({"mode":"EXPLICIT","keyPart":"SYMBOL","matches":"ZERO"});
+        assert_eq!(capture_failure(&error)["kotlinFlowOwner"], expected);
+        let mut dirty = error.clone();
+        dirty.details.as_mut().unwrap()["kotlinFlowOwner"]["unexpected"] = json!("private-source");
+        assert!(capture_failure(&dirty).get("kotlinFlowOwner").is_none());
+        dirty.details.as_mut().unwrap()["kotlinFlowOwner"] = json!({
+            "mode":"EXPLICIT","keyPart":"private-field","matches":"ZERO"
+        });
+        assert!(capture_failure(&dirty).get("kotlinFlowOwner").is_none());
+
+        let checked = capture_selected_with(
+            &repo,
+            &BTreeSet::new(),
+            repo.inputs().unwrap(),
+            |_, _, _| Err(error.clone()),
+        )
+        .unwrap();
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        let loaded = Check::load_snapshot(&repo, &snapshot).unwrap();
+        assert_eq!(
+            unresolved_summary(&loaded.unresolved["owned"])["kotlinFlowOwner"],
+            expected
+        );
+        drop(repo);
+        let (report, private) =
+            super::super::support_collect::inspect(temp.path(), Some(&snapshot), None, false);
+        let failure = &report["services"][0]["failure"];
+        assert!(private.is_none());
+        assert_eq!(failure["reason"], "INVALID_INPUT");
+        assert_eq!(
+            failure["remediationId"],
+            "INSPECT_KOTLIN_FLOW_OWNER_BINDING"
+        );
+        assert_eq!(failure["kotlinFlowOwner"], expected);
+        for forbidden in [
+            "private-path",
+            "private-symbol",
+            "private-source",
+            "private-binding",
+            "12345",
+            "45678",
+        ] {
+            assert!(!failure.to_string().contains(forbidden));
         }
     }
 
