@@ -73,6 +73,11 @@ POSITIVES = {"konvert", "independent", "existing"}
 NEGATIVES = {"missing-jar", "other-variant", "state-changed"}
 
 
+ABSENT_OUTPUT = """project.delete(directory.get().asFile)
+        assert !directory.get().asFile.exists()
+"""
+
+
 def git(repo, *args):
     return subprocess.check_output(["git", *args], cwd=repo)
 
@@ -97,8 +102,11 @@ def fixture(repo, case):
                    "tasks.named('compileTestKotlin') { dependsOn(preview) }" if case == "other-variant" else "")
         build = (OTHER_BUILD.replace("OUTPUT_DECLARATION", declaration)
                  .replace("CLASSPATH_INPUT", "archive" if case == "missing-jar" else "directory")
-                 .replace("EXTRA_OUTPUT", EXISTING_OUTPUT if case == "existing" else "")
-                 .replace("AFTER_COMPILE", "doLast { directory.get().asFile.mkdirs() }" if case == "state-changed" else "")
+                 .replace("EXTRA_OUTPUT", EXISTING_OUTPUT if case == "existing" else ABSENT_OUTPUT)
+                 .replace("AFTER_COMPILE", """doLast {
+        assert !directory.get().asFile.exists()
+        assert directory.get().asFile.mkdirs()
+    }""" if case == "state-changed" else "")
                  .replace("OTHER_VARIANT", variant))
         content = "package demo\nfun selectedCard(): Int = GeneratedGauge.read()\n"
         expectation = ("demo.GeneratedGauge.read", b"GeneratedGauge.read()")
@@ -158,16 +166,16 @@ def check(base, clew, case, expect_baseline=False):
         "--snapshot", checked["snapshot"], "--output", exported)
     manifest = json.loads((exported / "manifest.json").read_bytes())
     rows = [row for part in manifest["parts"] for row in json.loads((exported / part["path"]).read_bytes())["records"]]
-    receipt, = [row["normalized"] for row in rows if row["kind"] == "NATIVE_COMPILATION"]
-    selection, = [row["normalized"] for row in rows if row["kind"] == "WORKING_TREE_SOURCE"]
+    receipt, = [row["normalized"] for row in rows if row.get("kind") == "NATIVE_COMPILATION"]
+    selection, = [row["normalized"] for row in rows if row.get("kind") == "WORKING_TREE_SOURCE"]
     assert selection["kind"] == "WORKING_TREE" and selection["baseRevision"] == head, selection
-    assert receipt["revision"] == selection["snapshotDigest"].removeprefix("sha256:"), (receipt, selection)
+    assert receipt["sourceSelection"] == selection and receipt["revision"] == selection["snapshotDigest"].removeprefix("sha256:"), (receipt, selection)
     assert receipt["schema"] == "codeclew-kotlin-native-fir/1" and receipt["scope"] == SCOPE, receipt
     assert (receipt["requestedCompiler"], receipt["nativeGradleVersion"], receipt["jvmTarget"]) == ("2.4.20", "9.6.1", "21")
     digest = "sha256:" + sha256(saved).hexdigest()
     calls = []
     for row in rows:
-        fact = row.get("normalized", {})
+        fact = row.get("normalized") or {}
         span = fact.get("sourceSpan", {})
         if (fact.get("kind"), fact.get("resolution"), fact.get("scope")) != ("CALL", "COMPILER_EXACT", SCOPE):
             continue
@@ -180,7 +188,7 @@ def check(base, clew, case, expect_baseline=False):
         expectations.append(("demo.BinaryFlag.number", b"BinaryFlag.number()"))
     links = []
     for member, expression in expectations:
-        match, = [target for target, snippet in calls if snippet == expression and target.startswith("callable:" + member + "#")]
+        match, = [target for target, snippet in calls if snippet == expression and target.startswith("callable:demo/" + member.removeprefix("demo.") + "#")]
         links.append({"member": match, "expression": expression.decode(), "sourceDigest": digest})
     return {**evidence, "outcome": "CAPTURED", "nativeReceipt": receipt, "calls": links,
             "seconds": round(time.monotonic() - started, 3)}
