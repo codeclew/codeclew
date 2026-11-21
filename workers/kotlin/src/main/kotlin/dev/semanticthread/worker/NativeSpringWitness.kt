@@ -128,9 +128,17 @@ internal fun verifyNativeCompilationInputs(repo: Path, model: JsonObject, receip
         val outputs = producer.jsonObject["selectedJavaDigests"]!!.jsonObject
         require(outputs.isNotEmpty() && outputs.all { (path, digest) -> javaInputs[path] == digest })
     }
-    val classpath = model["classpath"]!!.jsonArray.map { value ->
+    val expected = receipt["classpathDigests"]!!.jsonArray
+    val declared = model["classpath"]!!.jsonArray
+    require(expected.size == declared.size)
+    val classpath = declared.mapIndexed { index, value ->
         val path = Path.of(value.jsonPrimitive.content)
-        if (Files.isRegularFile(path, NOFOLLOW_LINKS)) {
+        if (expected[index].isAbsentDirectorySlot()) {
+            require(model["nativeFirCompilation"] == receipt &&
+                model["classpathAuthority"]?.jsonObject?.get("chosen") == JsonPrimitive("KOTLIN_TASK_LIBRARIES"))
+            absentNativeClasspathIdentity(repo, path, index, receipt["compileTask"], expected[index].jsonObject)
+            expected[index]
+        } else if (Files.isRegularFile(path, NOFOLLOW_LINKS)) {
             JsonPrimitive(nativeFileHash(path))
         } else {
             require(Files.isDirectory(path, NOFOLLOW_LINKS) && path.toRealPath() == path)
@@ -140,7 +148,7 @@ internal fun verifyNativeCompilationInputs(repo: Path, model: JsonObject, receip
             })
         }
     }
-    require(JsonArray(classpath) == receipt["classpathDigests"])
+    require(JsonArray(classpath) == expected)
     val output = repo.resolve(receipt["outputRoot"]!!.jsonPrimitive.content).normalize()
     require(output.startsWith(repo) && output != repo)
     require(JsonObject(nativeClassFiles(output).mapValues { JsonPrimitive(nativeFileHash(it.value)) }) == receipt["classDigests"])
