@@ -69,7 +69,10 @@ jobs:
         if: always()
         with:
           name: kotlin-native-classpath-qualification
-          path: ${{ runner.temp }}/kotlin-native-classpath
+          path: |
+            ${{ runner.temp }}/kotlin-native-classpath/result.json
+            ${{ runner.temp }}/kotlin-native-classpath/*/check.json
+            ${{ runner.temp }}/kotlin-native-classpath/*/check.stderr
           if-no-files-found: ignore
           retention-days: 7
 
