@@ -172,10 +172,10 @@ fn capture_working_tree_with_hook(
     }
     if raw_index
         .iter()
-        .any(|entry| entry.stage != 0 || !matches!(entry.mode, 0o100644 | 0o100755))
+        .any(|entry| entry.stage != 0 || !matches!(entry.mode, 0o100644 | 0o100755 | 0o120000))
     {
         return Err(invalid(
-            "working-tree analysis requires a merged index with regular files; links are unsupported",
+            "working-tree analysis requires a merged index with regular files or tracked symlinks; gitlinks are unsupported",
         ));
     }
     let metadata = read_git_blob_metadata(&repo, raw_index.iter().map(|entry| entry.oid.as_str()))?;
@@ -203,6 +203,11 @@ fn capture_working_tree_with_hook(
         })
         .collect::<Result<Vec<_>, ClewError>>()?;
     drop(blobs);
+    let tracked_links = index
+        .iter()
+        .filter(|entry| entry.mode == 0o120000)
+        .map(|entry| entry.path.as_str())
+        .collect::<BTreeSet<_>>();
     let root = FdRoot::open(&repo)?;
     let mut worktree = Vec::with_capacity(paths.len());
     for path in &paths {
@@ -217,10 +222,18 @@ fn capture_working_tree_with_hook(
                     Some(store.put(BLOB_SCHEMA, &bytes)?),
                 )
             }
-            RawWorktreeEntry::Symlink { .. } => {
-                return Err(invalid(
-                    "working-tree analysis does not follow or capture links",
-                ));
+            RawWorktreeEntry::Symlink { mode, target } => {
+                if !tracked_links.contains(path.as_str()) {
+                    return Err(invalid(
+                        "working-tree analysis only captures symlinks recorded as links in the index",
+                    ));
+                }
+                charge_working_bytes(&mut total, target.len() as u64, limits)?;
+                (
+                    WorktreeKind::Symlink,
+                    mode,
+                    Some(store.put(BLOB_SCHEMA, &target)?),
+                )
             }
         };
         worktree.push(WorktreeEntry {
@@ -239,6 +252,9 @@ fn capture_working_tree_with_hook(
             (RawWorktreeEntry::Missing, WorktreeKind::Missing, None) => true,
             (RawWorktreeEntry::Regular { mode, bytes }, WorktreeKind::Regular, Some(content)) => {
                 mode == entry.mode && store.put(BLOB_SCHEMA, &bytes)? == *content
+            }
+            (RawWorktreeEntry::Symlink { mode, target }, WorktreeKind::Symlink, Some(content)) => {
+                mode == entry.mode && store.put(BLOB_SCHEMA, &target)? == *content
             }
             _ => false,
         };
@@ -264,6 +280,8 @@ fn capture_working_tree_with_hook(
         index,
         worktree,
     };
+    validate_staged_symlinks(&snapshot, store)?;
+    validate_symlinks(&snapshot, store)?;
     snapshot.snapshot_id = canonical::hash(&snapshot).map_err(internal)?;
     let (snapshot, object) = publish_snapshot(store, snapshot)?;
     let head = String::from_utf8(head)
@@ -751,6 +769,8 @@ pub fn verify_materialized_working_tree(
     path: &Path,
 ) -> Result<(), ClewError> {
     snapshot.verify()?;
+    validate_staged_symlinks(snapshot, store)?;
+    validate_symlinks(snapshot, store)?;
     let views = bounded_git_views(path, WorkingTreeLimits::default())?;
     if canonical::hash_bytes(&views.staged) != snapshot.staged_view_digest
         || canonical::hash_bytes(&views.cached) != snapshot.cached_view_digest
@@ -769,6 +789,9 @@ pub fn verify_materialized_working_tree(
             (RawWorktreeEntry::Regular { mode, bytes }, WorktreeKind::Regular, Some(content)) => {
                 (mode & 0o111 != 0) == (entry.mode & 0o111 != 0)
                     && store.read(content, bytes.len())?.bytes() == bytes
+            }
+            (RawWorktreeEntry::Symlink { target, .. }, WorktreeKind::Symlink, Some(content)) => {
+                store.read(content, MAX_FILE_BYTES as usize)?.bytes() == target
             }
             _ => false,
         };
@@ -797,18 +820,34 @@ pub(crate) fn materialize_with_git_tags(
     if destination.exists() {
         return Err(invalid("snapshot destination already exists"));
     }
+    validate_symlinks(snapshot, store)?;
     fs::create_dir(destination).map_err(io_error)?;
     set_mode(destination, 0o700)?;
-    validate_symlinks(snapshot, store)?;
-    for entry in &snapshot.worktree {
-        if entry.kind == WorktreeKind::Missing {
-            continue;
-        }
+    for entry in snapshot
+        .worktree
+        .iter()
+        .filter(|entry| entry.kind != WorktreeKind::Missing)
+    {
         let path = destination.join(&entry.path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
             set_mode(parent, 0o700)?;
         }
+    }
+    // Create each physical directory and regular file before adding links.
+    // A case-insensitive path collision cannot make later writes follow a link.
+    for entry in snapshot
+        .worktree
+        .iter()
+        .filter(|entry| entry.kind == WorktreeKind::Regular)
+        .chain(
+            snapshot
+                .worktree
+                .iter()
+                .filter(|entry| entry.kind == WorktreeKind::Symlink),
+        )
+    {
+        let path = destination.join(&entry.path);
         let reference = entry
             .content
             .as_ref()
@@ -1701,45 +1740,100 @@ fn validate_symlinks(
     snapshot: &RepositoryInputSnapshot,
     store: &CasStore,
 ) -> Result<(), ClewError> {
-    let mut captured = BTreeSet::new();
-    for entry in snapshot
+    let links = snapshot
         .worktree
         .iter()
-        .filter(|entry| entry.kind != WorktreeKind::Missing)
-    {
-        captured.insert(entry.path.clone());
-        let mut parent = Path::new(&entry.path).parent();
-        while let Some(path) = parent {
-            if path.as_os_str().is_empty() {
-                break;
-            }
-            captured.insert(path.to_string_lossy().into_owned());
-            parent = path.parent();
-        }
+        .filter(|entry| entry.kind == WorktreeKind::Symlink);
+    if links.clone().next().is_none() {
+        return Ok(());
     }
-    for entry in snapshot
-        .worktree
-        .iter()
-        .filter(|entry| entry.kind == WorktreeKind::Symlink)
-    {
+    let captured = target_inventory(snapshot.worktree.iter().filter_map(|entry| {
+        let kind = match entry.kind {
+            WorktreeKind::Missing => return None,
+            WorktreeKind::Regular => LinkTarget::Regular,
+            WorktreeKind::Symlink => LinkTarget::Link,
+        };
+        Some((entry.path.as_str(), kind))
+    }))?;
+    for entry in links {
         let reference = entry
             .content
             .as_ref()
             .ok_or_else(|| corrupt_input("symlink has no target"))?;
-        let lease = store.read(reference, MAX_FILE_BYTES as usize)?;
-        let target = std::str::from_utf8(lease.bytes())
-            .map_err(|_| invalid("snapshot symlink target is not UTF-8"))?;
-        let resolved = resolve_symlink(&entry.path, target)?;
-        if !captured.contains(&resolved) {
-            return Err(invalid("snapshot symlink target was not captured"));
-        }
+        validate_link_target(&entry.path, reference, &captured, store)?;
     }
     Ok(())
 }
 
-fn resolve_symlink(path: &str, target: &str) -> Result<String, ClewError> {
-    let target = Path::new(target);
-    if target.is_absolute() {
+fn validate_staged_symlinks(
+    snapshot: &RepositoryInputSnapshot,
+    store: &CasStore,
+) -> Result<(), ClewError> {
+    let links = snapshot.index.iter().filter(|entry| entry.mode == 0o120000);
+    if links.clone().next().is_none() {
+        return Ok(());
+    }
+    let captured = target_inventory(snapshot.index.iter().filter_map(|entry| {
+        let kind = match entry.mode {
+            0o100644 | 0o100755 => LinkTarget::Regular,
+            0o120000 => LinkTarget::Link,
+            _ => return None,
+        };
+        Some((entry.path.as_str(), kind))
+    }))?;
+    for entry in links {
+        validate_link_target(&entry.path, &entry.content, &captured, store)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkTarget {
+    Regular,
+    Directory,
+    Link,
+}
+
+fn target_inventory<'a>(
+    entries: impl Iterator<Item = (&'a str, LinkTarget)>,
+) -> Result<BTreeMap<String, LinkTarget>, ClewError> {
+    let mut captured = BTreeMap::new();
+    for (file, kind) in entries {
+        if captured.insert(file.into(), kind).is_some() {
+            return Err(invalid("snapshot has conflicting file and directory paths"));
+        }
+        let mut parent = Path::new(file).parent();
+        while let Some(path) = parent.filter(|path| !path.as_os_str().is_empty()) {
+            if *captured
+                .entry(path.to_string_lossy().into_owned())
+                .or_insert(LinkTarget::Directory)
+                != LinkTarget::Directory
+            {
+                return Err(invalid("snapshot has conflicting file and directory paths"));
+            }
+            parent = path.parent();
+        }
+    }
+    Ok(captured)
+}
+
+fn validate_link_target(
+    path: &str,
+    content: &CasObject,
+    captured: &BTreeMap<String, LinkTarget>,
+    store: &CasStore,
+) -> Result<(), ClewError> {
+    let lease = store.read(content, MAX_FILE_BYTES as usize)?;
+    let target = std::str::from_utf8(lease.bytes())
+        .map_err(|_| invalid("snapshot symlink target is not UTF-8"))?;
+    if target.is_empty()
+        || target.len() > WorkingTreeLimits::default().max_path_bytes
+        || target.contains('\0')
+    {
+        return Err(invalid("snapshot symlink has an invalid target"));
+    }
+    let target_path = Path::new(target);
+    if target_path.is_absolute() {
         return Err(invalid("absolute snapshot symlink is unsupported"));
     }
     let mut parts = Path::new(path)
@@ -1751,10 +1845,32 @@ fn resolve_symlink(path: &str, target: &str) -> Result<String, ClewError> {
             _ => None,
         })
         .collect::<Vec<_>>();
-    for component in target.components() {
+    let mut components = target_path.components().peekable();
+    while let Some(component) = components.next() {
         match component {
             Component::CurDir => {}
-            Component::Normal(value) => parts.push(value.to_string_lossy().into_owned()),
+            Component::Normal(value) => {
+                let name = value.to_string_lossy();
+                if name.eq_ignore_ascii_case(".git") {
+                    return Err(invalid("snapshot symlink targets Git metadata"));
+                }
+                parts.push(name.into_owned());
+                match captured.get(&parts.join("/")) {
+                    Some(LinkTarget::Directory) => {}
+                    Some(LinkTarget::Regular)
+                        if components.peek().is_none()
+                            && !target.ends_with('/')
+                            && !target.ends_with("/.") => {}
+                    Some(LinkTarget::Link) => {
+                        return Err(invalid("snapshot symlink traverses another symlink"));
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "snapshot symlink target or directory was not captured",
+                        ));
+                    }
+                }
+            }
             Component::ParentDir => {
                 if parts.pop().is_none() {
                     return Err(invalid("snapshot symlink escapes its root"));
@@ -1768,7 +1884,7 @@ fn resolve_symlink(path: &str, target: &str) -> Result<String, ClewError> {
     if parts.is_empty() {
         return Err(invalid("snapshot symlink resolves to its root"));
     }
-    Ok(parts.join("/"))
+    Ok(())
 }
 
 pub(crate) fn seal_tree(root: &Path) -> Result<(), ClewError> {
@@ -2087,6 +2203,135 @@ mod tests {
                 .any(|e| e.path.starts_with("build/"))
         );
         symlink("main.zeta", repo.path().join("src/link.zeta")).unwrap();
+        assert_eq!(
+            capture_working_tree(repo.path(), &store).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn working_capture_preserves_tracked_link_index_and_saved_target_independently() {
+        let (repo, state, store) = fixture();
+        fs::create_dir(repo.path().join("infra")).unwrap();
+        let alias = repo.path().join("infra/current");
+        let alternate = repo.path().join("src/alternate.zeta");
+        fs::write(alternate, b"alternate\n").unwrap();
+        symlink("../src/main.zeta", &alias).unwrap();
+        git_command(
+            repo.path(),
+            &["add", "infra/current", "src/alternate.zeta"],
+            None,
+        )
+        .unwrap();
+        let index_before = fs::read(repo.path().join(".git/index")).unwrap();
+        let (head, first, first_object) = capture_working_tree(repo.path(), &store).unwrap();
+        assert_eq!(
+            capture_working_tree(repo.path(), &store).unwrap().2,
+            first_object
+        );
+
+        fs::remove_file(&alias).unwrap();
+        symlink("../src/alternate.zeta", &alias).unwrap();
+        let (same_head, saved, saved_object) = capture_working_tree(repo.path(), &store).unwrap();
+        assert_eq!(same_head, head);
+        assert_ne!(saved.snapshot_id, first.snapshot_id);
+        assert_ne!(saved_object, first_object);
+        assert_eq!(saved.staged_view_digest, first.staged_view_digest);
+        assert_eq!(
+            capture_working_tree(repo.path(), &store).unwrap().2,
+            saved_object
+        );
+        assert_eq!(
+            fs::read(repo.path().join(".git/index")).unwrap(),
+            index_before
+        );
+
+        let stage = saved
+            .index
+            .iter()
+            .find(|entry| entry.path == "infra/current")
+            .unwrap();
+        assert_eq!((stage.mode, stage.stage), (0o120000, 0));
+        assert_eq!(
+            store.read(&stage.content, 1024).unwrap().bytes(),
+            b"../src/main.zeta"
+        );
+        let file = saved
+            .worktree
+            .iter()
+            .find(|entry| entry.path == "infra/current")
+            .unwrap();
+        assert_eq!(file.kind, WorktreeKind::Symlink);
+        assert_eq!(
+            store
+                .read(file.content.as_ref().unwrap(), 1024)
+                .unwrap()
+                .bytes(),
+            b"../src/alternate.zeta",
+        );
+        let destination = state.path().join("sealed");
+        materialize(&saved, &store, &destination).unwrap();
+        assert_eq!(
+            fs::read_link(destination.join("infra/current")).unwrap(),
+            Path::new("../src/alternate.zeta"),
+        );
+        assert_eq!(
+            git_command(&destination, &["show", ":infra/current"], None).unwrap(),
+            b"../src/main.zeta",
+        );
+        verify_materialized_working_tree(&saved, &store, &destination).unwrap();
+        let error = capture_working_tree_with_hook(
+            repo.path(),
+            &store,
+            WorkingTreeLimits::default(),
+            |path| {
+                if path == "src/main.zeta" {
+                    fs::remove_file(&alias).unwrap();
+                    symlink("../src/main.zeta", &alias).unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InputMutated);
+
+        set_mode(&destination.join("infra"), 0o700).unwrap();
+        fs::remove_file(destination.join("infra/current")).unwrap();
+        symlink("../src/main.zeta", destination.join("infra/current")).unwrap();
+        assert_eq!(
+            verify_materialized_working_tree(&saved, &store, &destination)
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt,
+        );
+    }
+
+    #[test]
+    fn working_capture_rejects_unsafe_or_unavailable_tracked_link_targets() {
+        let (repo, _state, store) = fixture();
+        let alias = repo.path().join("src/alias");
+        let other = repo.path().join("src/other");
+        symlink("main.zeta", &alias).unwrap();
+        symlink("main.zeta", &other).unwrap();
+        git_command(repo.path(), &["add", "src/alias", "src/other"], None).unwrap();
+        for target in [
+            "/outside/tree",
+            "../../outside",
+            "../.git/HEAD",
+            "not-captured",
+            "other",
+            "other/../main.zeta",
+            "main.zeta/",
+        ] {
+            fs::remove_file(&alias).unwrap();
+            symlink(target, &alias).unwrap();
+            let error = capture_working_tree(repo.path(), &store).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput, "{target}");
+        }
+        // A safe saved link cannot conceal unsafe bytes in the staged alias.
+        git_command(repo.path(), &["add", "src/alias"], None).unwrap();
+        fs::remove_file(&alias).unwrap();
+        symlink("main.zeta", &alias).unwrap();
         assert_eq!(
             capture_working_tree(repo.path(), &store).unwrap_err().code,
             ErrorCode::InvalidInput
