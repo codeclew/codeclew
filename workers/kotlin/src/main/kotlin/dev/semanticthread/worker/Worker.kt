@@ -1979,7 +1979,19 @@ internal class Worker(
             normalized.startsWith(repo.resolve("build/generated").normalize()) ||
                 normalized.startsWith(repo.resolve("target/generated-sources").normalize())
         }.map { repo.relativize(it.parent).invariantSeparatorsPathString }.distinct().sorted()
-        val classpath = buildModel["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty()
+        val absentDirectories = buildModel["nativeAbsentClasspathDirectories"]?.jsonArray.orEmpty()
+            .associate { it.jsonObject.getValue("index").jsonPrimitive.int to it.jsonObject }.toMutableMap()
+        if (absentDirectories.isNotEmpty() && buildModel["nativeFirCompileReceipt"] == null) {
+            throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED")
+        }
+        val classpath = buildModel["classpath"]?.jsonArray?.mapIndexed { index, entry ->
+            val path = Path.of(entry.jsonPrimitive.content)
+            val missing = absentDirectories.remove(index)
+            if (missing == null) normalizeArtifact(repo, path)
+            else runCatching { absentNativeClasspathIdentity(repo, path, index, buildModel["compileTask"], missing) }
+                .getOrElse { throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED") }
+        }.orEmpty()
+        if (absentDirectories.isNotEmpty()) throw nativeFirFailure("NATIVE_KOTLIN_RECEIPT_FAILED")
         val requestedPlugins = buildModel["requestedCompilerPlugins"]?.jsonArray
             ?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }
             .orEmpty()
@@ -2500,12 +2512,15 @@ internal class Worker(
                 val native = nativeFirObservation.takeIf { selected.model["nativeFirCompilation"] != null }
                 val model = buildJsonObject {
                     selected.model.forEach { (key, value) ->
-                        if (key != "nativeFirCompilation") put(key, value)
+                        if (key != "nativeFirCompilation" && key != "nativeAbsentClasspathDirectories") put(key, value)
                     }
                     put("buildSystem", "GRADLE")
                     native?.let {
                         put("nativeFirCompileReceipt", it.receipt)
                         put("requestedCompilerPlugins", selected.model.getValue("compilerPlugins"))
+                        val absent = selected.model.getValue("nativeFirCompilation").jsonObject
+                            .getValue("classpathDigests").jsonArray.filter(JsonElement::isAbsentDirectorySlot)
+                        if (absent.isNotEmpty()) put("nativeAbsentClasspathDirectories", JsonArray(absent))
                     }
                 }
                 if (native != null) withJavaAnalysisSources(model)

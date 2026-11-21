@@ -63,6 +63,18 @@ jobs:
           export CODECLEW_HOME="$HOME/.codeclew-release-qualification-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ./clew --version
           python3 -I -S scripts/language_mutation_pilot.py --reuse-primed-runtime
+          python3 -I -S scripts/qualification/kotlin-native-classpath.py \
+            --output "$RUNNER_TEMP/kotlin-native-classpath"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kotlin-native-classpath-qualification
+          path: |
+            ${{ runner.temp }}/kotlin-native-classpath/result.json
+            ${{ runner.temp }}/kotlin-native-classpath/*/check.json
+            ${{ runner.temp }}/kotlin-native-classpath/*/check.stderr
+          if-no-files-found: ignore
+          retention-days: 7
 
   build:
     name: Build ${{ matrix.os }} ${{ matrix.arch }}

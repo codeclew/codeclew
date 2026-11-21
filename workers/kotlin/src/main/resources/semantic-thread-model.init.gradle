@@ -1,4 +1,8 @@
 import groovy.json.JsonOutput
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
@@ -131,10 +135,18 @@ gradle.beforeProject { project ->
         }
         return observer
     }
-    def observedCompilerInputs = { compile, observation ->
+    def observedCompilerInputs = { compile, observation, classpath ->
         def loader = compile.class.classLoader
         def context = loader.loadClass('org.jetbrains.kotlin.gradle.plugin.KotlinCompilerArgumentsProducer$CreateCompilerArgumentsContext')
         def args = compile.createCompilerArguments(context.getField("Companion").get(null).getDefault())
+        if (classpath.any { it instanceof Map && it.kind == "ABSENT_DECLARED_DIRECTORY" }) {
+            def actual = args.classpath ? args.classpath.split(java.util.regex.Pattern.quote(File.pathSeparator), -1).toList() : []
+            def declared = compile.libraries.files.toList()
+            def expected = declared.withIndex().findAll { file, index ->
+                !(classpath[index] instanceof Map && classpath[index].kind == "ABSENT_DECLARED_DIRECTORY")
+            }.collect { file, index -> file.absolutePath }
+            if (actual != expected) throw new IllegalStateException("Selected compiler classpath differs from its sealed inputs")
+        }
         def plugins = args.pluginClasspaths.toList().collect { new File(it).canonicalFile }
         def options = args.pluginOptions.toList()
         if (plugins.count { it == observation.jar } != 1 ||
@@ -153,6 +165,57 @@ gradle.beforeProject { project ->
             observerArtifactDigest: digestFile(observation.jar),
         ]
     }
+    def completed = { task ->
+        def state = task.state
+        gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
+            (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
+    }
+    def physicallyAbsent = { path, repo ->
+        if (!path.startsWith(repo) || path == repo || path.normalize() != path) return false
+        for (def candidate = path; candidate.startsWith(repo); candidate = candidate.parent) {
+            try {
+                def attributes = Files.readAttributes(candidate, BasicFileAttributes, LinkOption.NOFOLLOW_LINKS)
+                return candidate != path && attributes.isDirectory() && candidate.toRealPath() == candidate &&
+                    Files.isReadable(candidate) && Files.isExecutable(candidate)
+            } catch (NoSuchFileException ignored) {
+                if (candidate == repo) return false
+            }
+        }
+        return false
+    }
+    def missingClasspathOutputs = { compile, missing, repo ->
+        if (missing.isEmpty()) return [:]
+        if (nativeObserver == null) throw new IllegalStateException("Unavailable native classpath")
+        def candidates = [:].withDefault { [] }
+        def producers = compile.taskDependencies.getDependencies(compile).findAll { producer ->
+            producer.project.rootDir.toPath() == repo &&
+                producer.outputs.files.files.any { missing.contains(it.toPath()) }
+        }
+        for (def producer : producers) {
+            // The public file collection does not distinguish files from directories
+            // when an output does not exist. Read the types Gradle uses for validation.
+            def loader = this.class.classLoader
+            def properties = loader.loadClass("org.gradle.api.internal.tasks.properties.DefaultTaskProperties")
+            def walker = loader.loadClass("org.gradle.internal.properties.bean.PropertyWalker")
+            def factory = loader.loadClass("org.gradle.api.internal.file.FileCollectionFactory")
+            def task = loader.loadClass("org.gradle.api.internal.TaskInternal")
+            def services = producer.project.services
+            def resolved = properties.getMethod("resolve", walker, factory, task)
+                .invoke(null, services.get(walker), services.get(factory), producer)
+            resolved.outputFileProperties.each { output ->
+                def path = output.outputFile?.toPath()
+                if (missing.contains(path)) candidates[path].add([task: producer, output: output])
+            }
+        }
+        return missing.collectEntries { path ->
+            def matches = candidates[path]
+            if (matches.size() != 1 || matches[0].output.outputType.name() != "DIRECTORY" ||
+                !completed(matches[0].task) || !physicallyAbsent(path, repo)) {
+                throw new IllegalStateException("Unavailable native classpath has no completed directory producer")
+            }
+            [(path): [producerTask: matches[0].task.path, outputProperty: matches[0].output.propertyName]]
+        }
+    }
     def selectedCompilationInputs = { compile ->
         def repo = project.rootDir.canonicalFile.toPath()
         def sources = [kotlin: compile.sources.files, java: compile.javaSources.files].collectEntries { kind, files ->
@@ -162,7 +225,17 @@ gradle.beforeProject { project ->
                 [repo.relativize(path).toString().replace('\\', '/'), digestFile(file)]
             }.sort()]
         }
-        return [sources: sources, classpath: compile.libraries.files.collect { file ->
+        def libraries = compile.libraries.files.toList()
+        def missing = libraries.findAll { !it.isFile() && !it.isDirectory() }.collect { it.toPath() }.toSet()
+        def outputs = missingClasspathOutputs(compile, missing, repo)
+        return [sources: sources, classpath: libraries.withIndex().collect { file, index ->
+            if (outputs.containsKey(file.toPath())) {
+                if (!physicallyAbsent(file.toPath(), repo)) {
+                    throw new IllegalStateException("Native classpath output changed while sealing")
+                }
+                return [kind: "ABSENT_DECLARED_DIRECTORY", index: index,
+                    path: repo.relativize(file.toPath()).toString().replace('\\', '/')] + outputs[file.toPath()]
+            }
             if (file.isFile()) return digestFile(file)
             if (!file.isDirectory()) throw new IllegalStateException("Unavailable native classpath")
             return project.fileTree(file).files.collectEntries { child ->
@@ -362,8 +435,8 @@ gradle.beforeProject { project ->
                     }
                     if (nativeObserver != null) {
                         try {
-                            nativeObserver.inputs = observedCompilerInputs(compile, nativeObserver)
                             capturedInputs = selectedCompilationInputs(compile)
+                            nativeObserver.inputs = observedCompilerInputs(compile, nativeObserver, capturedInputs.classpath)
                         } catch (Exception failure) {
                             println("__SEMANTIC_THREAD_NATIVE_FIR_INPUT_FAILED__")
                             throw new GradleException("Codeclew could not seal the native Kotlin inputs", failure)
@@ -407,16 +480,12 @@ gradle.beforeProject { project ->
         diagnostic.outcome = passed ? "PASSED" : "FAILED"
         return passed
     }
-    def completed = { task ->
-        def state = task.state
-        gradle.taskGraph.hasTask(task) && state.executed && state.failure == null && !state.noSource &&
-            (state.didWork || state.upToDate || state.skipMessage == "FROM-CACHE")
-    }
     def observedCompileReceipt = { compile, model ->
         if (!completed(compile) || compile.state.skipped || !compile.state.didWork ||
             nativeObserver.inputs == null || !nativeObserver.output.isFile() ||
-            nativeObserver.inputs != observedCompilerInputs(compile, nativeObserver) ||
-            capturedInputs != selectedCompilationInputs(compile)) throw new IllegalStateException("Incomplete native observation")
+            capturedInputs != selectedCompilationInputs(compile) ||
+            nativeObserver.inputs != observedCompilerInputs(compile, nativeObserver, capturedInputs.classpath))
+            throw new IllegalStateException("Incomplete native observation")
         def repo = project.rootDir.canonicalFile.toPath()
         def destination = compile.destinationDirectory.get().asFile.canonicalFile.toPath()
         def generated = capturedInputs.sources.java.findAll { path, hash ->
