@@ -1081,7 +1081,9 @@ if args[:2] == ['docs', 'context'] and args[args.index('--source')+1] == {large[
         pins = D['load'](self.run / 'pins.json')
         pins.update(jobDigest=D['digest'](job), inputFiles=D['tree'](self.run / 'inputs'))
         D['save'](self.run / 'pins.json', pins)
-        self.original['pages'].extend({'page': name + '.md', 'fragments': [{'text': text}]}
+        self.original['pages'].extend({'page': name + '.md', 'fragments': [
+                                      {'text': text + '\n'}, {'id': 'description', 'text': 'Fixture description.\n',
+                                                            'evidence': [self.handle]}]}
                                       for name, text in [('warehouse', '# Warehouse\n'),
                                                          ('process-one', '# First process\n\n## First\n\n## Other\n'),
                                                          ('process-two', '# Second process\n\n## Second\n')])
