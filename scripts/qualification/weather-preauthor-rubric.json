@@ -1,0 +1,343 @@
+[
+  {
+    "id": "route-add-place.html/core/1",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Unsupported400 and supported response",
+    "sourceAcceptance": "City switch default null\u2192BadRequest; supported city\u2192await Save\u2192Ok. OpenAPI supplies numeric400/200; route selection remains conditional."
+  },
+  {
+    "id": "route-add-place.html/core/2",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "New place and request-outbox save transaction before response",
+    "sourceAcceptance": "Controller awaits Save; Save begins one transaction, inserts place and conditionally calls InsertRequest with that same transaction, then awaits Commit before returning."
+  },
+  {
+    "id": "route-add-place.html/core/3",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Existing place queues no second event",
+    "sourceAcceptance": "ON CONFLICT DO NOTHING RETURNING id plus non-null-only InsertRequest guard excludes a second request on the existing-place branch."
+  },
+  {
+    "id": "route-add-place.html/core/4",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Immediate response versus contingent card projection",
+    "sourceAcceptance": "Dashboard awaits only upstream HTTP; later outbox publication and consumer applyEvent are separate conditional candidates. No card completion is awaited by Save/HTTP."
+  },
+  {
+    "id": "route-add-place.html/supplemental/1",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Proxyfailure does not prove whether upstream already committed",
+    "sourceAcceptance": "The proxy catch covers fetch and response JSON parsing; upstream Commit can already have completed before a later transport/parse failure.503 cannot establish rollback."
+  },
+  {
+    "id": "route-add-place.html/supplemental/2",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Unsupported/new/existing save branches",
+    "sourceAcceptance": "Combine City/default guard, supported Save and insert-result guard to enumerate unsupported/new/existing cases."
+  },
+  {
+    "id": "route-add-place.html/supplemental/3",
+    "route": "operation-a7d8675103bc",
+    "eligiblePeers": [
+      "operation-45be3587fb5b"
+    ],
+    "requirement": "Continuation is conditional on generated event and delivery, not guaranteed completed forecast",
+    "sourceAcceptance": "Only guarded InsertRequest generates the request payload; publisher/consumer literals plus explicit outbox-thread delivery/lineage boundary make forecast completion contingent."
+  },
+  {
+    "id": "route-manual-refresh.html/core/1",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "Missing404 and stored-place lookup",
+    "sourceAcceptance": "Find forwards to List and selects matching id; null\u2192NotFound; list source reads stored places. OpenAPI confirms404."
+  },
+  {
+    "id": "route-manual-refresh.html/core/2",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "New committed request before202",
+    "sourceAcceptance": "Found place\u2192await Enqueue\u2192same-transaction InsertRequest\u2192Commit\u2192Accepted. Contract declares202; runtime persistence remains conditional."
+  },
+  {
+    "id": "route-manual-refresh.html/core/3",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "Immediate acceptance versus contingent forecast/card work",
+    "sourceAcceptance": "Accepted is returned after enqueue, without awaiting independent publisher/Forecasts.consume/applyEvent; effect order stays open in the embedded candidate thread."
+  },
+  {
+    "id": "route-manual-refresh.html/supplemental/1",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "Proxyfailure versus upstream commit uncertainty",
+    "sourceAcceptance": "Proxy try/catch includes upstream response parsing; Enqueue can have committed already.503 is not evidence of rollback or non-enqueue."
+  },
+  {
+    "id": "route-manual-refresh.html/supplemental/2",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "Unknown/no-enqueue versus found/enqueue alternatives",
+    "sourceAcceptance": "Controller null-return precedes Enqueue; found alternative awaits Enqueue and returns Accepted."
+  },
+  {
+    "id": "route-manual-refresh.html/supplemental/3",
+    "route": "operation-2989c68b73c0",
+    "eligiblePeers": [
+      "operation-50094b895b93"
+    ],
+    "requirement": "Generated forecast and reader visibility are contingent, not a fixed interleaving",
+    "sourceAcceptance": "Direct source bodies establish guarded generation through refresh70\u2013125, independent outbox publisher and Dashboard consumer/card writer, and GETweather62\u201365read bridge. Each grouped relationship supplies effective store/broker/channel/activation/selection conditions. Local enqueue/send/DB/read order can be derived; no fixed global response/processing interleaving, actual delivery or observed visibility is asserted."
+  },
+  {
+    "id": "route-place-publisher.html/core/1",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "Hosted start and polling loop",
+    "sourceAcceptance": "AddHostedService registration plus full ExecuteAsync show hosted invocation candidate, cancellation-tested loop and Task.Delay1000."
+  },
+  {
+    "id": "route-place-publisher.html/core/2",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "One pending row/payload becomes place request publication",
+    "sourceAcceptance": "SELECT pending request_outbox row LIMIT1/FOR UPDATE; read payload and place id\u2192ProduceAsync weather.place-requested with same payload."
+  },
+  {
+    "id": "route-place-publisher.html/core/3",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "Send completion before mark and DBcommit",
+    "sourceAcceptance": "Await ProduceAsync precedes UPDATE published and awaited transaction Commit. This is local request order under the named Npgsql/Kafka APIs, not observed delivery."
+  },
+  {
+    "id": "route-place-publisher.html/core/4",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "Possible duplicate after accepted send and failed DBcompletion",
+    "sourceAcceptance": "There is a send\u2192mark/Commit interval. Under rollback/retry semantics, accepted send plus failed DB completion leaves a possible repeat; the loop catches failure and polls again."
+  },
+  {
+    "id": "route-place-publisher.html/supplemental/1",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "Cancellation/caught failure versus next poll",
+    "sourceAcceptance": "Cancellation-filtered catch breaks; general catch logs; otherwise Task.Delay and next while iteration remain."
+  },
+  {
+    "id": "route-place-publisher.html/supplemental/2",
+    "route": "operation-ff2e6db7f082",
+    "eligiblePeers": [],
+    "requirement": "Empty selection returns without send/mark",
+    "sourceAcceptance": "If ReadAsync is false, immediate return precedes ProduceAsync, UPDATE and Commit."
+  },
+  {
+    "id": "route-forecast-request.html/core/1",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "Invalid-event rejection",
+    "sourceAcceptance": "Complete validatePlaceEvent guard and consume parse/validation catch lead to rejected_messages insert, acknowledge and return."
+  },
+  {
+    "id": "route-forecast-request.html/core/2",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "Inbox dedupe and refresh call conditions",
+    "sourceAcceptance": "Within supplied callback, inserted0 returns from executeWithoutResult; nonzero upserts place and calls refresh. Validation and fresh-cache guards are directly accessible."
+  },
+  {
+    "id": "route-forecast-request.html/core/3",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "ACK order and pre-ACK failure/offset boundary",
+    "sourceAcceptance": "consume45\u201351 invokes the property typed TransactionTemplate at30; local normal callback completion precedes ACK52. Under the named transaction contract, an uncaught DB/refresh/transaction failure skips ACK. No observed commit or broker acknowledgment is proved."
+  },
+  {
+    "id": "route-forecast-request.html/supplemental/1",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "Cache/mode/backoff conditions controlling provider call",
+    "sourceAcceptance": "Full refresh exposes fresh-cache return, fixture/live branch, live User-Agent requirement, future nextAttempt rejection and provider send."
+  },
+  {
+    "id": "route-forecast-request.html/supplemental/2",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "Pre-response transport failure retains a retry marker",
+    "sourceAcceptance": "refresh reads and sets nextAttempt before http.send; direct declaration32 is a ConcurrentHashMap<String,Instant>. The thrown-send path has no local resetting assignment and assignment is outside DB transactional state; future invocation/lifetime remains conditional."
+  },
+  {
+    "id": "route-forecast-request.html/supplemental/3",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "304/200/203/429/other-status parsing/persistence boundaries",
+    "sourceAcceptance": "Full refresh contains304+cached expiry-only return;429 backoff;200/203 requirement;other-status throw;parse/validation before forecast and outbox SQL."
+  },
+  {
+    "id": "route-forecast-request.html/supplemental/4",
+    "route": "operation-a5765007228f",
+    "eligiblePeers": [],
+    "requirement": "Fresh-cache return also creates no forecast-outbox event",
+    "sourceAcceptance": "Fresh-cache return occurs before all provider/parsing and forecast_outbox insertion statements in this complete method."
+  },
+  {
+    "id": "route-scheduled-refresh.html/core/1",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Timer activation/timing and missing/expired selection",
+    "sourceAcceptance": "Source @Scheduled fixedDelayString default60000, missing/expired SELECT and ordered iteration are complete; runtime activation remains conditional."
+  },
+  {
+    "id": "route-scheduled-refresh.html/core/2",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Per-place state established before provider send",
+    "sourceAcceptance": "Per-place id indexes nextAttempt; future marker blocks; assignment now+60seconds occurs before http.send in the live branch."
+  },
+  {
+    "id": "route-scheduled-refresh.html/core/3",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Failed send before response retains the retry marker",
+    "sourceAcceptance": "refresh invoked at66 uses nextAttempt ConcurrentHashMap field32, assigning delay before provider send88. Thrown send leaves this local marker without a local reset; scheduled/per-place catch does not roll back the independent map."
+  },
+  {
+    "id": "route-scheduled-refresh.html/supplemental/1",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Per-place caught errors versus selection/outside errors",
+    "sourceAcceptance": "Only each transaction+refresh is inside the per-place try/catch; initial selection is outside, so its failure differs from logged per-place retry and next iteration."
+  },
+  {
+    "id": "route-scheduled-refresh.html/supplemental/2",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Cache/mode/backoff conditions and response forecast/outbox state",
+    "sourceAcceptance": "Full refresh supplies cache/mode/backoff/status guards and the literal forecast/outbox requests. Actual transaction execution/persistence stays conditional."
+  },
+  {
+    "id": "route-scheduled-refresh.html/supplemental/3",
+    "route": "operation-d84844588e8d",
+    "eligiblePeers": [],
+    "requirement": "Fresh-cache short circuit creates no forecast-outbox event",
+    "sourceAcceptance": "Fresh-cache early return precedes forecast_outbox insert; selected expired row does not erase the independent later fresh-cache check."
+  },
+  {
+    "id": "route-forecast-publish.html/core/1",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "Scheduled activation and pending-row lock selection",
+    "sourceAcceptance": "@Scheduled PUBLISH_INTERVAL_MS default1000 and complete pending-row SQL LIMIT1/FOR UPDATE SKIP LOCKED are supplied."
+  },
+  {
+    "id": "route-forecast-publish.html/core/2",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "Bounded Kafka success before published mark",
+    "sourceAcceptance": "kafka.send(...).get(10,TimeUnit.SECONDS) must return before published update within the same callback. Awaited future completion is not proof of remote consumer execution."
+  },
+  {
+    "id": "route-forecast-publish.html/core/3",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "DBtransaction state and possible post-send-failure duplicate",
+    "sourceAcceptance": "publish130\u2013137 uses the property typed TransactionTemplate at30 around selection/send/mark. A send accepted before later DB completion fails permits retry/duplicate under the named transaction contract; no successful transaction or remote delivery is asserted."
+  },
+  {
+    "id": "route-forecast-publish.html/supplemental/1",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "Empty-outbox no-send return",
+    "sourceAcceptance": "rows.isEmpty returns from callback before rows.first,send and mark."
+  },
+  {
+    "id": "route-forecast-publish.html/supplemental/2",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "Sendtimeout and transactionfailure nextattempt/duplicate consequences",
+    "sourceAcceptance": "10second future wait and catch138 are directly addressed with transaction owner30. Timeout/failure precedes successful marking/commit; accepted-send plus failed DB completion permits a subsequent duplicate. Actual delivery remains unknown."
+  },
+  {
+    "id": "route-forecast-publish.html/supplemental/3",
+    "route": "operation-602619abba89",
+    "eligiblePeers": [],
+    "requirement": "Conditional downstream card/reader visibility evidence",
+    "sourceAcceptance": "Direct publisher\u2192Dashboard callback/card-writer\u2192GETweather62\u201365bodies establish a conditional read bridge. Each grouped relationship supplies effective store/broker/channel/activation/selection conditions. Local enqueue/send/DB/read order can be derived; no fixed global response/processing interleaving, actual delivery or observed visibility is asserted."
+  },
+  {
+    "id": "route-dashboard-projection.html/core/1",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Both actual subscriptions and callback hookup",
+    "sourceAcceptance": "Exact subscribe both topics and consumer.run autoCommit:false/eachMessage:consumeMessage establish both declared subscriptions and callback hookup."
+  },
+  {
+    "id": "route-dashboard-projection.html/core/2",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Per-topic shapes and invalid rejection/offset",
+    "sourceAcceptance": "Full events.ts per-topic validator and timestamp helper, consume parse/catch, rejected insert and explicit offset+1 commit precede return."
+  },
+  {
+    "id": "route-dashboard-projection.html/core/3",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Inbox duplicates and place versus forecast timestamp effects",
+    "sourceAcceptance": "applyEvent full body: inbox conflict\u2192COMMIT/DUPLICATE before card write; forecast branch uses strictly newer SQL predicate; place branch only updates place fields."
+  },
+  {
+    "id": "route-dashboard-projection.html/core/4",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "DBtransaction before offsetcommit",
+    "sourceAcceptance": "consume awaits applyEvent before offset commit. applyEvent has BEGIN,COMMIT,ROLLBACK/rethrow and finally release; failed applyEvent skips the later offset call."
+  },
+  {
+    "id": "route-dashboard-projection.html/supplemental/1",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Invalid versus valid paths",
+    "sourceAcceptance": "Complete validator and consume try/catch separate invalid rejected+offset path from validated applyEvent+offset path."
+  },
+  {
+    "id": "route-dashboard-projection.html/supplemental/2",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Duplicate/no-card-write and stale/equal forecast alternatives",
+    "sourceAcceptance": "Duplicate early return avoids card SQL; strict greater-than timestamp WHERE plus rowCount result distinguishes older/equal from applied forecast."
+  },
+  {
+    "id": "route-dashboard-projection.html/supplemental/3",
+    "route": "operation-62ac6ca924e6",
+    "eligiblePeers": [],
+    "requirement": "Database/offset ordering boundary",
+    "sourceAcceptance": "Explicit DB COMMIT and later consumer.commitOffsets show separate boundaries: offset failure after DB completion can lead to replay; no broker/DB atomic commit is stated."
+  }
+]
