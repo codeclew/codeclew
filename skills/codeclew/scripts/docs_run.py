@@ -887,6 +887,38 @@ def source_membership_failure(job, source, work, result, directory):
                                             'code': code(native.get('code')), 'status': code(native.get('status'))}}}
 
 
+def check_source_part_membership(job, entry, checks, label):
+    """Recheck a complete saved SOURCE using the full identity on a bounded native part."""
+    source = entry['source']
+    reference = (entry.get('sourceBinding', {}).get('reference')
+                 or entry.get('declaration', {}).get('selectedSourceReference'))
+    work = entry.get('work')
+    need(isinstance(work, str) and work and isinstance(reference, str) and reference,
+         'SOURCE_WORK_IDENTITY_REQUIRED', source=source['id'])
+    request = Path(checks) / (label + '.input.json')
+    save(request, {'schema': 'codeclew-documentation-source-part-request/1.0', 'reference': reference})
+    part = command([job['clew'], 'docs', 'work', 'read-part', '--root', job['root'],
+                    '--work', work, '--input', str(request)], checks, label)
+    raw = entry['readText'].encode()
+    fragment = part.get('text') if isinstance(part, dict) else None
+    need(isinstance(fragment, str), 'PROVENANCE_MISMATCH', source=source['id'])
+    fragment = fragment.encode()
+    cursor = part.get('nextCursor')
+    need(part.get('schema') == 'codeclew-documentation-source-part/1.0'
+         and part.get('work') == work and part.get('snapshot') == job['snapshot']
+         and part.get('reference') == reference and part.get('sourceId') == source['id']
+         and part.get('authority') == 'IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED'
+         and part.get('receiptType') == 'SOURCE_PART' and part.get('source') == source
+         and part.get('recordDigest') == entry['sourceRecordDigest']
+         and type(part.get('startByte')) is int and part['startByte'] == 0
+         and type(part.get('endByte')) is int and part['endByte'] == len(fragment)
+         and type(part.get('totalTextBytes')) is int and part['totalTextBytes'] == len(raw)
+         and bool(fragment) and raw.startswith(fragment) and part.get('fragmentDigest') == sha(fragment)
+         and 'nextCursor' in part and (cursor is None if len(fragment) == len(raw) else isinstance(cursor, str) and cursor)
+         and part.get('receiptDigest') == M['C']['digest']({k: v for k, v in part.items() if k != 'receiptDigest'}),
+         'PROVENANCE_MISMATCH', source=source['id'])
+
+
 def check_source_membership(job, inventory, entry, checks, cache):
     """Reload identity without requiring a large SOURCE body on stdout.
 
@@ -918,16 +950,24 @@ def check_source_membership(job, inventory, entry, checks, cache):
              and all(row.get('source',{}).get(k)==source.get(k) for k in keys),
              'PROVENANCE_MISMATCH',source=source['id'])
         return
-    # Compiler Work without SOURCE_SCOPE keeps its own supported context route.
-    # Never retry unsupported file inventory or silently substitute syntax.
-    page=command([job['clew'],'docs','context','--root',job['root'],'--service',service,
-        '--snapshot',job['snapshot'],'--source',source['id'],'--format','compact','--limit','100'],
-        checks,'source-'+str(len(cache)))
-    records=[r['record'] for r in page.get('items',[]) if r.get('kind')=='SOURCE' and r.get('id')==source['id']]
-    need(page.get('selectedSnapshot',page.get('snapshot'))==job['snapshot'] and len(records)==1
-         and all(records[0].get(k)==source.get(k) for k in keys),'PROVENANCE_MISMATCH',
-         source=source['id'],omitted=page.get('omitted',[]))
-    cache[(service,source['id'])]=True
+    # Compiler Work uses the source context route when it can deliver the row.
+    label = 'source-' + str(len(cache))
+    page = command([job['clew'], 'docs', 'context', '--root', job['root'], '--service', service,
+                    '--snapshot', job['snapshot'], '--source', source['id'], '--format', 'compact',
+                    '--limit', '100'], checks, label)
+    omitted = page.get('omitted', [])
+    need(page.get('selectedSnapshot', page.get('snapshot')) == job['snapshot'], 'PROVENANCE_MISMATCH',
+         source=source['id'], omitted=omitted)
+    records = [r['record'] for r in page.get('items', []) if r.get('kind') == 'SOURCE' and r.get('id') == source['id']]
+    if not records and any(row.get('id') == source['id'] and row.get('reason') == 'ITEM_EXCEEDS_STDOUT_BUDGET'
+                           for row in omitted if isinstance(row, dict)):
+        # C.load checked complete saved bytes. A live first part binds their
+        # full record digest without reloading every part or trusting an omission.
+        check_source_part_membership(job, entry, checks, label + '-part')
+    else:
+        need(len(records) == 1 and all(records[0].get(k) == source.get(k) for k in keys),
+             'PROVENANCE_MISMATCH', source=source['id'], omitted=omitted)
+    cache[(service, source['id'])] = True
 
 
 def cite_entries(job, inventory, draft, checks, prepared=None):

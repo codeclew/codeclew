@@ -148,8 +148,10 @@ Place any additional citation reads under draft/reads and complete the bidirecti
 pages and handler identities are fixed; additional discovered entry accounts cannot
 replace them. The runner uses the real Markdown lexer and packaged sequence
 validator, then compose/bind/finalize/export and source membership checks.
-Native SOURCE membership uses bounded file metadata and record identity; the
-retained read still proves the complete source body, owner, revision and range.
+Native SOURCE membership uses bounded file metadata and record identity. If
+compiler context omits the requested SOURCE for size, the runner reloads the
+complete record identity from a bounded native Work part. The saved read still
+proves the complete source body, owner, revision and range.
 A metadata match alone cannot replace that proof. Native failures retain bounded
 codes and transport details without source bodies or raw logs.
 Author-written PASS reports are ignored. No gate command or skip list comes from

@@ -764,6 +764,90 @@ else:
         self.assertEqual(result['status'], 'READY', result)
         self.assertTrue(prepared.joinpath('citations.json').is_file())
 
+    def test_prepared_compiler_work_with_large_source_part_promotes_and_rechecks_live_identity(self):
+        text = '// captured original ' + 'x' * 80 + '\n'
+        large = F['source'](text * 650)
+        large.update(id='source-original-unit', service=self.service, revision=self.source['revision'],
+                     file='src/OriginalUnit.cs', startLine=1, endLine=650)
+        body = large['text'].encode()
+        ref = 's10'
+        scope = self.inventory['services'][self.service]
+        first = F['part'](large, 0, 32000, 'second', ref)
+        rest = F['part'](large, 32000, len(body), None, ref)
+        for part in (first, rest):
+            part['work'] = scope['work']
+            part['receiptDigest'] = F['digest']({key: value for key, value in part.items() if key != 'receiptDigest'})
+        parts = self.root / 'native-parts.json'
+        D['save'](parts, {'first': first, 'second': rest})
+
+        work_page = F['page']({**scope['coverage'], 'id': self.service}, omitted=[{
+            'kind': 'SOURCE', 'id': large['id'], 'reference': ref, 'reason': 'ITEM_EXCEEDS_WORK_BYTE_BUDGET'}])
+        work_page.update(work=scope['work'], subject='service:' + self.service, total=2,
+                         contextDigest='owned-context', inputDigest='owned-input',
+                         membershipDigest='owned-members', authority='IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED')
+        work_page['receiptDigest'] = F['digest'](work_page)
+        compact = {'snapshot': self.job['snapshot'], 'items': [], 'omitted': [
+            {'index': 0, 'reason': 'ITEM_EXCEEDS_STDOUT_BUDGET', 'id': large['id']}]}
+        driver = self.clew.read_text()
+        native = f"""
+from pathlib import Path
+if args[:3] == ['docs', 'work', 'read']:
+    request = json.loads(Path(args[args.index('--input')+1]).read_text())
+    assert request == {{'references': [{ref!r}]}}
+    print(json.dumps({work_page!r}))
+    sys.exit(0)
+if args[:3] == ['docs', 'work', 'read-part']:
+    request = json.loads(Path(args[args.index('--input')+1]).read_text())
+    assert request['schema'] == 'codeclew-documentation-source-part-request/1.0'
+    assert request['reference'] == {ref!r}
+    print(json.dumps(json.loads(Path({str(parts)!r}).read_text())[request.get('cursor', 'first')]))
+    sys.exit(0)
+if args[:2] == ['docs', 'context'] and args[args.index('--source')+1] == {large['id']!r}:
+    print(json.dumps({compact!r}))
+    sys.exit(0)
+"""
+        self.clew.write_text(driver.replace('args=sys.argv[1:]\n', 'args=sys.argv[1:]\n' + native, 1))
+
+        def collect(launcher, root, work, output, **kwargs):
+            output.mkdir()
+            D['save'](output / 'items.json', [self.native_entry] if kwargs.get('selection') else [scope['coverage']])
+            return {'status': 'COMPLETE', 'omittedRecords': 0,
+                    'identity': {'snapshot': F['SNAPSHOT'], 'contextDigest': 'owned-context', 'inputDigest': 'owned-input'}}
+
+        def prepare_sources(job, inventory, folder):
+            shutil.copytree(self.manifest.parent, folder / 'read')
+            shutil.rmtree(self.manifest.parent)
+            fact_reads = folder / self.service / 'fact-evidence'
+            selection = fact_reads / 'selection.json'
+            D['save'](selection, [{'sourceId': large['id'], 'sourceReference': ref}])
+            sub = fact_reads / 'read-sources'
+            acquired = D['command']([sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/evidence_packet.py'),
+                'read-sources', '--clew', job['clew'], '--root', job['root'], '--service', self.service,
+                '--snapshot', job['snapshot'], '--work', scope['work'], '--selection', str(selection),
+                '--source-batch-size', '1', '--output-format', 'metadata', '--output-dir', str(sub)], fact_reads, 'prepare-exact')
+            self.assertEqual(acquired['status'], 'SELECTED_SOURCES_READY')
+            outcome, = D['load'](sub / 'packet.json')['outcomes']
+            self.assertEqual(len(outcome['sourceParts']), 2)
+
+        self.review['requirements'] = [row for row in self.review['requirements'] if 'discoveryDisposition' not in row]
+        self.seed_files()
+        run = self.root / 'compiler-run'
+        with patch.dict(D['T'], {'collect': collect}), patch.dict(D['prepare'].__globals__,
+                                                                 {'prepare_sources': prepare_sources}):
+            self.assertEqual(D['prepare'](self.job_path, run)['status'], 'PREPARED')
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        self.assertEqual(D['load'](run / 'report.json')['checks']['provenance']['handles'], 2)
+        checks = list((run / 'checks').rglob('source-*-part.command.json'))
+        self.assertTrue(checks)
+        self.assertEqual(len(checks), len({path.parent for path in checks}))
+
+        first['recordDigest'] = 'sha256:' + '9' * 64
+        first['receiptDigest'] = F['digest']({key: value for key, value in first.items() if key != 'receiptDigest'})
+        D['save'](parts, {'first': first, 'second': rest})
+        result = D['verify'](run)
+        self.assertEqual(result['checks']['provenance']['code'], 'PROVENANCE_MISMATCH')
+
     def test_job_without_token_cap_promotes_and_reports_large_author_usage(self):
         self.assertNotIn('maxModelTokens', D['load'](self.run / 'inputs/job.json')['budget'])
         self.mode.write_text('high-usage')
