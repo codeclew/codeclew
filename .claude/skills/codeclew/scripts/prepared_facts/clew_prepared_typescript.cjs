@@ -26,7 +26,7 @@ const priority = [
     "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write",
     "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
     "http_request", "message_request", "request_after_commit_failure",
-    "return_rejection", "await_bypass", "result_continuation", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
+    "return_rejection", "await_bypass", "result_continuation", "iteration_helper_binding", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
     "awaited_binding", "awaited_call", "retained_effect", "call_order", "callback_binding", "unawaited_call",
 ];
 for (const excerpt of request.excerpts) {
@@ -396,6 +396,28 @@ function scan(scope, inherited) {
                 [...origin.sites, site], state);
         }
     };
+    function iterationOrigin(expression, state, depth = 0) {
+        const value = unwrap(expression);
+        if (!value || depth > 5 || ts.isOptionalChain(value)) return undefined;
+        if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value) &&
+                ts.isStringLiteralLike(value.argumentExpression)) {
+            const owner = iterationOrigin(value.expression, state, depth + 1);
+            if (!owner) return undefined;
+            const member = ts.isPropertyAccessExpression(value) ? "." + value.name.text :
+                "[" + JSON.stringify(value.argumentExpression.text) + "]";
+            return {...owner, access: owner.access + member, sites: [...owner.sites, source(scope, value)]};
+        }
+        if (!ts.isIdentifier(value)) return undefined;
+        const key = symbol(value);
+        const loop = (state.iterations || []).find(item => item.binding === key);
+        if (loop) return {loop, access: loop.element, sites: [loop.site, source(scope, value)]};
+        const local = localBinding(value);
+        if (!local || !immutable(local)) return undefined;
+        const declaration = local.declarations[0];
+        const origin = iterationOrigin(declaration.initializer, state, depth + 1);
+        return origin && {...origin, sites: [...origin.sites, source(scope, declaration)]};
+    }
+
     function resultFor(call, target, site, state, waited, binding, messageArgs) {
         if (!target) return;
         const name = callName(call);
@@ -415,6 +437,14 @@ function scan(scope, inherited) {
             if (!formal || formal.dotDotDotToken || !ts.isIdentifier(formal.name)) break;
             const actual = caption(call.arguments[index]);
             if (actual !== undefined) args.push(actual + " to " + formal.name.text);
+            if (!request.callback.active || focus || !actual) continue;
+            const origin = iterationOrigin(call.arguments[index], state);
+            if (!origin) continue;
+            const alias = actual === origin.access ? "" : " through " + actual;
+            emit("iteration_helper_binding", "For a reached " + origin.loop.element + " from " + origin.loop.collection +
+                ", " + name + " receives " + origin.access + alias + " in parameter " + formal.name.text + ".",
+                [...origin.sites, site, target.id], {guards},
+                "The source selects the helper. The iterable and argument evaluation determine the runtime value.");
         }
         if (args.length) {
             emit("argument_binding", name + " supplies " + args.join(", ") + ".", [site, target.id],

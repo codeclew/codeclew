@@ -105,6 +105,8 @@ def verify(options, base, service):
             assert "parcels.ready" in lower and "processparcel" in lower and "commitoffsets" in lower, visible
         elif kind == "SCHEDULED_JOB":
             assert "5000" in lower and "updatehealth" in lower and "shadowed callback" not in lower, visible
+            bindings = [row["text"] for row in entry["propositions"] if row["kind"] == "iteration_helper_binding"]
+            assert len(bindings) == 1 and "sample.id through key in parameter key" in bindings[0], bindings
     print(f"{service}: {', '.join(sorted(detected))}")
 
 
