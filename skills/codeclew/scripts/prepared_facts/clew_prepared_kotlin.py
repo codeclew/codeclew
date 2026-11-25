@@ -53,6 +53,10 @@ MAX_FACTS = {
     "POSSIBLE_REPEAT_AFTER_MARK_FAILURE": 8,
     "POSSIBLE_LATER_SELECTION": 8,
     "RESULT_CONTROLLED_LOOP": 4,
+    "LOOP_RESULT_SOURCE": 4,
+    "LOOP_LOCAL_ACCUMULATION": 8,
+    "LOOP_ENTRY_VALIDATION": 8,
+    "LOOP_FAILURE_PATH": 8,
     "SCOPE_LIMIT": 1,
 }
 ASSIGNMENTS = {"=", "+=", "-=", "*=", "/=", "%="}
@@ -1136,18 +1140,19 @@ class Projector:
                      for ref in sorted(declared[compiler_root])}
         return rows, retained, roots, declared
 
-    def result_repetition(self, body, scope, proof):
-        if len(body.function.params) < 2 or not {"while", "do"}.intersection(body.unit.words):
+    def result_repetition(self, body, scope, proof, external_sites):
+        if not {"while", "do"}.intersection(body.unit.words):
             return
-        # The transfer projection uses the existing parser but leaves legacy call and operand facts intact.
+        # Use a fresh lexical state for the callable, keeping legacy call and operand facts unchanged.
         lexical = Body(self, body.ref, body.label, ())
         lexical.compiler_targets.update(body.compiler_targets)
-        if relation := REPETITION(lexical, FAILURE):
-            text, condition, sites = relation
-            host = self.ranges.by_ref[body.ref]
-            addresses = [{"host": host, "start": site.start, "end": site.end, "units": "CHARACTERS"} for site in sites]
-            self.add("RESULT_CONTROLLED_LOOP", f"In {scope}, {text[0].lower() + text[1:]}",
-                     extra=proof, condition=condition, _repetitionRanges=addresses)
+        host = self.ranges.by_ref[body.ref]
+        for relation in REPETITION(lexical, FAILURE, Controls, external_sites):
+            addresses = [{"host": host, "start": site.start, "end": site.end, "units": "CHARACTERS"}
+                         for site in relation.sites]
+            fields = {"condition": relation.condition} if relation.condition else {}
+            self.add(relation.kind, f"In {scope}, {relation.text[0].lower() + relation.text[1:]}",
+                     extra=proof, _repetitionRanges=addresses, **fields)
 
     def derive(self):
         rows, retained, roots, declared = self.declarations()
@@ -1168,6 +1173,7 @@ class Projector:
                 continue
             scope = quote(body.function.name) if ref == root else f"the retained body selected if {call.text} dispatches to {quote(label)}"
             proof = (self.ranges.by_ref[ref], *(call.citations if call else ()))
+            external_sites = set()
             if declaration:
                 for event in self.process.get("facts", ()):
                     if event.get("declaration") == declaration and event.get("kind") == "EVENT":
@@ -1175,7 +1181,9 @@ class Projector:
                         if (event.get("event") == "CALL" and event.get("resolution") == "COMPILER_EXACT"
                                 and (target := event.get("target"))):
                             body.compiler_targets.update((site, target) for site in sites)
-            self.result_repetition(body, scope, proof)
+                            if event.get("http"):
+                                external_sites.update(sites)
+            self.result_repetition(body, scope, proof, external_sites)
             try:
                 suite = body.suite()
             except Unsupported:

@@ -240,7 +240,7 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
             if not all(ref in loop_identity for ref in repetition_sites):
                 rejected += 1
                 continue
-            values['_repetitionKey'] = tuple(loop_identity[ref] for ref in repetition_sites)
+            values['_repetitionKey'] = (values['kind'], *(loop_identity[ref] for ref in repetition_sites))
         if witnesses:
             values['witnesses'] = witnesses
         for private in ('_edgeCause', '_edgePhase', '_writeFocus', '_pollPublication', '_httpStatus', '_writeBinding',

@@ -2354,6 +2354,18 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         parser.finish(prefix)
     }
 
+    @Scheduled(fixedDelay = 900)
+    fun recount() {
+        var collected = 0
+        var outcome: ScanResult
+        do {
+            outcome = parser.next()
+            if (false) throw IllegalStateException()
+            collected += outcome.size
+        } while (outcome.status == ScanResult.Again)
+        parser.finish(collected)
+    }
+
     private fun validate(value: Message) {
         require(value.kind == "selected") { "selected kind required" }
     }
@@ -2509,30 +2521,42 @@ class Unrelated {
             self.assertIn('INSERT INTO parcel', json.dumps(poll))
             self.assertEqual(received['omittedPreparedFacts'], 0)
             checkpoint = D['P']['expand_fact_context'](packet_for('checkpoint'))
-            relation, = (fact for scope in checkpoint['facts'].values() for fact in scope.get('facts', ())
-                         if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
-            self.assertIn('`prefix.isNotEmpty()` is true', relation['condition'])
-            self.assertIn('`size > 0` is true', relation['condition'])
+            facts = [fact for scope in checkpoint['facts'].values() for fact in scope.get('facts', ())]
+            relation, = (fact for fact in facts if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
             self.assertIn('If `outcome != ScanResult.Again` is true, `break` exits', relation['text'])
-            self.assertIn('failure escaping the supplier', relation['text'])
-            self.assertIn('`continue` skips the remaining body', relation['text'])
-            self.assertIn('After the normal exit, source reaches `parser.finish(prefix)`', relation['text'])
+            self.assertIn('The normal after-loop continuation reaches `parser.finish(prefix)`', relation['text'])
+            guards = {fact['condition'] for fact in facts if fact['kind'] == 'LOOP_ENTRY_VALIDATION'}
+            self.assertEqual(guards, {'`prefix.isNotEmpty()` is true', '`size > 0` is true'})
+            recovery, = (fact for fact in facts if fact['kind'] == 'LOOP_FAILURE_PATH')
+            self.assertIn('`continue` skips the remaining body', recovery['text'])
             scoped_regions = [checkpoint['sourceRanges'][region]['text'] for alias in relation['sources']
                               for region in checkpoint['citations'][alias].get('regions', [checkpoint['citations'][alias]['region']])]
-            for source in ('kotlin.require(prefix.isNotEmpty())', 'kotlin.check(size > 0)', 'parser.next(prefix, size)',
-                           'outcome != ScanResult.Again', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)'):
+            for source in ('parser.next(prefix, size)', 'outcome != ScanResult.Again', 'parser.collect()',
+                           'parser.remember()', 'parser.finish(prefix)'):
                 self.assertTrue(any(source in text for text in scoped_regions), scoped_regions)
+
+            recount = D['P']['expand_fact_context'](packet_for('recount'))
+            facts = [fact for scope in recount['facts'].values() for fact in scope.get('facts', ())]
+            loop, = (fact for fact in facts if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
+            self.assertIn('outcome.status == ScanResult.Again', loop['text'])
+            self.assertIn('exits normally', loop['text'])
+            self.assertTrue({'LOOP_RESULT_SOURCE', 'LOOP_LOCAL_ACCUMULATION'} <= {fact['kind'] for fact in facts})
+            self.assertFalse({'LOOP_ENTRY_VALIDATION', 'LOOP_FAILURE_PATH'} & {fact['kind'] for fact in facts})
             sidecar = D['load'](run / 'inputs/author-source/intake/prepared-facts.json')
-            checked, = (fact for fact in sidecar['entries'][checkpoint['requirement']['id']]['propositions']
-                        if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
-            anchors = {(proof['startByte'], proof['endByte'], proof['textDigest']) for proof in checked['witnesses']}
             raw = contents.encode()
-            for literal in ('prefix.isNotEmpty()', 'size > 0', 'outcome != ScanResult.Again', 'continue',
-                            'parser.next(prefix, size)', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)'):
-                encoded = literal.encode()
-                self.assertTrue(any(stop - start == len(encoded) and raw[start:stop] == encoded
-                                    and digest == D['sha'](encoded) for start, stop, digest in anchors), literal)
-            self.assertEqual(checkpoint['omittedPreparedFacts'], 0)
+            for packet, literals in ((checkpoint, ('prefix.isNotEmpty()', 'size > 0', 'outcome != ScanResult.Again', 'continue',
+                                                   'parser.next(prefix, size)', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)')),
+                                     (recount, ('var collected = 0', 'parser.next()', 'collected += outcome.size',
+                                                'outcome.status == ScanResult.Again', 'parser.finish(collected)'))):
+                checked = sidecar['entries'][packet['requirement']['id']]['propositions']
+                anchors = {(proof['startByte'], proof['endByte'], proof['textDigest'])
+                           for fact in checked if fact['kind'] == 'RESULT_CONTROLLED_LOOP' or fact['kind'].startswith('LOOP_')
+                           for proof in fact['witnesses']}
+                for literal in literals:
+                    encoded = literal.encode()
+                    self.assertTrue(any(stop - start == len(encoded) and raw[start:stop] == encoded
+                                        and digest == D['sha'](encoded) for start, stop, digest in anchors), literal)
+                self.assertEqual(packet['omittedPreparedFacts'], 0)
 
 
 class PreparedServiceEdgeTests(unittest.TestCase):

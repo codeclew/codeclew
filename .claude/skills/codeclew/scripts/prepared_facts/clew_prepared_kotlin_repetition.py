@@ -5,6 +5,9 @@ import re
 
 
 MAX_STEPS = 6
+MAX_STATEMENTS = 96
+MAX_LOOPS = 4
+COMPARISONS = {"==", "!=", "===", "!==", "<", "<=", ">", ">="}
 LITERAL = re.compile(r'-?\d[\d_]*(?:[lL])?|"[^"$]*"|true|false|null')
 
 
@@ -12,11 +15,26 @@ LITERAL = re.compile(r'-?\d[\d_]*(?:[lL])?|"[^"$]*"|true|false|null')
 class Step:
     site: object
     catches: tuple = ()
+    outcome: bool = True
+
+
+@dataclass(frozen=True)
+class Local:
+    site: object
+    initializer: tuple = ()
+    mutable: bool = False
+
+
+@dataclass(frozen=True)
+class Fact:
+    kind: str
+    text: str
+    sites: tuple
+    condition: str | None = None
 
 
 @dataclass(frozen=True)
 class Validation:
-    parameters: set
     guard: str
     passes: str
     rejects: str
@@ -35,37 +53,44 @@ class Loop:
     stop: object = None
     binding: object = None
     prefix: tuple = ()
+    result: str | None = None
+    suite: tuple = ()
 
 
 class Projection:
-    def __init__(self, body, syntax):
+    def __init__(self, body, syntax, controls, external_sites):
         self.body = body
         self.unit = body.unit
         self.syntax = syntax
         self.span = syntax["token_site"]
         self.words = self.unit.words
-        self.parameters = {parameter.name for parameter in body.function.params}
+        self.parameters = {parameter.name: parameter for parameter in body.function.params}
+        self.controls = controls(body, '', ())
+        self.external_sites = external_sites
+        self.locals = {}
 
-    def names(self, tokens):
-        """Use ordinary parameter references in their original, unshadowed prefix."""
+    def checks_input(self, tokens):
+        """Accept only visible inputs to the leading check."""
         if any(token.text in {"{", "->", "::"} for token in tokens):
-            return set()
-        return {token.text for index, token in enumerate(tokens) if token.text in self.parameters
-                and (not index or tokens[index - 1].text not in {".", "?.", "@"})
-                and (index + 1 == len(tokens) or tokens[index + 1].text != "=")}
+            return False
+        return any((token.text in self.parameters or token.text in self.locals)
+                   and (not index or tokens[index - 1].text not in {".", "?.", "@"})
+                   and (index + 1 == len(tokens) or tokens[index + 1].text != "=")
+                   or token.text == "this" and index + 2 < len(tokens) and tokens[index + 1].text == "."
+                   for index, token in enumerate(tokens))
 
     def validation(self, statement):
         hard = self.body.hard_guard(statement)
-        if hard and hard.predicate and (names := self.names(self.tokens(hard.predicate.site))):
+        if hard and hard.predicate and self.checks_input(self.tokens(hard.predicate.site)):
             assumption = ("the selectors resolve to " + " and ".join(f"`kotlin.{name}`" for name in hard.bindings)
                           if hard.bindings else "")
-            return Validation(names, hard.failure.text, hard.true, hard.false, f"throws `{hard.exception}`",
+            return Validation(hard.failure.text, hard.true, hard.false, f"throws `{hard.exception}`",
                               tuple(note.site for note in hard.proof), assumption)
         if (statement.kind == "if" and not statement.alternative and len(statement.body) == 1
-                and statement.body[0].kind == "throw" and (names := self.names(statement.expression))):
+                and statement.body[0].kind == "throw" and self.checks_input(statement.expression)):
             site, exit_ = self.span(statement.expression), statement.body[0].site
             if (predicate := self.literal(site)) and (terminal := self.literal(exit_)):
-                return Validation(names, f"the check {predicate}", f"{predicate} is false", f"{predicate} is true",
+                return Validation(f"the check {predicate}", f"{predicate} is false", f"{predicate} is true",
                                   f"reaches {terminal}", (site, exit_))
         return None
 
@@ -87,35 +112,51 @@ class Projection:
             return Step(parts[-1].site)
         return None
 
-    def action(self, statement, *, continues=False):
+    def action(self, statement, *, binding=False, locals_=None):
         if statement.kind == "expression":
-            return self.call(statement.expression)
+            if operation := self.call(statement.expression):
+                return operation
+            if not binding and self.accumulation(statement, locals_ or {}):
+                return Step(statement.site)
+            return None
         if statement.kind != "try" or len(statement.body) != 1 or not statement.handlers or statement.cleanup:
             return None
-        operation = self.action(statement.body[0], continues=continues)
+        operation = self.action(statement.body[0], binding=binding, locals_=locals_)
         if operation is None or operation.catches:
             return None
         variants = []
         for _, handler, suite in statement.handlers:
-            if not suite and not continues:
-                variants.append((handler, None))
+            if not suite and not binding:
+                variants.append((handler, "resume", None))
             elif (len(suite) == 1 and suite[0].kind == "continue" and not suite[0].expression):
-                variants.append((handler, suite[0].site))
+                variants.append((handler, "continue", suite[0].site))
+            elif len(suite) == 1 and suite[0].kind == "throw":
+                variants.append((handler, "throw", suite[0].site))
             else:
                 return None
         return Step(operation.site, tuple(variants))
 
-    def assignment(self, statement, declared=None):
-        if statement.kind != "expression":
-            return None
+    def declaration(self, statement):
         tokens = statement.expression
         words = self.syntax["strings"](tokens)
-        if declared and words[:2] == (declared, "=") and len(words) > 2:
-            return declared, tokens[2:]
-        if len(words) >= 4 and words[0] in {"val", "var"} and self.syntax["name"](words[1]):
-            split = next((index for index, piece in enumerate(words[2:], 2) if piece == "="), None)
-            if split is not None and (split == 2 or words[2] == ":"):
-                return words[1], tokens[split + 1:]
+        if statement.kind != "expression" or len(words) < 3 or words[0] not in {"val", "var"} or not self.syntax["name"](words[1]):
+            return None
+        first = self.unit.token_indices[tokens[0].start]
+        direct = self.unit.container[first]
+        split = next((index for index, word in enumerate(words[2:], 2) if word == "="
+                      and self.unit.container[first + index] == direct), len(words))
+        if split == 2 or words[2] == ":" and split > 3:
+            return words[1], Local(statement.site, tokens[split + 1:], words[0] == "var")
+        return None
+
+    def assignment(self, statement):
+        if local := self.declaration(statement):
+            name, declaration = local
+            return (name, declaration.initializer) if declaration.initializer else None
+        tokens = statement.expression
+        words = self.syntax["strings"](tokens)
+        if statement.kind == "expression" and len(words) > 2 and words[1] == "=" and (local := self.locals.get(words[0])) and local.mutable:
+            return words[0], tokens[2:]
         return None
 
     def supplier(self, tokens):
@@ -125,10 +166,35 @@ class Projection:
             first = self.unit.token_indices[tokens[0].start]
             statement, stop = self.unit.statement(first, first + len(tokens), 0)
             if stop == first + len(tokens):
-                return self.action(statement, continues=True)
+                return self.action(statement, binding=True)
+        if self.expected(tokens) and (tokens[0].text in self.locals or tokens[0].text in self.parameters
+                                      or tokens[0].text == "this" and len(tokens) >= 3):
+            return Step(self.span(tokens), outcome=False)
         return None
 
-    def equality(self, tokens):
+    def accumulation(self, statement, locals_):
+        if statement.kind != "expression":
+            return None
+        tokens = statement.expression
+        words = self.syntax["strings"](tokens)
+        if len(words) > 2 and (local := locals_.get(words[0])) and local.initializer:
+            if local.mutable and words[1] == "+=":
+                return words[0], local, tokens[2:]
+            if local.mutable and len(words) > 4 and words[1:4] == ("=", words[0], "+"):
+                return words[0], local, tokens[4:]
+            if words[1:3] in {(".", "add"), (".", "addAll")}:
+                initial = "".join(self.syntax["strings"](local.initializer)).split("(", 1)[0].split("<", 1)[0]
+                if initial in {"kotlin.collections.mutableListOf", "kotlin.collections.arrayListOf"}:
+                    if invocation := self.syntax["invocation"](tokens):
+                        _, args = invocation
+                        if len(args) == 1:
+                            return words[0], local, args[0]
+        return None
+
+    def has_continue(self, steps):
+        return any(mode == "continue" for step in steps for _, mode, _ in step.catches)
+
+    def comparison_parts(self, tokens):
         first = self.unit.token_indices[tokens[0].start] if tokens else None
         if first is None:
             return None
@@ -137,7 +203,7 @@ class Projection:
             first, stop = first + 1, stop - 1
         common = self.unit.container[first]
         operators = [index for index in range(first, stop) if self.unit.container[index] == common
-                     and self.words[index] in {"==", "!="}]
+                     and self.words[index] in COMPARISONS]
         if len(operators) != 1:
             return None
         middle, = operators
@@ -147,11 +213,14 @@ class Projection:
         words = self.syntax["strings"](tokens)
         if len(words) == 1 and LITERAL.fullmatch(words[0]):
             return True
-        return (bool(words) and len(words) % 2 == 1 and all(self.syntax["name"](word) for word in words[::2])
+        if len(words) == 2 and words[0] == "-" and words[1].isdigit():
+            return True
+        return (bool(words) and len(words) % 2 == 1 and all(self.syntax["name"](word) or index == 0 and word == "this"
+                        for index, word in enumerate(words[::2]))
                 and all(word == "." for word in words[1::2]))
 
     def result_test(self, tokens, name=None):
-        if not (sides := self.equality(tokens)):
+        if not (sides := self.comparison_parts(tokens)):
             return None
         matches = []
         for supplied, expected in (sides, sides[::-1]):
@@ -164,17 +233,51 @@ class Projection:
                 matches.append((None, self.span(tokens)))
         return matches[0] if len(matches) == 1 else None
 
+    def thrown_arm(self, statement):
+        if (statement.kind == "if" and not statement.alternative and len(statement.body) == 1
+                and statement.body[0].kind == "throw" and self.syntax["strings"](statement.expression) not in {("true",), ("false",)}):
+            return self.span(statement.expression), statement.body[0].site
+        return None
+
     def actions(self, statements):
         if len(statements) > MAX_STEPS:
             return None
-        operations = tuple(self.action(statement) for statement in statements)
-        return operations if all(operations) else None
+        result = []
+        for statement in statements:
+            if self.thrown_arm(statement) or (statement.kind == "if" and not statement.alternative
+                                              and self.syntax["strings"](statement.expression) == ("false",)):
+                continue
+            if not (step := self.action(statement, locals_=self.locals)):
+                return None
+            result.append(step)
+        return tuple(result)
+
+    def reassignments(self, statements):
+        changed = set()
+        for statement in statements:
+            words = self.syntax["strings"](self.tokens(statement.site))
+            for word, following in zip(words, words[1:]):
+                if following in {"=", "+=", "-=", "*=", "/=", "%=", "++", "--"} and self.syntax["name"](word):
+                    changed.add(word)
+                if word in {"val", "var", "++", "--"} and self.syntax["name"](following):
+                    changed.add(following)
+        return changed
+
+    def resumable(self, statements):
+        return self.controls.shape(statements, "CALLABLE").resumes
+
+    def reached_steps(self, statements):
+        for statement in statements:
+            yield statement
+            if not self.controls.statement_shape(statement, "CALLABLE").resumes:
+                return
 
     def top_test(self, loop):
         if result := self.result_test(loop.expression):
+            if not self.resumable(loop.body):
+                return None
             supplier, comparison = result
-            if (actions := self.actions(loop.body)) is not None:
-                return Loop(supplier, comparison, actions, "header", True)
+            return Loop(supplier, comparison, self.actions(loop.body) or (), "header", True, suite=loop.body)
         if (self.syntax["strings"](loop.expression) != ("true",) or len(loop.body) < 2
                 or not (binding := self.assignment(loop.body[0]))):
             return None
@@ -183,129 +286,231 @@ class Projection:
         if (gate.kind != "if" or gate.alternative or len(gate.body) != 1
                 or gate.body[0].kind != "break" or gate.body[0].expression):
             return None
-        if ((supplier := self.supplier(tokens)) and (result := self.result_test(gate.expression, name))
-                and (actions := self.actions(loop.body[2:])) is not None):
-            return Loop(supplier, result[1], actions, "body", False, gate.body[0].site, loop.body[0].site)
+        if (supplier := self.supplier(tokens)) and (result := self.result_test(gate.expression, name)) and self.resumable(loop.body[2:]):
+            return Loop(supplier, result[1], self.actions(loop.body[2:]) or (), "body", False,
+                        gate.body[0].site, loop.body[0].site, result=name, suite=loop.body[2:])
         return None
 
-    def tail_test(self, start, end, declared=None):
+    def tail_test(self, start, end):
         suite, at = self.unit.block(start + 1, end, 0)
-        if not suite or len(suite) > MAX_STEPS + 1 or self.words[at:at + 2] != ("while", "("):
+        if self.words[at:at + 2] != ("while", "("):
             return None, at
         close = self.unit.pairs[at + 1]
+        if not suite or len(suite) > MAX_STEPS + 1:
+            return None, close + 1
         predicate = self.unit.tokens[at + 2:close]
         for index, statement in enumerate(suite):
-            if not (binding := self.assignment(statement, declared)):
+            if not (binding := self.assignment(statement)):
                 continue
             name, tokens = binding
-            if not ((supplier := self.call(tokens)) and (result := self.result_test(predicate, name))):
+            if not ((supplier := self.supplier(tokens)) and (result := self.result_test(predicate, name))):
                 continue
-            # A continue before this binding could reach the test without this iteration's result.
+            # A bottom test can only be tied to this iteration's value when the prefix reaches its binding.
             before, after = self.actions(suite[:index]), self.actions(suite[index + 1:])
-            if before is not None and after is not None and not any(exit_ for step in before for _, exit_ in step.catches):
-                return Loop(supplier, result[1], after, "tail", True, binding=statement.site, prefix=before), close + 1
+            if (before is None or self.has_continue(before) or self.has_continue((supplier,))
+                    or name in self.reassignments(suite[index + 1:]) or not self.resumable(suite[index + 1:])):
+                continue
+            return Loop(supplier, result[1], after or (), "tail", True, binding=statement.site,
+                        prefix=before, result=name, suite=(*suite[:index], *suite[index + 1:])), close + 1
         return None, close + 1
 
-    def describe(self, loop, validations, suffix, terminal, declaration):
-        steps = (*loop.prefix, loop.supplier, *loop.actions, *suffix)
-        sites = [*(site for validation in validations for site in validation.sites), loop.comparison]
-        sites.extend(site for site in (declaration, loop.binding, loop.stop, terminal) if site)
-        sites.extend(step.site for step in steps)
-        sites.extend(site for step in steps for handler, exit_ in step.catches for site in (handler, exit_) if site)
-        literals = {site: self.literal(site) for site in sites}
-        if not all(literals.values()):
+    def fact(self, kind, text, sites, condition=None):
+        return Fact(kind, text, tuple(dict.fromkeys(site for site in sites if site)), condition)
+
+    def core(self, loop, suffix):
+        supplier, comparison = self.literal(loop.supplier.site), self.literal(loop.comparison)
+        if not supplier or not comparison:
             return None
-        assumptions = list(dict.fromkeys(row.assumption for row in validations if row.assumption))
-        passing = " and ".join([*assumptions, *(row.passes for row in validations)])
-        parameters = ", ".join(f"`{name}`" for name in sorted(set().union(*(row.parameters for row in validations))))
-        parts = [f"The leading validations of {parameters} are " + " then ".join(row.guard for row in validations) + "."]
-        if loop.prefix:
-            parts.append("After these checks, each entered iteration reaches " + " then ".join(literals[step.site] for step in loop.prefix)
-                         + f" before {literals[loop.supplier.site]} supplies the loop result.")
-        else:
-            parts.append(f"After these checks complete normally, {literals[loop.supplier.site]} supplies the loop result.")
-        for row in validations:
-            failure = " and ".join(filter(None, (row.assumption, row.rejects)))
-            parts.append(f"If source reaches {row.guard} and {failure}, it {row.failure} before the loop starts, after its arguments finish evaluating.")
-        order = " then ".join(literals[step.site] for step in loop.actions)
-        comparison = literals[loop.comparison]
+        phases = [self.literal(step.site) for step in loop.actions]
+        before = [self.literal(step.site) for step in loop.prefix]
+        after = [self.literal(site) for site in suffix]
+        stop = self.literal(loop.stop) if loop.stop else None
+        if not all([*phases, *before, *after]) or loop.stop and not stop:
+            return None
+        origin = f"evaluates {supplier}" if loop.supplier.outcome else f"reads {supplier}"
+        prefix = ("the normal iteration reaches " + " then ".join(before) + " before it " if before else "source ")
+        parts = [f"If control enters this loop, {prefix}{origin} for the selected result."]
+        actions = " then ".join(phases)
         if loop.position == "tail":
-            before = f"The normal iteration reaches {order} before the comparison. " if order else ""
-            parts.append(before + f"The comparison {comparison} is tested after the body. If true, source starts another iteration.")
+            if actions:
+                parts.append(f"On normal continuation, {actions} follows the result before the bottom test.")
+            parts.append(f"When the bottom comparison {comparison} is reached, source starts another iteration if it evaluates true.")
         elif loop.continue_if:
-            next_ = f"the body reaches {order}, then the next test reevaluates the supplier" if order else "the next test reevaluates the supplier"
-            parts.append(f"The comparison {comparison} is tested before the body. On the normal true continuation, {next_}.")
+            continuation = f" source reaches {actions} on normal continuation before testing again." if actions else " source can enter the body."
+            parts.append(f"The header comparison is {comparison}. If true,{continuation}")
         else:
-            parts.append(f"If {comparison} is true, {literals[loop.stop]} exits the loop. If false, source "
-                         + (f"reaches {order}, then starts another iteration." if order else "starts another iteration."))
+            parts.append(f"If {comparison} is true, {stop} exits the loop.")
+            continuation = f" source reaches {actions} before the next iteration on the normal path." if actions else " source can reach the next iteration."
+            parts.append("If the comparison is false," + continuation)
         if loop.continue_if:
             parts.append(f"If {comparison} evaluates false, the loop exits normally.")
-        after = [*(literals[step.site] for step in suffix), *([literals[terminal]] if terminal else [])]
         if after:
-            parts.append("After the normal exit, source reaches " + " then ".join(after)
-                         + " if prior evaluations return normally.")
-        skipped = f" bypasses {order} in that iteration and" if order else ""
-        parts.append(f"A failure escaping the supplier{skipped} prevents the normal loop exit on that path. "
-                     "A failure escaping a body action skips the later calls in that iteration and the next test.")
-        for step in steps:
-            for handler, exit_ in step.catches:
-                if exit_:
-                    resume = ("evaluates the bottom comparison before another possible iteration" if loop.position == "tail"
-                              else "continues at the next loop iteration or header test")
-                    consequence = f"{literals[exit_]} skips the remaining body and {resume}"
+            parts.append("The normal after-loop continuation reaches " + " then ".join(after) + ".")
+        sites = [loop.supplier.site, loop.comparison, loop.stop, loop.binding, *(step.site for step in (*loop.prefix, *loop.actions)), *suffix]
+        return self.fact("RESULT_CONTROLLED_LOOP", " ".join(parts), sites)
+
+    def source(self, loop, locals_):
+        tokens = self.tokens(loop.supplier.site)
+        name = tokens[0].text
+        literal = self.literal(loop.supplier.site)
+        target = "the loop's selected result"
+        sites = [loop.supplier.site, loop.binding, loop.comparison]
+        if loop.supplier.site in self.external_sites:
+            text = f"The retained external call in {literal} supplies {target} when its evaluation succeeds."
+        elif name in self.parameters:
+            parameter = self.parameters[name]
+            sites.append(parameter.site)
+            text = f"Source takes {target} through the declared parameter `{name}` at {literal}."
+        elif name in locals_:
+            local = locals_[name]
+            sites.append(local.site)
+            text = f"Source takes {target} through the local `{name}` at {literal}."
+            if not local.mutable and local.initializer and (initial := self.literal(self.span(local.initializer))):
+                text += f" Its retained initializer is {initial}."
+        elif name == "this" and len(tokens) >= 3 and tokens[1].text == ".":
+            text = f"Source takes {target} through the member on `this` at {literal}."
+        elif loop.supplier.outcome:
+            text = f"The normal return of {literal} supplies {target}."
+        else:
+            return None
+        return self.fact("LOOP_RESULT_SOURCE", text, sites)
+
+    def accumulations(self, loop, locals_):
+        if not loop.result:
+            return
+        locals_ = locals_.copy()
+        for statement in self.reached_steps(loop.suite):
+            if loop.result in self.reassignments((statement,)):
+                return
+            if (shadow := self.declaration(statement)) and shadow[0] in locals_:
+                locals_.pop(shadow[0])
+            if not (update := self.accumulation(statement, locals_)):
+                continue
+            name, local, operand = update
+            if not operand or operand[0].text != loop.result or not (self.expected(operand) or self.call(operand)):
+                continue
+            if (site := self.literal(statement.site)) and (declaration := self.literal(local.site)):
+                yield self.fact("LOOP_LOCAL_ACCUMULATION", f"The loop uses the selected result in {site} on the local accumulator `{name}`. "
+                                f"The local is declared by {declaration} before the loop.",
+                                (local.site, statement.site, loop.supplier.site, loop.binding, loop.comparison))
+
+    def failures(self, loop, suffix):
+        after = bool(suffix)
+        for step in (loop.supplier, *loop.prefix, *loop.actions):
+            for handler, mode, exit_ in step.catches:
+                call, clause = self.literal(step.site), self.literal(handler)
+                transfer = self.literal(exit_) if exit_ else None
+                if not call or not clause or exit_ and not transfer:
+                    continue
+                if mode == "continue":
+                    next_ = "the bottom comparison" if loop.position == "tail" else "the next iteration or header test"
+                    text = f"{transfer} skips the remaining body and goes to {next_}."
+                elif mode == "throw":
+                    text = f"{transfer} exits this continuation when the exception escapes."
                 else:
-                    consequence = ("source resumes the after-loop continuation if the handler completes" if step in suffix
-                                   else "source resumes at the next action or loop test if the handler completes")
-                parts.append(f"If a failure from {literals[step.site]} selects {literals[handler]}, {consequence}.")
-        return " ".join(parts), passing, tuple(dict.fromkeys(sites))
+                    text = "the source resumes at the next action or test when the handler completes."
+                prefix = f"If a failure from {call} selects {clause}"
+                yield self.fact("LOOP_FAILURE_PATH", f"{prefix}, {text}",
+                                (step.site, handler, exit_, loop.comparison), prefix)
+        for statement in self.reached_steps(loop.suite):
+            if branch := self.thrown_arm(statement):
+                predicate, exit_ = map(self.literal, branch)
+                if predicate and exit_:
+                    condition = f"{predicate} is true"
+                    tail = " and the normal after-loop continuation" if after else ""
+                    yield self.fact("LOOP_FAILURE_PATH", f"If this decision is reached and {condition}, {exit_} skips the remaining iteration{tail} "
+                                    "once the thrown value evaluates and the exception escapes.",
+                                    (*branch, loop.comparison, *suffix), condition)
+
+    def validations(self, checks, loop):
+        for check in checks:
+            passes = " and ".join(filter(None, (check.assumption, check.passes)))
+            rejects = " and ".join(filter(None, (check.assumption, check.rejects)))
+            yield self.fact("LOOP_ENTRY_VALIDATION", f"Reaching the loop through its leading validation {check.guard} requires {passes}. "
+                            f"If that validation is reached and {rejects}, it {check.failure} before the loop starts, after its arguments finish evaluating.",
+                            (*check.sites, loop.comparison), passes)
+
+    def scope_tail(self, statements):
+        sites = []
+        for statement in statements[:MAX_STEPS]:
+            if statement.kind == "return" and (not statement.expression or statement.expression[0].text != "@"):
+                sites.append(statement.site)
+                break
+            if not (operation := self.call(statement.expression)) or statement.kind != "expression":
+                break
+            sites.append(operation.site)
+        return tuple(sites)
 
     def project(self):
         function = self.body.function
-        if function.expression_body or len(self.parameters) < 2:
-            return None
-        start, end = function.body + 1, function.end
-        validations = []
-        declaration = None
-        for _ in range(MAX_STEPS + 1):
-            if start == end or self.words[start] in {"while", "do"}:
+        if function.expression_body:
+            return []
+        at, end = function.body + 1, function.end
+        checks, facts = [], []
+        pending = None
+        loops = 0
+        for _ in range(MAX_STATEMENTS):
+            if at >= end:
                 break
-            statement, after = self.unit.statement(start, end, 0)
-            if validation := self.validation(statement):
-                validations.append(validation)
-                start = after + (self.words[after] == ";")
+            if self.words[at] == ";":
+                at += 1
                 continue
-            words = self.syntax["strings"](statement.expression)
-            if len(words) > 3 and words[0] == "var" and words[2] == ":" and self.expected(statement.expression[3:]):
-                start = after + (self.words[after] == ";")
-                if self.words[start] == "do" and self.syntax["name"](words[1]):
-                    declaration = words[1], statement.site
+            if self.words[at] == "do":
+                loop, at = self.tail_test(at, end)
+                statement = None
+            else:
+                statement, at = self.unit.statement(at, end, 0)
+                loop = self.top_test(statement) if statement.kind == "while" else None
+            if pending is not None:
+                earlier, earlier_checks, nearby, locals_ = pending
+                if statement is not None and not loop and len(nearby) < MAX_STEPS:
+                    nearby.append(statement)
+                if statement is None or loop or len(nearby) == MAX_STEPS:
+                    self.emit(earlier, earlier_checks, nearby, locals_, facts)
+                    pending = None
+            if loop:
+                if loops == MAX_LOOPS:
                     break
-            return None
-        if len(validations) < 2 or len(set().union(*(row.parameters for row in validations))) < 2 or start >= end:
-            return None
-        if self.words[start] == "while":
-            statement, after = self.unit.statement(start, end, 0)
-            loop = self.top_test(statement) if statement.kind == "while" else None
-        elif self.words[start] == "do":
-            loop, after = self.tail_test(start, end, declaration[0] if declaration else None)
-        else:
-            return None
-        if loop:
-            remaining = self.unit.suite(after, end)
-            terminal = None
-            if remaining and remaining[-1].kind == "return":
-                returned = remaining[-1]
-                if returned.expression and returned.expression[0].text == "@":
-                    return None
-                remaining, terminal = remaining[:-1], returned.site
-            suffix = self.actions(remaining)
-            if suffix is not None and not any(exit_ for step in suffix for _, exit_ in step.catches):
-                return self.describe(loop, validations, suffix, terminal, declaration[1] if declaration else None)
-        return None
+                pending = loop, tuple(checks), [], self.locals.copy()
+                loops += 1
+            if statement is None:
+                continue
+            if statement.kind in {"while", "for"}:
+                if (statement.kind == "while" and self.syntax["strings"](statement.expression) == ("true",)
+                        and not any("break" in self.syntax["strings"](self.tokens(item.site)) for item in statement.body)):
+                    break
+                continue
+            hard = self.body.hard_guard(statement)
+            if (not self.controls.statement_shape(statement, "CALLABLE").resumes or
+                    hard and hard.verified and hard.predicate and self.syntax["strings"](self.tokens(hard.predicate.site)) == ("false",)):
+                break
+            if check := self.validation(statement):
+                if len(checks) < MAX_STEPS:
+                    checks.append(check)
+            else:
+                # Preserve only declarations whose selected initializer is still the reaching local definition.
+                for name in self.reassignments((statement,)):
+                    self.locals.pop(name, None)
+                if local := self.declaration(statement):
+                    name, value = local
+                    self.locals[name] = value
+        if pending is not None:
+            self.emit(*pending, facts)
+        return facts
+
+    def emit(self, loop, checks, nearby, locals_, facts):
+        suffix = self.scope_tail(nearby)
+        if core := self.core(loop, suffix):
+            facts.append(core)
+            if result := self.source(loop, locals_):
+                facts.append(result)
+            facts.extend(self.accumulations(loop, locals_))
+            facts.extend(self.failures(loop, suffix))
+            facts.extend(self.validations(checks, loop))
 
 
-def project(body, syntax):
+def project(body, syntax, controls, external_sites=()):
     try:
-        return Projection(body, syntax).project()
+        return Projection(body, syntax, controls, external_sites).project()
     except syntax["Unsupported"]:
-        return None
+        return []

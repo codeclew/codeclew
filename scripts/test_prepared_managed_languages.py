@@ -904,24 +904,24 @@ class ArchiveJob(private val pages: PageSource, private val archive: Archive) {
         loops = {
             'top test': ('while (pages.next(directory, size) == PageResult.More) {\n'
                          '    archive.pack()\n    archive.record()\n}',
-                         ('pages.next(directory, size) == PageResult.More', 'before the body', 'archive.pack()'), None),
+                         ('pages.next(directory, size) == PageResult.More', 'header comparison', 'archive.pack()'), None),
             'changed condition': ('while (pages.next(directory, size) != PageResult.More) { archive.pack() }',
-                                  ('pages.next(directory, size) != PageResult.More', 'before the body'), None),
+                                  ('pages.next(directory, size) != PageResult.More', 'header comparison'), None),
             'break guard': ('while (true) {\n    val result = pages.next(directory, size)\n'
                             '    if (result != PageResult.More) break\n    archive.pack()\n    archive.record()\n}',
-                            ('result != PageResult.More', '`break` exits', 'If false'), None),
+                            ('result != PageResult.More', '`break` exits', 'If the comparison is false'), None),
             'tail test': ('do {\n    val result = pages.next(directory, size).await()\n    archive.pack()\n'
                           '} while (result == PageResult.More)',
-                          ('pages.next(directory, size).await()', 'result == PageResult.More', 'after the body'), None),
+                          ('pages.next(directory, size).await()', 'result == PageResult.More', 'bottom comparison'), None),
             'tail result assignment': ('var result: PageResult\ndo {\n    archive.open()\n'
                                        '    result = pages.next(directory, size)\n    archive.pack()\n'
                                        '} while (result.status == PageResult.More)',
-                                       ('archive.open()', 'result.status == PageResult.More', 'after the body'), None),
+                                       ('archive.open()', 'result.status == PageResult.More', 'bottom comparison'), None),
             'catch continue': ('while (true) {\n'
                                '    val result = try { pages.next(directory, size) } catch (retry: Retry) { continue }\n'
                                '    if (result != PageResult.More) break\n'
                                '    try { archive.pack() } catch (ignored: Ignored) {}\n    archive.record()\n}',
-                               ('result != PageResult.More', 'skips the remaining body', 'resumes at the next action'),
+                               ('result != PageResult.More',),
                                'catch (retry: Retry)'),
             'opaque callback': ('archive.defer {\n'
                                 '    while (pages.next(directory, size) == PageResult.More) { archive.pack() }\n}', (), None),
@@ -939,17 +939,100 @@ class ArchiveJob(private val pages: PageSource, private val archive: Archive) {
                     continue
                 relation, = projected
                 self.assertIn('collect("recordings", 12)', relation['text'])
-                self.assertIn('`directory.isNotEmpty()` is true', relation['condition'])
-                self.assertIn('`size < 1` is false', relation['condition'])
-                for needle in (*needles, 'before the loop starts', 'archive.finish(directory)', 'failure escaping the supplier'):
+                passed = {row['condition'] for row in rows if row['kind'] == 'LOOP_ENTRY_VALIDATION'}
+                self.assertEqual(passed, {'`directory.isNotEmpty()` is true', '`size < 1` is false'})
+                for needle in (*needles, 'archive.finish(directory)'):
                     self.assertIn(needle, relation['text'])
-                anchors = [witnesses[ref] for ref in relation['sources'] if ref in witnesses]
+                self.assertNotIn('condition', relation)
+                evidence = [row for row in rows if row['kind'] in {'LOOP_ENTRY_VALIDATION', 'LOOP_FAILURE_PATH'}]
+                anchors = [witnesses[ref] for row in [relation, *evidence] for ref in row['sources'] if ref in witnesses]
                 self.assertGreaterEqual(len(anchors), 5)
                 self.assertTrue(any(row['text'] == 'size < 1' for row in anchors))
                 self.assertTrue(any(row['text'] == 'archive.finish(directory)' for row in anchors))
-                self.assertEqual(any('catch (' in row['text'] for row in anchors), handler is not None)
+                failures = [row for row in evidence if row['kind'] == 'LOOP_FAILURE_PATH']
+                self.assertEqual(bool(failures), handler is not None)
+                if handler:
+                    self.assertTrue(any('skips the remaining body' in row['text'] for row in failures), failures)
+                    self.assertTrue(any('resumes at the next action' in row['text'] for row in failures), failures)
+                    self.assertTrue(any(handler in row['text'] for row in anchors))
                 if name == 'top test':
                     self.assertLess(relation['text'].index('archive.pack()'), relation['text'].index('archive.record()'))
+
+    def test_kotlin_loop_progress_accumulation_and_failures_have_independent_witnesses(self):
+        template = """class Scanner(private val feeder: Feeder, private val current: Packet, private val settings: Settings) {
+    fun run(INPUT) {
+        PREFIX
+        var collected = 0
+        do {
+            val result = OUTCOME
+            BODY
+            collected += result.size
+        } while (PREDICATE)
+        report(collected)
+    }
+}
+"""
+        variants = (
+            ('zero parameters', '', '', 'feeder.next().await()', '', 'result.status == Progress.More', 'normal return', True, False),
+            ('explicit field', '', '', 'this.current', '', 'result.status == Progress.More', 'member on `this`', True, False),
+            ('ordered comparison', '', '', 'this.current', '', 'result.size >= 10', 'member on `this`', True, False),
+            ('local origin', '', 'val next = feeder.next()', 'next', '', 'result.status != Progress.More', 'local `next`', True, False),
+            ('parameter origin', 'packet: Packet', '', 'packet', '', 'result.status == Progress.More', 'declared parameter `packet`', True, False),
+            ('unreachable fault', '', '', 'this.current', 'if (false) throw IllegalStateException()', 'result.status == Progress.More', 'member on `this`', True, False),
+            ('explicit exception', '', '', 'this.current', 'if (result.bad) throw IllegalStateException()', 'result.status == Progress.More', 'member on `this`', True, True),
+            ('non-governing guard', 'enabled: Boolean', 'if (enabled) { kotlin.require(enabled) }', 'feeder.next()', '', 'result.status == Progress.More', 'normal return', True, False),
+            ('no selected result use', '', '', 'feeder.next()', '', 'settings.status == Progress.More', '', False, False),
+            ('no exit from earlier loop', '', 'while (true) waitNext()', 'feeder.next()', '', 'result.status == Progress.More', '', False, False),
+            ('unreachable loop', '', 'if (true) return', 'feeder.next()', '', 'result.status == Progress.More', '', False, False),
+        )
+        for name, params, prefix, supplied, body, predicate, origin, expected, failing in variants:
+            with self.subTest(name=name):
+                source = (template.replace('INPUT', params).replace('PREFIX', prefix).replace('OUTCOME', supplied)
+                          .replace('BODY', body).replace('PREDICATE', predicate))
+                root = source[source.index('fun run'):source.rindex('\n}')]
+                rows, witnesses = self.kotlin_callback_facts(source, root, 'HTTP_ENDPOINT', 'run')
+                projected = [row for row in rows if row['kind'] == 'RESULT_CONTROLLED_LOOP']
+                self.assertEqual(bool(projected), expected, rows)
+                self.assertFalse(any(row['kind'] == 'LOOP_ENTRY_VALIDATION' for row in rows), rows)
+                failures = [row for row in rows if row['kind'] == 'LOOP_FAILURE_PATH']
+                self.assertEqual(bool(failures), failing, rows)
+                if not expected:
+                    continue
+                loop, = projected
+                self.assertIn(predicate, loop['text'])
+                self.assertIn('exits normally', loop['text'])
+                self.assertIn('report(collected)', loop['text'])
+                supplied_fact, = (row for row in rows if row['kind'] == 'LOOP_RESULT_SOURCE')
+                self.assertIn(origin, supplied_fact['text'])
+                accumulator, = (row for row in rows if row['kind'] == 'LOOP_LOCAL_ACCUMULATION')
+                self.assertIn('collected += result.size', accumulator['text'])
+                anchors = {witnesses[ref]['text'] for ref in accumulator['sources'] if ref in witnesses}
+                self.assertTrue({'var collected = 0', 'collected += result.size', predicate} <= anchors, anchors)
+
+    def test_kotlin_result_source_uses_only_the_external_call_selected_by_the_comparison(self):
+        text = """fun archive() {
+    while (client.read() == Status.More) {
+        collector.record()
+    }
+}
+"""
+        for name, selected_call in [('returned value', 'client.read()'), ('unrelated action', 'collector.record()')]:
+            with self.subTest(name=name):
+                process, context = selected('Archive.kt', text)
+                line = text[:text.index(selected_call)].count('\n') + 1
+                event, _ = selected('Archive.kt', text, standalone=selected_call, start=line)
+                member = event['sources']['s1']
+                process['entrySymbol'] = 'archive'
+                process['sources']['external'] = member
+                process['facts'].append({'kind': 'EVENT', 'event': 'CALL', 'declaration': 'decl', 'resolution': 'COMPILER_EXACT',
+                                         'target': 'callable:fixture/Client.request#jvm:', 'sources': ['external'],
+                                         'http': {'adapter': 'SPRING_REST_CLIENT_URI/2.0', 'method': 'GET', 'path': '/entries'}})
+                context['sourceRanges'].append({**member, 'id': 'event-exact', 'references': ['external']})
+                context['_sourceOccurrences']['external'] = member
+                rows, _ = self.project(process, context)
+                origin, = (row for row in rows if row['kind'] == 'LOOP_RESULT_SOURCE')
+                self.assertEqual('retained external call' in origin['text'], name == 'returned value')
+                self.assertIn('client.read()', origin['text'])
 
     def test_kotlin_validation_skip_applies_only_to_the_selected_later_write(self):
         template = """import org.springframework.scheduling.annotation.Scheduled
