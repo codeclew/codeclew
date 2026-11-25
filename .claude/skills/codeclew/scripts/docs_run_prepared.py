@@ -671,7 +671,9 @@ def background_operation(service, found, files, exact):
                'entrySymbol': name, 'entryKind': kind, 'trigger': trigger, 'routes': [],
                'entrySources': refs, 'sources': sources,
                'facts': [{'kind': 'BODY', 'declaration': ref, 'sources': [ref]} for ref in bodies],
-               '_background': {'bodies': bodies, 'calls': calls, 'offsets': [row[:3] for row in offsets],
+               '_background': {'bodies': bodies, 'calls': calls,
+                               **({'compilationFiles': sorted(files)} if kind == 'HOSTED_BACKGROUND_WORKER' else {}),
+                               'offsets': [row[:3] for row in offsets],
                                'anchored': list(dict.fromkeys([first for first, _ in calls] +
                                                             [row[0] for row in offsets]))}}
     facts = [dict(kind='background-registration', authority=authority, sources=refs,

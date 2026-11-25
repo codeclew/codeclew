@@ -383,10 +383,25 @@ def managed(process, context):
     # citation by itself does not attest to a route via the surrounding registration.
     if roslyn_command(context) is None:
         return unavailable(context, "ROSLYN_SDK_OR_BUILD_UNAVAILABLE")
+    # Supporting declarations come only from the captured compilation that selected the worker.
+    supporting = {}
+    revisions = {evidence[ref]["revision"] for ref in roots}
+    revision = next(iter(revisions)) if len(revisions) == 1 else None
+    files = context.get("_nativeFiles", {})
+    for file in process.get("_background", {}).get("compilationFiles", ()):
+        if len(verified) + len(supporting) >= effects["MAX_FILES"]:
+            break
+        source = files.get(file)
+        if (not source or (file, revision) in verified or source["revision"] != revision or
+                source["authority"] != "RETAINED_CSHARP_COMPILATION_UNIT"):
+            continue
+        unit = captured_csharp_unit(context, source)
+        if unit is not None and unit[1] == source_snapshot:
+            supporting[file] = unit[0].decode()
     graph = effects["derive"]({**process, "routes": []}, managed_evidence, grouped, verified,
                               lambda request: roslyn_request(request, context), lambda blobs, source: blobs[source["file"], source["revision"]].decode(),
                               module("effect_storage"), module("source_candidates")["sql_tables"],
-                              module("effect_commands"))
+                              module("effect_commands"), supporting=supporting)
     if graph and graph.get("status") == "OPEN":
         limitation(context, "CSHARP_CONTROL_FLOW_PROJECTION_OPEN")
     return module("prepared_managed")["derive"]({**process, "routes": []}, context, graph)

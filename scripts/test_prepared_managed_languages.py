@@ -381,6 +381,59 @@ public static class ScoreApi
             self.assertIn("leave the existing row unchanged", row["text"])
             self.assertEqual(row["sources"], [HANDLE])
 
+    def test_roslyn_stored_row_delivery_uses_matching_key_receiver_and_order(self):
+        self.require_roslyn()
+        header = """using System.Threading.Tasks;
+using Confluent.Kafka;
+using Dapper;
+using Npgsql;
+
+sealed record Candidate(int Id, string Payload);
+sealed class Relay
+{
+"""
+        root = """    public async Task RunAsync(NpgsqlConnection connection, NpgsqlConnection other, IProducer<int, string> broker)
+    {
+        await PublishAsync(connection, other, broker);
+    }"""
+        helper = """    private static async Task PublishAsync(NpgsqlConnection connection, NpgsqlConnection other, IProducer<int, string> broker)
+    {
+        var tx = await connection.BeginTransactionAsync();
+        var row = await connection.QuerySingleOrDefaultAsync<Candidate>(
+            "SELECT id, payload FROM pending WHERE ready = true LIMIT 1", transaction: tx);
+        if (row is null) return;
+        await broker.ProduceAsync("parcel.available", new Message<int, string> { Key = row.Id, Value = row.Payload });
+        await connection.ExecuteAsync("UPDATE pending SET ready = false WHERE id = @id", new { id = row.Id }, transaction: tx);
+        await tx.CommitAsync();
+    }"""
+        for label, routine in {
+            "matched": helper,
+            "different receiver": helper.replace('await connection.ExecuteAsync', 'await other.ExecuteAsync'),
+            "different key": helper.replace('new { id = row.Id }', 'new { id = 100 }'),
+            "prior commit": helper.replace('        await tx.CommitAsync();\n', '').replace(
+                '        await broker.ProduceAsync', '        await tx.CommitAsync();\n        await broker.ProduceAsync'),
+        }.items():
+            with self.subTest(label=label):
+                text = header + root + "\n" + routine + "\n}\n"
+                process, context = selected("Relay.cs", text, standalone=root, start=header.count("\n") + 1)
+                process.update(entryKind="HOSTED_BACKGROUND_WORKER", entrySymbol="Relay.RunAsync")
+                other, _ = selected("Relay.cs", text, standalone=routine,
+                                    start=header.count("\n") + root.count("\n") + 2)
+                source = other["sources"]["s1"]
+                process["sources"]["s2"] = source
+                process["facts"].append({"kind": "BODY", "declaration": "helper", "sources": ["s2"]})
+                context["sourceRanges"].append({**source, "id": "m123456789abc:e2", "references": ["s2"]})
+                context["_nativeFiles"]["Relay.cs"] = captured_csharp(text, "Relay.cs")
+                facts, _ = self.project(process, context)
+                deliveries = [row for row in facts if row["kind"] == "worker-row-delivery"]
+                retries = [row for row in facts if row["kind"] == "worker-reselection" and "broker may" in row["text"]]
+                if label == "matched":
+                    self.assertTrue(deliveries and retries, facts)
+                    self.assertIn("CommitAsync", deliveries[0]["text"])
+                    self.assertIn("ProduceAsync", retries[0]["text"])
+                else:
+                    self.assertFalse(deliveries or retries, facts)
+
     def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
         captured = CSHARP.replace("using Microsoft.AspNetCore.Http;", "using Results = Other.Results;")

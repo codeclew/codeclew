@@ -813,6 +813,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                 literal.IsKind(SyntaxKind.NullLiteralExpression) => new { kind = "literal", value = literal.Token.Value },
             ParenthesizedExpressionSyntax wrapped => LexicalValue(wrapped.Expression),
             CastExpressionSyntax cast => LexicalValue(cast.Expression),
+            MemberAccessExpressionSyntax access when InferredDataMember(access) is { } field => field,
             MemberAccessExpressionSyntax access => new { kind = "lexical-member", owner = LexicalValue(access.Expression),
                 name = access.Name.Identifier.ValueText },
             _ => null,
@@ -890,6 +891,14 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             awaitable.Name is "Task" or "ValueTask" or "ConfiguredTaskAwaitable" or "ConfiguredValueTaskAwaitable" &&
             awaitable.TypeArguments.Length == 1)
             return awaitable.TypeArguments[0];
+        if (expression is AwaitExpressionSyntax { Expression: InvocationExpressionSyntax {
+            Expression: MemberAccessExpressionSyntax { Name: GenericNameSyntax generic } query } } &&
+            generic.TypeArgumentList.Arguments is [var rowType] && generic.Identifier.ValueText is
+                ("QueryFirstAsync" or "QueryFirstOrDefaultAsync" or "QuerySingleAsync" or "QuerySingleOrDefaultAsync") &&
+            RetainedSdkEffects.Dapper(model, query.Expression, generic.Identifier.ValueText,
+                ManagedValues.ResourceFamily(NominalType(query.Expression, depth + 1))) &&
+            model.GetTypeInfo(rowType).Type is { TypeKind: not TypeKind.Error } row)
+            return row;
         if (expression is InvocationExpressionSyntax invocation)
         {
             var method = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol ?? SourceCandidate(invocation, depth + 1);
@@ -929,20 +938,25 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
         var family = access is null ? null : ManagedValues.ResourceFamily(NominalType(access.Expression));
         var nominalRole = candidate is not null && ManagedValues.IsList(candidate.ContainingType) ?
             Role(candidate) : null;
+        var effectFamily = operation is not IDynamicInvocationOperation && access is not null
+            ? RetainedSdkEffects.Family(model, access.Expression, name, family) : null;
+        var dapper = effectFamily == "database" && access is not null && RetainedSdkEffects.Dapper(model, access.Expression, name, family);
         var asyncResourceApi = name is "BeginTransactionAsync" or "CommitAsync" or "RollbackAsync" or
             "ExecuteNonQueryAsync" or "ExecuteReaderAsync" or "ExecuteScalarAsync" or "ReadAsync" or "DisposeAsync";
         Add(operation, "CALL", ("symbol", null), ("spelling", name), ("receiver", receiver),
             ("arguments", SyntaxArguments(invocation.ArgumentList.Arguments, candidate)), ("binding", null),
             ("candidate", candidate is null ? null : BoundTarget(candidate, false)),
             ("receiverFamily", family),
-            ("candidateEffectFamily", operation is IDynamicInvocationOperation || access is null ? null :
-                RetainedSdkEffects.Family(model, access.Expression, name, family)),
+            ("candidateEffectFamily", effectFamily),
+            ("nominalPublication", candidate is null && RetainedSdkEffects.Publication(name, effectFamily)),
+            ("dapperCandidate", candidate is null && dapper),
             ("resultFamily", ManagedValues.ResourceFamily(candidate?.ReturnType)),
             ("predicateSite", selector.Length == 1 ? Site(selector[0]) : null),
             ("role", nominalRole), ("nominalFramework", nominalRole is not null),
             ("dynamic", operation is IDynamicInvocationOperation),
             ("dispatch", "OPEN"), ("inSource", false), ("instanceCall", candidate is { IsStatic: false }), ("isAsync", candidate?.IsAsync ?? false),
-            ("taskLike", candidate is not null ? ReturnsTask(candidate) : asyncResourceApi));
+            ("taskLike", candidate is not null ? ReturnsTask(candidate) : asyncResourceApi ||
+                (dapper || RetainedSdkEffects.Publication(name, effectFamily)) && name!.EndsWith("Async", StringComparison.Ordinal)));
     }
 
     private static bool IsUnboundCancellationParameter(IParameterSymbol parameter) =>

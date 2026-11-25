@@ -378,6 +378,21 @@ def bound_argument(event, name):
     return None
 
 
+def sql_argument(step, event, name):
+    """Project an explicitly bound SQL parameter, including a retained Dapper parameter record."""
+    if name is None:
+        return None
+    if not step.get("dapperCandidate"):
+        return bound_argument(event, name)
+    args = event.get("arguments", ())
+    supplied = [arg["value"] for arg in args if arg.get("name") == "param" or
+                not arg.get("name") and arg["position"] == 1]
+    if len(supplied) != 1 or not supplied[0] or supplied[0][0] != "record":
+        return None
+    matches = [value for field, value in supplied[0][1] if field.casefold() == name.casefold()]
+    return matches[0] if len(matches) == 1 and tracked(matches[0]) else None
+
+
 def positional_key(event, transaction):
     candidates = [(argument["position"], argument["value"]) for argument in event.get("arguments", ())
                   if not argument.get("name") and tracked(argument["value"]) and argument["value"] != transaction]
@@ -401,8 +416,11 @@ def projected_key(key, select, write, read):
     if key is None or key[0] != "member" or not contains_result(key[2], read["id"]):
         return False
     column = write["column"]
-    return key[1].rsplit(".", 1)[-1].casefold() == column.casefold() and (
-        select["columns"] == ["*"] or column in select["columns"])
+    names = [field["name"] for field in select["projections"] if field["column"] == column]
+    if select["columns"] == ["*"]:
+        names = [column]
+    member = key[1].rsplit(".", 1)[-1].casefold()
+    return len(names) == 1 and member == names[0].strip('"[]`').casefold()
 
 
 def sql_pair(read, read_inv, write, write_inv, transaction, commit_authority):
@@ -422,13 +440,15 @@ def sql_pair(read, read_inv, write, write_inv, transaction, commit_authority):
             name in mutate["assignment"] and mutate["assignment"][name] != value
             for name, value in select["predicate"].items()):
         return None
-    key = bound_argument(write_inv, mutate["parameter"])
+    key = sql_argument(write, write_inv, mutate["parameter"])
     if select["parameter"] is None:
-        if key is None:
+        if key is None and not write.get("dapperCandidate"):
             _, key = positional_key(write_inv, transaction)
         return (receiver, key, "SELECTED_RECORD_MEMBER") if projected_key(key, select, mutate, read) else None
-    if key is not None and key == bound_argument(read_inv, select["parameter"]):
+    if key is not None and key == sql_argument(read, read_inv, select["parameter"]):
         return receiver, key, "NAMED"
+    if read.get("dapperCandidate") or write.get("dapperCandidate"):
+        return None
     read_position, prior = positional_key(read_inv, transaction)
     write_position, key = positional_key(write_inv, transaction)
     if key is not None and key == prior and read_position == write_position:
@@ -467,7 +487,7 @@ def read_gates_effect(path, comparisons, read, effect, effect_index):
             continue
         for other in comparisons:
             route = other["sequence"]
-            if (other["outcome"] == "RETURNED" and not other["open"] and len(route) > index
+            if (other["outcome"] in {"RETURNED", "NORMAL_EXIT"} and len(route) > index
                     and route[:index] == path["sequence"][:index] and route[index]["step"] == event["step"]
                     and route[index]["outcome"] != event["outcome"]
                     and not any(item["step"] == effect for item in route)):
@@ -475,68 +495,110 @@ def read_gates_effect(path, comparisons, read, effect, effect_index):
     return False
 
 
-def durable_candidates(paths, steps, budget):
-    """An interrupted path can leave the prior selection eligible, under stated premises."""
-    found = {}
-    for path in paths:
-        if path["outcome"] == "OPEN" or path["open"]:
+def row_origin(value, row):
+    if value == row:
+        return True
+    if not value or not isinstance(value, tuple):
+        return False
+    if value[0] == "member":
+        return row_origin(value[2], row)
+    if value[0] == "tuple":
+        return any(row_origin(item, row) for item in value[1])
+    if value[0] == "record":
+        return any(row_origin(item, row) for _, item in value[1])
+    return False
+
+
+def publication_arguments(invocation, sequence, row):
+    """Find direct selected-row arguments and fields of inline message initializers."""
+    values = [arg["value"] for arg in invocation.get("arguments", ())]
+    proof = []
+    for event in sequence:
+        if event["outcome"] not in {"STATE_WRITE_REACHED", "CANDIDATE_INITIALIZER_REACHED"}:
             continue
-        calls = list(event_calls(path["sequence"], steps))
-        for cut, event in enumerate(path["sequence"]):
-            if event["outcome"] not in INTERRUPTED:
-                continue
-            for i, read, read_event, read_inv in calls:
-                if i >= cut or read["role"] != "SQL_READ_CANDIDATE" or read_event["outcome"] not in COMPLETED:
+        target = event["resource"]
+        if (len(target) >= 3 and target[2] and target[2][0] == "allocation" and target[2] in values and
+                row_origin(event.get("sourceValue", event["value"]), row)):
+            proof.append(event["step"])
+    return proof if proof or any(row_origin(value, row) for value in values) else None
+
+
+def durable_candidates(paths, steps, budget):
+    """Use a common path prefix and the matching write and commit to qualify repeat delivery."""
+    found = {}
+    routes = [(path, list(event_calls(path["sequence"], steps))) for path in paths
+              if "NULL_ACCEPTING_NON_INSTANCE_DISPATCH_REQUIRED" not in path["open"]]
+    for path, calls in routes:
+        sequence = path["sequence"]
+        interruptions = [(index, event) for index, event in enumerate(sequence) if event["outcome"] in INTERRUPTED]
+        for cut, interruption in interruptions:
+            for j, external, event, invocation in calls:
+                ack_failure = (j == cut and event["outcome"] == "FAULT_OR_CANCELLATION" and
+                               external["role"] == "PUBLICATION_CANDIDATE")
+                if external["role"] not in EXTERNAL or not (j < cut and event["outcome"] in COMPLETED or ack_failure):
                     continue
-                for j, external, external_event, _ in calls:
-                    if not i < j < cut or external["role"] not in EXTERNAL or external_event["outcome"] not in COMPLETED:
+                prefix_end = j if ack_failure else j + 1
+                for i, read, read_event, read_inv in calls:
+                    if (i >= j or read["role"] != "SQL_READ_CANDIDATE" or read_event["outcome"] not in COMPLETED or
+                            not read_gates_effect(path, paths, read["id"], external["id"], j)):
                         continue
-                    if not read_gates_effect(path, paths, read["id"], external["id"], j):
+                    payload = publication_arguments(invocation, sequence[i:j], read_inv["result"])
+                    if ack_failure and payload is None:
                         continue
-                    for normal in paths:
-                        if normal["outcome"] not in {"NORMAL_EXIT", "RETURNED"} or normal["open"]:
+                    for normal, later in routes:
+                        route = normal["sequence"]
+                        if route[:prefix_end] != sequence[:prefix_end]:
                             continue
-                        if path["sequence"][:j + 1] != normal["sequence"][:j + 1]:
+                        if ack_failure and not (len(route) > j and route[j]["step"] == event["step"] and
+                                                route[j]["outcome"] == "RESUMED"):
                             continue
-                        later = list(event_calls(normal["sequence"], steps))
                         for write_index, write, write_event, write_inv in later:
                             if write_index <= j or write["role"] != "SQL_WRITE_CANDIDATE" or write_event["outcome"] not in COMPLETED:
                                 continue
-                            commits = [(operation, binding, invoke) for k, operation, completed, invoke in later
-                                       if k > write_index and completed["outcome"] in COMPLETED
-                                       and (binding := commit_operation(operation, invoke))]
-                            for commit, (transaction, authority, signature), invocation in commits:
-                                matched = sql_pair(read, read_inv, write, write_inv, transaction, authority)
-                                if not matched or any(
-                                        completed["outcome"] in COMPLETED and (observed := commit_operation(action, invoked))
-                                        and observed[0] == transaction for _, action, completed, invoked in calls):
+                            for k, commit, done, invoked in later:
+                                if k <= write_index or done["outcome"] not in COMPLETED or not (binding := commit_operation(commit, invoked)):
+                                    continue
+                                tx, authority, signature = binding
+                                if not (matched := sql_pair(read, read_inv, write, write_inv, tx, authority)):
+                                    continue
+                                if any(mark["outcome"] in COMPLETED and (observed := commit_operation(action, applied))
+                                       and observed[0] == tx for _, action, mark, applied in calls):
                                     continue
                                 receiver, key, key_mode = matched
-                                fact = (read["id"], external["id"], event["step"], write["id"], commit["id"])
-                                reentered = any(n > cut and action["id"] == read["id"] and
-                                                invocation.get("receiver") == receiver and
-                                                bound_argument(invocation, read["sql"]["parameter"]) == key
-                                                for n, action, _, invocation in calls)
-                                proof = commit_argument_evidence(invocation)
-                                sources = {source for step in fact for source in steps[step]["sources"]}
-                                if proof:
-                                    sources.update(proof["sources"])
+                                if key_mode == "SELECTED_RECORD_MEMBER" and key[2] != read_inv["result"]:
+                                    continue
+                                if ack_failure and not any(
+                                        begun < i and start["result"] == tx and start["receiver"] == receiver and
+                                        (op["role"] == "TRANSACTION_BEGIN_REQUEST" or
+                                         op.get("candidateEffectFamily") == "database" and
+                                         op.get("spelling") in {"BeginTransaction", "BeginTransactionAsync"}) and
+                                        done["outcome"] in COMPLETED for begun, op, done, start in later):
+                                    continue
+                                fact = (read["id"], external["id"], interruption["step"], write["id"], commit["id"], ack_failure)
+                                callers = [item["step"] for item in route[:i] if item["outcome"] == "INVOKED" and
+                                           read["id"].split("/", 1)[0] in steps[item["step"]].get("boundSources", ())]
+                                proof = list(dict.fromkeys([*callers, *fact[:5], *(payload or ()), route[j]["step"],
+                                                           write_event["step"], done["step"]]))
+                                token = commit_argument_evidence(invoked)
+                                sources = {source for step in proof for source in steps[step]["sources"]}
+                                if token:
+                                    sources.update(token["sources"])
                                 found.setdefault(fact, {
-                                    "kind": "POSSIBLE_DURABLE_RESELECTION",
-                                    "select": read["id"], "selectTable": read["sql"]["table"],
-                                    "keyColumn": write["sql"]["column"], "key": key, "keyBinding": key_mode,
-                                    "receiver": receiver, "transaction": transaction,
+                                    "kind": "POSSIBLE_DURABLE_RESELECTION", "select": read["id"],
+                                    "selectTable": read["sql"]["table"], "keyColumn": write["sql"]["column"],
+                                    "key": key, "keyBinding": key_mode, "receiver": receiver, "transaction": tx,
                                     "externalCall": external["id"], "effectAuthority": external["roleAuthority"],
-                                    "completedAt": external_event["step"], "interruption": event["step"],
-                                    "matchingWrite": write["id"], "matchingCommit": commit["id"], "commitAuthority": authority,
-                                    "commitSignature": signature,
-                                    **({"commitArgumentEvidence": proof} if proof else {}),
+                                    "completedAt": route[j]["step"], "interruption": interruption["step"],
+                                    "matchingWrite": write["id"], "matchingCommit": commit["id"],
+                                    "commitAuthority": authority, "commitSignature": signature,
+                                    "publicationAwaitFailed": ack_failure, "selectedRowSuppliesArguments": payload is not None,
                                     "failurePath": path["id"], "comparisonPath": normal["id"],
-                                    "reentry": "READ_REVISITED_ON_MODELED_PATH" if reentered else "IF_LATER_INVOCATION_REACHES_SELECT",
+                                    "evidenceSteps": proof,
+                                    "reentry": "IF_LATER_INVOCATION_REACHES_SELECT",
                                     "premises": ["The provider executes the retained SQL with the projected key and transaction arguments.",
-                                                 "The effective completion API is a commit on that transaction.",
-                                                 "The absent successful commit leaves a row with that key eligible when the select runs again.",
-                                                 "Repeated source invocation leaves runtime delivery, idempotency and rollback open."],
+                                                 "A later select encounters that same still-eligible row.",
+                                                 "Runtime delivery, durability and rollback remain open."],
+                                    **({"commitArgumentEvidence": token} if token else {}),
                                     "sources": sorted(sources),
                                 })
                                 if len(found) >= budget:

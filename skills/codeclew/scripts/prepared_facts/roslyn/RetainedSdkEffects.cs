@@ -14,14 +14,20 @@ internal static class RetainedSdkEffects
         if (method is null) return null;
         var type = Name(model, receiver, 0);
         if (type is not null && Match(type, method) is { } family) return family;
-        if ((resource == "connection" || type is not null && Match(type, "Open") == "database") &&
-            method is "Query" or "QueryAsync" or "QueryFirst" or "QueryFirstAsync" or "QueryFirstOrDefault" or
-                "QueryFirstOrDefaultAsync" or "QuerySingle" or "QuerySingleAsync" or "QuerySingleOrDefault" or
-                "QuerySingleOrDefaultAsync" or "QueryMultiple" or "QueryMultipleAsync" or "Execute" or "ExecuteAsync" or
-                "ExecuteScalar" or "ExecuteScalarAsync" && Uses(receiver, "Dapper"))
+        if (Dapper(model, receiver, method, resource))
             return "database";
         return null;
     }
+
+    internal static bool Publication(string? method, string? family) => family == "broker" && method is
+        "Produce" or "ProduceAsync" or "BasicPublish" or "BasicPublishAsync" or "SendMessageAsync" or "SendMessagesAsync";
+
+    internal static bool Dapper(SemanticModel model, ExpressionSyntax receiver, string? method, string? resource) =>
+        method is ("Query" or "QueryAsync" or "QueryFirst" or "QueryFirstAsync" or "QueryFirstOrDefault" or
+            "QueryFirstOrDefaultAsync" or "QuerySingle" or "QuerySingleAsync" or "QuerySingleOrDefault" or
+            "QuerySingleOrDefaultAsync" or "QueryMultiple" or "QueryMultipleAsync" or "Execute" or "ExecuteAsync" or
+            "ExecuteScalar" or "ExecuteScalarAsync") && Uses(receiver, "Dapper") &&
+        (resource == "connection" || Name(model, receiver, 0) is { } type && Match(type, "Open") == "database");
 
     internal static string? Construction(SemanticModel model, BaseObjectCreationExpressionSyntax creation) =>
         Name(model, creation, 0) is { } type ? Match(type, ".ctor") : null;

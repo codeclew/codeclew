@@ -81,7 +81,7 @@ def locate(blob, source):
     return options[0] if len(options) == 1 else None
 
 
-def derive(process, evidence, grouped, repo, project, load_source, storage, sql_tables, commands, *, site_texts=None):
+def derive(process, evidence, grouped, repo, project, load_source, storage, sql_tables, commands, *, site_texts=None, supporting=None):
     selections = eligible(process, evidence)
     cs = any(row["file"].endswith(".cs") and not row.get("peerService") for row in evidence.values())
     if not cs:
@@ -133,7 +133,7 @@ def derive(process, evidence, grouped, repo, project, load_source, storage, sql_
         return report("OPEN", sorted(gaps | {"RETAINED_CALLABLE_SOURCE_UNAVAILABLE"}))
     is_http = process.get("entryKind") in {"HTTP_ENDPOINT", "SOURCE_HTTP_MAPPING"}
     allow_sdk_imports = is_http or process.get("entryKind") == "HOSTED_BACKGROUND_WORKER"
-    result = project({"files": files, "selections": list(requested.values()),
+    result = project({"files": {**(supporting or {}), **files}, "selections": list(requested.values()),
                       **({"allowSdkImports": True} if allow_sdk_imports else {})})
     if result is None:
         return report("OPEN", sorted(gaps | {"ROSLYN_PROJECTOR_UNAVAILABLE"}))
@@ -711,6 +711,9 @@ class Trace:
         fn = self.functions[ref]
         evidence = self.roles.get((ref, call["id"]), {})
         role = call["role"] or evidence.get("role")
+        nominal_publication = role is None and call.get("nominalPublication")
+        if nominal_publication:
+            role = "PUBLICATION_CANDIDATE"
         receiver = data_value(symbol(call["receiver"], frame), state.data_fields)
         actuals = {arg["id"]: symbol(arg["value"], frame) for arg in call["arguments"] if arg["id"] is not None}
         resource = receiver if role != "PERSISTENCE_REQUEST" else actuals.get(0)
@@ -720,7 +723,8 @@ class Trace:
         step = key(symbol=call["symbol"], spelling=call.get("spelling"), role=role, dispatch=call["dispatch"],
                    binding=binding, taskLike=call.get("taskLike", False),
                    roleAuthority=(NOMINAL_FRAMEWORK if call.get("nominalFramework") else "ROSLYN_FRAMEWORK_DECLARATION")
-                   if call["role"] else evidence.get("roleAuthority"),
+                   if call["role"] else "CONDITIONAL_NOMINAL_BROKER_API" if nominal_publication else evidence.get("roleAuthority"),
+                   **{name: call[name] for name in ("dapperCandidate", "candidateEffectFamily") if call.get(name)},
                    **{key: evidence[key] for key in ("sql", "sourceSql", "topic") if key in evidence},
                    **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault", "directEffectFamily")
                       if call.get(key)},

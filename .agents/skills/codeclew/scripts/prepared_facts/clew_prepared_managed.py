@@ -886,7 +886,8 @@ class Facts:
                 if destination := value_text(start.get("resource")):
                     resource = f" for {code(destination)}"
             completion = "resumes after awaiting" if outcome == "RESUMED" else "returns from"
-            candidate = candidate_begin or candidate_tx or command and command.get("authority") == "CONDITIONAL_COMMAND_API"
+            candidate = (candidate_begin or candidate_tx or step.get("roleAuthority") == "CONDITIONAL_NOMINAL_BROKER_API" or
+                         command and command.get("authority") == "CONDITIONAL_COMMAND_API")
             witnesses = matching["evidenceSteps"] if candidate_tx and matching else command["evidenceSteps"] if command else ()
             prefix = "the candidate API call " if candidate else ""
             actions.append((i, f"{completion} {prefix}{name}{resource}", [*witnesses, call, key]))
@@ -1223,17 +1224,32 @@ class Facts:
             table, column = code(item["selectTable"]), code(item["keyColumn"])
             topic = self.steps[item["externalCall"]].get("topic")
             action = f"{call} for topic {code(topic)}" if topic else call
-            self.add("worker-reselection", f"If a later poll selects the same still-eligible {column} from {table}, "
-                     f"{action} can run again. The comparison path reaches the corresponding write and commit. "
-                     "Eligibility after interruption depends on the provider and transaction.",
-                     [item[key] for key in ("select", "externalCall", "completedAt", "interruption", "matchingWrite", "matchingCommit")],
-                     [item["failurePath"], item["comparisonPath"]], item["sources"])
+            if item.get("publicationAwaitFailed"):
+                failed = self.source_call(item["externalCall"]) or action
+                write = self.steps[item["matchingWrite"]].get("sourceSql")
+                mark = self.sql_label(write) if write else f"the update by {column}"
+                commit = self.name(item["matchingCommit"])
+                self.add("worker-row-delivery", f"The comparison path supplies data from the selected {table} row to {failed}. "
+                         f"After the send await resumes, it reaches {mark} for the same {column}, then {commit} on the matching transaction.",
+                         item["evidenceSteps"], [item["comparisonPath"]], item["sources"],
+                         uncertainty="The provider and broker must bind the cited APIs and honor the projected arguments.")
+                text = (f"If the await of {failed} faults or is cancelled, the broker may already have accepted the send. "
+                        f"If a later poll selects the same still-eligible {column} from {table}, it can attempt that send again. "
+                        f"The comparison path reaches {mark} and {commit} after the send await resumes.")
+            else:
+                text = (f"If a later poll selects the same still-eligible {column} from {table}, {action} can run again. "
+                        "The comparison path reaches the corresponding write and commit.")
+            self.add("worker-reselection", text,
+                     item.get("evidenceSteps", [item[key] for key in ("select", "externalCall", "completedAt", "interruption", "matchingWrite", "matchingCommit")]),
+                     [item["failurePath"], item["comparisonPath"]], item["sources"],
+                     uncertainty="Source order does not establish broker delivery or row eligibility after an interruption. "
+                                 "Eligibility depends on the provider and transaction.")
 
     def output(self):
         order = ("http-entry", "input", "http-outcome", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
                  "helper-return", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
                  "sql-write", "conditional-no-write", "callable-scope", "worker-control", "worker-poll", "worker-state",
-                 "worker-reselection", "guarded_state_write", "await_bypass", "early_exit", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
+                 "worker-reselection", "worker-row-delivery", "guarded_state_write", "await_bypass", "early_exit", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
         groups = [iter(self.rows[kind].values()) for kind in order]
         rows = []
         while groups and len(rows) < LIMIT:
