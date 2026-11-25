@@ -737,7 +737,8 @@ def prepare_facts(job, inventory, prepared):
         pending[service] = home, required, selected
 
     project_edges = runpy.run_path(str(HERE / 'prepared_facts/clew_service_edges.py'))['project']
-    edges = project_edges(inventory['requirements'], records, contracts=contracts)
+    edges = project_edges(inventory['requirements'], records, contracts=contracts,
+                          isolated=job.get('authorMode') == P['MODE'])
     for service, (home, required, selection) in pending.items():
         scope = prepared['services'][service]
         combined = {identity: [*contracts.get(identity, ()), *edges.get(identity, ())]

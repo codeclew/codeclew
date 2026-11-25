@@ -2691,6 +2691,10 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         if not node or subprocess.run([node, "-e", 'require("typescript")'], capture_output=True).returncode:
             self.skipTest("The locked TypeScript projector is unavailable")
         front = """async function claim(reply: Reply, host: string, id: string) {
+    await fetch("/archives/one", {method: "POST"});
+    await fetch("/archives/two", {method: "POST"});
+    await fetch("/archives/three", {method: "POST"});
+    await fetch("/archives/four", {method: "POST"});
     try {
         const res = await fetch(`${host}/books/${encodeURIComponent(id)}/claim`, {method: "POST"});
         return reply.code(res.status).send(await res.json());
@@ -2715,6 +2719,8 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             services, scopes, requirements, work_rows = {}, {}, [], {}
             for name, file, body, route in (
                 ("gateway", "Gateway.ts", front, "/claim"),
+                *((word, f"{word}.kt", "fun archive() = 202\n", f"/archives/{word}")
+                  for word in ("one", "two", "three", "four")),
                 ("catalogue", "Catalogue.cs", catalogue, "/books/{id}/claim"),
             ):
                 home = root / name
@@ -2792,8 +2798,10 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     return module
                 original = module["project"]
                 def adapt(process, context, *, node):
-                    if process["service"] != "catalogue":
-                        return original(process, context, node=node)
+                    if process["service"] == "gateway":
+                        rows, witnesses = original(process, context, node=node)
+                        self.assertTrue(any(row["kind"] == "response_decode_failure_outcome" for row in rows), rows)
+                        return rows, witnesses
                     proof, = context["sourceRanges"]
                     def facet(kind, text, **extra):
                         return {"kind": kind, "text": text, "authority": "RETAINED_PATH", "sources": [proof["id"]], **extra}
@@ -2804,6 +2812,10 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     outcomes.extend([
                         facet("http-commit-before-response", "The handler commits the transaction before returning HTTP 201."),
                         facet("conditional-no-write", "If validation rejects the book, this path bypasses the INSERT."),
+                        facet("conditional-no-write", "If the user cancels, this path bypasses the notice."),
+                        facet("conditional-no-write", "If the nested lookup returns no list entry, this path bypasses the enqueue.",
+                              condition="the collection lookup misses"),
+                        facet("helper-return", "The nested lookup returns its retained list of candidate books."),
                         facet("lookup-guard-return", "When lookup yields no book, the handler returns HTTP 400 with INVALID_BOOK.",
                               _httpStatus=400, condition="lookup yields no book"),
                         facet("guard-return-bypass", "The missing lookup's early return bypasses the enqueue."),
@@ -2822,18 +2834,19 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 return {**module, "project": adapt}
 
             job = {"clew": "/fixture/clew", "root": str(root), "snapshot": F["SNAPSHOT"],
-                   "node": node, "services": list(services), "request": "Document book claims.", "language": "en"}
+                   "node": node, "services": list(services), "request": "Document book claims.", "language": "en",
+                   "authorMode": "ISOLATED_PAGES"}
             prepared = {"bounds": {"visibleBytes": 100_000}, "visibleBytes": 0,
                         "requirements": requirements.copy(), "services": services}
             inventory = {"requirements": requirements, "services": scopes, "snapshot": F["SNAPSHOT"]}
             with patch.dict(D["T"], {"collect": collect}), patch.object(runpy, "run_path", run_path):
                 with patch.dict(D["prepare_facts"].__globals__, {"command": lambda *a, **kw: {}}):
                     D["prepare_facts"](job, inventory, prepared)
-            page = (root / "gateway/view.md").read_text()
-            self.assertIn("[http-failure-after-peer-commit", page)
-            self.assertIn("reply.code receives 502", page)
-            self.assertIn("upstream write may already be committed", page)
-            self.assertIn("REMOTE_UNAVAILABLE", page)
+            caller_facts = [row for row in D["load"](root / "gateway/prepared-facts.json")["entries"]["gateway:entry"]["propositions"]
+                            if row["kind"].startswith("http-")]
+            self.assertTrue(any(row["kind"] == "http-failure-after-peer-commit" and "REMOTE_UNAVAILABLE" in row["text"]
+                                for row in caller_facts), [row["kind"] for row in caller_facts])
+            self.assertGreater(len(caller_facts), 48)
             authored = D["load"](root / "gateway/prepared-facts.json")["entries"]["gateway:entry"]["propositions"]
             self.assertTrue(all(not any(key.startswith("_") for key in row) for row in authored))
 
@@ -2843,7 +2856,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 slot = next(row for row in plan["slots"] if row["requirement"] == "gateway:entry")
                 issue = pages["expand_fact_context"](json.loads((root / slot["prompt"]).read_text().split("\n\n")[-1]))
                 self.assertEqual(set(issue["facts"]), {"gateway:entry"})
+                self.assertEqual(issue["omittedPreparedFacts"], 0)
                 facts = issue["facts"]["gateway:entry"]["facts"]
+                facts = [row for row in facts if "catalogue-claim.md" in row["text"]]
                 declared, = (row for row in facts if row["kind"] == "http-peer-declared-response")
                 self.assertEqual(declared["authority"], "DECLARED_OPENAPI")
                 self.assertIn("`202`", declared["text"])
@@ -2857,13 +2872,14 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 self.assertTrue(all(any(str(status) in row["text"] for row in facts if row["kind"] == "http-peer-outcome")
                                     for status in (200, 400, 409, 500)))
                 for kind, value in (("http-peer-commit-before-response", "HTTP 201"),
-                                    ("http-peer-conditional-no-write", "bypasses the INSERT"),
                                     ("http-peer-guarded-return", "INVALID_BOOK"),
                                     ("http-peer-return-bypass", "bypasses the enqueue"),
                                     ("http-peer-value-lineage", "id and title")):
                     row, = (row for row in facts if row["kind"] == kind)
                     self.assertIn(value, row["text"])
-                claims, notices = (row for row in facts if row["kind"] == "http-peer-sql-write")
+                writes = [row for row in facts if row["kind"] == "http-peer-sql-write"]
+                claims, = (row for row in writes if "Guid.NewGuid()" in row["text"])
+                notices, = (row for row in writes if "ClaimCreated" in row["text"])
                 self.assertIn("claims binds @id from Guid.NewGuid()", claims["text"])
                 self.assertIn("slug is nonempty", claims["condition"])
                 self.assertNotIn("ClaimCreated", claims["text"])
@@ -2874,6 +2890,14 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     files = {issue["sourceRanges"][issue["citations"][handle]["region"]]["file"] for handle in write["sources"]}
                     self.assertEqual(files, {"Gateway.ts", "Catalogue.cs"})
                     self.assertIn("commit, visibility and timing remain unknown", write["uncertainty"])
+                negative = [row for row in facts if row["kind"] == "http-peer-conditional-no-write"]
+                self.assertEqual(len(negative), 3)
+                self.assertTrue(any("nested lookup returns no list entry" in row["text"]
+                                    and row.get("condition") == "the collection lookup misses" for row in negative))
+                self.assertTrue(any(row["kind"] == "http-peer-helper-result" and "list of candidate books" in row["text"]
+                                    for row in facts))
+                self.assertTrue(any(row["kind"] == "http-failure-after-peer-commit" and "REMOTE_UNAVAILABLE" in row["text"]
+                                    for row in facts))
                 for bad_binding, bad_text in (({"revision": "stale"}, contract_text), (native["binding"], "different bytes")):
                     with patch.dict(native, {"binding": bad_binding}), patch.dict(packet["texts"], {spec["textDigest"]: bad_text}):
                         with self.assertRaisesRegex(D["Stop"], "PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED"):

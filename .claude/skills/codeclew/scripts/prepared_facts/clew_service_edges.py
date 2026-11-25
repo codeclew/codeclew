@@ -10,7 +10,6 @@ ENTRIES = object()
 MAX_MATCHES = 4
 MAX_SITES = 8
 MAX_LINKS = 16
-MAX_COLLECTED_LINKS = 48
 MAX_WRITE_SITES = 16
 MAX_HTTP_WRITES = 2
 MAX_NESTED_VISITS = 24
@@ -28,7 +27,9 @@ PEER_FACETS = (("lookup-guard-return", "http-peer-guarded-return"),
                ("sql_result_flow", "http-peer-value-lineage"),
                ("argument-projection", "http-peer-value-lineage"),
                ("sql-row", "http-peer-value-lineage"),
-               ("lookup", "http-peer-value-lineage"))
+               ("lookup", "http-peer-value-lineage"),
+               ("finite-mapping", "http-peer-value-lineage"),
+               ("helper-return", "http-peer-helper-result"))
 PEER_CONTRACTS = {"openapi-declared-response": "http-peer-declared-response",
                   "openapi-overlay-boundary": "http-peer-declaration-boundary",
                   "openapi-response-boundary": "http-peer-declaration-boundary"}
@@ -155,7 +156,7 @@ def source_exits(process, sources):
                        "uncertainty": "Reaching the exit and completing its operand evaluation are conditional."}
 
 
-def response_representatives(rows, limit):
+def response_representatives(rows):
     groups, status_rows = defaultdict(list), {}
     for row in rows:
         status = row.get("_httpStatus")
@@ -164,16 +165,12 @@ def response_representatives(rows, limit):
         if family:
             status_rows.setdefault(status, row)
     priority = (4, 5, 2, 3, 1, None)
-    selected = []
-    for candidates in (
-            (groups[family][0] for family in priority if groups[family]),
-            status_rows.values(),
-            (row for family in priority for row in groups[family])):
-        for row in candidates:
-            if row not in selected:
-                selected.append(row)
-                if len(selected) == limit:
-                    return selected
+    selected, seen = [], set()
+    for row in chain((groups[family][0] for family in priority if groups[family]),
+                     status_rows.values(), (row for family in priority for row in groups[family])):
+        if id(row) not in seen:
+            seen.add(id(row))
+            selected.append(row)
     return selected
 
 
@@ -254,7 +251,7 @@ def record(requirement, process, context, facts, exact):
                 indexed = {**face, "table": table, "verb": link["kind"]}
                 index = reads if link["kind"] == "SELECT" else writes
                 keep(index, (*identity, face.get("condition")), indexed, MAX_WRITE_SITES)
-                if index is writes and len(write_statements[identity]) < MAX_WRITE_SITES:
+                if index is writes:
                     write_statements[identity].append({**indexed, "bound": fact.get("_writeBinding") is True})
 
     registration_witnesses = []
@@ -269,16 +266,16 @@ def record(requirement, process, context, facts, exact):
             "reads": list(reads.values()), "writes": [{**write, "focus": write_focus.get(write["occurrence"], {})}
                                                      for write in writes.values()],
             "writeStatements": dict(write_statements),
-            "responses": response_representatives((fact for fact in facts if fact["kind"] in PEER_RESPONSES), MAX_MATCHES),
-            "facets": [(target, response_representatives(response_facts[kind], 1))
+            "responses": response_representatives(fact for fact in facts if fact["kind"] in PEER_RESPONSES),
+            "facets": [(target, response_representatives(response_facts[kind]))
                        for kind, target in PEER_FACETS if response_facts[kind]],
-            "commits": [fact for fact in facts if fact["kind"] == "http-commit-before-response"][:2],
-            "bypasses": [fact for fact in facts if fact["kind"] == "conditional-no-write"][:2],
+            "commits": response_facts["http-commit-before-response"],
+            "bypasses": response_facts["conditional-no-write"],
             "exits": list(source_exits(process, sources))[:MAX_MATCHES],
             "paths": [fact for fact in facts if fact["kind"] in CALLER_PATHS]}
 
 
-def project(requirements, records, *, contracts=None):
+def project(requirements, records, *, contracts=None, isolated=False):
     """Index each protocol once and bound per-page evidence fan-out."""
     routes = Routes(requirements)
     contracts = contracts or {}
@@ -302,20 +299,19 @@ def project(requirements, records, *, contracts=None):
 
     def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE",
              authority="RETAINED_SOURCE_EDGE"):
-        if len(result[owner]) >= MAX_COLLECTED_LINKS:
-            return
         if not (sources := list(dict.fromkeys(ref for face in faces for ref in face["sources"]))):
             return
         conditions = list(dict.fromkeys(face["condition"] for face in faces if face.get("condition")))
-        key = (kind, text, tuple(sources), tuple(conditions), status)
+        witnesses = {tuple(sorted(w.items())): w for face in faces for w in face.get("witnesses", ())}
+        key = (kind, text, tuple(sorted(sources)), tuple(conditions), status, authority, uncertainty,
+               frozenset(witnesses))
         if key in seen[owner]:
             return
         seen[owner].add(key)
-        witnesses = [w for face in faces for w in face.get("witnesses", ())]
         row = {"kind": kind, "authority": authority, "status": status,
                "text": text, "uncertainty": uncertainty, "sources": sources,
                **({"condition": " ".join(conditions)} if conditions else {}),
-               **({"witnesses": witnesses} if witnesses else {})}
+               **({"witnesses": list(witnesses.values())} if witnesses else {})}
         result[owner].append(row)
         return row
 
@@ -411,12 +407,7 @@ def project(requirements, records, *, contracts=None):
         groups.sort(key=lambda rows: (not rows[0]["bound"], not rows[0].get("condition")))
         # First preserve distinct call sites. Use a spare slot for a distinct
         # guarded binding from the same SQL call site.
-        used = set()
-        for candidate in chain((rows[0] for rows in groups), (row for rows in groups for row in rows[1:])):
-            key = candidate["occurrence"], candidate["table"], candidate.get("condition"), candidate["text"]
-            if key not in used:
-                used.add(key)
-                yield candidate
+        yield from chain((rows[0] for rows in groups), (row for rows in groups for row in rows[1:]))
 
     def representative_writes(writer, topic=None):
         groups = defaultdict(list)
@@ -541,15 +532,14 @@ def project(requirements, records, *, contracts=None):
             name = f"`{peer['service']}` (`{peer['page']}`)"
             predicate = (f"If the deployed request reaches the matching handler in {name}, "
                          "the following are separately retained source outcomes.")
-            if len(requester_links[peer["id"]]) < MAX_MATCHES:
-                requester_links[peer["id"]].append((owner, call, cited[0], boundary))
+            requester_links[peer["id"]].append((owner, call, cited[0], boundary))
             emit(owner, "http-peer", f"The request at {label} has a route candidate in {name}.", boundary, call, cited[0])
             emit(peer["id"], "http-peer", f"`{service}` has a retained request matching this source route at {label}.",
                  boundary, call, cited[0])
-            for commit in target["commits"]:
+            for commit in (target["commits"] if isolated else target["commits"][:2]):
                 emit(owner, "http-peer-commit-before-response", predicate + " " + commit["text"],
                      boundary + " " + commit.get("uncertainty", ""), call, cited[0], commit)
-            for bypass in target["bypasses"]:
+            for bypass in (target["bypasses"] if isolated else target["bypasses"][:2]):
                 emit(owner, "http-peer-conditional-no-write", predicate + " " + bypass["text"],
                      boundary + " " + bypass.get("uncertainty", ""), call, cited[0], bypass)
             for declaration in contracts.get(peer["id"], ()):
@@ -558,10 +548,10 @@ def project(requirements, records, *, contracts=None):
                      + declaration["text"], boundary + " " + declaration["uncertainty"],
                      call, cited[0], declaration, status=declaration["status"], authority=declaration["authority"])
             for kind, facets in target["facets"]:
-                for facet in facets:
+                for facet in (facets if isolated else facets[:1]):
                     emit(owner, kind, predicate + " " + facet["text"],
                          boundary + " " + facet.get("uncertainty", ""), call, cited[0], facet)
-            for write in islice(http_writes(target), MAX_HTTP_WRITES):
+            for write in islice(http_writes(target), None if isolated else MAX_HTTP_WRITES):
                 scope = (f"If the request reaches the matched handler in {name}, it can take "
                          f"the cited {write['verb']} path on `{write['table']}`. ")
                 qualifier = " ".join(filter(None, (boundary, STORAGE_OPEN, write["uncertainty"])))
@@ -569,12 +559,13 @@ def project(requirements, records, *, contracts=None):
                 focus = next((item["focus"] for item in target["writes"]
                               if item["occurrence"] == write["occurrence"] and item["site"] == write["site"]), {})
                 for kind in ("write_lineage", "write_sql"):
-                    detail = next((row for row in focus.get(None, ()) if row["kind"] == kind
-                                   and (not write.get("condition") or row.get("condition") == write["condition"])), None)
-                    if detail:
+                    details = (row for row in focus.get(None, ()) if row["kind"] == kind
+                               and (not write.get("condition") or row.get("condition") == write["condition"]))
+                    for detail in (details if isolated else islice(details, 1)):
                         emit(owner, "http-peer-write-binding", scope + detail["text"],
                              qualifier + " " + detail.get("uncertainty", ""), call, cited[0], write, detail)
-            for outcome in target["responses"] or target["exits"]:
+            outcomes = target["responses"] or target["exits"]
+            for outcome in (outcomes if isolated else outcomes[:MAX_MATCHES]):
                 emit(owner, "http-peer-outcome", predicate + " " + outcome["text"],
                      boundary + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
             if not (target["responses"] or target["commits"] or target["exits"]):
@@ -583,15 +574,19 @@ def project(requirements, records, *, contracts=None):
             local_paths = [row for row in local["paths"] if continuation(row, call)]
             decoding = (row for row in local_paths if row["kind"] == "response_decode_failure_outcome"
                         and row.get("_edgePhase") == "RESPONSE_DECODING")
-            for outcome in islice(decoding, MAX_MATCHES):
-                for commit in target["commits"]:
+            # Extra peer commit paths remain separate facts. Do not manufacture
+            # a product of unrelated response decoders and callee commit paths.
+            for outcome in (decoding if isolated else islice(decoding, MAX_MATCHES)):
+                for commit in target["commits"][:1]:
                     emit(owner, "http-failure-after-peer-commit",
                          f"If the matched handler in {name} takes its cited commit-before-response path, "
                          f"the caller can still fail while decoding the resulting response. {outcome['text']}",
                          boundary + " The upstream write may already be committed. The caller failure does not "
                          "establish upstream rollback, durability or the wire status. " + outcome.get("uncertainty", ""),
                          call, cited[0], commit, outcome)
-            for outcome in local_paths[:MAX_MATCHES]:
+            for outcome in (local_paths if isolated else local_paths[:MAX_MATCHES]):
+                if outcome["kind"] == "response_decode_failure_outcome" and target["commits"]:
+                    continue
                 emit(owner, "http-caller-continuation", outcome["text"],
                      boundary + " Persistence and rollback of any earlier effects remain unknown. "
                      + outcome.get("uncertainty", ""), call, cited[0], outcome)
@@ -742,6 +737,8 @@ def project(requirements, records, *, contracts=None):
                 emit(requester, kind, f"If the request reaches `{name}`, the handler has this retained continuation. "
                      + row["text"], boundary + " " + row["uncertainty"], call, registration_proof, row,
                      status=row["status"])
+    if isolated:
+        return result
     preferred = ("http-failure-after-peer-commit", "http-peer-commit-before-response", "http-peer-conditional-no-write",
                  "http-peer-sql-write", "http-peer-write-binding", "http-peer-guarded-return",
                  "http-peer-return-bypass", "http-peer-declared-response",
