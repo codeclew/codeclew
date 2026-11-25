@@ -102,6 +102,10 @@ def unique_details(results):
     for result in results:
         if result["kind"] in FOCUS_KINDS:
             groups.setdefault(result["kind"], []).append(result)
+    lineage = groups.get("write_lineage", ())
+    if len(lineage) > 1 and "write_formation" in groups:
+        # Give a second source-proven value path the slot used for the generic initializer summary.
+        groups["write_formation"].insert(0, lineage.pop(1))
     layers = (group[index] for index in range(MAX_FACTS_PER_WRITE) for group in groups.values() if index < len(group))
     chosen = []
     for result in layers:

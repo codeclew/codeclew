@@ -21,6 +21,7 @@ OPERANDS = runpy.run_path(str(HERE / "clew_prepared_kotlin_operands.py"))
 PROTOCOLS = runpy.run_path(str(HERE / "clew_prepared_kotlin_protocols.py"))["Projection"]
 HARD_GUARD = runpy.run_path(str(HERE / "clew_prepared_kotlin_hard_exits.py"))["derive"]
 WRITE_LINEAGE = runpy.run_path(str(HERE / "clew_prepared_kotlin_write_lineage.py"))["project"]
+WRITE_GUARDS = runpy.run_path(str(HERE / "clew_prepared_kotlin_write_guards.py"))["GuardModel"]
 Kotlin, Site, Unsupported = (FAILURE[key] for key in ("Kotlin", "Site", "Unsupported"))
 encloses, name, strings, token_site = (
     FAILURE[key] for key in ("encloses", "name", "strings", "token_site"))
@@ -1158,6 +1159,28 @@ class FocusedWrite(Projector):
         super().__init__(process, context)
         self.site = site
         self.output = {}
+        self.guard_models = {}
+        self.captured_units = {}
+
+    def guard_model(self, body):
+        if body.ref not in self.guard_models:
+            source = body.host
+            key = (source["file"], source["revision"])
+            if key not in self.captured_units:
+                self.captured_units[key] = None
+                whole = self.context.get("_nativeFiles", {}).get(key[0], {})
+                text = whole.get("text")
+                if (not isinstance(text, str) or whole.get("revision") != key[1]
+                        or "sha256:" + sha256(text.encode()).hexdigest() != whole.get("textDigest")):
+                    loader = self.context.get("_loadPinnedFile")
+                    text = loader(*key) if loader else None
+                if isinstance(text, str) and text and len(text.encode()) <= 128 * 1024:
+                    try:
+                        self.captured_units[key] = Kotlin(text, key[0])
+                    except Unsupported:
+                        pass
+            self.guard_models[body.ref] = WRITE_GUARDS(body, FAILURE, self.captured_units[key])
+        return self.guard_models[body.ref]
 
     @staticmethod
     def span(row):
@@ -1238,16 +1261,37 @@ class FocusedWrite(Projector):
     def guards_before(path, site):
         return tuple((note, holds) for note, holds in path.guards if note.site.start < site.start)
 
-    @staticmethod
-    def conditions(guards):
-        return join(list(dict.fromkeys(Body.guard_text(note, holds) for note, holds in guards))) if guards else None
+    def conditions(self, body, guards):
+        return join(list(dict.fromkeys(self.guard_model(body).labels(guards)))) if guards else None
+
+    @classmethod
+    def join_arrivals(cls, arriving):
+        """An earlier arm is no longer a premise when its sibling reaches the same continuation."""
+        choices = {(cls.normal(path), frozenset(guards)): (path, guards) for path, guards in arriving}
+        while True:
+            pair = None
+            for key, (path, guards) in choices.items():
+                for note, holds in guards:
+                    remainder = key[1] - {(note, holds)}
+                    sibling = (key[0], remainder | {(note, not holds)})
+                    if sibling in choices:
+                        pair = key, sibling, remainder, path, guards
+                        break
+                if pair:
+                    break
+            if not pair:
+                return list(choices.values())
+            first, sibling, remainder, path, guards = pair
+            del choices[first], choices[sibling]
+            choices.setdefault((first[0], remainder), (path, tuple(guard for guard in guards if guard in remainder)))
 
     def follow(self, body, paths, at, trail, inherited):
-        arriving = [path for path in paths if self.reached(body, path, at)]
+        model = self.guard_model(body)
+        paths = [path for path in paths if model.feasible(path.guards)]
+        arriving = [(path, self.guards_before(path, at)) for path in paths if self.reached(body, path, at)]
         if not arriving:
             return [], ()
-        first = self.guards_before(arriving[0], at)
-        common = set(first).intersection(*(self.guards_before(path, at) for path in arriving[1:]))
+        common = set(arriving[0][1]).intersection(*(guards for _, guards in arriving[1:]))
         skips = []
         for path in paths:
             if path.open or path.exit and path.exit[0] == "CAUGHT_OPEN" or self.reached(body, path, at):
@@ -1256,11 +1300,11 @@ class FocusedWrite(Projector):
             if not any((note, not holds) in common for note, holds in guards):
                 continue
             ending = path.exit[1] if path.exit else None
-            premise = self.conditions((*inherited, *guards))
+            premise = self.conditions(body, (*inherited, *guards))
             action = f" reaches {ending.text} before the selected write" if ending else " bypasses the selected write on this path"
             notes = [*(note for note, _ in (*inherited, *guards)), *([ending] if ending else [])]
             skips.append((f"When {premise}, source{action}.", trail, notes))
-        return [(path, (*inherited, *self.guards_before(path, at))) for path in arriving], tuple(skips)
+        return [(path, (*inherited, *guards)) for path, guards in self.join_arrivals(arriving)], tuple(skips)
 
     def mutation(self, body, paths, at):
         if at is None:
@@ -1297,7 +1341,7 @@ class FocusedWrite(Projector):
                 if statement.kind == "return" and (words[:1] == ("@",) or callback) and words[:2] != ("@", callback):
                     return
                 ending = self.body.note(statement.site)
-                premise = projector.conditions((*inherited, *guards))
+                premise = projector.conditions(body, (*inherited, *guards))
                 if ending and premise:
                     notes = [*(note for note, _ in (*inherited, *guards)), ending]
                     skips.append((f"If this check is reached and {premise}, source reaches {ending.text} before the selected write.",
@@ -1339,14 +1383,36 @@ class FocusedWrite(Projector):
                     bindings.append((variable, origin))
         return bindings
 
+    def lexical_prefix(self, body, suite, action, depth=0):
+        if depth >= 8:
+            return None
+        for index, statement in enumerate(suite):
+            if not encloses(statement.site, action):
+                continue
+            if (note := body.action(statement)) and self.reached(body, PathState(effects=(note,)), action):
+                return suite[:index]
+            if decision := body.decision(statement):
+                for _, arm in decision[1]:
+                    if (inner := self.lexical_prefix(body, arm, action, depth + 1)) is not None:
+                        return (*suite[:index], *inner)
+            return None
+        return None
+
     def value_lineage(self, body, prefix, action, note, trail, guards, transaction, normal_prefix=None):
         selected = {guard: Body.guard_text(guard, holds) for guard, holds in guards}
+        model = self.guard_model(body)
         for value in WRITE_LINEAGE(body, prefix, action, Controls, FAILURE, include_derived=self.site is not None):
             if any(guard in selected and selected[guard] != text for text, guard in value.conditions):
                 continue
+            choice = [(guard, holds) for text, guard in value.conditions for holds in (True, False)
+                      if text == Body.guard_text(guard, holds)]
+            if not model.feasible((*guards, *choice)):
+                continue
             statements = ". ".join(text[0].upper() + text[1:] for text, _ in value.steps)
-            premises = list(dict.fromkeys([*selected.values(), *([normal_prefix] if normal_prefix else ()),
-                                          *(text for text, _ in value.conditions)]))
+            selected_notes = {guard for guard, _ in choice}
+            extra = [text for text, guard in value.conditions if guard not in selected_notes]
+            premises = list(dict.fromkeys([*model.labels((*guards, *choice)),
+                                          *([normal_prefix] if normal_prefix else ()), *extra]))
             proof = [*(guard for guard, _ in guards), *(guard for _, guard in value.conditions),
                      *(piece for _, links in value.steps for piece in links)]
             self.record("write_lineage", f"{statements} at {note.text}.", trail, [note, transaction, *proof],
@@ -1405,20 +1471,22 @@ class FocusedWrite(Projector):
             return False
         reached, skips = self.follow(body, paths, action, trail, inherited)
         normal_prefix = None
-        if not reached and probe and self.reached(body, probe[0], action):
+        if (not reached and probe and self.reached(body, probe[0], action)
+                and not any(self.reached(body, path, action) for path in paths)):
             structural = self.structural_path(body, suite[:direct], exact, callback, trail, inherited)
             if structural:
                 guards, skips = structural
                 normal_prefix = "preceding evaluations and any loop iterations complete normally"
                 normal_tail = Controls(body, "the retained write body", trail).shape(suite[direct + 1:], "CALLABLE").resumes
-                reached = [(replace(probe[0], open=not normal_tail), (*inherited, *guards))]
+                if self.guard_model(body).feasible(guards):
+                    reached = [(replace(probe[0], open=not normal_tail), (*inherited, *guards))]
         if reached:
             for text, sources, notes in (*bypasses, *skips):
                 self.record("write_skip", text, sources, notes)
-        direct_effect = exact and self.reached(body, probe[0], action)
-        formation = self.formation(body, suite[:direct], action) if reached and direct_effect else []
+        prefix = self.lexical_prefix(body, suite, action) if reached else None
+        formation = self.formation(body, prefix, action) if prefix is not None else []
         for path, guards in reached:
-            clauses = [clause for clause in (self.conditions(guards), normal_prefix) if clause]
+            clauses = [clause for clause in (self.conditions(body, guards), normal_prefix) if clause]
             premise = join(clauses) if clauses else None
             conditions = {"condition": premise} if premise else {}
             notes = [note, *(guard for guard, _ in guards)]
@@ -1428,8 +1496,8 @@ class FocusedWrite(Projector):
             for variable, origin in formation:
                 self.record("write_formation", f"The selected write receives {quote(variable)}, initialized from {origin.text}.",
                             trail, [*notes, origin], **conditions)
-            if direct_effect and transaction:
-                self.value_lineage(body, suite[:direct], action, note, trail, guards, transaction, normal_prefix)
+            if prefix is not None and transaction:
+                self.value_lineage(body, prefix, action, note, trail, guards, transaction, normal_prefix)
             for detail in sql:
                 self.record("write_sql", f"The SQL argument contains {detail.text}.", trail, [*notes, detail], **conditions)
             if transaction and self.normal(path):

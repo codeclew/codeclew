@@ -760,6 +760,75 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes["audit_log"]]
         self.assertFalse(any("parser.parse" in row["text"] for row in audit if row["kind"] == "write_lineage"), audit)
 
+    def test_kotlin_focused_write_joins_normal_initializer_arms_and_keeps_feasible_guards(self):
+        source = '''import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import org.springframework.transaction.support.TransactionTemplate
+
+class ParcelDispatcher(
+    private val transaction: TransactionTemplate, private val db: QueryClient,
+    private val gateway: HttpClient, private val request: HttpRequest, private val gauge: Gauge
+) {
+    @Scheduled(fixedDelay = 200)
+    fun dispatch(other: HttpResponse<String>, allowed: Boolean) {
+        transaction.executeWithoutResult {
+            val reply = gateway.send(request, HttpResponse.BodyHandlers.ofString())
+            val selected = if (reply.statusCode() == 205) choose(reply) else fallback()
+            if (reply.statusCode() == 206 && allowed) {
+                db.update("INSERT INTO parcel (flag) VALUES (?)", selected)
+                return@executeWithoutResult
+            }
+        }
+    }
+}
+'''
+        def focused(text):
+            root = text[text.index("@Scheduled"):text.rindex("\n}")]
+            rows, _ = self.kotlin_callback_facts(text, root, "SCHEDULED_JOB", "dispatch")
+            site, = (row["_edge"]["occurrence"] for row in rows if row.get("_edge", {}).get("kind") == "INSERT")
+            return [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == site]
+
+        rows = focused(source)
+        simple = [row for row in rows if row["kind"] in {"write_guard", "write_request", "write_sql", "write_commit"}]
+        self.assertEqual({row["kind"] for row in simple}, {"write_guard", "write_request", "write_sql", "write_commit"})
+        for row in simple:
+            premise = row.get("condition", row["text"])
+            self.assertIn("reply.statusCode() == 206 && allowed", premise)
+            self.assertNotIn("`reply.statusCode() == 205` and", premise)
+        self.assertTrue(any("fallback()" in row["text"] for row in rows if row["kind"] == "write_lineage"), rows)
+        self.assertFalse(any("choose(reply)" in row["text"] for row in rows if row["kind"] == "write_lineage"), rows)
+
+        outside = focused(source.replace("reply.statusCode() == 206 && allowed", "allowed"))
+        guard, = (row for row in outside if row["kind"] == "write_guard")
+        self.assertIn("allowed", guard["text"])
+        self.assertNotIn("205", guard["text"])
+        choices = [row for row in outside if row["kind"] == "write_lineage"]
+        self.assertTrue(any("choose(reply)" in row["text"] and "205`" in row["condition"] for row in choices), choices)
+        self.assertTrue(any("fallback()" in row["text"] and "205` is false" in row["condition"] for row in choices), choices)
+
+        no_early = "val selected = if (reply.statusCode() == 205) choose(reply) else fallback()"
+        early = "val selected = if (reply.statusCode() == 205) return@executeWithoutResult else fallback()"
+        surviving = focused(source.replace(no_early, early))
+        self.assertTrue(any("205` is false" in row.get("condition", "") and "206" in row.get("condition", "")
+                            for row in surviving if row["kind"] == "write_request"), surviving)
+
+        nested = source.replace(no_early, "if (reply.statusCode() == 205) {\n                val selected = fallback()")
+        nested = nested.replace("return@executeWithoutResult\n            }", "return@executeWithoutResult\n            }\n            }")
+        self.assertFalse(any(row["kind"] == "write_request" for row in focused(nested)))
+        scalar = nested.replace("reply.statusCode()", "status").replace(
+            "if (status == 205)", "val status = reply.statusCode()\n            if (status == 205)")
+        self.assertFalse(any(row["kind"] == "write_request" for row in focused(scalar)))
+        mutable = scalar.replace("val status", "var status").replace("val selected = fallback()",
+                                                                       "val selected = fallback()\n                status = 206")
+        self.assertTrue(any(row["kind"] == "write_request" for row in focused(mutable)))
+        distinct = nested.replace("reply.statusCode() == 206", "other.statusCode() == 206")
+        self.assertTrue(any("205" in row.get("condition", "") and "other.statusCode() == 206" in row.get("condition", "")
+                            for row in focused(distinct) if row["kind"] == "write_request"))
+        changing = nested.replace("reply.statusCode()", "gauge.measure()")
+        self.assertTrue(any("line" in row.get("condition", "") and "205" in row.get("condition", "")
+                            and "206" in row.get("condition", "") for row in focused(changing) if row["kind"] == "write_request"))
+
     def test_installed_typescript_focus_checks_prefix_and_transaction_at_each_occurrence(self):
         self.require_typescript()
         root = """async function receive({topic, message}: Envelope) {
