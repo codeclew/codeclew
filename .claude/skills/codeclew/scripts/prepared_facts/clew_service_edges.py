@@ -22,6 +22,7 @@ PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
 HTTP_ADAPTERS = {"SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "SPRING_REST_CLIENT_URI/2.0"}
 PEER_RESPONSES = {"http-outcome", "status_body"}
+OUTBOX_WRITE_FACETS = ("further-subscriber-write-lineage", "further-subscriber-write-bypass")
 PEER_FACETS = (("lookup-guard-return", "http-peer-guarded-return"),
                ("guard-return-bypass", "http-peer-return-bypass"),
                ("sql_result_flow", "http-peer-value-lineage"),
@@ -258,10 +259,11 @@ def record(requirement, process, context, facts, exact):
                 identity = (face["occurrence"] or site, table, link["kind"])
                 indexed = {**face, "table": table, "verb": link["kind"]}
                 index = reads if link["kind"] == "SELECT" else writes
-                keep(index, (*identity, face.get("condition")), indexed, MAX_WRITE_SITES)
                 if index is writes:
+                    indexed["writeSite"] = fact.get("_writeSite")
                     write_shapes[face["occurrence"]].add((table, link["kind"]))
                     write_statements[identity].append({**indexed, "bound": fact.get("_writeBinding") is True})
+                keep(index, (*identity, face.get("condition")), indexed, MAX_WRITE_SITES)
 
     registration_witnesses = []
     for ref in trigger_refs:
@@ -429,6 +431,42 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 emit(owner, "message-peer-write-detail", message + " " + detail["text"],
                      qualifier + " " + detail.get("uncertainty", ""), *proof, detail)
 
+    def write_coordinates(site):
+        if not site:
+            return None
+        first, last = site.get("startByte"), site.get("endByte")
+        identity = tuple(site.get(key) for key in ("file", "revision", "textDigest"))
+        if type(first) is type(last) is int and 0 <= first < last and all(identity):
+            return (*identity, first, last)
+        return None
+
+    def outbox_write_facets(owner, write, topic, writer_page, poller, read, qualifier, *upstream):
+        site = write.get("writeSite")
+        if not write["singleShape"] or not (coordinate := write_coordinates(site)):
+            return
+        details = defaultdict(list)
+        for row in focused_rows(write, topic):
+            if (write_coordinates(row.get("_writeSite")) == coordinate
+                    and row["_writeFocus"].get("compatibility") != "INCOMPATIBLE"):
+                details[row["kind"]].append(row)
+        topic_scope = f" on `{topic}`" if topic else ""
+        scope = (f"If delivery{topic_scope} reaches `{writer_page}`, this path concerns its cited "
+                 f"{write['verb']} on `{write['table']}`. The separate poller `{poller['requirement']['page']}` "
+                 "can select the row if that write is reached and becomes visible. ")
+        # Carry the relation's witnesses but leave the selected write and the
+        # later poll guards out of each independent lineage or bypass path.
+        anchor = {"sources": [site["cite"]], "witnesses": [site]}
+        association = (anchor, registration(poller), {**read, "condition": None})
+        groups = (details["write_lineage"] or details["write_formation"],
+                  [*details["write_skip"], *details["conditional-no-write"]])
+        for kind, candidates in zip(OUTBOX_WRITE_FACETS, groups, strict=True):
+            alternatives = {}
+            for row in candidates:
+                alternatives.setdefault((row["text"], row.get("condition")), row)
+            for detail in islice(alternatives.values(), MAX_MATCHES):
+                uncertainty = " ".join(filter(None, (qualifier, detail.get("uncertainty"))))
+                emit(owner, kind, scope + detail["text"], uncertainty, *upstream, *association, detail)
+
     def http_writes(target):
         groups = []
         for variants in target["writeStatements"].values():
@@ -530,6 +568,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                                    qualifier, *proof)
                         if hop and initial:
                             first_outbox_hops[owner].append(hop)
+                            outbox_write_facets(owner, write, topic, writer_page, poller, read, qualifier, *evidence)
                         for effect in representative_writes(target, next_topic):
                             if conflict := incompatible_write(effect, next_topic):
                                 emit(owner, "message-peer-write-boundary", prefix + conflict["text"],
@@ -768,7 +807,11 @@ def project(requirements, records, *, contracts=None, isolated=False):
         activation = next((item for item in result[handler] if item["kind"] == "storage-poll-activation"), None)
         completion = (item for item in result[handler] if item["kind"] == "local-response-independent-poll")
         initial = first_outbox_hops[handler] if isolated else first_outbox_hops[handler][:1]
-        rows = [*([activation] if activation else ()), *initial,
+        facets = []
+        for kind in OUTBOX_WRITE_FACETS:
+            candidates = (row for row in result[handler] if row["kind"] == kind)
+            facets.extend(candidates if isolated else islice(candidates, 1))
+        rows = [*([activation] if activation else ()), *initial, *facets,
                 *(completion if isolated else islice(completion, 1)), *islice(by_kind.values(), 3)]
         name = records[handler]["requirement"]["page"]
         for requester, call, registration_proof, boundary in requesters:

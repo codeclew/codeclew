@@ -2387,7 +2387,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             name: D[name] for name in ("digest", "encode", "sha", "save")})
 
     def retained(self, service, *, name=None, verb="GET", path="/units", entry_kind="HTTP_ENDPOINT", trigger=None, proof=True,
-                 events=(), facts=()):
+                 events=(), facts=(), write_sites=()):
         identity = service + ":" + (name or "entry")
         name = name or service
         registration = name + "-registration"
@@ -2395,7 +2395,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         exact = {}
 
         def source(handle, text, start):
+            offset = sum(len(row["text"].encode()) + 1 for row in exact.values())
             exact[handle] = {"id": handle, "file": "Operations.java", "service": service, "revision": D["sha"](service.encode()),
+                             "startByte": offset, "endByte": offset + len(text.encode()),
                              "startLine": start, "endLine": start, "text": text, "textDigest": D["sha"](text.encode()),
                              "authority": "EXACT_SNAPSHOT_TEXT", "references": [handle]}
 
@@ -2419,7 +2421,8 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             source(cite, text, number)
             rows.append(obligation("EVENT", cite, event))
         process, context = self.prepared["operation"](requirement, rows, exact, {})
-        accepted, rejected = self.prepared["bound_facts"](facts, {}, exact, set(exact))
+        lifted = {site: exact[name + "-" + site] for site in write_sites}
+        accepted, rejected = self.prepared["bound_facts"](facts, lifted, exact, set(exact))
         self.assertEqual(rejected, 0)
         row = self.edges["record"](requirement, process, context, accepted, exact)
         return requirement, row, exact
@@ -3210,8 +3213,10 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         subscriber = self.retained("catalogue", name="view", entry_kind="KAFKA_LISTENER",
                                    trigger={"configuration": {"topics": ["draft.saved"]}})
         operation = {"kind": "UPDATE", "site": "apply-body", "table": "edits", "occurrence": "one-write"}
+        focus = {"occurrence": "one-write", "topic": "draft.queued", "compatibility": "COMPATIBLE"}
         paths = [
-            fact("apply", "sql-write", _edge=operation, condition="deduplication allows the event"),
+            fact("apply", "sql-write", _edge=operation, _writeSite="store", sources=["apply-body", "store"],
+                 condition="deduplication allows the event"),
             *[fact("apply", "write_request", condition=guard,
                    _writeFocus={"occurrence": "one-write", "topic": topic, "compatibility": "COMPATIBLE"})
               for guard, topic in (
@@ -3220,15 +3225,62 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                   ("an unrelated schema version is present", "draft.old"),
               )],
         ]
+        paths.extend([
+            fact("apply", "write_lineage", text="The UPDATE binds revision from the local cache.",
+                 condition="validation succeeds and the local cache contains a version",
+                 sources=["apply-body", "store", "apply-cache"], _writeFocus=focus, _writeSite="store"),
+            fact("apply", "write_lineage", text="The UPDATE binds revision from the decoded provider reply.",
+                 condition="validation succeeds and the local cache is empty and the provider reply decodes",
+                 sources=["apply-body", "store", "apply-external"], _writeFocus=focus, _writeSite="store"),
+            fact("apply", "write_skip", text="The validation exit bypasses the selected UPDATE.",
+                 condition="validation rejects the decoded revision", sources=["apply-body", "store", "apply-validation"],
+                 _writeFocus=focus, _writeSite="store"),
+            fact("apply", "sql-write", _edge={**operation, "occurrence": "unrelated-write"},
+                 sources=["apply-body", "other"], _writeSite="other"),
+            fact("apply", "write_compatibility", sources=["apply-body", "other"], _writeSite="other",
+                 _writeFocus={**focus, "occurrence": "unrelated-write", "compatibility": "INCOMPATIBLE"}),
+            fact("apply", "write_lineage", text="The other write binds revision from an unrelated source.",
+                 sources=["apply-body", "other"], _writeFocus=focus, _writeSite="other"),
+            fact("apply", "write_skip", text="An old topic refuses the update.",
+                 sources=["apply-body", "store"], _writeFocus={**focus, "topic": "draft.old"}, _writeSite="store"),
+        ])
+
         def callback(facts):
             return self.retained("processor", name="apply", entry_kind="KAFKA_LISTENER",
-                                 trigger={"configuration": {"topics": ["draft.queued", "draft.old"]}}, facts=facts)
+                                 trigger={"configuration": {"topics": ["draft.queued", "draft.old"]}},
+                                 events=[
+                                     ("store", 'db.update("UPDATE edits SET revision = ?", value)', {"kind": "CALL"}),
+                                     ("other", 'db.update("UPDATE edits SET revision = ?", 100)', {"kind": "CALL"}),
+                                     ("cache", "value = cache.current()", {"kind": "CALL"}),
+                                     ("external", "value = decode(provider.read())", {"kind": "CALL"}),
+                                     ("validation", "require(value > 0)", {"kind": "CALL"}),
+                                 ], facts=facts, write_sites=("store", "other"))
 
         def first_hops(consumer):
             rows = self.project(client, origin, first, consumer, second, subscriber, isolated=True)[client[0]["id"]]
             return [row for row in rows if row["kind"] == "http-further-subscriber-outbox"]
 
-        hops = first_hops(callback(paths))
+        consumer = callback(paths)
+        rows = self.project(client, origin, first, consumer, second, subscriber, isolated=True)[client[0]["id"]]
+        lineage = [row for row in rows if row["kind"] == "http-further-subscriber-write-lineage"]
+        cached, = (row for row in lineage if "local cache." in row["text"])
+        decoded, = (row for row in lineage if "decoded provider reply" in row["text"])
+        self.assertEqual(len(lineage), 2)
+        self.assertEqual(cached["condition"], "validation succeeds and the local cache contains a version")
+        self.assertEqual(decoded["condition"],
+                         "validation succeeds and the local cache is empty and the provider reply decodes")
+        self.assertIn("apply-cache", cached["sources"])
+        self.assertNotIn("apply-cache", decoded["sources"])
+        self.assertIn("apply-external", decoded["sources"])
+        bypass, = (row for row in rows if row["kind"] == "http-further-subscriber-write-bypass")
+        self.assertIn("bypasses the selected UPDATE", bypass["text"])
+        self.assertIn("apply-validation", bypass["sources"])
+        self.assertEqual(bypass["condition"], "validation rejects the decoded revision")
+        for facet in (*lineage, bypass):
+            self.assertIn("separate poller `flush.md`", facet["text"])
+            self.assertTrue({"gateway-call", "apply-store", "flush-registration"} <= set(facet["sources"]))
+            self.assertNotIn("apply-other", facet["sources"])
+        hops = first_hops(consumer)
         self.assertEqual({row["condition"] for row in hops}, {
             "deduplication allows the event and the cache has no version",
             "deduplication allows the event and durable replay mode is on",
