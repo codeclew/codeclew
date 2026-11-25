@@ -80,7 +80,8 @@ internal static class AdoOperations
                 "NextResult" or "NextResultAsync" => "ADO_READER_NEXT_RESULT",
                 "GetOrdinal" => "ADO_READER_ORDINAL",
                 "GetValue" or "GetFieldValue" or "GetFieldValueAsync" or "GetString" or "GetGuid" or "GetBoolean"
-                    or "GetByte" or "GetInt16" or "GetInt32" or "GetInt64" or "GetDecimal" => "ADO_READER_VALUE",
+                    or "GetByte" or "GetInt16" or "GetInt32" or "GetInt64" or "GetDecimal" or "GetDouble" or "GetFloat"
+                    => "ADO_READER_VALUE",
                 _ => null,
             };
         return null;

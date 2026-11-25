@@ -1122,6 +1122,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                     ("emptyList", ManagedValues.IsList(creation.Type) && creation.Constructor is { } listConstructor &&
                         listConstructor.Parameters.All(parameter => parameter.Name == "capacity")),
                     ("recordFields", ManagedValues.RecordFields(creation.Constructor)),
+                    ("transparentRecord", ManagedValues.IsTransparentRecordConstruction(creation.Constructor)),
                     ("unresolved", false), ("parameter", AdoOperations.IsType(creation.Type, "DbParameter")));
                 break;
             case IInvalidOperation when operation.Syntax is BaseObjectCreationExpressionSyntax creation:

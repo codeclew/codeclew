@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -158,6 +159,43 @@ internal static class ManagedValues
 
     internal static bool NullDefault(ITypeSymbol type) => type.IsReferenceType ||
         type is INamedTypeSymbol value && value.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+    internal static bool IsTransparentRecordConstruction(IMethodSymbol? constructor)
+    {
+        if (constructor?.ContainingType is not { IsRecord: true } type ||
+            type.BaseType?.SpecialType is not (SpecialType.System_Object or SpecialType.System_ValueType) ||
+            type.DeclaringSyntaxReferences.Length != 1 ||
+            type.DeclaringSyntaxReferences[0].GetSyntax() is not RecordDeclarationSyntax record ||
+            record.ParameterList is not { Parameters.Count: > 0 } primary || record.BaseList is not null ||
+            record.Modifiers.Any(SyntaxKind.PartialKeyword) || constructor.Parameters.Length != primary.Parameters.Count ||
+            record.Members.Any(ConstructionHook))
+            return false;
+
+        // The selected parameters and synthesized properties must belong to this positional declaration.
+        for (var i = 0; i < constructor.Parameters.Length; i++)
+        {
+            var parameter = constructor.Parameters[i];
+            var syntax = primary.Parameters[i];
+            if (parameter.DeclaringSyntaxReferences.SingleOrDefault() is not { } position ||
+                position.SyntaxTree != syntax.SyntaxTree || position.Span != syntax.Span)
+                return false;
+            var generated = type.GetMembers(parameter.Name).OfType<IPropertySymbol>()
+                .Where(property => property.IsImplicitlyDeclared || property.DeclaringSyntaxReferences.Any(reference =>
+                    reference.SyntaxTree == syntax.SyntaxTree && reference.Span == syntax.Span));
+            if (generated.Count() != 1) return false;
+        }
+        return true;
+    }
+
+    private static bool ConstructionHook(MemberDeclarationSyntax member) => member switch
+    {
+        ConstructorDeclarationSyntax or DestructorDeclarationSyntax or IndexerDeclarationSyntax or EventDeclarationSyntax => true,
+        FieldDeclarationSyntax field => field.Declaration.Variables.Any(variable => variable.Initializer is not null),
+        EventFieldDeclarationSyntax field => field.Declaration.Variables.Any(variable => variable.Initializer is not null),
+        PropertyDeclarationSyntax property => property.Initializer is not null || property.ExpressionBody is not null ||
+            property.AccessorList?.Accessors.Any(accessor => accessor.Body is not null || accessor.ExpressionBody is not null) == true,
+        _ => false,
+    };
 
     internal static bool IsLocalJsonSerialization(IMethodSymbol method, IInvocationOperation invocation)
     {

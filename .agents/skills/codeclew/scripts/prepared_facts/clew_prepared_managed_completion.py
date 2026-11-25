@@ -18,7 +18,7 @@ RESOURCE_CALLS = {"connection": {"Open", "OpenAsync", "Close", "CloseAsync", "Cr
                   "command": {"CreateParameter"},
                   "reader": {"Read", "ReadAsync", "NextResult", "NextResultAsync", "GetOrdinal", "GetValue", "GetFieldValue",
                              "GetFieldValueAsync", "GetString", "GetGuid", "GetBoolean", "GetByte", "GetInt16", "GetInt32",
-                             "GetInt64", "GetDecimal"}}
+                             "GetInt64", "GetDecimal", "GetDouble", "GetFloat"}}
 DISPOSAL = {"Dispose", "DisposeAsync"}
 MAX_WRITES = 4
 
@@ -36,7 +36,8 @@ class ClosedReturn:
 
     def construction(self, step, event):
         symbol = step.get("symbol") or ""
-        if step.get("httpResult") or step.get("emptyList") and symbol.startswith("M:System.Collections.Generic.List"):
+        if (step.get("httpResult") or step.get("transparentRecord")
+                or step.get("emptyList") and symbol.startswith("M:System.Collections.Generic.List")):
             return True
         if family := step.get("resourceFamily"):
             if step.get("candidateEffectFamily") == "database" or symbol.startswith("M:System.Data.Common.Db"):

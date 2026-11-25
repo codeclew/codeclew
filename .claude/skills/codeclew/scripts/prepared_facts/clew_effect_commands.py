@@ -23,7 +23,7 @@ LEXICAL_ROLES = {
     "GetOrdinal": "ADO_READER_ORDINAL",
     **{name: "ADO_READER_VALUE" for name in (
         "GetValue", "GetFieldValue", "GetFieldValueAsync", "GetString", "GetGuid", "GetBoolean",
-        "GetInt16", "GetInt32", "GetInt64", "GetDecimal",
+        "GetInt16", "GetInt32", "GetInt64", "GetDecimal", "GetDouble", "GetFloat",
     )},
 }
 TYPED = "ROSLYN_ADO_DECLARATION"

@@ -685,7 +685,7 @@ class Trace:
             step = key(symbol=operation["symbol"], command=operation.get("command"), unresolved=operation.get("unresolved"),
                        parameter=operation.get("parameter"),
                        **{name: operation[name] for name in ("httpResult", "objectType", "recordFields", "resourceFamily",
-                                                            "emptyList", "candidateEffectFamily")
+                                                            "emptyList", "candidateEffectFamily", "transparentRecord")
                           if operation.get(name)})
             arguments = argument_values(operation.get("arguments", ()), frame)
             work = forget_lists(replace(state, memory={}), tuple(arg["value"] for arg in arguments))

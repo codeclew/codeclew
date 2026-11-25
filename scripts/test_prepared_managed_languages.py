@@ -1315,6 +1315,23 @@ public static class Intake
         lookup = '''var lookup = database.CreateCommand();
         lookup.CommandText = "SELECT observed FROM summaries WHERE id = 1";
         await lookup.ExecuteScalarAsync();'''
+        position = '''await using var lookup = database.CreateCommand();
+        lookup.CommandText = "SELECT east, north FROM coordinates WHERE id = 1";
+        await using var selected = await lookup.ExecuteReaderAsync();
+        if (!await selected.ReadAsync()) return Results.NotFound();
+        var east = selected.GetDouble(0);
+        var north = selected.GetFloat(1);'''
+        numeric = source.replace("if (!accepted) return Results.BadRequest();",
+                                 "if (!accepted) return Results.BadRequest();\n        " + position)
+        record = "public sealed record ReceiptCoordinate(string Label, double East, float North);"
+        data = numeric.replace("return Results.Ok();", 'return Results.Ok(new ReceiptCoordinate("ready", east, north));')
+        data += record + "\n"
+        custom_initializer = data.replace(record, record[:-1] + '''
+{
+    private static readonly int Readiness = GetReadiness();
+    private static int GetReadiness() => Task.Run(() => 1).GetAwaiter().GetResult();
+}''')
+        custom_accessor = data.replace(record, record[:-1] + "\n{\n    public double East => 0;\n}")
         cases = (
             ("closed", source, "", ("SaveAsync",), True),
             ("payload and cleanup", payload, "", ("SaveAsync",), True),
@@ -1323,6 +1340,10 @@ public static class Intake
                                                      "if (!accepted) return Results.BadRequest();\n        " + lookup),
              "", ("SaveAsync",), True),
             ("request observes storage after write", source, lookup, ("SaveAsync",), False),
+            ("typed numeric cursor values", numeric, "", ("SaveAsync",), True),
+            ("transparent positional record", data, "", ("SaveAsync",), True),
+            ("record with initialization hook", custom_initializer, "", ("SaveAsync",), False),
+            ("record with custom accessor", custom_accessor, "", ("SaveAsync",), False),
             ("explicit await", source, "await observation;", ("SaveAsync",), False),
             ("modeled helper waits", source, "await JoinAsync(observation);", ("SaveAsync", "JoinAsync"), False),
             ("opaque awaitable helper", source, "await JoinAsync(observation);", ("SaveAsync",), False),
