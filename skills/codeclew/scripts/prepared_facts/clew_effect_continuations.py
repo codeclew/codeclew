@@ -34,6 +34,9 @@ MAX_COMPOSED_EFFECT_SITES = 120
 LOCAL_CALLABLES = MAX_HELPER_MODELS + 1
 LOCAL_PATHS = 6
 LOCAL_VISITS = 240
+LOCAL_WORKER_EVENTS = 108
+LOCAL_WORKER_TRANSFERS = 200
+LOCAL_WORKER_VISITS = 480
 LOCAL_OUTPUT_PATHS = 24
 TRANSACTION_METHODS = {"BeginTransaction", "BeginTransactionAsync", "Commit", "CommitAsync", "Rollback", "RollbackAsync"}
 EFFECTS = {"CALL", "AWAIT", "WRITE", "CONSTRUCT"}
@@ -488,6 +491,8 @@ class Trace:
         self.local_only = False
         self.entry_seeds = {}
         self.visit_limit = MAX_VISITS
+        self.event_limit = MAX_EVENTS
+        self.transfer_limit = MAX_TRANSFERS
         self.focal = False
         self.focus_call = None
         self.path_limit = MAX_PATHS
@@ -569,8 +574,8 @@ class Trace:
     def advance_block(self, ref, index, offset, state, frame, stack, pending, visits):
         self.visits += 1
         if self.summary_queue is None and (
-                self.visits > self.visit_limit or len(state.sequence) - state.event_base >= MAX_EVENTS or
-                state.transfers >= MAX_TRANSFERS):
+                self.visits > self.visit_limit or len(state.sequence) - state.event_base >= self.event_limit or
+                state.transfers >= self.transfer_limit):
             return [self.open(state, "TRACE_BUDGET")]
         state = replace(state, transfers=state.transfers + 1)
         fn = self.functions[ref]
@@ -679,7 +684,8 @@ class Trace:
             constructed = ("allocation", fn.citation, identity, len(state.sequence))
             step = key(symbol=operation["symbol"], command=operation.get("command"), unresolved=operation.get("unresolved"),
                        parameter=operation.get("parameter"),
-                       **{name: operation[name] for name in ("httpResult", "objectType", "recordFields", "resourceFamily", "emptyList")
+                       **{name: operation[name] for name in ("httpResult", "objectType", "recordFields", "resourceFamily",
+                                                            "emptyList", "candidateEffectFamily")
                           if operation.get(name)})
             arguments = argument_values(operation.get("arguments", ()), frame)
             work = forget_lists(replace(state, memory={}), tuple(arg["value"] for arg in arguments))
@@ -1135,7 +1141,7 @@ class Trace:
         used.update(key for row in local_paths for key in row["scope"].get("openSites", ()))
         interruptions, repeated = self.interruptions(paths, executions), self.repeated(path_rows)
         durable = self.storage["durable_candidates"](paths, self.steps, 12)
-        durable.extend(self.local_durable_paths(local_paths, durable))
+        durable.extend(self.local_durable_paths(local_paths, local_executions, [*durable, *command_durable]))
         compact_paths, events = compact_paths_and_events([*paths, *local_paths])
         return report("PROJECTED" if paths else "OPEN", sorted(self.boundaries),
                       coverage="BOUNDED_RETAINED_SOURCE_ONLY",
@@ -1225,6 +1231,8 @@ class Trace:
                 if rooted:
                     seeded = {**seeded, "rootedWorker": True}
                     local.local_only = False
+                    local.event_limit, local.transfer_limit = LOCAL_WORKER_EVENTS, LOCAL_WORKER_TRANSFERS
+                    local.visit_limit = LOCAL_WORKER_VISITS
                 variants.extend(self.local_witnesses(local, ref, state, seed.frame, seeded, wanted))
                 if rooted:
                     local.coverage, local.focal = False, True
@@ -1233,6 +1241,7 @@ class Trace:
                         witnesses = self.local_witnesses(local, ref, state, seed.frame, seeded, wanted)
                         variants.extend(witnesses[:2])
                     local.coverage, local.focal, local.local_only, local.focus_call = True, False, True, None
+                    local.event_limit, local.transfer_limit, local.visit_limit = MAX_EVENTS, MAX_TRANSFERS, LOCAL_VISITS
             witnesses = [*variants, *native] if rooted or not native else [native[0], *variants, *native[1:]]
             round_robin.append(iter(witnesses))
         results, groups = [], []
@@ -1254,7 +1263,7 @@ class Trace:
             self.boundaries.add("CALLABLE_SCOPE_REPLAY_OUTER_JOIN_OPEN")
         return results, groups
 
-    def local_durable_paths(self, paths, existing):
+    def local_durable_paths(self, paths, executions, existing):
         """Compare alternatives only inside the same retained callback invocation prefix."""
         groups = defaultdict(list)
         for path in paths:
@@ -1265,8 +1274,12 @@ class Trace:
         signature = ("select", "externalCall", "interruption", "matchingWrite", "matchingCommit")
         seen = {tuple(row[key] for key in signature) for row in existing}
         derived = []
+        records = {group["path"]: [{**row, "index": row["eventIndex"]} for row in group["commands"]] for group in executions}
         for group in groups.values():
-            for row in self.storage["durable_candidates"](group, self.steps, 8):
+            local_commands = {path["id"]: records.get(path["id"], ()) for path in group}
+            comparisons = self.storage["durable_candidates"](group, self.steps, 8)
+            comparisons.extend(self.commands["command_candidates"](group, local_commands, self.steps, self.storage))
+            for row in comparisons:
                 key = tuple(row[field] for field in signature)
                 if key not in seen:
                     seen.add(key)

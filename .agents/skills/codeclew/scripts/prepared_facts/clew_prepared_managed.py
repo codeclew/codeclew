@@ -1265,7 +1265,7 @@ class Facts:
                                                                "matchingWrite", "matchingCommit")])
         prefix, scope_proof = self.worker_delivery_scope(item["comparisonPath"])
         reached = self.source_call(item["externalCall"]) or action
-        write = self.steps[item["matchingWrite"]].get("sourceSql")
+        write = item.get("matchingWriteSql") or self.steps[item["matchingWrite"]].get("sourceSql")
         mark = self.sql_label(write) if write else f"the update by {column}"
         commit = self.name(item["matchingCommit"])
         guard = item.get("rowGuard")
@@ -1275,10 +1275,12 @@ class Facts:
             connection = next((name for key in item.get("connectionEvidence", ()) if self.steps[key].get("boundSources")
                                and (name := self.source_call(key))), None)
             handle = f" It uses the connection returned by {connection}." if connection else ""
+            fields, lineage_proof = self.worker_publication_fields(item)
+            data = " The send binds " + ", ".join(fields) + "." if fields else ""
             self.add("worker-row-delivery", prefix + f"{selection} supplies data from the selected {table} row to {reached}. "
                      f"After the send await resumes, it reaches {mark} for the same {column}, then {commit} on the matching transaction."
-                     + handle,
-                     [*scope_proof, *proof], [item["comparisonPath"]], item["sources"],
+                     + handle + data,
+                     [*scope_proof, *proof, *lineage_proof], [item["comparisonPath"]], item["sources"],
                      uncertainty="The provider and broker must bind the cited APIs and honor the projected arguments.",
                      **({"condition": condition} if condition else {}))
         if item.get("publicationAwaitFailed"):
@@ -1294,6 +1296,22 @@ class Facts:
         self.add("worker-reselection", prefix + text, [*scope_proof, *proof],
                  [item["failurePath"], item["comparisonPath"]], item["sources"],
                  uncertainty="Broker delivery and row eligibility after an interruption depend on the provider, broker and transaction.")
+
+    def worker_publication_fields(self, item):
+        fields = item.get("publicationFields", ())
+        path = self.local_by_id.get(item["comparisonPath"]) or self.paths.get(item["comparisonPath"])
+        if not fields or not path:
+            return [], []
+        events = self.trace(path)
+        invocation = next((index for index, event in enumerate(events)
+                           if event["outcome"] == "INVOKED" and event.get("result") == item.get("publicationOccurrence")), None)
+        if invocation is None:
+            return [], []
+        labels, proof = [], []
+        for field in fields:
+            if label := self.lineage(field["value"], events[:invocation], self.commands_for(path), proof):
+                labels.append(f"{code(field['field'])} to {label}")
+        return labels, proof
 
     def worker_delivery_scope(self, path_id):
         path = self.local_by_id.get(path_id)

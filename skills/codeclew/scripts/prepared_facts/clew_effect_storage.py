@@ -516,33 +516,71 @@ def row_origin(value, row):
     return False
 
 
-def publication_arguments(invocation, sequence, row):
-    """Find direct selected-row arguments and fields of inline message initializers."""
+def publication_values(invocation, sequence):
+    """Read evaluated arguments and the latest fields of a non-escaped inline object."""
     values = [arg["value"] for arg in invocation.get("arguments", ())]
-    proof = []
+    allocations = {value for value in values if value and value[0] == "allocation"}
+    fields = {}
     for event in sequence:
-        if event["outcome"] not in {"STATE_WRITE_REACHED", "CANDIDATE_INITIALIZER_REACHED"}:
+        if event["outcome"] == "INVOKED":
+            if event.get("result") == invocation.get("result") and event["step"] == invocation["step"]:
+                break
+            escaped = {event.get("receiver"), *(item["value"] for item in event.get("arguments", ()))} & allocations
+            if escaped:
+                fields = {key: value for key, value in fields.items() if key[0] not in escaped}
+        if event["outcome"] in {"COMPLETION_OPEN", "WRITE_TARGET_OPEN"}:
+            fields.clear()
+        if event["outcome"] not in {"STATE_WRITE_REACHED", "CANDIDATE_INITIALIZER_REACHED", "RESOURCE_CONFIGURATION_REACHED"}:
             continue
         target = event["resource"]
-        if (len(target) >= 3 and target[2] and target[2][0] == "allocation" and target[2] in values and
-                row_origin(event.get("sourceValue", event["value"]), row)):
-            proof.append(event["step"])
-    return proof if proof or any(row_origin(value, row) for value in values) else None
+        if len(target) >= 3 and target[0] in {"member", "object-initializer-member", "ado-member"} and target[2] in allocations:
+            name = target[1].rsplit(".", 1)[-1]
+            fields[target[2], name] = (name, event.get("sourceValue", event["value"]), event["step"])
+    return [(None, value, None) for value in values], list(fields.values())
+
+
+def publication_arguments(invocation, sequence, row):
+    direct, fields = publication_values(invocation, sequence)
+    proof = [site for _, value, site in fields if row_origin(value, row)]
+    return proof if proof or any(row_origin(value, row) for _, value, _ in direct) else None
 
 
 def returned_connection(steps, sequence, receiver):
-    """Keep the actual connection origin when a selected nested helper returns it."""
-    if not receiver or receiver[0] != "call-result":
+    """Keep the selected connection origin, including allocation followed by a completed open."""
+    if not receiver:
         return []
-    origin = steps.get(receiver[1], {})
-    if origin.get("candidateEffectFamily") != "database" or origin.get("spelling") not in {
-            "OpenConnection", "OpenConnectionAsync"}:
+    returns = [(index, event) for index, event in enumerate(sequence)
+               if event.get("composed") and event.get("returnedValue") == receiver]
+    if receiver[0] == "call-result":
+        origin = steps.get(receiver[1], {})
+        if origin.get("candidateEffectFamily") != "database" or origin.get("spelling") not in {
+                "OpenConnection", "OpenConnectionAsync"}:
+            return []
+        return [origin["id"], *(key for _, event in returns for key in (event["call"], event["step"]))]
+    if receiver[0] != "allocation" or not returns:
         return []
-    proof = [origin["id"]]
-    for event in sequence:
-        if event.get("composed") and event.get("returnedValue") == receiver:
-            proof.extend((event["call"], event["step"]))
-    return proof
+    allocated = next(((index, event["step"]) for index, event in enumerate(sequence)
+                      if event["outcome"] == "CONSTRUCTED" and event.get("result") == receiver), None)
+    if not allocated:
+        return []
+    start, construction = allocated
+    origin = steps[construction]
+    if origin.get("resourceFamily") != "connection" and origin.get("candidateEffectFamily") != "database":
+        return []
+    opened = None
+    for index, call, completed, invoked in event_calls(sequence, steps):
+        if index <= start or invoked.get("receiver") != receiver:
+            continue
+        if call.get("spelling") in {"Close", "CloseAsync", "Dispose", "DisposeAsync"}:
+            opened = None
+        elif (call.get("spelling"), completed["outcome"]) in {("Open", "RETURNED"), ("OpenAsync", "RESUMED")} and (
+                call.get("receiverFamily") == "connection" or call.get("candidateEffectFamily") == "database"):
+            opened = index, call["id"], completed["step"]
+    if opened:
+        handoff = [key for index, event in returns if index > opened[0] for key in (event["call"], event["step"])]
+        if handoff:
+            return [construction, *opened[1:], *handoff]
+    return []
 
 
 def transaction_begin(calls, receiver, transaction, before, returned):

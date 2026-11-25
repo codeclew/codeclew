@@ -292,7 +292,7 @@ class CommandPath:
                 self.values[result] = value
                 self.readers[receiver].query.setdefault("columnReads", []).append({
                     "value": result, "column": value["column"], "call": step["id"], "completion": event["step"],
-                    "rowCheck": value["row"]["source"],
+                    "rowCheck": value["row"]["source"], "rowIndex": value["row"]["index"],
                     **({"cast": value["cast"]} if value.get("cast") else {}),
                 })
         elif not role or role in {"LIST_ADD"}:
@@ -400,23 +400,82 @@ def prefix_gaps(path, index):
     return gaps
 
 
+def selected_row_argument(value, origins, completed, steps, depth=0):
+    """Link a reader column, or an immutable JSON projection of it, to the reached send."""
+    if not value or depth > 8:
+        return None
+    if value in origins:
+        source = origins[value]
+        return [source["call"], source["completion"]]
+    if value[0] == "json-root":
+        return selected_row_argument(value[1], origins, completed, steps, depth + 1)
+    if value not in completed:
+        return None
+    call, done = completed[value]
+    if value[0] == "access-result" and (parent := call.get("value")) and parent[0] == "json-root":
+        proof = selected_row_argument(parent, origins, completed, steps, depth + 1)
+        return [*proof, call["step"]] if proof else None
+    if value[0] != "call-result":
+        return None
+    factory = steps[call["step"]].get("valueFactory")
+    if factory == "JSON_PARSE" and (steps[call["step"]].get("symbol") or "").startswith("M:System.Text.Json.JsonDocument.Parse("):
+        parent = argument(call, 0)
+    elif factory == "JSON_VALUE" or factory == "JSON_PROPERTY" and isinstance(literal(argument(call, 0)), str):
+        parent = call.get("receiver")
+    else:
+        return None
+    proof = selected_row_argument(parent, origins, completed, steps, depth + 1)
+    return [*proof, call["step"], done["step"]] if proof else None
+
+
+def reader_publication(read, row, invocation, sequence, calls, steps, storage, before):
+    origins = {column["value"]: column for column in read.get("columnReads", ())
+               if column["rowIndex"] == row["row"]["index"]}
+    completed = {started["result"]: (started, done) for i, _, done, started in calls
+                 if i < before and done["outcome"] in storage["COMPLETED"]}
+    completed.update({event["result"]: (event, event) for event in sequence if event["outcome"] == "INDEX_VALUE_REACHED"})
+    arguments, fields = storage["publication_values"](invocation, sequence)
+    evidence, data = [], []
+    for label, value, site in (*arguments, *fields):
+        if proof := selected_row_argument(value, origins, completed, steps):
+            evidence.extend(proof)
+            if site:
+                evidence.append(site)
+            if label:
+                data.append({"field": label, "value": value})
+    return evidence, data
+
+
 def command_candidates(paths, records, steps, storage):
     result = {}
+    path_calls = {path["id"]: [(index, call, event, invocation)
+                              for index, call, event, invocation in storage["event_calls"](path["sequence"], steps)
+                              if index >= path.get("scope", {}).get("prefixEvents", 0)] for path in paths}
     for path in paths:
-        calls = list(storage["event_calls"](path["sequence"], steps))
+        calls = path_calls[path["id"]]
         eligible = [cmd for cmd in records[path["id"]] if cmd["kind"] == "SELECT" and cmd["sql"] and cmd.get("reader")]
         if not eligible:
             continue
-        effects = [(index, call, event) for index, call, event, _ in calls if
-                   call["role"] in storage["EXTERNAL"] and event["outcome"] in storage["COMPLETED"]]
-        for index, effect, completed in effects:
+        effects = [(index, call, event, invocation) for index, call, event, invocation in calls if
+                   call["role"] in storage["EXTERNAL"] and (event["outcome"] in storage["COMPLETED"] or
+                   call["role"] == "PUBLICATION_CANDIDATE" and event["outcome"] == "FAULT_OR_CANCELLATION")]
+        for index, effect, observed, sent in effects:
             seq = path["sequence"]
-            for cut, interruption in enumerate(seq[index + 1:], index + 1):
+            publication = effect["role"] == "PUBLICATION_CANDIDATE"
+            ack_failed = observed["outcome"] == "FAULT_OR_CANCELLATION"
+            interruptions = [(index, observed)] if ack_failed else enumerate(seq[index + 1:], index + 1)
+            prefix_end = index if ack_failed else index + 1
+            for cut, interruption in interruptions:
                 if interruption["outcome"] not in storage["INTERRUPTED"]:
                     continue
                 for normal in paths:
-                    if seq[:index + 1] != normal["sequence"][:index + 1]:
+                    route = normal["sequence"]
+                    if seq[:prefix_end] != route[:prefix_end]:
                         continue
+                    if ack_failed and not (len(route) > index and route[index]["step"] == observed["step"] and
+                                           route[index]["outcome"] == "RESUMED"):
+                        continue
+                    completed = route[index]
                     writes = [cmd for cmd in records[normal["id"]] if cmd["kind"] == "WRITE" and cmd["sql"]
                               and cmd["index"] > index and cmd["outcome"] in storage["COMPLETED"] and cmd["rowKey"]]
                     for write in writes:
@@ -426,20 +485,31 @@ def command_candidates(paths, records, steps, storage):
                         read = next((cmd for cmd in eligible if cmd["reader"] == row["reader"] and cmd["index"] < index), None)
                         if read is None or not transitioned(read, write):
                             continue
+                        event_index = row["row"]["index"]
+                        payload, data = reader_publication(read, row, sent, seq[event_index:index], calls, steps, storage, index)
+                        if publication and not payload:
+                            continue
                         tx = write["transaction"]
                         if any(commit_matches(call, invocation, tx, storage) and event["outcome"] in storage["COMPLETED"]
                                for _, call, event, invocation in calls):
                             continue
-                        for at, commit, outcome, invocation in storage["event_calls"](normal["sequence"], steps):
+                        for at, commit, outcome, invocation in path_calls[normal["id"]]:
                             if at <= write["index"] or outcome["outcome"] not in storage["COMPLETED"]:
                                 continue
                             binding = commit_matches(commit, invocation, tx, storage)
-                            if not binding or any(null_dispatch_required(route, read, write) for route in (path, normal)):
+                            if not binding or any(null_dispatch_required(candidate, read, write) for candidate in (path, normal)):
                                 continue
                             authority, signature = binding
+                            commit_failed = (cut == at and interruption.get("call") == commit["id"] and
+                                             interruption["step"] == outcome["step"] and seq[:cut] == route[:cut])
+                            connection = storage["returned_connection"](steps, route[:read["index"]], read["connection"])
+                            begin = storage["transaction_begin"](path_calls[normal["id"]], read["connection"], tx,
+                                                                  read["index"], connection)
+                            if publication and (ack_failed or commit_failed) and not begin:
+                                continue
                             key = (read["call"], effect["id"], interruption["step"], write["call"], commit["id"])
-                            proof = [*read["evidenceSteps"], *write["evidenceSteps"], effect["id"],
-                                     completed["step"], interruption["step"], commit["id"], outcome["step"]]
+                            proof = [*connection, *begin, *read["evidenceSteps"], *write["evidenceSteps"], *payload,
+                                     effect["id"], completed["step"], interruption["step"], commit["id"], outcome["step"]]
                             argument = storage["commit_argument_evidence"](invocation)
                             sources = set(source_list(steps, proof))
                             if argument:
@@ -452,11 +522,17 @@ def command_candidates(paths, records, steps, storage):
                                 "selectTable": read["sql"]["table"], "keyColumn": row["column"],
                                 "keyBinding": "READER_ROW_COLUMN_TO_COMMAND_PARAMETER",
                                 "keyRead": row["source"], "rowAvailableAt": row["row"]["source"],
+                                "rowGuard": {"step": row["row"]["source"], "when": seq[event_index]["outcome"] == "TRUE"},
                                 "parameter": write["parameter"], "receiver": write["connection"], "transaction": tx,
                                 "externalCall": effect["id"], "effectAuthority": effect["roleAuthority"],
                                 "completedAt": completed["step"], "interruption": interruption["step"],
-                                "matchingWrite": write["call"], "matchingCommit": commit["id"], "commitAuthority": authority,
-                                "commitSignature": signature,
+                                "matchingWrite": write["call"], "matchingWriteSql": write["sourceSql"],
+                                "matchingCommit": commit["id"], "matchingCommitFailed": publication and commit_failed,
+                                "publicationAwaitFailed": ack_failed,
+                                "commitAuthority": authority, "commitSignature": signature,
+                                "selectedRowSuppliesArguments": bool(payload), "publicationFields": data,
+                                "publicationOccurrence": sent["result"],
+                                **({"connectionEvidence": connection} if connection else {}),
                                 **({"commitArgumentEvidence": argument} if argument else {}),
                                 "commandAuthority": TYPED if read["authority"] == write["authority"] == TYPED else CANDIDATE,
                                 "failurePath": path["id"], "comparisonPath": normal["id"],

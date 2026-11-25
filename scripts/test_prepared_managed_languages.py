@@ -889,6 +889,53 @@ sealed class Relay
                 else:
                     self.assertFalse(deliveries or commit_faults, facts)
 
+    def test_roslyn_worker_reader_keeps_returned_open_connection_and_row_data(self):
+        self.require_roslyn()
+        path = ROOT / "fixtures/documentation-background-processes/roslyn/ReaderWorker.cs"
+        fixture = path.read_text()
+        direct = fixture.replace('        using var document = JsonDocument.Parse(payload);\n'
+                                 '        var routingKey = document.RootElement.GetProperty("routing").GetProperty("key").GetString();',
+                                 '        var routingKey = payload;')
+        for label, text in {
+            "json key and direct payload": fixture,
+            "json key alone": fixture.replace("Value = payload", 'Value = "fixed"'),
+            "direct payload": direct,
+            "unrelated connection": direct.replace('await using var update = db.CreateCommand();',
+                'await using var alternate = await ConnectAsync(settings, token);\n'
+                '        await using var update = alternate.CreateCommand();'),
+            "unrelated publish": direct.replace('Key = routingKey, Value = payload', 'Key = "fixed", Value = "different"'),
+        }.items():
+            with self.subTest(label=label):
+                for index, name in enumerate(("ExecuteAsync", "ShipAsync", "ConnectAsync"), 1):
+                    line = next(line for line in text.splitlines() if "async Task" in line and f" {name}(" in line)
+                    first = text.index(line)
+                    end = text.index("\n    }", first) + len("\n    }")
+                    branch, current = selected(path.name, text, standalone=text[first:end],
+                                               start=text[:first].count("\n") + 1)
+                    if index == 1:
+                        process, context = branch, current
+                        process.update(entryKind="HOSTED_BACKGROUND_WORKER", entrySymbol="ReaderWorker.ExecuteAsync")
+                    else:
+                        ref = f"s{index}"
+                        body = branch["sources"]["s1"]
+                        process["sources"][ref] = body
+                        process["facts"].append({"kind": "BODY", "declaration": name, "sources": [ref]})
+                        context["sourceRanges"].append({**body, "id": f"m123456789abc:e{index}", "references": [ref]})
+                context["_nativeFiles"][path.name] = captured_csharp(text, path.name)
+                facts, _ = self.project(process, context)
+                deliveries = [row for row in facts if row["kind"] == "worker-row-delivery"]
+                failures = [row for row in facts if row["kind"] == "worker-reselection" and "CommitAsync` can fail" in row["text"]]
+                ack_failures = [row for row in facts if row["kind"] == "worker-reselection" and "already have accepted" in row["text"]]
+                self.assertEqual(bool(deliveries), not label.startswith("unrelated"), facts)
+                self.assertEqual(bool(failures), not label.startswith("unrelated"), facts)
+                self.assertEqual(bool(ack_failures), not label.startswith("unrelated"), facts)
+                if deliveries:
+                    self.assertTrue(any("connection returned by `ConnectAsync(settings, token)`" in row["text"] for row in deliveries))
+                    self.assertTrue(any("m123456789abc:e3" in row["sources"] for row in deliveries))
+                    self.assertTrue(any("payload" in row["text"] and "id" in row["text"] for row in deliveries))
+                    if label.startswith("json key"):
+                        self.assertTrue(any('"routing"' in row["text"] and '"key"' in row["text"] for row in deliveries), deliveries)
+
     def test_roslyn_lookup_checks_later_rows_before_claiming_no_match(self):
         self.require_roslyn()
         header = """using System.Collections.Generic;
