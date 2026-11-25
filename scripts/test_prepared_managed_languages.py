@@ -210,6 +210,7 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertTrue(all(row["_edgeCause"] == origin for row in decoding))
         failure, = (row for row in decoding if row["kind"] == "status_body")
         self.assertIn("reply.status receives 502", failure["text"])
+        self.assertEqual(failure["_httpStatus"], 502)
         self.assertIn("Response unavailable", failure["text"])
         self.assertTrue(any(row["kind"] == "response_body_read" for row in decoding))
 
@@ -1468,9 +1469,13 @@ static class Reader
         self.assertTrue(any('`input.Id` matches `"b"`' in row and 'Second' in row for row in success), success)
         self.assertTrue(all('`input.Id` matches `"a"`' in row for row in success if 'First' in row), success)
         self.assertTrue(all('`input.Id` matches `"b"`' in row for row in success if 'Second' in row), success)
-        invalid = [row["text"] for row in facts if row["kind"] == "http-outcome" and "HTTP 400" in row["text"]]
+        invalid = [row["text"] for row in facts if row["kind"] == "http-outcome" and row.get("_httpStatus") == 400]
         self.assertTrue(any('`input.Id` differs from `"a"`' in row and
                             '`input.Id` differs from `"b"`' in row for row in invalid), invalid)
+        guarded, = (row for row in facts if row["kind"] == "lookup-guard-return")
+        self.assertEqual(guarded["_httpStatus"], 400)
+        self.assertIn("item is null", guarded["condition"])
+        self.assertIn('differs from `"a"`', guarded["condition"])
 
     def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]

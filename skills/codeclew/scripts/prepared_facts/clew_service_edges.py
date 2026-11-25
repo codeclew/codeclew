@@ -22,6 +22,12 @@ PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
 HTTP_ADAPTERS = {"SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "SPRING_REST_CLIENT_URI/2.0"}
 PEER_RESPONSES = {"http-outcome", "status_body"}
+PEER_FACETS = (("lookup-guard-return", "http-peer-guarded-return"),
+               ("guard-return-bypass", "http-peer-return-bypass"),
+               ("sql_result_flow", "http-peer-value-lineage"),
+               ("argument-projection", "http-peer-value-lineage"),
+               ("sql-row", "http-peer-value-lineage"),
+               ("lookup", "http-peer-value-lineage"))
 PEER_CONTRACTS = {"openapi-declared-response": "http-peer-declared-response",
                   "openapi-overlay-boundary": "http-peer-declaration-boundary",
                   "openapi-response-boundary": "http-peer-declaration-boundary"}
@@ -36,6 +42,7 @@ HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown
 MESSAGE_OPEN = ("Broker or adapter binding, handler activation, delivery, acknowledgement, ordering and "
                 "payload compatibility remain unknown.")
 STORAGE_OPEN = ("Database and schema binding, key or row identity, commit, visibility and timing remain unknown.")
+ASYNC_OPEN = "Any wait for downstream completion and its order relative to an original HTTP response remain open."
 
 
 def topic(value):
@@ -147,6 +154,28 @@ def source_exits(process, sources):
                        "uncertainty": "Reaching the exit and completing its operand evaluation are conditional."}
 
 
+def response_representatives(rows, limit):
+    groups, status_rows = defaultdict(list), {}
+    for row in rows:
+        status = row.get("_httpStatus")
+        family = status // 100 if type(status) is int and 100 <= status <= 599 else None
+        groups[family].append(row)
+        if family:
+            status_rows.setdefault(status, row)
+    priority = (4, 5, 2, 3, 1, None)
+    selected = []
+    for candidates in (
+            (groups[family][0] for family in priority if groups[family]),
+            status_rows.values(),
+            (row for family in priority for row in groups[family])):
+        for row in candidates:
+            if row not in selected:
+                selected.append(row)
+                if len(selected) == limit:
+                    return selected
+    return selected
+
+
 def record(requirement, process, context, facts, exact):
     """Retain only small indexes needed after all ordinary projections complete."""
     sources = {ref: {**exact[row["id"]], "handle": row["id"]}
@@ -193,7 +222,9 @@ def record(requirement, process, context, facts, exact):
             keep(publishes, (refs[0], value), {**face, "topic": value, "precise": True})
 
     write_focus, poll_paths = defaultdict(lambda: defaultdict(list)), defaultdict(dict)
+    response_facts = defaultdict(list)
     for fact in facts:
+        response_facts[fact["kind"]].append(fact)
         if (pair := fact.get("_pollPublication")) and pair.get("readOccurrence") and pair.get("publicationOccurrence"):
             poll_paths[pair["readOccurrence"]].setdefault(pair["publicationOccurrence"], stored_face(fact))
         if (focus := fact.get("_writeFocus")) and focus.get("occurrence"):
@@ -232,7 +263,9 @@ def record(requirement, process, context, facts, exact):
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
             "reads": list(reads.values()), "writes": [{**write, "focus": write_focus.get(write["occurrence"], {})}
                                                      for write in writes.values()],
-            "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
+            "responses": response_representatives((fact for fact in facts if fact["kind"] in PEER_RESPONSES), MAX_MATCHES),
+            "facets": [(target, response_representatives(response_facts[kind], 1))
+                       for kind, target in PEER_FACETS if response_facts[kind]],
             "commits": [fact for fact in facts if fact["kind"] == "http-commit-before-response"][:2],
             "bypasses": [fact for fact in facts if fact["kind"] == "conditional-no-write"][:2],
             "exits": list(source_exits(process, sources))[:MAX_MATCHES],
@@ -427,7 +460,7 @@ def project(requirements, records, *, contracts=None):
                         prefix = (prior_topic + f"if the cited callback write becomes visible and the registered poller in `{title}` "
                                   f"selects the same key, it can reach the publication on `{next_topic}`. ")
                         qualifier = (STORAGE_OPEN + " " + MESSAGE_OPEN + " Other payload fields and wire mapping remain open. "
-                                     + selection["uncertainty"])
+                                     + selection["uncertainty"] + " " + ASYNC_OPEN)
                         proof = (*continuation, callback(records[target]))
                         if len({ref for face in proof for ref in face["sources"]}) > MAX_CHAIN_SOURCES:
                             emit(owner, "further-outbox-limit-boundary",
@@ -489,6 +522,10 @@ def project(requirements, records, *, contracts=None):
                 emit(owner, kind, f"The matching source route in {name} has this declaration evidence. "
                      + declaration["text"], boundary + " " + declaration["uncertainty"],
                      call, cited[0], declaration, status=declaration["status"], authority=declaration["authority"])
+            for kind, facets in target["facets"]:
+                for facet in facets:
+                    emit(owner, kind, predicate + " " + facet["text"],
+                         boundary + " " + facet.get("uncertainty", ""), call, cited[0], facet)
             for outcome in target["responses"] or target["exits"]:
                 emit(owner, "http-peer-outcome", predicate + " " + outcome["text"],
                      boundary + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
@@ -589,6 +626,10 @@ def project(requirements, records, *, contracts=None):
                 read = {**read, "condition": None}
                 for publication, selection in paired:
                     publication = {**publication, "condition": None}
+                    emit(owner, "storage-poll-activation",
+                         f"The cited write names the same table as an independently registered poller in `{name}`. "
+                         + selection["text"], STORAGE_OPEN + " " + MESSAGE_OPEN + " " + ASYNC_OPEN,
+                         write, registration(target), read, publication, selection)
                     subscribers = subscriptions.get(publication["topic"], ())
                     if len(subscribers) > MAX_MATCHES:
                         emit(owner, "storage-message-boundary", f"Multiple retained subscriptions follow the "
@@ -604,7 +645,7 @@ def project(requirements, records, *, contracts=None):
                         consumer = records[subscriber["id"]]
                         prefix = f"If the registered reader in `{name}` selects this row and reaches publication, "
                         boundary = " ".join(filter(None, (STORAGE_OPEN, MESSAGE_OPEN, publication.get("uncertainty"),
-                                                           selection["uncertainty"],
+                                                           selection["uncertainty"], ASYNC_OPEN,
                                                            "Other payload fields and wire mapping remain open.")))
                         evidence = (write, registration(target), read, publication, selection,
                                     registration(consumer), callback(consumer))
@@ -637,18 +678,19 @@ def project(requirements, records, *, contracts=None):
     for handler, requesters in requester_links.items():
         rows = sorted((row for row in result[handler] if row["kind"] in priority),
                       key=lambda row: (priority[row["kind"]], -len(row["sources"])))[:3]
+        activation = next((row for row in result[handler] if row["kind"] == "storage-poll-activation"), None)
         name = records[handler]["requirement"]["page"]
         for requester, call, registration_proof, boundary in requesters:
-            for row in rows:
+            for row in ([activation, *rows] if activation else rows):
                 kind = "http-" + row["kind"]
                 emit(requester, kind, f"If the request reaches `{name}`, the handler has this retained continuation. "
                      + row["text"], boundary + " " + row["uncertainty"], call, registration_proof, row,
                      status=row["status"])
     preferred = ("http-failure-after-peer-commit", "http-peer-commit-before-response", "http-peer-conditional-no-write",
-                 "http-peer-declared-response", "http-peer-declaration-boundary", "http-peer-outcome",
-                 "http-further-subscriber-readback",
-                 "further-subscriber-readback",
-                 "message-storage-reader", "http-message-storage-reader", "further-subscriber-outbox",
+                 "http-peer-guarded-return", "http-peer-return-bypass", "http-peer-declared-response",
+                 "http-peer-declaration-boundary", "http-peer-outcome", "http-peer-value-lineage",
+                 "http-storage-poll-activation", "http-further-subscriber-readback", "further-subscriber-readback",
+                 "message-storage-reader", "http-message-storage-reader", "storage-poll-activation", "further-subscriber-outbox",
                  "message-peer-write-detail", "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
                  "further-outbox-limit-boundary", "further-outbox-boundary")
     for owner, rows in result.items():

@@ -896,7 +896,8 @@ function scan(scope, inherited) {
         const response = statusResponse(call);
         if (response) {
             emit("status_body", response.text, response.sites, state,
-                "The framework binding determines the actual HTTP status and response.", arrivalEvidence(state));
+                "The framework binding determines the actual HTTP status and response.",
+                {...arrivalEvidence(state), _httpStatus: response.status});
         }
         const status = response?.status;
         if (query && ts.isPropertyAccessExpression(method) && ["json", "send"].includes(method.name.text) &&

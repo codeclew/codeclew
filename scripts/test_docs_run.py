@@ -2784,14 +2784,22 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     if process["service"] != "catalogue":
                         return original(process, context, node=node)
                     proof, = context["sourceRanges"]
-                    outcomes = [("http-outcome", f"The handler can return HTTP {status}.")
-                                for status in (400, 404, 409, 500)]
+                    def facet(kind, text, **extra):
+                        return {"kind": kind, "text": text, "authority": "RETAINED_PATH", "sources": [proof["id"]], **extra}
+                    outcomes = [facet("http-outcome", f"Success alternative {alias} yields HTTP 200.", _httpStatus=200)
+                                for alias in range(6)]
+                    outcomes.extend(facet("http-outcome", f"The handler can return HTTP {status}.", _httpStatus=status)
+                                    for status in (400, 409, 500))
                     outcomes.extend([
-                        ("http-commit-before-response", "The handler commits the transaction before returning HTTP 201."),
-                        ("conditional-no-write", "If validation rejects the book, this path bypasses the INSERT."),
+                        facet("http-commit-before-response", "The handler commits the transaction before returning HTTP 201."),
+                        facet("conditional-no-write", "If validation rejects the book, this path bypasses the INSERT."),
+                        facet("lookup-guard-return", "When lookup yields no book, the handler returns HTTP 400 with INVALID_BOOK.",
+                              _httpStatus=400, condition="lookup yields no book"),
+                        facet("guard-return-bypass", "The missing lookup's early return bypasses the enqueue."),
+                        facet("argument-projection", "The selected book row supplies id and title to the persisted object.",
+                              condition="lookup matches the book"),
                     ])
-                    return [{"kind": kind, "authority": "RETAINED_PATH", "text": text, "sources": [proof["id"]]}
-                            for kind, text in outcomes], {}
+                    return outcomes, {}
                 return {**module, "project": adapt}
 
             job = {"clew": "/fixture/clew", "root": str(root), "snapshot": F["SNAPSHOT"],
@@ -2828,9 +2836,12 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 self.assertEqual(selected["service"], "catalogue")
                 self.assertNotIn("/unrelated", selected["text"])
                 self.assertTrue(all(any(str(status) in row["text"] for row in facts if row["kind"] == "http-peer-outcome")
-                                    for status in (400, 404, 409, 500)))
+                                    for status in (200, 400, 409, 500)))
                 for kind, value in (("http-peer-commit-before-response", "HTTP 201"),
-                                    ("http-peer-conditional-no-write", "bypasses the INSERT")):
+                                    ("http-peer-conditional-no-write", "bypasses the INSERT"),
+                                    ("http-peer-guarded-return", "INVALID_BOOK"),
+                                    ("http-peer-return-bypass", "bypasses the enqueue"),
+                                    ("http-peer-value-lineage", "id and title")):
                     row, = (row for row in facts if row["kind"] == kind)
                     self.assertIn(value, row["text"])
                 for bad_binding, bad_text in (({"revision": "stale"}, contract_text), (native["binding"], "different bytes")):
@@ -3072,6 +3083,11 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                                              "relay-registration", "relay-body", "listener-registration",
                                              "listener-body", "reader-registration", "reader-body"])
         self.assertIn("Other payload fields and wire mapping remain open", complete["uncertainty"])
+        activation, = (row for row in result[front[0]["id"]] if row["kind"] == "http-storage-poll-activation")
+        self.assertIn("independently registered poller", activation["text"])
+        self.assertIn("Any wait for downstream completion", activation["uncertainty"])
+        self.assertIn("relative to an original HTTP response remain open", activation["uncertainty"])
+        self.assertIn("relay-registration", activation["sources"])
         self.assertTrue(any(row["kind"] == "message-storage-reader" for row in result[relay[0]["id"]]))
         self.assertNotIn(wrong[0]["id"], result)
         self.assertEqual(result[disabled[0]["id"]][0]["status"], "DISABLED_IN_SOURCE")

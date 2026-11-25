@@ -553,7 +553,7 @@ def project(process, context, *, node):
         values = {key: row[key] for key in ("kind", "text", "condition", "uncertainty", "status") if key in row}
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
-        for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication"):
+        for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication", "_httpStatus"):
             if private in row:
                 values[private] = row[private]
         declared = row.get("authority")

@@ -600,6 +600,9 @@ class Facts:
             return response[0], [*response[1], returned]
         return "a return from the handler", [returned]
 
+    def http_status(self, return_proof):
+        return (self.steps[return_proof[0]].get("httpResult") or {}).get("status")
+
     def path_condition(self, events):
         guards = {}
         for event in events:
@@ -677,10 +680,11 @@ class Facts:
                 steps = [key for key in returned[1] if key.split("/", 1)[0] in self.root_refs]
                 if len(steps) == len(returned[1]):
                     self.add("http-outcome", start + f"returns an {returned[0]}. The storage-to-selector lineage remains open.",
-                             [*(key for _, key in guards), *steps])
+                             [*(key for _, key in guards), *steps], _httpStatus=self.http_status(steps))
             else:
                 self.add_path("http-outcome", self.when(guards) + f"returns an {returned[0]}.", path, events,
-                              [*(key for _, key in guards), *returned[1]])
+                              [*(key for _, key in guards), *returned[1]],
+                              _httpStatus=self.http_status(returned[1]))
         for index, event in enumerate(events):
             if event["outcome"] not in COMPLETED or "returnedValue" not in event:
                 continue

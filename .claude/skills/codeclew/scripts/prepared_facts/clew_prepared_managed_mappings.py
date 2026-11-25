@@ -361,4 +361,7 @@ def project(facts, traces, is_http, code, value_text):
             proof.extend(key for _, steps in skipped for key in steps)
         if guard.lookup:
             text += " The collection contents remain open."
-        facts.add_path("lookup-guard-return", text, path, trace, proof, alternate)
+        guards = facts.path_condition(trace)
+        facts.add_path("lookup-guard-return", text, path, trace, [*proof, *(step for _, step in guards)], alternate,
+                       condition=" and ".join(dict.fromkeys([*(label for label, _ in guards), condition])),
+                       **({"_httpStatus": facts.http_status(returns)} if is_http else {}))
