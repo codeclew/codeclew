@@ -145,43 +145,77 @@ def source_calls(process, bodies):
             yield owners[0], target, site
 
 
-def reached(process, bodies, bind):
+def kotlin_source_calls(bodies, selections, bind):
+    """Attach private AST selections only after rebinding the caller and target bytes."""
+    links = []
+
+    def declaration(site, probe=None):
+        matching = [owner for owner, body in bodies.items()
+                    if (relative_slice(body, site) is not None or relative_slice(site, body) is not None)
+                    and (probe is None or relative_slice(body, probe) is not None)]
+        if len(matching) == 1:
+            return matching[0]
+        if matching:
+            return None
+        identity = "source-declaration:" + digest(repr(location(site)).encode())[7:]
+        bodies[identity] = site
+        return identity
+
+    for row in selections:
+        if row.get("authority") != "RETAINED_KOTLIN_SAME_OWNER_SOURCE_SELECTION":
+            continue
+        caller, site, target, owner_site = (row[field] for field in ("caller", "site", "target", "ownerSite"))
+        if not (caller["file"].endswith((".kt", ".kts")) and len({key(source) for source in (caller, site, target, owner_site)}) == 1
+                and relative_slice(caller, site) is not None and all(bind(source) for source in (caller, site, target, owner_site))):
+            continue
+        owner, destination = declaration(caller, site), declaration(target)
+        if not owner or not destination or owner == destination:
+            continue
+        premises = [(source, bind(source)) for source in row.get("premises", ())]
+        if not all(cite and key(source) == key(caller) for source, cite in premises):
+            continue
+        links.append((owner, destination, site, [(owner_site, bind(owner_site)), *premises], row.get("conditions", ())))
+    return links
+
+
+def reached(process, bodies, bind, selections):
     root = process['root']
     if root not in bodies or not (cite := bind(bodies[root])):
         return {}, 0
     links = defaultdict(dict)
-    for owner, target, site in (*compiler_calls(process), *source_calls(process, bodies)):
+    native = [(owner, target, site, [], ()) for owner, target, site in (*compiler_calls(process), *source_calls(process, bodies))]
+    for owner, target, site, premises, conditions in (*native, *kotlin_source_calls(bodies, selections, bind)):
         if owner not in bodies or target not in bodies or relative_slice(bodies[owner], site) is None:
             continue
         if (site_cite := bind(site)) and (target_cite := bind(bodies[target])):
             identity = target, key(site), site['startLine'], site.get('startByte'), site['textDigest']
-            links[owner][identity] = (target, site, site_cite, target_cite)
-    selected, queue = {root: (bodies[root], cite, ())}, deque([root])
+            links[owner].setdefault(identity, (target, target_cite, [(site, site_cite), *premises], tuple(conditions)))
+    selected, queue = {root: (bodies[root], cite, (), ())}, deque([root])
     limited = set()
     while queue:
         owner = queue.popleft()
-        trail = selected[owner][2]
-        for target, site, site_cite, target_cite in links[owner].values():
+        trail, guards = selected[owner][2:]
+        for target, target_cite, proof, conditions in links[owner].values():
             if target in selected:
                 continue
             if len(selected) >= MAX_REACHED:
                 limited.add(target)
                 continue
-            selected[target] = bodies[target], target_cite, (*trail, (site, site_cite))
+            selected[target] = bodies[target], target_cite, (*trail, *proof), (*guards, *conditions)
             queue.append(target)
     return selected, len(limited)
 
 
-def select(process, discovery, exact, bind):
+def select(process, discovery, exact, bind, selections=()):
     """Keep declaration-local evidence only from this operation's reached bodies."""
     bodies = body_index(process)
-    targets, limited = reached(process, bodies, bind)
+    targets, limited = reached(process, bodies, bind, selections)
     other = defaultdict(list)
     for owner, body in bodies.items():
         if owner not in targets:
             other[key(body)].append(body)
     result, seen = [], set()
-    for declaration, (body, body_cite, trail) in targets.items():
+    for declaration, (body, body_cite, trail, guards) in targets.items():
         for fact in discovery.get(key(body), ()):
             proofs = []
             localized = False
@@ -207,10 +241,12 @@ def select(process, discovery, exact, bind):
                 if not declaration_proof or not all(trail_evidence + proofs):
                     continue
                 seen.add(identity)
-                witnesses = [*trail_evidence, declaration_proof, *proofs]
+                witnesses = [dict(proof) for proof in dict.fromkeys(tuple(proof.items()) for proof in
+                                                                     [*trail_evidence, declaration_proof, *proofs])]
                 condition = fact.get('condition')
                 if trail:
-                    condition = CONDITIONAL + (f'. Additional condition: {condition}' if condition else '.')
+                    extras = ' and '.join(dict.fromkeys(filter(None, (*guards, condition))))
+                    condition = CONDITIONAL + (f'. Additional condition: {extras}' if extras else '.')
                 uncertainty = ' '.join(filter(None, (fact.get('uncertainty'), DISPATCH_OPEN if trail else None)))
                 result.append({**fact, 'sources': list(dict.fromkeys(proof['cite'] for proof in witnesses)),
                                'witnesses': witnesses, '_reachedDeclaration': declaration,

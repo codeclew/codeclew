@@ -669,6 +669,47 @@ class Kotlin:
         scope = self.scope[function.body]
         return next((owner for owner in self.owners if owner.body == scope), None)
 
+    def same_owner_callable(self, owner, labels, arguments, site, locals_):
+        """Select a fixed member only for an explicit or unshadowed same-owner receiver."""
+        if len(labels) != 1 and not (len(labels) == 3 and labels[:2] == ("this", ".")):
+            return None
+        spelling = labels[-1]
+        start = self.token_indices.get(site.start)
+        if start is None:
+            return None
+        scope = self.scope[start]
+        while scope is not None and scope != owner.body:
+            if len(labels) == 1 and spelling in self.value_names[scope]:
+                return None
+            scope = self.scope[scope]
+        if scope != owner.body or len(labels) == 1 and spelling in locals_:
+            return None
+        # A member or constructor property named like the call can provide a
+        # separate invoke target. Skip instead of choosing between the two.
+        properties = self.words[owner.start:owner.body]
+        if any(kind in {"val", "var"} and name_ == spelling for kind, name_ in zip(properties, properties[1:])):
+            return None
+        if any(self.container[index] == owner.body and self.words[index] in {"val", "var"}
+               and self.words[index + 1] == spelling for index in range(owner.body + 1, owner.end)):
+            return None
+        members, _ = self.members(owner)
+        candidates = members.get(spelling, ())
+        if not candidates or any(method is None for method in candidates):
+            return None
+        arity = len(arguments)
+        possible = [method for method in candidates if sum(not param.vararg and not param.default for param in method.params) <= arity
+                    and (arity <= len(method.params) or any(param.vararg for param in method.params))]
+        if len(possible) != 1:
+            return None
+        target, = possible
+        if (any(param.vararg for param in target.params) or len(target.params) != arity
+                or not self.fixed_dispatch(target)):
+            return None
+        mapped = [named_argument(arg) for arg in arguments]
+        if any(named and named != param.name for (named, _), param in zip(mapped, target.params)):
+            return None
+        return target, [value for _, value in mapped]
+
     def fixed_dispatch(self, method):
         modifiers = method.modifiers
         if modifiers & {"final", "private"} or not modifiers & {"open", "abstract", "override"}:

@@ -41,24 +41,25 @@ class Flow:
     last_external: tuple | None = None
 
 
-def project(unit, root, syntax, protocols, hard_guards, bind, native_calls, entry_kind):
+def project(unit, root, syntax, protocols, hard_guards, bind, native_calls, entry_kind, *, selected_call=None):
     """Recognize ordered source effects without assuming scheduler or transaction activation."""
     owner = unit.enclosing_owner(root)
     if owner is None or root.expression_body:
         return []
-    projector = ScheduledState(unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind)
+    projector = ScheduledState(unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind, selected_call)
     try:
         body = unit.suite(root.body + 1, root.end)
         inputs = {param.name: Key(param.site, (), (param.site,)) if projector.listener else None for param in root.params}
-        projector.walk(body, inputs, Flow(), (root.name,), 0)
+        projector.walk(body, inputs, Flow(), (root,), 0)
     except syntax["Unsupported"]:
         return []
     return list(projector.rows.values())
 
 
 class ScheduledState:
-    def __init__(self, unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind):
+    def __init__(self, unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind, selected_call):
         self.unit, self.bind, self.native_calls = unit, bind, native_calls
+        self.owner, self.selected_call = owner, selected_call
         self.listener = entry_kind == "KAFKA_LISTENER"
         self.functions, self.fields = unit.members(owner)
         self.maps = frozenset(field.name for field in self.fields.values() if field.storage == "MAP")
@@ -224,8 +225,7 @@ class ScheduledState:
         self.walk(suite, child, replace(flow, evidence=(*flow.evidence, header),
                                         conditions=(*flow.conditions, premise)), stack, depth + 1)
 
-    def callbacks(self, statement, env, flow, stack, depth):
-        tokens = statement.expression
+    def callbacks(self, tokens, env, flow, stack, depth):
         if not tokens or tokens[-1].text != "}":
             return
         start, last = self.unit.token_indices[tokens[0].start], self.unit.token_ends[tokens[-1].end]
@@ -238,56 +238,62 @@ class ScheduledState:
             direct = direct[:-2]
         if len(direct) < 3 or direct[-2] != ".":
             return
-        callback = self.callback(self.unit, self.unit.site(opening, last + 1),
-                                 statement.site, None)
+        handoff = self.site(tokens)
+        callback = self.callback(self.unit, self.unit.site(opening, last + 1), handoff, None)
         if not callback:
             return
         suite = self.unit.suite(callback.start, callback.end)
         if direct[-1] == "forEach" and len(callback.params) == 1 and any(
-                self.foreach.match(target) for target, _ in self.native(statement.site)):
-            self.foreach_loop(callback.params[0][0], statement.site, suite, env, flow, stack, depth)
+                self.foreach.match(target) for target, _ in self.native(handoff)):
+            self.foreach_loop(callback.params[0][0], handoff, suite, env, flow, stack, depth)
             return
         if direct[-1] in {"execute", "executeWithoutResult"}:
             field = self.receiver(direct[:-2], env)
             if field and field.stable and field.type in self.transactions:
                 self.walk(suite, {**env, **dict.fromkeys(name for name, _ in callback.params)},
-                          replace(flow, transaction=True, evidence=(*flow.evidence, field.site, statement.site),
+                          replace(flow, transaction=True, evidence=(*flow.evidence, field.site, handoff),
                                   conditions=(*flow.conditions, "the retained transaction template invokes its callback")),
                           stack, depth + 1)
+        if direct[-1] == "also" and len(callback.params) == 1:
+            selected = self.also_premise(handoff, env)
+            if selected:
+                origin = self.value(prefix[:-2], env)
+                local = {**env, callback.params[0][0]: origin}
+                self.walk(suite, local, replace(flow, evidence=(*flow.evidence, handoff),
+                                               conditions=(*flow.conditions, selected)), stack, depth + 1)
 
     def helper(self, tokens, env, flow, stack, depth):
         if not (call := self.call(tokens)):
             return
         labels, args, site, end = call
-        if end != len(tokens) or not (len(labels) == 1 or labels[:2] == ("this", ".") and len(labels) == 3):
+        if end != len(tokens):
             return
-        name = labels[-1]
-        if name in stack or (len(labels) == 1 and name in env):
+        selected = self.unit.same_owner_callable(self.owner, labels, args, site, env)
+        if selected is None:
             return
-        choices = self.functions.get(name, ())
-        if len(choices) != 1 or not (helper := choices[0]) or helper.expression_body or not self.unit.fixed_dispatch(helper):
+        helper, arguments = selected
+        if helper in stack:
             return
-        if any(param.vararg for param in helper.params) or len(helper.params) != len(args):
+        declaration = self.unit.function_site(helper)
+        if self.selected_call:
+            owner_site = self.unit.site(self.owner.start, self.owner.body + 1)
+            self.selected_call(self.unit.function_site(stack[-1]), site, declaration, owner_site, flow)
+        if helper.expression_body:
             return
         values, parameter_sites = {}, []
-        for param, arg in zip(helper.params, args):
-            named, value = self.named(arg)
-            if named and named != param.name:
-                return
+        for param, value in zip(helper.params, arguments):
             values[param.name] = self.value(value, env)
             if values[param.name] is not None:
                 parameter_sites.append((param, self.site(value), values[param.name].origins))
-        if not parameter_sites:
-            return
         child = replace(flow, evidence=(*flow.evidence, site, self.unit.function_site(helper)),
                         conditions=(*flow.conditions, "the call selects the retained same-owner implementation"))
         for param, actual, origins in parameter_sites:
             self.add("LISTENER_ARGUMENT" if self.listener else "SCHEDULED_ARGUMENT",
-                     f"The source handoff passes {self.code(actual)} to the {param.name} parameter of {name}.",
+                     f"The source handoff passes {self.code(actual)} to the {param.name} parameter of {helper.name}.",
                      child, actual, param.site, *origins,
                      uncertainty="The local call must be reached and the argument must evaluate normally.")
         suite = self.unit.suite(helper.body + 1, helper.end)
-        self.walk(suite, values, replace(child, reads=(), writes=()), (*stack, name), depth + 1)
+        self.walk(suite, values, replace(child, reads=(), writes=()), (*stack, helper), depth + 1)
 
     def code(self, site):
         return '`' + self.phrase(site) + '`'
@@ -454,6 +460,19 @@ class ScheduledState:
                     return True
         return False
 
+    def also_premise(self, site, env):
+        targets = [target for target, _ in self.native(site)
+                   if (api := self.make_call(target)) and api[1] == "also"]
+        standard = r"(?:callable:kotlin/(?:StandardKt(?:__StandardKt)?[.])?also#jvm:|method:class:kotlin[.]StandardKt(?:__StandardKt)?#also\()"
+        if targets:
+            if any(not re.match(standard, target) for target in targets):
+                return None
+            return "Kotlin's also invokes its retained lambda"
+        if ("also" in env or self.unit.stars or self.unit.imports.get("also", {"kotlin.also"}) != {"kotlin.also"}
+                or self.local_also()):
+            return None
+        return "the suffix selects Kotlin's also and invokes its retained lambda"
+
     def decoding_result(self, tokens, env):
         """Tie a result identity to the reached initializer, with input provenance kept separate."""
         if not (call := self.call(tokens)):
@@ -471,17 +490,10 @@ class ScheduledState:
             if self.unit.pairs.get(callback) != self.unit.token_ends[tokens[-1].end]:
                 return None
             whole = self.site(tokens)
-            targets = [target for target, _ in self.native(whole)
-                       if (api := self.make_call(target)) and api[1] == "also"]
-            standard = r"(?:callable:kotlin/(?:StandardKt(?:__StandardKt)?[.])?also#jvm:|method:class:kotlin[.]StandardKt(?:__StandardKt)?#also\()"
-            if targets and any(not re.match(standard, target) for target in targets):
-                return None
-            if not targets and (self.unit.stars or self.unit.imports.get("also", {"kotlin.also"}) != {"kotlin.also"}
-                                or self.local_also()):
+            if not (selected := self.also_premise(whole, env)):
                 return None
             evidence.append(whole)
-            if not targets:
-                premise += " and the suffix selects Kotlin's also"
+            premise += " and " + selected
             premise += " and that scope call and its invoked callback complete normally"
         return Key(decoder, (), tuple(dict.fromkeys((*evidence, *(site for origin in inputs for site in origin.origins))))), premise
 
@@ -630,6 +642,8 @@ class ScheduledState:
         for index, statement in enumerate(suite):
             self.steps -= 1
             if statement.kind in {"return", "throw", "break", "continue"}:
+                if statement.kind == "return" and statement.expression:
+                    self.helper(statement.expression, env, flow, stack, depth)
                 return None
             if self.steps <= 0 or statement.kind == "unsupported":
                 return self.invalidate(flow, self.maps)
@@ -661,8 +675,8 @@ class ScheduledState:
                 continue
             if statement.kind != "expression":
                 return self.invalidate(flow, self.maps)
-            self.callbacks(statement, env, flow, stack, depth)
             evaluated = assignment[1] if assignment else tokens
+            self.callbacks(evaluated, env, flow, stack, depth)
             flow = self.expression_guard(evaluated, env, flow)
             if flow is None:
                 return None

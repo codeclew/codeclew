@@ -197,22 +197,22 @@ def kotlin_callback_state(process, context):
     bind_witness = context.get("_bindWitness")
     kind = process.get("entryKind")
     if kind not in {"SCHEDULED_JOB", "KAFKA_LISTENER"} or len(roots) != 1 or not bind_witness:
-        return [], {}
+        return [], {}, []
     root, = roots
     source = process["sources"][root]
     text = pinned_text(context, source)
     if not text or len(text.encode()) > MAX_FILE_BYTES or remaining(context, 8) <= 0:
-        return [], {}
+        return [], {}, []
     syntax = module("kotlin_syntax")
     try:
         unit = syntax["Kotlin"](text, source["file"])
         method = unit.select(source)
     except syntax["Unsupported"]:
-        return [], {}
+        return [], {}, []
     if method is None:
-        return [], {}
+        return [], {}, []
 
-    witnesses, by_site, native_calls = {}, {}, []
+    witnesses, by_site, native_calls, selected_calls = {}, {}, [], {}
 
     def bind(site):
         if site in by_site:
@@ -231,6 +231,21 @@ def kotlin_callback_state(process, context):
         by_site[site] = None
         return None
 
+    def select_call(caller, site, target, owner_site, flow):
+        if len(selected_calls) >= 32:
+            limitation(context, "KOTLIN_SELECTED_HELPER_LIMIT")
+            return
+        core = {key: bind(span) for key, span in (("caller", caller), ("site", site), ("target", target), ("ownerSite", owner_site))}
+        if not all(core.values()):
+            limitation(context, "KOTLIN_SELECTED_HELPER_WITNESS_UNAVAILABLE")
+            return
+        premises = [bind(span) for span in dict.fromkeys(flow.evidence)]
+        conditions = list(dict.fromkeys(flow.conditions)) if all(premises) else []
+        row = {key: witnesses[alias] for key, alias in core.items()}
+        row.update(authority="RETAINED_KOTLIN_SAME_OWNER_SOURCE_SELECTION",
+                   conditions=conditions, premises=[witnesses[alias] for alias in premises] if conditions else [])
+        selected_calls.setdefault((site, target), row)
+
     for event in process.get("facts", ()):
         if event.get("kind") != "EVENT" or event.get("event") != "CALL" or event.get("resolution") != "COMPILER_EXACT":
             continue
@@ -243,9 +258,34 @@ def kotlin_callback_state(process, context):
 
     facts = module("prepared_kotlin_scheduled_state")["project"](
         unit, method, syntax, module("prepared_kotlin_protocols"), module("prepared_kotlin_hard_exits"),
-        bind, native_calls, kind)
+        bind, native_calls, kind, selected_call=select_call)
     used = {ref for row in facts for ref in row["sources"]}
-    return facts, {ref: value for ref, value in witnesses.items() if ref in used}
+    reachable = list(selected_calls.values())
+    used.update(value["id"] for call in reachable for value in
+                [call["caller"], call["site"], call["target"], call["ownerSite"], *call["premises"]])
+    return facts, {ref: value for ref, value in witnesses.items() if ref in used}, reachable
+
+
+def kotlin_selected_calls(process, context, selected, witnesses, authority, unique):
+    """Use the corroborated Kotlin scopes as input to ordinary and focused projection."""
+    if not selected:
+        return process, context
+    rows = []
+    for target in {row["target"]["id"]: row["target"] for row in selected}.values():
+        rows.append({"kind": "BODY", "authority": authority, "label": "the retained same-owner helper",
+                     "details": {}, "sites": [{"role": "declaration", "reference": target["id"]}]})
+    for row in selected:
+        rows.append({"kind": "CALL", "authority": authority, "label": "the retained same-owner helper",
+                     "details": {"resolution": unique, "candidateCount": 1},
+                     "sites": [{"role": "call", "reference": row["site"]["id"]},
+                               {"role": "target", "reference": row["target"]["id"]}]})
+    used = {site["reference"] for row in rows for site in row["sites"]}
+    bodies = {ref: source for ref, source in witnesses.items() if ref in used}
+    return ({**process, "sources": {**process["sources"], **bodies},
+             "entryKotlinSourceContext": [*process.get("entryKotlinSourceContext", ()), *rows]},
+            {**context, "sourceRanges": [*context["sourceRanges"], *bodies.values()],
+             "_sourceOccurrences": {**context["_sourceOccurrences"], **bodies}})
+
 
 
 def typescript(process, context, node, focus_witnesses=None):
@@ -485,8 +525,12 @@ def project(process, context, *, node):
         if process.get("root"):
             process, context, witnesses = kotlin_receivers(process, context)
             adapter = module("prepared_kotlin")
+            state_rows, state_witnesses, selected = kotlin_callback_state(process, context)
+            if "_sourceCallSelections" in context:
+                context["_sourceCallSelections"].extend(selected)
+            process, context = kotlin_selected_calls(process, context, selected, state_witnesses,
+                                                     adapter["SYNTAX"], adapter["FAILURE"]["UNIQUE_SYNTAX"])
             rows = adapter["derive"](process, context)
-            state_rows, state_witnesses = kotlin_callback_state(process, context)
             focus, found = module("prepared_write_focus")["project"](
                 process, context, rows, lambda operation, frame, site, _: adapter["derive_write"](operation, frame, None, site),
                 reserved=state_witnesses)

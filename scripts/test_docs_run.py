@@ -2174,6 +2174,166 @@ class SourceMembershipTests(unittest.TestCase):
             D['check_source_membership'](self.job,self.inventory,self.entry,self.root,{})
 
 
+class PreparedKotlinSourceTests(unittest.TestCase):
+    def test_installed_source_prepare_qualifies_local_helpers_and_focused_writes(self):
+        launcher = os.environ.get('CODECLEW_TEST_INSTALLED_SOURCE_LAUNCHER')
+        if not launcher:
+            self.skipTest('An installed release launcher was not configured.')
+        contents = '''package demo
+import java.io.ByteArrayInputStream
+import java.util.zip.GZIPInputStream
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.kafka.annotation.KafkaListener
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.transaction.support.TransactionTemplate
+
+class Intake(private val transaction: TransactionTemplate, private val db: JdbcTemplate, private val parser: Parser) {
+    @KafkaListener(topics = ["parcel.received"])
+    fun receive(packet: Packet) {
+        val decoded = try {
+            parser.parse(packet.value()).also { validate(it) }
+        } catch (bad: Exception) {
+            return
+        }
+        transaction.executeWithoutResult {
+            for (item in decoded.items) {
+                if (!item.enabled) continue
+                persist(item)
+            }
+        }
+    }
+
+    @KafkaListener(topics = ["parcel.shadowed"])
+    fun shadowed(packet: Packet) {
+        val validate = parser.validator
+        parser.parse(packet.value()).also { validate(it) }
+    }
+
+    @KafkaListener(topics = ["parcel.ambiguous"])
+    fun ambiguous(packet: Packet) {
+        evaluate(packet.value())
+    }
+
+    @Scheduled(fixedDelay = 500)
+    fun poll() {
+        for (item in parser.pending()) {
+            refresh(item)
+        }
+    }
+
+    private fun validate(value: Message) {
+        require(value.kind == "selected") { "selected kind required" }
+    }
+
+    private fun evaluate(value: String) {
+        require(value != "ambiguous string marker")
+    }
+
+    private fun evaluate(value: Int) {
+        require(value != 98765)
+    }
+
+    private fun refresh(item: Item) {
+        if (item.cached) return
+        persist(item)
+    }
+
+    private fun persist(item: Item) {
+        if (!item.enabled) return
+        val text = GZIPInputStream(ByteArrayInputStream(item.bytes)).reader().readText()
+        val message = parser.parse(text)
+        if (message.kind != "parcel") return
+        val first = message.items.first()
+        val id = first.external
+        db.update("INSERT INTO parcel (id) VALUES (?)", id)
+        db.update("INSERT INTO relay_queue (id) VALUES (?)", id)
+    }
+}
+
+class Unrelated {
+    private fun validate(value: Message) {
+        require(value.kind == "unrelated owner marker")
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='clew-source-helper-test-') as tmp:
+            directory = Path(tmp).resolve()
+            repo, docs = directory / 'source', directory / 'docs'
+            repo.mkdir()
+            (repo / 'Intake.kt').write_text(contents)
+            backend = directory / 'unavailable-author'
+            backend.write_text('#!/bin/sh\nexit 81\n')
+            backend.chmod(0o700)
+
+            def git(*args):
+                subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
+            git('init', '-q')
+            git('remote', 'add', 'origin', 'https://example.invalid/intake')
+            git('add', '.')
+            git('-c', 'user.name=Owned Test', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
+
+            def clew(*args):
+                result = subprocess.run([launcher, 'docs', *args, '--root', str(docs)],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertIn(result.returncode, (0, 3) if args[0] == "check" else (0,), result.stdout + result.stderr)
+                return json.loads(result.stdout)
+
+            clew('init', '--title', 'Intake test')
+            baseline = clew('service', 'list')
+            record = directory / 'service.json'
+            D['save'](record, {'schema': 'codeclew-documentation-service/1.0', 'id': 'intake',
+                                'title': 'Intake', 'repositoryId': 'intake', 'repository': 'https://example.invalid/intake',
+                                'language': 'kotlin', 'profile': 'source-syntax', 'targetRef': 'HEAD',
+                                'source': {'roots': ['.'], 'dialect': '1.9'}})
+            clew('service', 'add', '--input', str(record), '--expected-input-digest', baseline['inputDigest'])
+            clew('bind', '--service', 'intake', '--repo', str(repo))
+            check = clew('check')
+            self.assertEqual(check['status'], 'CHECKED')
+            self.assertEqual(check['services']['intake']['coverage'], 'SYNTAX')
+            job = directory / 'job.json'
+            D['save'](job, {'schema': D['SCHEMA'], 'request': 'Document the retained intake operations.',
+                           'clew': str(Path(launcher).absolute()), 'root': str(docs), 'snapshot': check['snapshot'],
+                           'services': ['intake'], 'language': 'en', 'renderer': str(RENDERER),
+                           'node': str(Path(shutil.which('node')).absolute()), 'evidenceMode': 'PREPARED_FACTS',
+                           'authorMode': 'ISOLATED_PAGES', 'author': {'executable': str(backend),
+                              'model': 'unused-test-author', 'reasoningEffort': 'high'},
+                           'budget': {'wallSeconds': 30, 'maxRepairs': 0}})
+            run = directory / 'run'
+            result = D['prepare'](job, run)
+            self.assertEqual(result['authorMode'], 'ISOLATED_PAGES')
+            plan = D['load'](run / 'inputs/author-plan.json')
+            packets = [json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
+                       for row in plan['slots'] if row['kind'] == 'OPERATION']
+            by_entry = {item['requirement']['entrySymbol']: item for item in packets}
+
+            def packet_for(member):
+                found = [item for symbol, item in by_entry.items() if member in symbol]
+                self.assertEqual(len(found), 1, list(by_entry))
+                return found[0]
+
+            received = packet_for('receive')
+            output = json.dumps(received)
+            self.assertIn('selected kind required', output)
+            self.assertIn('suffix selects Kotlin', output)
+            self.assertNotIn('unrelated owner marker', output)
+            self.assertIn('write_commit', output)
+            self.assertIn('write_guard', output)
+            facts = [fact for scope in received['facts'].values() for fact in scope.get('facts', ())]
+            lineage = [fact for fact in facts if fact['kind'] == 'write_lineage']
+            self.assertTrue(any('parser.parse' in fact['text'] and 'GZIPInputStream' in fact['text']
+                                and 'message.kind' in fact.get('condition', '') for fact in lineage),
+                            [(fact['kind'], fact.get('condition')) for fact in facts])
+            self.assertIn('INSERT INTO parcel', output)
+            self.assertIn('INSERT INTO relay_queue', output)
+            self.assertNotIn('selected kind required', json.dumps(packet_for('shadowed')))
+            self.assertNotIn('ambiguous string marker', json.dumps(packet_for('ambiguous')))
+            self.assertNotIn('98765', json.dumps(packet_for('ambiguous')))
+            poll = packet_for('poll')
+            self.assertIn('item.cached', json.dumps(poll))
+            self.assertIn('INSERT INTO parcel', json.dumps(poll))
+            self.assertEqual(received['omittedPreparedFacts'], 0)
+
+
 class PreparedServiceEdgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

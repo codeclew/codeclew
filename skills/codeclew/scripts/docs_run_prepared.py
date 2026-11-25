@@ -846,7 +846,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
                        _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
-                       _allowLegacyPinned=allow_legacy_pinned,
+                       _allowLegacyPinned=allow_legacy_pinned, _sourceCallSelections=[],
                        _bindWitness=lambda witness: extra_binding(witness, exact, read_pinned))
         if file := context['file']:
             languages = {Path(file).suffix.lower()} if context['sourceRanges'] else set()
@@ -886,7 +886,8 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
     for entry_id, (requirement, process, context, propositions, unbound, projection_limits, failed, unavailable) in projections.items():
         row = result[entry_id]
         if requirement['kind'] == 'ENTRY':
-            additional, limited_reach = REACHED['select'](process, indexed, exact, context['_bindWitness'])
+            additional, limited_reach = REACHED['select'](process, indexed, exact, context['_bindWitness'],
+                                                         context['_sourceCallSelections'])
             direct = {(fact['kind'], fact['text'], fact.get('condition')) for fact in propositions}
             propositions.extend(fact for fact in additional
                                 if (fact['kind'], fact['text'], fact.get('condition')) not in direct)
