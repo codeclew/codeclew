@@ -1687,6 +1687,98 @@ sealed class Relay
         self.assertTrue(any("worker-row-delivery" == row["kind"] and "matching transaction" in row["text"]
                             for row in facts), facts)
 
+    def test_roslyn_connects_an_awaited_collection_to_the_returned_selector(self):
+        self.require_roslyn()
+        header = """using System;
+using System.Collections.Generic;
+using System.Data.Common;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+sealed record Candidate(int Id);
+static class Finder
+{
+"""
+        root = """    public static async Task<IResult> Show(int key)
+    {
+        var selected = await FindByKey(key);
+        return selected is null ? Results.NotFound() : Results.Ok(selected.Id);
+    }"""
+        find = """    private static async Task<Candidate?> FindByKey(int key)
+        => (await LoadRows()).FirstOrDefault(row => row.Id == key);"""
+        load = """    private static async Task<List<Candidate>> LoadRows()
+    {
+        var items = new List<Candidate>();
+        items.Add(new Candidate(1));
+        return items;
+    }"""
+        custom = """
+static class LocalLookup
+{
+    public static Candidate? FirstOrDefault(this List<Candidate> rows, Func<Candidate, bool> selector) => null;
+}
+"""
+        other_receiver = """    private static async Task<Candidate?> FindByKey(int key)
+    {
+        var other = new List<Candidate>();
+        await LoadRows();
+        return other.FirstOrDefault(row => row.Id == key);
+    }"""
+        discarded = """    private static async Task<Candidate?> FindByKey(int key)
+    {
+        var discarded = (await LoadRows()).FirstOrDefault(row => row.Id == key);
+        return null;
+    }"""
+
+        def project(lookup, extension="", *, handler=root, producer=load):
+            source = header + "\n".join((handler, lookup, producer)) + "\n}\n" + extension
+            process, context = selected("Finder.cs", source, standalone=handler, start=header.count("\n") + 1)
+            for number, body in enumerate((lookup, producer), start=2):
+                binding, _ = selected("Finder.cs", source, standalone=body,
+                                      start=source[:source.index(body)].count("\n") + 1)
+                ref = f"s{number}"
+                process["sources"][ref] = bound = binding["sources"]["s1"]
+                process["facts"].append({"kind": "BODY", "declaration": f"helper-{number}", "sources": [ref]})
+                context["sourceRanges"].append({**bound, "id": f"m123456789abc:e{number}", "references": [ref]})
+            context["_nativeFiles"]["Finder.cs"] = captured_csharp(source, "Finder.cs")
+            return self.project(process, context)[0]
+
+        rows = project(find)
+        lineage = [row for row in rows if row["kind"] == "awaited-list-selection"]
+        self.assertTrue(lineage, rows)
+        self.assertTrue(all("await LoadRows()" in row["text"] and "row.Id == key" in row["text"]
+                            and "FindByKey(key)" in row["text"] and "`null` when there is no match" in row["text"]
+                            and {HANDLE, "m123456789abc:e2", "m123456789abc:e3"} <= set(row["sources"])
+                            for row in lineage), lineage)
+        for title, lookup, extension in (("different receiver", other_receiver, ""),
+                                         ("discarded result", discarded, ""),
+                                         ("custom method", find, custom)):
+            with self.subTest(title=title):
+                self.assertFalse(any(row["kind"] == "awaited-list-selection" for row in project(lookup, extension)))
+
+        sql_root = root.replace("Show(int key)", "Show(DbConnection connection, int key)").replace(
+            "FindByKey(key)", "FindByKey(connection, key)")
+        sql_find = find.replace("FindByKey(int key)", "FindByKey(DbConnection connection, int key)").replace(
+            "LoadRows()", "LoadRows(connection)")
+        sql_load = """    private static async Task<List<Candidate>> LoadRows(DbConnection connection)
+    {
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM samples";
+        var reader = await command.ExecuteReaderAsync();
+        var items = new List<Candidate>();
+        if (await reader.ReadAsync())
+            items.Add(new Candidate(reader.GetInt32(0)));
+        return items;
+    }"""
+        with_sql = project(sql_find, handler=sql_root, producer=sql_load)
+        self.assertTrue(any(row["kind"] == "awaited-list-selection" and "receives values from" in row["text"]
+                            and "`SELECT` on `samples`" in row["text"] for row in with_sql), with_sql)
+        different_result = sql_load.replace("return items;", "return new List<Candidate>();")
+        without_sql = project(sql_find, handler=sql_root, producer=different_result)
+        statements = [row for row in without_sql if row["kind"] == "awaited-list-selection"]
+        self.assertTrue(statements, without_sql)
+        self.assertTrue(all("receives values from" not in row["text"] for row in statements), statements)
+
     def test_roslyn_lookup_checks_later_rows_before_claiming_no_match(self):
         self.require_roslyn()
         header = """using System.Collections.Generic;

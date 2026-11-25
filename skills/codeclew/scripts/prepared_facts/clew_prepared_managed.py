@@ -696,15 +696,16 @@ class Facts:
             symbol = self.steps[call]
             if not symbol.get("boundSources") or not (name := self.name(call)):
                 continue
+            invoked = next((i for i in range(index - 1, -1, -1) if events[i]["step"] == call and events[i]["outcome"] == "INVOKED"), None)
+            if invoked is None:
+                continue
+            self.awaited_list_return(path, events, invoked, index, symbol["boundSources"])
             value = event["returnedValue"]
             commands = self.commands_for(path)
             response = self.http(value, events[:index], commands)
             value_proof = []
             shown = response[0] if response else code(text) if (text := self.lineage(value, events[:index], commands, value_proof)) else None
             if shown is None:
-                continue
-            invoked = next((i for i in range(index - 1, -1, -1) if events[i]["step"] == call and events[i]["outcome"] == "INVOKED"), None)
-            if invoked is None:
                 continue
             inside = events[invoked + 1:index]
             guards = self.path_condition(inside)
@@ -716,6 +717,120 @@ class Facts:
             self.add("helper-return", description + f"{qualifier}{name} returns {shown} to its caller.",
                      [call, event["step"], *(key for _, key in guards), *returning, *value_proof,
                       *(response[1] if response else ())], [path["id"]], symbol["boundSources"])
+
+    def awaited_receiver(self, selector, awaited):
+        """Verify that the cited await is the immediate member receiver."""
+        outer, inner = self.steps[selector], self.steps[awaited]
+        site, part = outer["site"], inner["site"]
+        if ((site["file"], site["revision"]) != (part["file"], part["revision"]) or
+                not site["startByte"] < part["startByte"] < part["endByte"] < site["endByte"]):
+            return False
+        literal = self.sources.literal(site, outer["sources"])
+        if not literal:
+            return False
+        data = literal.encode()
+        lower = part["startByte"] - site["startByte"]
+        upper = part["endByte"] - site["startByte"]
+        prefix, middle, suffix = data[:lower], data[lower:upper], data[upper:]
+        closing = re.match(rb"(?:\s*\))+\s*\.\s*FirstOrDefault\s*\(", suffix)
+        return bool(re.fullmatch(rb"(?:\s*\()+\s*", prefix) and re.match(rb"await\s+", middle)
+                    and closing and prefix.count(b"(") == closing[0].count(b")"))
+
+    def direct_return_expression(self, returned, call):
+        terminal, selector = self.steps[returned], self.steps[call]
+        site, part = terminal["site"], selector["site"]
+        if site == part:
+            return True
+        if ((site["file"], site["revision"]) != (part["file"], part["revision"]) or
+                not site["startByte"] < part["startByte"] < part["endByte"] <= site["endByte"]):
+            return False
+        literal = self.sources.literal(site, terminal["sources"])
+        if not literal:
+            return False
+        data = literal.encode()
+        before = data[:part["startByte"] - site["startByte"]]
+        after = data[part["endByte"] - site["startByte"]:]
+        return bool(re.fullmatch(rb"return\s+", before) and re.fullmatch(rb"\s*;?\s*", after))
+
+    def awaited_list_return(self, path, events, start, end, owners):
+        inside = events[start + 1:end]
+        returned = next((row for row in reversed(inside) if row["outcome"] == "RETURN"
+                         and row["step"].split("/", 1)[0] in owners), None)
+        if returned is None or returned.get("value") != events[end]["returnedValue"]:
+            return
+        value = returned["value"]
+        for index, selected in enumerate(inside):
+            if selected["outcome"] != "RETURNED" or not (call := selected.get("call")):
+                continue
+            step = self.steps[call]
+            if (call.split("/", 1)[0] not in owners or step.get("valueFactory") != "LINQ_FIRST_OR_DEFAULT"
+                    or not step.get("nullDefault") or not step.get("predicateSite")):
+                continue
+            arguments = {arg.get("name"): arg["value"] for arg in selected["arguments"]}
+            if set(arguments) != {"source", "predicate"} or len(selected["arguments"]) != 2:
+                continue
+            result = ("literal", None) if selected.get("emptyListDefault") else selected.get("selectedValue", ("call-result", call))
+            if value != result or not arguments["source"] or not self.direct_return_expression(returned["step"], call):
+                continue
+            if not (predicate := self.sources.text(step["predicateSite"], step["sources"])):
+                continue
+            resume = next((at for at in range(index - 1, -1, -1) if inside[at]["outcome"] == "RESUMED"
+                           and inside[at].get("returnedValue") == arguments["source"] and inside[at].get("composed")
+                           and inside[at].get("call") and inside[at]["step"].split("/", 1)[0] == call.split("/", 1)[0]
+                           and self.awaited_receiver(call, inside[at]["step"])), None)
+            if resume is None:
+                continue
+            producer = inside[resume]
+            if not (awaited := self.text(producer["step"])) or not (caller := self.text(events[start]["step"])):
+                continue
+            proof = [events[start]["step"], producer["call"], producer["step"], call, returned["step"], events[end]["step"]]
+            text = (f"After {code(awaited)} resumes, its returned collection is the source of the selected LINQ "
+                    f"`FirstOrDefault` with predicate {code(predicate)}. {code(caller)} returns that selector result to its caller. "
+                    "The selector returns the first matching item or `null` when there is no match.")
+            if selected.get("emptyListDefault"):
+                text += " This modeled collection is empty."
+            elif "selectedValue" in selected:
+                text += (" No tracked item satisfies the predicate on this path." if null_literal(result)
+                         else " This modeled path selects the first satisfying tracked item.")
+            if read := self.collection_read(path, events, start + 1 + resume, arguments["source"]):
+                sql, steps = read
+                text += f" The modeled collection receives values from {self.sql_label(sql)}."
+                proof.extend(steps)
+            self.add_path("awaited-list-selection", text, path, events, proof,
+                          sources=self.steps[producer["call"]].get("boundSources", ()),
+                          condition=f"{code(awaited)} resumes and the cited selector returns normally")
+            return
+
+    def collection_read(self, path, events, resume, collection):
+        call = events[resume]["call"]
+        start = next((index for index in range(resume - 1, -1, -1)
+                      if events[index]["step"] == call and events[index]["outcome"] == "INVOKED"), None)
+        if start is None:
+            return None
+        producer = events[start + 1:resume]
+        for command in self.commands_for(path):
+            if (command["kind"] != "SELECT" or command["outcome"] not in COMPLETED
+                    or not start < command["eventIndex"] < resume):
+                continue
+            if command.get("returnValue") == collection:
+                return command["sourceSql"], command["evidenceSteps"]
+            column_sites = {read["call"] for read in command.get("columnReads", ())}
+            if not column_sites:
+                continue
+            for index, event in enumerate(producer):
+                key = event["step"]
+                if (start + 1 + index <= command["eventIndex"] or event["outcome"] != "INVOKED"
+                        or self.steps[key].get("role") != "LIST_ADD"
+                        or event.get("receiver") != collection):
+                    continue
+                completion = next((row for row in producer[index + 1:] if row.get("call") == key), None)
+                if not completion or completion["outcome"] != "RETURNED":
+                    continue
+                item = next((arg["value"] for arg in event["arguments"] if arg["position"] == 0), None)
+                proof = []
+                if self.lineage(item, producer[:index], (command,), proof) and column_sites.intersection(proof):
+                    return command["sourceSql"], [*command["evidenceSteps"], *proof, key, completion["step"]]
+        return None
 
     @staticmethod
     def sql_label(sql):
@@ -1505,7 +1620,7 @@ class Facts:
 
     def output(self):
         order = ("http-entry", "input", "http-outcome", "http-local-completion", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
-                 "helper-return", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
+                 "helper-return", "awaited-list-selection", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
                  "sql-write", "conditional-no-write", "callable-scope", "worker-control", "worker-poll", "worker-state",
                  "worker-reselection", "worker-row-delivery", "guarded_state_write", "await_bypass", "early_exit", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
         groups = [iter(self.rows[kind].values()) for kind in order]
