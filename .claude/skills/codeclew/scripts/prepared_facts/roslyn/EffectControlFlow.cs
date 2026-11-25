@@ -765,7 +765,8 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             return "HTTP";
         if (role is not null && (role.StartsWith("ADO_", StringComparison.Ordinal) ||
                 role.StartsWith("TRANSACTION_", StringComparison.Ordinal)) ||
-            AdoOperations.IsType(owner, "DbConnection") && target.Name is "Open" or "OpenAsync" or "Close" or "CloseAsync")
+            AdoOperations.IsType(owner, "DbConnection") && target.Name is "Open" or "OpenAsync" or "Close" or "CloseAsync" ||
+            AdoOperations.IsType(owner, "DbDataSource") && target.Name is "OpenConnection" or "OpenConnectionAsync")
             return "database";
         if (assembly == "System.Data.Common" && (type, target.Name) is
             ("System.Data.IDbConnection", "Open" or "Close" or "CreateCommand" or "BeginTransaction") or
@@ -1081,6 +1082,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                     ("receiverFamily", ManagedValues.ResourceFamily(invocation.Instance?.Type)),
                     ("resultFamily", ManagedValues.ResourceFamily(target.ReturnType)), ("implicit", invocation.IsImplicit),
                     ("valueFactory", factory), ("nullDefault", factory == "LINQ_FIRST_OR_DEFAULT" && ManagedValues.NullDefault(target.ReturnType)),
+                    ("localJsonSerialization", ManagedValues.IsLocalJsonSerialization(target, invocation)),
                     ("predicateSite", lambda is not null ? Site(lambda) : null),
                     ("selector", Selector(lambda)),
                     ("hasSelector", selector is not null),

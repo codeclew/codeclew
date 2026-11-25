@@ -158,4 +158,31 @@ internal static class ManagedValues
 
     internal static bool NullDefault(ITypeSymbol type) => type.IsReferenceType ||
         type is INamedTypeSymbol value && value.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+    internal static bool IsLocalJsonSerialization(IMethodSymbol method, IInvocationOperation invocation)
+    {
+        // Default serialization of an anonymous scalar payload cannot call application converters or getters.
+        if (ValueFactory(method) != "JSON_SERIALIZE" || method.Parameters is not [_, { Name: "options" }]) return false;
+        var arguments = invocation.Arguments;
+        return arguments.Any(argument => argument.Parameter?.Ordinal == 0 && LocalJsonValue(argument.Value.Type)) &&
+            arguments.All(argument => argument.Parameter?.Ordinal == 0 ||
+                argument.Parameter?.Ordinal == 1 && argument.Value.ConstantValue is { HasValue: true, Value: null });
+    }
+
+    private static bool LocalJsonValue(ITypeSymbol? type, int depth = 0)
+    {
+        if (type is null || depth > 4) return false;
+        if (type.SpecialType is SpecialType.System_Boolean or SpecialType.System_String or SpecialType.System_Char or
+            SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
+            SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or
+            SpecialType.System_Decimal or SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_DateTime)
+            return true;
+        if (type is not INamedTypeSymbol named) return false;
+        if (named.Name == "Guid" && named.ContainingNamespace.ToDisplayString() == "System" &&
+            named.ContainingAssembly.Name == "System.Private.CoreLib") return true;
+        if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+            return LocalJsonValue(named.TypeArguments[0], depth + 1);
+        return named.IsAnonymousType && named.GetMembers().OfType<IPropertySymbol>()
+            .All(property => LocalJsonValue(property.Type, depth + 1));
+    }
 }

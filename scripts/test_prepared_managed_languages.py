@@ -1261,6 +1261,108 @@ public static class ScoreApi
             else:
                 self.assertEqual(row["sources"], [HANDLE])
 
+    def test_roslyn_http_local_completion_requires_closed_awaited_save_and_return_path(self):
+        self.require_roslyn()
+        source = '''using Microsoft.AspNetCore.Http;
+using System.Data.Common;
+using System.Threading.Tasks;
+
+public static class Intake
+{
+    public static async Task<IResult> Submit(DbConnection database, bool accepted, Task observation)
+    {
+        if (!accepted) return Results.BadRequest();
+        await SaveAsync(database).ConfigureAwait(false);
+        // observation boundary
+        return Results.Ok();
+    }
+
+    private static async Task SaveAsync(DbConnection database)
+    {
+        var transaction = await database.BeginTransactionAsync();
+        var command = database.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT INTO delivery_items (id) VALUES (1)";
+        await command.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
+    }
+
+    private static async Task JoinAsync(Task dependency)
+    {
+        await dependency;
+    }
+}
+'''
+        payload = source.replace("using System.Data.Common;", "using System;\nusing System.Data.Common;\n"
+                                 "using System.Linq;\nusing System.Text.Json;\nusing System.Collections.Generic;")
+        payload = payload.replace("var transaction = await database.BeginTransactionAsync();",
+                                  "await using var transaction = await database.BeginTransactionAsync();")
+        payload = payload.replace("var command = database.CreateCommand();", "await using var command = database.CreateCommand();")
+        payload = payload.replace('command.CommandText = "INSERT INTO delivery_items (id) VALUES (1)";',
+                                  '''var rows = new List<Guid>();
+        rows.Add(Guid.NewGuid());
+        var identifier = rows.Select(value => value).FirstOrDefault();
+        var body = JsonSerializer.Serialize(new { Id = identifier });
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@payload";
+        parameter.Value = body;
+        command.Parameters.Add(parameter);
+        command.CommandText = "INSERT INTO delivery_items (payload) VALUES (@payload)";''')
+        custom_options = payload.replace('new { Id = identifier }', 'new { Id = identifier }, SerializerOptions')
+        custom_options = custom_options.replace('    public static async Task<IResult> Submit',
+                                                '    private static JsonSerializerOptions SerializerOptions = new();\n\n'
+                                                '    public static async Task<IResult> Submit')
+        lookup = '''var lookup = database.CreateCommand();
+        lookup.CommandText = "SELECT observed FROM summaries WHERE id = 1";
+        await lookup.ExecuteScalarAsync();'''
+        cases = (
+            ("closed", source, "", ("SaveAsync",), True),
+            ("payload and cleanup", payload, "", ("SaveAsync",), True),
+            ("unverified serializer options", custom_options, "", ("SaveAsync",), False),
+            ("lookup precedes write", source.replace("if (!accepted) return Results.BadRequest();",
+                                                     "if (!accepted) return Results.BadRequest();\n        " + lookup),
+             "", ("SaveAsync",), True),
+            ("request observes storage after write", source, lookup, ("SaveAsync",), False),
+            ("explicit await", source, "await observation;", ("SaveAsync",), False),
+            ("modeled helper waits", source, "await JoinAsync(observation);", ("SaveAsync", "JoinAsync"), False),
+            ("opaque awaitable helper", source, "await JoinAsync(observation);", ("SaveAsync",), False),
+            ("synchronous wait", source, "observation.GetAwaiter().GetResult();", ("SaveAsync",), False),
+            ("polling delay", source, "while (accepted) { await Task.Delay(10); }", ("SaveAsync",), False),
+            ("no matched write", source, "", (), False),
+        )
+        for label, template, middle, helpers, complete in cases:
+            with self.subTest(label=label):
+                text = template.replace("// observation boundary", middle)
+                for index, name in enumerate(("Submit", *helpers), 1):
+                    line = next(line for line in text.splitlines() if "async Task" in line and f" {name}(" in line)
+                    first = text.index(line)
+                    body = text[first:text.index("\n    }", first) + len("\n    }")]
+                    branch, ranges = selected("Intake.cs", text, standalone=body, start=text[:first].count("\n") + 1)
+                    if index == 1:
+                        process, context = branch, ranges
+                    else:
+                        ref = f"s{index}"
+                        retained = branch["sources"]["s1"]
+                        process["sources"][ref] = retained
+                        process["facts"].append({"kind": "BODY", "declaration": name, "sources": [ref]})
+                        context["sourceRanges"].append({**retained, "id": f"m123456789abc:e{index}", "references": [ref]})
+                context["_nativeFiles"]["Intake.cs"] = captured_csharp(text, "Intake.cs")
+                rows, _ = self.project(process, context)
+                completions = [row for row in rows if row["kind"] == "http-local-completion"]
+                self.assertTrue(any(row["kind"] == "http-outcome" and row.get("_httpStatus") == 200 for row in rows), rows)
+                if not complete:
+                    self.assertFalse(completions, completions)
+                    continue
+                self.assertEqual(len(completions), 1, {row["kind"] for row in rows})
+                positive, = completions
+                self.assertEqual(positive["_httpCompletion"]["status"], 200)
+                self.assertIn("`accepted`", positive["condition"])
+                self.assertEqual(set(positive["sources"]), {HANDLE, "m123456789abc:e2"})
+                write, = positive["_httpCompletion"]["writes"]
+                self.assertEqual((write["verb"], write["table"]), ("INSERT", "delivery_items"))
+                self.assertIn(write["occurrence"], {row["_edge"]["occurrence"] for row in rows
+                                                   if row.get("_edge", {}).get("kind") == "INSERT"})
+
     def test_managed_write_bypass_needs_the_selected_leaf_even_with_only_an_outer_comparison(self):
         managed = runpy.run_path(str(MANAGED / "clew_prepared_managed.py"))
         facts = managed["Facts"]({}, {})

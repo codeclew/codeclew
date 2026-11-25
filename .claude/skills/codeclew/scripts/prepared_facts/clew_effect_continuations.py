@@ -736,7 +736,8 @@ class Trace:
                    **{name: call[name] for name in ("dapperCandidate", "candidateEffectFamily") if call.get(name)},
                    **{key: evidence[key] for key in ("sql", "sourceSql", "topic") if key in evidence},
                    **({"kafkaTopicPosition": kafka_position} if kafka_position is not None else {}),
-                   **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault", "directEffectFamily")
+                   **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault",
+                                                  "directEffectFamily", "localJsonSerialization")
                       if call.get(key)},
                    **({"predicateSite": fn.site(call["predicateSite"])} if call.get("predicateSite") else {}),
                    boundSources=[self.functions[target].citation] if target else [])
@@ -860,7 +861,8 @@ class Trace:
                 resumed = replace(resumed, projections={**resumed.projections,
                                                          result: (list_source, call["selector"], frame)},
                                   nonnull=resumed.nonnull | {result})
-            return resume(resumed, result)
+            proven_projection = projection and collection_items(result, resumed) is not None
+            return resume(resumed, result, **({"localProjection": True} if proven_projection else {}))
 
         def interrupt(failed):
             failed = self.record(failed, awaited or step, "FAULT_OR_CANCELLATION" if awaited else "CALL_EXCEPTION",

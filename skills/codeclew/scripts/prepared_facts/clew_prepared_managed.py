@@ -23,6 +23,7 @@ HTTP_CLIENT_METHODS = {"GetAsync": "GET", "GetStringAsync": "GET", "GetByteArray
 DIRECT_EFFECT_FAMILIES = ("HTTP", "database", "broker", "file system", "process")
 LIMIT = 32
 MAPPINGS = runpy.run_path(str(Path(__file__).with_name("clew_prepared_managed_mappings.py")))["project"]
+LOCAL_COMPLETION = runpy.run_path(str(Path(__file__).with_name("clew_prepared_managed_completion.py")))["project"]
 
 
 def code(text):
@@ -1503,7 +1504,7 @@ class Facts:
         return f"{premise}{binding}{helper}{via}. ", [*active_calls, *latest]
 
     def output(self):
-        order = ("http-entry", "input", "http-outcome", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
+        order = ("http-entry", "input", "http-outcome", "http-local-completion", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
                  "helper-return", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
                  "sql-write", "conditional-no-write", "callable-scope", "worker-control", "worker-poll", "worker-state",
                  "worker-reselection", "worker-row-delivery", "guarded_state_write", "await_bypass", "early_exit", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
@@ -1539,6 +1540,8 @@ def derive(process, context, graph):
         events = facts.trace(path)
         traces[path["id"]] = events
         facts.returns(path, events, is_http)
+        if is_http:
+            LOCAL_COMPLETION(facts, path, events)
         facts.list_lookup(path, events)
         facts.object_arguments(path, events)
         facts.sql(path, events)
