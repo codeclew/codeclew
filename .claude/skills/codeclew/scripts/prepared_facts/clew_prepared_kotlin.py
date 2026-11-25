@@ -542,7 +542,7 @@ class Body:
                 reached.extend(self.step(statement, path, scope, callback, caught))
             if len(reached) > MAX_STATES:
                 self.projector.limits.setdefault("NORMAL_ORDER_SCAN", (self.ranges.by_ref[self.ref],))
-                self.projector.paths([replace(path, open=True) for path in reached[:MAX_STATES]], scope)
+                self.projector.paths(self, [replace(path, open=True) for path in reached[:MAX_STATES]], scope)
                 states = [PathState(fragment=True)]
             else:
                 states = reached
@@ -608,6 +608,12 @@ class Body:
     @staticmethod
     def guard_text(guard, holds):
         return guard.text if holds else guard.negation or guard.text + " is false"
+
+    def feasible_guards(self, guards):
+        return not guards or self.projector.guard_model(self).feasible(guards)
+
+    def guard_labels(self, guards):
+        return list(self.projector.guard_model(self).labels(guards)) if guards else []
 
     def guard_bindings(self, statement, state, scope, guard):
         bindings = dict(state.bindings)
@@ -709,7 +715,8 @@ class Body:
             alternative = []
             for arm, suite in arms:
                 selected = replace(path, guards=(*path.guards, (condition, arm)))
-                alternative.extend(self.continuation(suite, selected, scope, callback, caught))
+                if self.feasible_guards(selected.guards):
+                    alternative.extend(self.continuation(suite, selected, scope, callback, caught))
             return alternative
         if statement.kind == "try":
             return self.protected(statement, path, scope, callback, caught)
@@ -717,7 +724,7 @@ class Body:
             # Analyze a local iteration separately. Its transfers cannot prove outer skips or order.
             if iteration := self.iteration(statement, callback, caught, scope):
                 loop, label = iteration
-                self.projector.paths(self.continuation(statement.body, PathState(), label, callback, caught),
+                self.projector.paths(self, self.continuation(statement.body, PathState(), label, callback, caught),
                                      label, loop.citations)
             return [replace(path, open=True)]
         if nested := self.expression_control(statement):
@@ -772,7 +779,7 @@ class Body:
             if not note:
                 continue
             label = f"{note.text} in {scope}"
-            self.projector.paths(self.continuation(suite, PathState(), label, callback, caught),
+            self.projector.paths(self, self.continuation(suite, PathState(), label, callback, caught),
                                  label, note.citations)
             actions = self.handler_actions(suite)
             if earlier:
@@ -897,7 +904,7 @@ class Body:
                 continue
             proof = tuple(dict.fromkeys(source for item in evidence for source in item.citations))
             self.control(suite, scope, proof, "CALLBACK", callback.label)
-            self.projector.paths(self.continuation(suite, PathState(), scope, callback.label), scope, proof)
+            self.projector.paths(self, self.continuation(suite, PathState(), scope, callback.label), scope, proof)
 
     def event_sites(self, row):
         sites = set()
@@ -915,6 +922,28 @@ class Projector:
         self.facts = defaultdict(dict)
         self.limits = {}
         self.steps = MAX_STEPS
+        self.guard_models = {}
+        self.captured_units = {}
+
+    def guard_model(self, body):
+        if body.ref not in self.guard_models:
+            source = body.host
+            key = (source["file"], source["revision"])
+            if key not in self.captured_units:
+                self.captured_units[key] = None
+                whole = self.context.get("_nativeFiles", {}).get(key[0], {})
+                text = whole.get("text")
+                if (not isinstance(text, str) or whole.get("revision") != key[1]
+                        or "sha256:" + sha256(text.encode()).hexdigest() != whole.get("textDigest")):
+                    loader = self.context.get("_loadPinnedFile")
+                    text = loader(*key) if loader else None
+                if isinstance(text, str) and text and len(text.encode()) <= 128 * 1024:
+                    try:
+                        self.captured_units[key] = Kotlin(text, key[0])
+                    except Unsupported:
+                        pass
+            self.guard_models[body.ref] = WRITE_GUARDS(body, FAILURE, self.captured_units[key])
+        return self.guard_models[body.ref]
 
     def add(self, kind, text, notes=(), extra=(), *, identity=None, **metadata):
         sources = list(dict.fromkeys([*extra, *(source for note in notes for source in note.citations)]))
@@ -927,13 +956,13 @@ class Projector:
             return
         self.facts[kind][key] = {"kind": kind, "text": text, "sources": sources, **metadata}
 
-    def paths(self, paths, scope, proof=()):
+    def paths(self, body, paths, scope, proof=()):
         possible = dict.fromkeys((effect.site, effect) for path in paths if not path.fragment for effect in path.effects)
         alternatives = tuple(effect for _, effect in possible)
         for path in paths:
             if len(path.guards) > 4:
                 continue
-            predicates = [Body.guard_text(guard, holds) for guard, holds in path.guards]
+            predicates = body.guard_labels(path.guards)
             conditions = [guard for guard, _ in path.guards]
             opening = f"In {scope}, if the later fragment is reached" if path.fragment else f"In {scope}"
             context = opening + (f", when {join(predicates)}" if predicates else "")
@@ -1134,7 +1163,7 @@ class Projector:
                                 and (target := event.get("target"))):
                             body.compiler_targets.update((site, target) for site in sites)
             body.control(suite, scope, proof)
-            self.paths(body.continuation(suite, PathState(), scope), scope, proof)
+            self.paths(body, body.continuation(suite, PathState(), scope), scope, proof)
             body.deferred(declaration)
             PROTOCOLS(body, suite, scope, declaration).derive()
             body.operand_facts(scope)
@@ -1167,28 +1196,6 @@ class FocusedWrite(Projector):
         super().__init__(process, context)
         self.site = site
         self.output = {}
-        self.guard_models = {}
-        self.captured_units = {}
-
-    def guard_model(self, body):
-        if body.ref not in self.guard_models:
-            source = body.host
-            key = (source["file"], source["revision"])
-            if key not in self.captured_units:
-                self.captured_units[key] = None
-                whole = self.context.get("_nativeFiles", {}).get(key[0], {})
-                text = whole.get("text")
-                if (not isinstance(text, str) or whole.get("revision") != key[1]
-                        or "sha256:" + sha256(text.encode()).hexdigest() != whole.get("textDigest")):
-                    loader = self.context.get("_loadPinnedFile")
-                    text = loader(*key) if loader else None
-                if isinstance(text, str) and text and len(text.encode()) <= 128 * 1024:
-                    try:
-                        self.captured_units[key] = Kotlin(text, key[0])
-                    except Unsupported:
-                        pass
-            self.guard_models[body.ref] = WRITE_GUARDS(body, FAILURE, self.captured_units[key])
-        return self.guard_models[body.ref]
 
     @staticmethod
     def span(row):

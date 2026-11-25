@@ -821,6 +821,7 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         source = '''import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.transaction.support.TransactionTemplate
 
 class ParcelDispatcher(
@@ -840,9 +841,13 @@ class ParcelDispatcher(
     }
 }
 '''
-        def focused(text):
+        def project(text):
             root = text[text.index("@Scheduled"):text.rindex("\n}")]
             rows, _ = self.kotlin_callback_facts(text, root, "SCHEDULED_JOB", "dispatch")
+            return rows
+
+        def focused(text):
+            rows = project(text)
             site, = (row["_edge"]["occurrence"] for row in rows if row.get("_edge", {}).get("kind") == "INSERT")
             return [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == site]
 
@@ -855,6 +860,10 @@ class ParcelDispatcher(
             self.assertNotIn("`reply.statusCode() == 205` and", premise)
         self.assertTrue(any("fallback()" in row["text"] for row in rows if row["kind"] == "write_lineage"), rows)
         self.assertFalse(any("choose(reply)" in row["text"] for row in rows if row["kind"] == "write_lineage"), rows)
+        sequences = [row["text"] for row in project(source) if row["kind"] == "ORDERED_EFFECTS"]
+        written = [text for text in sequences if "db.update" in text]
+        self.assertTrue(written, sequences)
+        self.assertTrue(all("205` is false" in text for text in written), written)
 
         outside = focused(source.replace("reply.statusCode() == 206 && allowed", "allowed"))
         guard, = (row for row in outside if row["kind"] == "write_guard")
@@ -873,6 +882,8 @@ class ParcelDispatcher(
         nested = source.replace(no_early, "if (reply.statusCode() == 205) {\n                val selected = fallback()")
         nested = nested.replace("return@executeWithoutResult\n            }", "return@executeWithoutResult\n            }\n            }")
         self.assertFalse(any(row["kind"] == "write_request" for row in focused(nested)))
+        self.assertFalse(any("arm contains" in row["text"] and "db.update" in row["text"]
+                             for row in project(nested) if row["kind"] == "GUARDED_EFFECTS"))
         scalar = nested.replace("reply.statusCode()", "status").replace(
             "if (status == 205)", "val status = reply.statusCode()\n            if (status == 205)")
         self.assertFalse(any(row["kind"] == "write_request" for row in focused(scalar)))

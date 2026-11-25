@@ -137,7 +137,7 @@ class Controls:
         if not selected and not bypass:
             return
         guards = (*surrounding, (guard, arm))
-        predicate = join([self.body.guard_text(note, holds) for note, holds in guards])
+        predicate = join(self.body.guard_labels(guards))
         condition = [note for note, _ in guards]
         prefix = f"If execution reaches this decision in {self.scope_for(region)} and {predicate}, "
         notes = [item.note for item in unique(selected)]
@@ -166,7 +166,7 @@ class Controls:
             return
         if statement.kind == "throw" and catches:
             alternatives = ()
-        conditions = join([self.body.guard_text(guard, holds) for guard, holds in guards]) if guards else ""
+        conditions = join(self.body.guard_labels(guards)) if guards else ""
         branch = f" and {conditions}" if conditions else ""
         control = {"return": "the callback returns" if is_labeled else "the callable returns",
                    "throw": "the source throws", "break": "the loop exits",
@@ -195,20 +195,22 @@ class Controls:
             entries = (*entries[:head], *entries[-(limit - head):])
         return tuple(action.note for action in entries)
 
-    @staticmethod
-    def compatible_continuation(actions, guards):
-        selected = {guard.site: holds for guard, holds in guards}
+    def compatible_continuation(self, actions, guards):
+        selected = {guard.site: (guard, holds) for guard, holds in guards}
         result = []
         for action in actions:
-            if action.continues and all(site not in selected or selected[site] == arm
-                                        for site, arm in action.choices):
+            if not action.continues or any(site in selected and selected[site][1] != arm for site, arm in action.choices):
+                continue
+            choices = {site: (self.body.note(site), arm) for site, arm in action.choices}
+            candidate = selected | {site: choice for site, choice in choices.items() if choice[0]}
+            if self.body.feasible_guards(tuple(candidate.values())):
+                selected = candidate
                 result.append(action)
-                selected.update(action.choices)
         return result
 
     def emit_hard_exit(self, hard, guards, downstream, region, catches, returns):
         scope = self.scope_for(region)
-        conditions = [self.body.guard_text(guard, holds) for guard, holds in guards]
+        conditions = self.body.guard_labels(guards)
         if hard.bindings:
             types = join([f"`kotlin.{name}`" for name in hard.bindings])
             conditions.append(f"the cited selectors resolve to {types}")
@@ -264,10 +266,13 @@ class Controls:
                 condition, arms = branches
                 by_arm = dict(arms)
                 for arm, selected in arms:
+                    branch_guards = (*guards, (condition, arm))
+                    if not self.body.feasible_guards(branch_guards):
+                        continue
                     self.emit_arm(condition, arm, by_arm, region, guards)
                     other = self.shape(by_arm.get(not arm, ()), region)
                     reachable_after = subsequent if other.resumes or self.shape(selected, region).resumes else ()
-                    self.visit(selected, region, (*guards, (condition, arm)), reachable_after,
+                    self.visit(selected, region, branch_guards, reachable_after,
                                (*other.actions, *alternatives), callback, catches)
             elif statement.kind == "try":
                 outer = () if statement.handlers else subsequent
