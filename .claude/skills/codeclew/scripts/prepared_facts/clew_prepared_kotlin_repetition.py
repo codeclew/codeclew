@@ -1,6 +1,6 @@
 """Project one bounded, result-controlled local continuation from retained Kotlin syntax."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 
@@ -357,16 +357,16 @@ class Projection:
         sites = [loop.supplier.site, loop.binding, loop.comparison]
         if loop.supplier.site in self.external_sites:
             text = f"The retained external call in {literal} supplies {target} when its evaluation succeeds."
-        elif name in self.parameters:
-            parameter = self.parameters[name]
-            sites.append(parameter.site)
-            text = f"Source takes {target} through the declared parameter `{name}` at {literal}."
         elif name in locals_:
             local = locals_[name]
             sites.append(local.site)
             text = f"Source takes {target} through the local `{name}` at {literal}."
             if not local.mutable and local.initializer and (initial := self.literal(self.span(local.initializer))):
                 text += f" Its retained initializer is {initial}."
+        elif name in self.parameters:
+            parameter = self.parameters[name]
+            sites.append(parameter.site)
+            text = f"Source takes {target} through the declared parameter `{name}` at {literal}."
         elif name == "this" and len(tokens) >= 3 and tokens[1].text == ".":
             text = f"Source takes {target} through the member on `this` at {literal}."
         elif loop.supplier.outcome:
@@ -488,9 +488,10 @@ class Projection:
                 if len(checks) < MAX_STEPS:
                     checks.append(check)
             else:
-                # Preserve only declarations whose selected initializer is still the reaching local definition.
+                # A rebind clears the initializer proof without losing the local declaration.
                 for name in self.reassignments((statement,)):
-                    self.locals.pop(name, None)
+                    if local := self.locals.get(name):
+                        self.locals[name] = replace(local, initializer=())
                 if local := self.declaration(statement):
                     name, value = local
                     self.locals[name] = value

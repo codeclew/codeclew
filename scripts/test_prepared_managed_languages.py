@@ -978,6 +978,8 @@ class ArchiveJob(private val pages: PageSource, private val archive: Archive) {
             ('ordered comparison', '', '', 'this.current', '', 'result.size >= 10', 'member on `this`', True, False),
             ('local origin', '', 'val next = feeder.next()', 'next', '', 'result.status != Progress.More', 'local `next`', True, False),
             ('parameter origin', 'packet: Packet', '', 'packet', '', 'result.status == Progress.More', 'declared parameter `packet`', True, False),
+            ('local shadows parameter', 'packet: Packet', 'val packet = feeder.next()', 'packet', '', 'result.status == Progress.More', 'local `packet`', True, False),
+            ('rebound local still shadows parameter', 'packet: Packet', 'var packet = feeder.next(); packet = feeder.other()', 'packet', '', 'result.status == Progress.More', 'local `packet`', True, False),
             ('unreachable fault', '', '', 'this.current', 'if (false) throw IllegalStateException()', 'result.status == Progress.More', 'member on `this`', True, False),
             ('explicit exception', '', '', 'this.current', 'if (result.bad) throw IllegalStateException()', 'result.status == Progress.More', 'member on `this`', True, True),
             ('non-governing guard', 'enabled: Boolean', 'if (enabled) { kotlin.require(enabled) }', 'feeder.next()', '', 'result.status == Progress.More', 'normal return', True, False),
