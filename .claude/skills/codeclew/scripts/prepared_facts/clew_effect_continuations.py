@@ -494,7 +494,7 @@ class Trace:
         self.event_limit = MAX_EVENTS
         self.transfer_limit = MAX_TRANSFERS
         self.focal = False
-        self.focus_call = None
+        self.fault_checkpoints = None
         self.path_limit = MAX_PATHS
         self.summary_queue = None
         self.summary_visits = 0
@@ -867,8 +867,9 @@ class Trace:
                                  call=step, **data)
             return fault(failed)
 
-        priority = (step == self.focus_call if self.focus_call else
-                    self.commands["completion_boundary"](role, call.get("spelling"), call["dispatch"]))
+        if self.fault_checkpoints is not None and step in self.fault_checkpoints:
+            self.fault_checkpoints[step][len(work.sequence)].append((work, interrupt))
+        priority = self.commands["completion_boundary"](role, call.get("spelling"), call["dispatch"])
         return self.bounded(action() for action in (lambda: composed,
                                                     lambda: self.completions(work, complete, interrupt, priority)))
 
@@ -1233,14 +1234,10 @@ class Trace:
                     local.local_only = False
                     local.event_limit, local.transfer_limit = LOCAL_WORKER_EVENTS, LOCAL_WORKER_TRANSFERS
                     local.visit_limit = LOCAL_WORKER_VISITS
+                    local.fault_checkpoints = {site: defaultdict(list) for site in [*commit_sites, *publication_sites][:4]}
                 variants.extend(self.local_witnesses(local, ref, state, seed.frame, seeded, wanted))
                 if rooted:
-                    local.coverage, local.focal = False, True
-                    for site in [*commit_sites, *publication_sites][:4]:
-                        local.focus_call = site
-                        witnesses = self.local_witnesses(local, ref, state, seed.frame, seeded, wanted)
-                        variants.extend(witnesses[:2])
-                    local.coverage, local.focal, local.local_only, local.focus_call = True, False, True, None
+                    variants.extend(self.worker_faults(local, ref, state, seed.frame, seeded, wanted, variants))
                     local.event_limit, local.transfer_limit, local.visit_limit = MAX_EVENTS, MAX_TRANSFERS, LOCAL_VISITS
             witnesses = [*variants, *native] if rooted or not native else [native[0], *variants, *native[1:]]
             round_robin.append(iter(witnesses))
@@ -1288,17 +1285,53 @@ class Trace:
                 break
         return derived[:8]
 
-    def local_witnesses(self, local, ref, state, frame, scope, wanted, *, keep_normal=False):
-        local.visits = 0
+    def worker_faults(self, local, ref, state, frame, scope, wanted, witnesses):
+        """Replay a failure only at a call completed on an admitted same-seed path."""
+        checkpoints, local.fault_checkpoints = local.fault_checkpoints, None
+        local.coverage, local.focal = False, True
+        normal = [path for path, _ in witnesses if path["outcome"] in {"NORMAL_EXIT", "RETURNED"}]
+        result = []
+        try:
+            for call, positions in checkpoints.items():
+                selected = None
+                for path in normal:
+                    for index in positions:
+                        if index >= len(path["sequence"]):
+                            continue
+                        completion = path["sequence"][index]
+                        if completion.get("call") != call or completion["outcome"] not in {"RESUMED", "RETURNED"}:
+                            continue
+                        prefix = tuple(path["sequence"][:index])
+                        for work, interrupt in positions[index]:
+                            premises = [{key: value for key, value in item.items() if key != "guard"}
+                                        for item in work.conditions]
+                            if work.sequence == prefix and premises == path["conditions"][:len(premises)]:
+                                selected = work, interrupt
+                                break
+                        if selected:
+                            break
+                    if selected:
+                        break
+                if selected:
+                    work, interrupt = selected
+                    local.visits = 0
+                    failure = replace(work, modeled_faults=work.modeled_faults + 1)
+                    result.extend(self.local_witnesses(local, ref, state, frame, scope, wanted,
+                                                      exits=interrupt(failure))[:2])
+        finally:
+            local.coverage, local.focal, local.local_only = True, False, True
+        return result
+
+    def local_witnesses(self, local, ref, state, frame, scope, wanted, *, keep_normal=False, exits=None):
+        if exits is None:
+            local.visits = 0
+            exits = local.enter(ref, state, frame, ())
         results, seen = [], set()
         first_normal = None
-        for exit_ in local.enter(ref, state, frame, ()):
+        for exit_ in exits:
             current = exit_.state
             suffix = current.sequence[scope["prefixEvents"]:]
             if NULL_DISPATCH in current.uncertainties:
-                continue
-            if local.focus_call and not any(event.get("call") == local.focus_call and
-                                            event["outcome"] in {"FAULT_OR_CANCELLATION", "CALL_EXCEPTION"} for event in suffix):
                 continue
             row = {"outcome": exit_.kind, "sequence": list(current.sequence), "scope": scope, "sources": scope["sources"],
                    "conditions": [{key: value for key, value in item.items() if key != "guard"} for item in current.conditions],

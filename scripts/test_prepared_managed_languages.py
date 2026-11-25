@@ -1018,6 +1018,43 @@ sealed class Relay
                     if label.startswith("json key"):
                         self.assertTrue(any('"routing"' in row["text"] and '"key"' in row["text"] for row in deliveries), deliveries)
 
+    def test_hosted_fault_witnesses_survive_unrelated_normal_suffix_branches(self):
+        self.require_roslyn()
+        path = ROOT / "fixtures/documentation-background-processes/roslyn/ReaderWorker.cs"
+        text = "using System;\n" + path.read_text()
+        text = text.replace(
+            "            if (enabled) await ShipAsync(settings, relay, stoppingToken);",
+            "            var configured = Environment.GetEnvironmentVariable(\"RELAY_CONFIGURATION\") ?? settings;\n"
+            "            try { if (enabled) await ShipAsync(configured, relay, stoppingToken); }\n"
+            "            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }\n"
+            "            catch (Exception failure) { Console.WriteLine(failure.Message); }")
+        branches = ''.join(f'        if (settings.Length > {i}) Console.WriteLine({i});\n' for i in range(6))
+        text = text.replace("        await tx.CommitAsync(token);\n", "        await tx.CommitAsync(token);\n" + branches)
+
+        for index, name in enumerate(("ExecuteAsync", "ShipAsync", "ConnectAsync"), 1):
+            line = next(line for line in text.splitlines() if "async Task" in line and f" {name}(" in line)
+            first = text.index(line)
+            end = text.index("\n    }", first) + len("\n    }")
+            branch, context_piece = selected(path.name, text, standalone=text[first:end],
+                                             start=text[:first].count("\n") + 1)
+            if index == 1:
+                process, context = branch, context_piece
+                process.update(entryKind="HOSTED_BACKGROUND_WORKER", entrySymbol="ReaderWorker.ExecuteAsync")
+            else:
+                ref = f"s{index}"
+                body = branch["sources"]["s1"]
+                process["sources"][ref] = body
+                process["facts"].append({"kind": "BODY", "declaration": name, "sources": [ref]})
+                context["sourceRanges"].append({**body, "id": f"m123456789abc:e{index}", "references": [ref]})
+        context["_nativeFiles"][path.name] = captured_csharp(text, path.name)
+        facts, _ = self.project(process, context)
+        retries = [row for row in facts if row["kind"] == "worker-reselection"]
+        self.assertTrue(any("broker may already have accepted" in row["text"] for row in retries), retries)
+        self.assertTrue(any("`CommitAsync` can fail" in row["text"] for row in retries), retries)
+        self.assertTrue(all("still-eligible" in row["text"] and "depend" in row["uncertainty"] for row in retries), retries)
+        self.assertTrue(any("worker-row-delivery" == row["kind"] and "matching transaction" in row["text"]
+                            for row in facts), facts)
+
     def test_roslyn_lookup_checks_later_rows_before_claiming_no_match(self):
         self.require_roslyn()
         header = """using System.Collections.Generic;
