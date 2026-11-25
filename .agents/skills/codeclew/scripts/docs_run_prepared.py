@@ -871,10 +871,9 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         if edge_module and requirement['kind'] == 'ENTRY':
             edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
         visible, limited = [], 0
-        for fact in propositions:
-            fact.pop('_edge', None)
-            fact.pop('_edgeCause', None)
-            fact.pop('_edgePhase', None)
+        for internal in propositions:
+            # The continuation index still owns the private causal metadata.
+            fact = {key: value for key, value in internal.items() if not key.startswith('_')}
             size = len(encode(fact))
             if len(visible) >= MAX_FACTS or total_bytes + size > MAX_PACKET_BYTES:
                 limited += 1

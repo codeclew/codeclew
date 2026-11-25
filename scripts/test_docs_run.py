@@ -2172,6 +2172,88 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertFalse(any(row["kind"] == "http-failure-after-peer-commit"
                              for row in self.project(front, no_commit)[front[0]["id"]]))
 
+    def test_full_preparation_keeps_private_cause_until_both_services_are_projected(self):
+        node = shutil.which("node")
+        if not node or subprocess.run([node, "-e", 'require("typescript")'], capture_output=True).returncode:
+            self.skipTest("The locked TypeScript projector is unavailable")
+        front = """async function claim(reply: Reply, host: string, id: string) {
+    try {
+        const res = await fetch(`${host}/books/${encodeURIComponent(id)}/claim`, {method: "POST"});
+        return reply.code(res.status).send(await res.json());
+    } catch {
+        return reply.code(502).send({error: "REMOTE_UNAVAILABLE"});
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            services, scopes, requirements, work_rows = {}, {}, [], {}
+            for name, file, body, route in (
+                ("gateway", "Gateway.ts", front, "/claim"),
+                ("catalogue", "Catalogue.kt", "fun claim(): Int { return 201 }\n", "/books/{id}/claim"),
+            ):
+                home = root / name
+                home.mkdir()
+                work = name + "-work"
+                source = F["source"]()
+                source.update(file=file, text=body, textDigest=D["sha"](body.encode()), startLine=1,
+                              endLine=len(body.splitlines()))
+                manifest, _, _ = F["fixture"](home, service=name, work=work, record=source,
+                                               authority="EXACT_SNAPSHOT_TEXT")
+                scope = {"work": work, "revision": source["revision"], "coverage": {"boundaries": []},
+                         "inputDigest": work + "-input", "contextDigest": work + "-context"}
+                entry = {"id": name + ":entry", "kind": "ENTRY", "entryKind": "HTTP_ENDPOINT",
+                         "service": name, "entrypoint": "claim", "method": "POST", "path": route,
+                         "page": name + ".md", "sourceIds": [source["id"]], "sourceReferences": ["s9"],
+                         "registrationSourceIds": [source["id"]], "rootDeclarations": [name + "-root"]}
+                work_rows[work] = {"kind": "THREAD_OBLIGATION", "id": "BODY:" + name, "obligationKind": "BODY",
+                                   "record": {"declaration": name + "-root", "sourceIds": [source["id"]]},
+                                   "sourceReferences": ["s9"]}
+                D["save"](home / "requirements.json", {entry["id"]: {"views": ["view.md"]}})
+                (home / "view.md").write_text("# " + file + "\n\n```\n" + body + "```\n")
+                services[name] = {"manifest": str(manifest), "sourceIndex": str(home / "index.md"),
+                                  "views": {file: {"file": file, "view": "view.md"}}}
+                scopes[name] = scope
+                requirements.append(entry)
+
+            def collect(launcher, docs_root, work, output, **kwargs):
+                output.mkdir(parents=True)
+                kind = kwargs["selection"]["query"]["kind"]
+                D["save"](output / "items.json", [work_rows[work]] if kind == "THREAD_CONTEXT" else [])
+                return {"status": "COMPLETE", "identity": {"snapshot": F["SNAPSHOT"],
+                        "inputDigest": work + "-input", "contextDigest": work + "-context"}}
+
+            native_run_path = runpy.run_path
+            def run_path(filename, **kwargs):
+                module = native_run_path(filename, **kwargs)
+                if not filename.endswith("/managed_languages.py"):
+                    return module
+                original = module["project"]
+                def adapt(process, context, *, node):
+                    if process["service"] != "catalogue":
+                        return original(process, context, node=node)
+                    proof, = context["sourceRanges"]
+                    return [{"kind": "http-commit-before-response", "authority": "RETAINED_PATH",
+                             "text": "The handler commits the transaction before returning HTTP 201.",
+                             "sources": [proof["id"]]}], {}
+                return {**module, "project": adapt}
+
+            job = {"clew": "/fixture/clew", "root": str(root), "snapshot": F["SNAPSHOT"],
+                   "node": node, "services": list(services)}
+            prepared = {"bounds": {"visibleBytes": 100_000}, "visibleBytes": 0,
+                        "requirements": requirements.copy(), "services": services}
+            inventory = {"requirements": requirements, "services": scopes}
+            with patch.dict(D["T"], {"collect": collect}), patch.object(runpy, "run_path", run_path):
+                with patch.dict(D["prepare_facts"].__globals__, {"command": lambda *a, **kw: {}}):
+                    D["prepare_facts"](job, inventory, prepared)
+            page = (root / "gateway/view.md").read_text()
+            self.assertIn("[http-failure-after-peer-commit", page)
+            self.assertIn("reply.code receives 502", page)
+            self.assertIn("upstream write may already be committed", page)
+            self.assertIn("REMOTE_UNAVAILABLE", page)
+            authored = D["load"](root / "gateway/prepared-facts.json")["entries"]["gateway:entry"]["propositions"]
+            self.assertTrue(all(not any(key.startswith("_") for key in row) for row in authored))
+
     def test_http_peer_ambiguity_does_not_select_an_outcome_and_missing_proof_stays_open(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
             "adapter": "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "method": "GET", "path": "/units"}}
