@@ -886,6 +886,94 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes["audit_log"]]
         self.assertFalse(any("parser.parse" in row["text"] for row in audit if row["kind"] == "write_lineage"), audit)
 
+    def test_kotlin_validation_skip_applies_only_to_the_selected_later_write(self):
+        template = """import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.transaction.support.TransactionTemplate
+
+class Publisher(private val tx: TransactionTemplate, private val queue: Store) {
+    @Scheduled(fixedDelay = 400)
+    fun publish(ready: Boolean) {
+        tx.executeWithoutResult {
+            queue.update("INSERT INTO delivery (kind) VALUES (?)", "before")
+            VALIDATION
+            queue.update("INSERT INTO delivery (kind) VALUES (?)", "after")
+        }
+    }
+}
+"""
+        variants = {
+            'qualified require': ('kotlin.require(ready)', 'IllegalArgumentException'),
+            'escaped error': ('if (!ready) kotlin.error("disabled")', 'IllegalStateException'),
+            'caught require': ('try { kotlin.require(ready) } catch (bad: IllegalArgumentException) { recover() }', None),
+            'caught error': ('try { if (!ready) kotlin.error("disabled") } catch (bad: IllegalStateException) { recover() }', None),
+            'caught throw': ('try { if (!ready) throw IllegalStateException() } catch (bad: IllegalStateException) { recover() }', None),
+            'optional assertion': ('assert(ready)', None),
+            'always passes': ('kotlin.check(true)', None),
+            'infeasible failure': ('if (ready) kotlin.require(ready)', None),
+        }
+        for title, (validation, exception) in variants.items():
+            with self.subTest(title=title):
+                source = template.replace('VALIDATION', validation)
+                root = source[source.index('@Scheduled'):source.rindex('\n}')]
+                rows, witnesses = self.kotlin_callback_facts(source, root, 'SCHEDULED_JOB', 'publish')
+                sites = {}
+                for row in rows:
+                    if row.get('_edge', {}).get('kind') == 'INSERT':
+                        anchor = witnesses[row['_writeSite']]
+                        site = 'after' if '"after"' in anchor['text'] else 'before'
+                        sites[site] = row['_edge']['occurrence']
+                self.assertEqual(set(sites), {'before', 'after'}, rows)
+                exits = [row for row in rows if row['kind'] == 'write_skip' and 'guard throws' in row['text']]
+                if exception is None:
+                    self.assertFalse([row for row in rows if row['kind'] == 'write_skip'], rows)
+                    continue
+                self.assertTrue(exits, rows)
+                for exit in exits:
+                    self.assertEqual(exit['_writeFocus']['occurrence'], sites['after'])
+                    self.assertIn(exception, exit['text'])
+                    self.assertIn('ready', exit['condition'])
+                    self.assertIn('"after"', witnesses[exit['_writeSite']]['text'])
+
+    def test_kotlin_write_focus_keeps_initial_local_and_validated_external_origins(self):
+        source = """import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.transaction.support.TransactionTemplate
+
+class Publisher(private val tx: TransactionTemplate, private val queue: Store, private val parser: Parser) {
+    @Scheduled(fixedDelay = 400)
+    fun publish(useLocal: Boolean, archived: Boolean) {
+        tx.executeWithoutResult {
+            val cached = loadCache()
+            val selected = if (useLocal) {
+                if (archived) cached.archive else cached.live
+            } else {
+                val response = remote.read()
+                val decoded = parser.parse(response.body())
+                kotlin.require(decoded.valid)
+                decoded.value
+            }
+            queue.update("INSERT INTO delivery (value) VALUES (?)", selected)
+        }
+    }
+}
+"""
+        root = source[source.index('@Scheduled'):source.rindex('\n}')]
+        rows, witnesses = self.kotlin_callback_facts(source, root, 'SCHEDULED_JOB', 'publish')
+        write, = (row['_edge']['occurrence'] for row in rows if row.get('_edge', {}).get('kind') == 'INSERT')
+        focused = [row for row in rows if row.get('_writeFocus', {}).get('occurrence') == write]
+        lineages = [row for row in focused if row['kind'] == 'write_lineage']
+        external = [row for row in lineages if 'parser.parse' in row['text']]
+        local = [row for row in lineages if 'loadCache' in row['text']]
+        self.assertTrue(external and local, focused)
+        self.assertTrue(any('remote.read()' in row['text'] and 'decoded.valid' in row['condition']
+                            and '`useLocal` is false' in row['condition'] for row in external), external)
+        self.assertTrue(all('`useLocal`' in row['condition'] and '`useLocal` is false' not in row['condition']
+                            for row in local), local)
+        compacted = [row for row in focused if row['kind'] == 'write_skip' and 'guard throws' in row['text']]
+        self.assertTrue(any('`useLocal` is false' in row['condition'] and 'decoded.valid' in row['condition']
+                            for row in compacted), focused)
+        for row in (*lineages, *compacted):
+            self.assertIn('INSERT INTO delivery', witnesses[row['_writeSite']]['text'])
+
     def test_kotlin_focused_write_joins_normal_initializer_arms_and_keeps_feasible_guards(self):
         source = '''import java.net.http.HttpClient
 import java.net.http.HttpRequest

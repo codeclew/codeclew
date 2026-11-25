@@ -96,28 +96,51 @@ def incoming_topics(process):
     return tuple(dict.fromkeys(value for value in topics if isinstance(value, str)))[:MAX_TOPICS]
 
 
-def unique_details(results, retain_alternatives=False):
-    """Keep distinct kinds visible within the per-occurrence delivery bound."""
+def origin_order(rows):
+    """Sample the first retained origin site for each lineage before sibling paths."""
+    origins, remaining = {}, []
+    for row in rows:
+        origin = row.get("_writeOrigin") or (row["text"], row.get("condition"))
+        if origin in origins:
+            remaining.append(row)
+        else:
+            origins[origin] = row
+    return [*origins.values(), *remaining]
+
+
+def ordered_details(results, retain_alternatives=False):
     groups = {}
     for result in results:
         if result["kind"] in FOCUS_KINDS:
             groups.setdefault(result["kind"], []).append(result)
-    lineage = groups.get("write_lineage", ())
-    if len(lineage) > 1 and "write_formation" in groups:
-        # Give a second source-proven value path the slot used for the generic initializer summary.
-        groups["write_formation"].insert(0, lineage.pop(1))
-    layers = (group[index] for index in range(MAX_FACTS_PER_WRITE) for group in groups.values() if index < len(group))
-    chosen = []
-    for result in layers:
-        chosen.append(result)
-        if len(chosen) == MAX_FACTS_PER_WRITE:
-            break
     if retain_alternatives:
-        represented = {row.get("condition") for row in chosen if row["kind"] == "write_request"}
-        for row in groups.get("write_request", ()):
-            if row.get("condition") not in represented:
+        for kind, rows in groups.items():
+            unique = {}
+            for row in rows:
+                unique.setdefault((row["text"], row.get("condition")), row)
+            groups[kind] = list(unique.values())
+        priority = ("write_request", "write_skip", "write_lineage", "write_commit", "write_guard")
+        groups = {kind: groups[kind] for kind in dict.fromkeys((*priority, *groups)) if kind in groups}
+        if "write_lineage" in groups:
+            groups["write_lineage"] = origin_order(groups["write_lineage"])
+    elif len(lineage := groups.get("write_lineage", ())) > 1 and "write_formation" in groups:
+        groups["write_formation"].insert(0, lineage.pop(1))
+    return [group[index] for index in range(max(map(len, groups.values()), default=0))
+            for group in groups.values() if index < len(group)]
+
+
+def unique_details(results, retain_alternatives=False):
+    """Keep the source-proven alternatives from the bounded focused replay."""
+    ordered = ordered_details(results, retain_alternatives)
+    chosen = ordered[:MAX_FACTS_PER_WRITE]
+    if retain_alternatives:
+        preserve = {"write_request", "write_skip", "write_lineage", "write_sql"}
+        seen = {(row["kind"], row["text"], row.get("condition")) for row in chosen}
+        for row in ordered[MAX_FACTS_PER_WRITE:]:
+            identity = row["kind"], row["text"], row.get("condition")
+            if row["kind"] in preserve and identity not in seen:
+                seen.add(identity)
                 chosen.append(row)
-                represented.add(row.get("condition"))
     return chosen
 
 

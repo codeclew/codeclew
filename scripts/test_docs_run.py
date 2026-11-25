@@ -2447,6 +2447,7 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
     }
 
     private fun persist(entry: Parcel) {
+        kotlin.require(entry.valid)
         if (entry.changed) {
             db.update("INSERT INTO delivery (id) VALUES (?)", entry.id)
         } else {
@@ -2512,6 +2513,13 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         for write in result['writes']:
             requests = [fact for fact in write['focus'].get(None, ()) if fact['kind'] == 'write_request']
             self.assertTrue(requests, write)
+            exits = [fact for fact in write['focus'].get(None, ()) if fact['kind'] == 'write_skip'
+                     and 'guard throws' in fact['text']]
+            self.assertTrue(exits, write)
+            self.assertTrue(all('entry.ready' in fact['condition'] and '`entry.valid` is false' in fact['condition']
+                                for fact in exits), exits)
+            self.assertEqual({fact['_writeSite']['startByte'] for fact in exits},
+                             {fact['_writeSite']['startByte'] for fact in requests})
             for request in requests:
                 # The same physical call may have two retained aliases, with identical predicates.
                 guarded.setdefault(request['_writeSite']['startByte'], set()).add(request['condition'])

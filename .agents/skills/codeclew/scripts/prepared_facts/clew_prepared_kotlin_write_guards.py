@@ -7,6 +7,7 @@ import re
 HTTP_CLIENT = "java.net.http.HttpClient"
 HTTP_RESPONSE = "java.net.http.HttpResponse"
 INT = "kotlin.Int"
+BOOLEAN = "kotlin.Boolean"
 INTEGER = re.compile(r"-?(?:0|[1-9]\d{0,9})\Z")
 
 
@@ -45,6 +46,8 @@ class GuardModel:
         if words in {("Int",), ("Int", "?")} and not any(
                 bindings.get("Int") for bindings in (unit.class_names, unit.imports, unit.aliases)):
             return INT
+        if words == ("Boolean",) and not any(bindings.get("Boolean") for bindings in (unit.class_names, unit.imports, unit.aliases)):
+            return BOOLEAN
         return unit.declared_type(tokens)
 
     def stable_binding(self, name, index, depth=0):
@@ -87,8 +90,11 @@ class GuardModel:
         return None
 
     def result_type(self, tokens, depth):
-        if self.number(self.syntax["strings"](tokens)) is not None:
+        words = self.syntax["strings"](tokens)
+        if self.number(words) is not None:
             return INT
+        if words in {("true",), ("false",)}:
+            return BOOLEAN
         if call := self.syntax["invocation"](tokens):
             callee, args = call
             if len(callee) == 3 and callee[1].text == ".":
@@ -111,6 +117,15 @@ class GuardModel:
         first, last = unit.token_indices.get(note.site.start), unit.token_ends.get(note.site.end)
         if first is None or last is None or self.body.note(note.site) != note:
             return
+        while first < last and unit.words[first] == "(" and unit.pairs[first] == last:
+            first, last = first + 1, last - 1
+        negated = unit.words[first] == "!"
+        name = unit.words[last]
+        if last == first + int(negated) and self.syntax["name"](name):
+            index = self.unit.token_indices.get(self.origin + unit.tokens[last].start)
+            binding = self.stable_binding(name, index) if index is not None else None
+            if binding and binding[0] == BOOLEAN:
+                yield (binding[1], BOOLEAN), None, holds != negated, True
         for left, operator, right in self.terms(unit, first, last + 1, holds):
             for value, tested in ((left, right), (right, left)):
                 if not tested or (number := self.number(self.syntax["strings"](value))) is None:
@@ -153,6 +168,8 @@ class GuardModel:
     def feasible(self, guards):
         selected, excluded = {}, defaultdict(set)
         for note, holds in guards:
+            if note.text in {"`true`", "`false`"} and holds != (note.text == "`true`"):
+                return False
             for identity, _, number, equality in self.atoms(note, holds):
                 if identity is None:
                     continue

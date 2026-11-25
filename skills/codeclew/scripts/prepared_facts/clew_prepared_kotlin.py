@@ -20,6 +20,7 @@ Controls, Action = FLOW["Controls"], FLOW["Action"]
 OPERANDS = runpy.run_path(str(HERE / "clew_prepared_kotlin_operands.py"))
 PROTOCOLS = runpy.run_path(str(HERE / "clew_prepared_kotlin_protocols.py"))["Projection"]
 HARD_GUARD = runpy.run_path(str(HERE / "clew_prepared_kotlin_hard_exits.py"))["derive"]
+WRITE_FOCUS = runpy.run_path(str(HERE / "clew_prepared_write_focus.py"))
 WRITE_LINEAGE = runpy.run_path(str(HERE / "clew_prepared_kotlin_write_lineage.py"))["project"]
 WRITE_GUARDS = runpy.run_path(str(HERE / "clew_prepared_kotlin_write_guards.py"))["GuardModel"]
 Kotlin, Site, Unsupported = (FAILURE[key] for key in ("Kotlin", "Site", "Unsupported"))
@@ -1318,7 +1319,7 @@ class FocusedWrite(Projector):
             premise = self.conditions(body, (*inherited, *guards))
             action = f" reaches {ending.text} before the selected write" if ending else " bypasses the selected write on this path"
             notes = [*(note for note, _ in (*inherited, *guards)), *([ending] if ending else [])]
-            skips.append((f"When {premise}, source{action}.", trail, notes))
+            skips.append((f"When {premise}, source{action}.", trail, notes, premise))
         return [(path, (*inherited, *guards)) for path, guards in self.join_arrivals(arriving)], tuple(skips)
 
     def mutation(self, body, paths, at):
@@ -1336,8 +1337,8 @@ class FocusedWrite(Projector):
             candidates[at] = (body.note(at), [])
         return next(iter(candidates.items())) if len(candidates) == 1 else None
 
-    def structural_path(self, body, prefix, target, callback, trail, inherited):
-        """Follow the direct lexical continuation when a prior region opens path state."""
+    def lexical_skips(self, body, suite, target, callback, trail, inherited, caught, future=(), *, abrupt=False):
+        """Find terminating guard paths with the exact selected site in their downstream source."""
         skips = []
         projector = self
 
@@ -1345,24 +1346,57 @@ class FocusedWrite(Projector):
             def emit_arm(self, *args):
                 pass
 
-            def emit_hard_exit(self, *args):
-                pass
+            def targets(self, downstream, guards=()):
+                for item in downstream:
+                    if not projector.reached(body, PathState(effects=(item.note,)), target):
+                        continue
+                    choices = [(body.note(site), arm) for site, arm in item.choices]
+                    if all(note for note, _ in choices) and body.feasible_guards((*guards, *choices)):
+                        return True
+                return False
+
+            def emit_hard_exit(self, hard, guards, downstream, region, catches, returns):
+                if catches or returns:
+                    return
+                selected = (*inherited, *guards)
+                normal = (*selected, (hard.predicate, True)) if hard.predicate else selected
+                if not self.targets(downstream, normal):
+                    return
+                if hard.predicate and not body.feasible_guards((*selected, (hard.predicate, False))):
+                    return
+                conditions = body.guard_labels(selected)
+                if hard.bindings:
+                    conditions.append("the cited selectors resolve to " + join([quote("kotlin." + name) for name in hard.bindings]))
+                if hard.false:
+                    conditions.append(hard.false)
+                premise = join(list(dict.fromkeys(conditions))) if conditions else None
+                test = f" and {premise}" if premise else ""
+                proof = [*(note for note, _ in selected), *hard.proof]
+                skips.append((f"If execution reaches {hard.failure.text}{test}, the guard throws "
+                              f"{quote(hard.exception)} if its arguments finish evaluating, before the selected write.",
+                              trail, proof, premise))
 
             def exit(self, statement, guards, subsequent, alternatives, region, callback, catches):
-                if (statement.kind not in {"return", "throw"} or statement.kind == "throw" and catches
-                        or not any(item.note.site == target.site for item in subsequent)):
+                if (not abrupt or statement.kind not in {"return", "throw"} or statement.kind == "throw" and catches
+                        or not self.targets(subsequent)):
                     return
-                words = self.body.words(statement)
+                words = body.words(statement)
                 if statement.kind == "return" and (words[:1] == ("@",) or callback) and words[:2] != ("@", callback):
                     return
-                ending = self.body.note(statement.site)
+                ending = body.note(statement.site)
                 premise = projector.conditions(body, (*inherited, *guards))
                 if ending and premise:
                     notes = [*(note for note, _ in (*inherited, *guards)), ending]
                     skips.append((f"If this check is reached and {premise}, source reaches {ending.text} before the selected write.",
-                                  trail, notes))
+                                  trail, notes, premise))
 
-        controls = TargetExits(body, "the retained write body", trail)
+        TargetExits(body, "the retained write body", trail).visit(suite, "CALLABLE", future=future,
+                                                                  callback=callback, catches=caught)
+        return tuple(skips)
+
+    def structural_path(self, body, prefix, target, callback, trail, inherited, caught):
+        """Follow the direct lexical continuation when a prior region opens path state."""
+        controls = Controls(body, "the retained write body", trail)
         guards = []
         for statement in prefix:
             if controls.flow_budget <= 0 or not controls.statement_shape(statement, "CALLABLE").resumes:
@@ -1375,8 +1409,8 @@ class FocusedWrite(Projector):
                 continuing = [arm for arm, suite in arms if controls.shape(suite, "CALLABLE").resumes]
                 if len(continuing) == 1:
                     guards.append((condition, continuing[0]))
-        controls.visit(prefix, "CALLABLE", future=(Action(target, "CALLABLE"),), callback=callback)
-        return tuple(guards), tuple(skips)
+        return tuple(guards), self.lexical_skips(body, prefix, target.site, callback, trail, inherited, caught,
+                                                 (Action(target, "CALLABLE"),), abrupt=True)
 
     @staticmethod
     def formation(body, prefix, action):
@@ -1430,8 +1464,9 @@ class FocusedWrite(Projector):
                                           *([normal_prefix] if normal_prefix else ()), *extra]))
             proof = [*(guard for guard, _ in guards), *(guard for _, guard in value.conditions),
                      *(piece for _, links in value.steps for piece in links)]
+            origin = value.steps[0][1][0].site
             self.record("write_lineage", f"{statements} at {note.text}.", trail, [note, transaction, *proof],
-                        condition=join(premises),
+                        condition=join(premises), _writeOrigin=(origin.file, origin.start, origin.end),
                         uncertainty="The cited path applies if its calls and evaluations complete normally and the database write joins this transaction.")
 
     def local_value_lineage(self, body, suite, trail, guards, transaction):
@@ -1451,7 +1486,7 @@ class FocusedWrite(Projector):
                     self.value_lineage(body, suite[:index], part.site, note, trail, guards, transaction)
 
     @staticmethod
-    def loop_regions(body, suite, guards, controls, depth=0):
+    def loop_regions(body, suite, guards, controls, caught, depth=0):
         """Select a possible iteration under the normal lexical prefix."""
         if depth > 8:
             return
@@ -1462,20 +1497,34 @@ class FocusedWrite(Projector):
             if local.kind == "for" and local.expression:
                 if note := body.note(token_site(local.expression)):
                     iteration = replace(note, text=f"source reaches an iteration of {note.text}")
-                    yield local.body, (*guards, (iteration, True))
+                    yield local.body, (*guards, (iteration, True)), caught
             elif decision := body.decision(local):
                 note, arms = decision
                 for holds, arm in arms:
-                    yield from FocusedWrite.loop_regions(body, arm, (*guards, (note, holds)), controls, depth + 1)
+                    yield from FocusedWrite.loop_regions(body, arm, (*guards, (note, holds)), controls, caught, depth + 1)
                 viable = [holds for holds, arm in arms if controls.shape(arm, "CALLABLE").resumes]
                 if len(viable) == 1:
                     guards = (*guards, (note, viable[0]))
             elif local.kind == "try":
-                yield from FocusedWrite.loop_regions(body, local.body, guards, controls, depth + 1)
+                yield from FocusedWrite.loop_regions(body, local.body, guards, controls, caught or bool(local.handlers), depth + 1)
             if not controls.statement_shape(statement, "CALLABLE").resumes:
                 return
 
-    def capture(self, body, suite, callback, paths, at, trail, inherited, transaction, bypasses):
+    @staticmethod
+    def catches_at(body, suite, site, depth=0):
+        if depth >= 8:
+            return True
+        for statement in suite:
+            if not encloses(statement.site, site):
+                continue
+            local = body.expression_control(statement) or statement
+            if local.kind == "try" and local.handlers and any(encloses(nested.site, site) for nested in local.body):
+                return True
+            children = (local.body, local.alternative, local.cleanup, *(suite for _, _, suite in local.handlers))
+            return any(FocusedWrite.catches_at(body, child, site, depth + 1) for child in children if child)
+        return False
+
+    def capture(self, body, suite, callback, paths, at, trail, inherited, transaction, bypasses, caught):
         direct = next((index for index, statement in enumerate(suite) if at and encloses(statement.site, at)), None)
         exact = body.action(suite[direct]) if direct is not None else None
         probe = [PathState(effects=(exact,))] if exact else []
@@ -1486,9 +1535,11 @@ class FocusedWrite(Projector):
             return False
         reached, skips = self.follow(body, paths, action, trail, inherited)
         normal_prefix = None
+        if reached:
+            skips = (*skips, *self.lexical_skips(body, suite, action, callback, trail, inherited, caught))
         if (not reached and probe and self.reached(body, probe[0], action)
                 and not any(self.reached(body, path, action) for path in paths)):
-            structural = self.structural_path(body, suite[:direct], exact, callback, trail, inherited)
+            structural = self.structural_path(body, suite[:direct], exact, callback, trail, inherited, caught)
             if structural:
                 guards, skips = structural
                 normal_prefix = "preceding evaluations and any loop iterations complete normally"
@@ -1496,8 +1547,8 @@ class FocusedWrite(Projector):
                 if self.guard_model(body).feasible(guards):
                     reached = [(replace(probe[0], open=not normal_tail), (*inherited, *guards))]
         if reached:
-            for text, sources, notes in (*bypasses, *skips):
-                self.record("write_skip", text, sources, notes)
+            for text, sources, notes, premise in (*bypasses, *skips):
+                self.record("write_skip", text, sources, notes, condition=premise)
         prefix = self.lexical_prefix(body, suite, action) if reached else None
         formation = self.formation(body, prefix, action) if prefix is not None else []
         for path, guards in reached:
@@ -1531,12 +1582,12 @@ class FocusedWrite(Projector):
         if len(roots) != 1 or len(rows) > MAX_ROWS:
             return []
         ref, label = next(iter(roots.items()))
-        pending = [(ref, label, self.process.get("root"), (), (), (), None, ())]
+        pending = [(ref, label, self.process.get("root"), (), (), (), None, (), False)]
         reached = False
         for _ in range(MAX_BODIES):
             if not pending or self.steps <= 0:
                 break
-            ref, label, declaration, ancestry, trail, guards, transaction, bypasses = pending.pop(0)
+            ref, label, declaration, ancestry, trail, guards, transaction, bypasses, caught = pending.pop(0)
             if ref in ancestry or ref not in self.ranges.by_ref:
                 continue
             try:
@@ -1549,25 +1600,28 @@ class FocusedWrite(Projector):
             links = list(self.links(body, declaration, retained, declared))
             protocols = PROTOCOLS(body, suite, label, declaration)
             protocols.selected()
-            regions = [(suite, None, guards, proof, transaction, bypasses)]
+            regions = [(suite, None, guards, proof, transaction, bypasses, caught)]
             visited_callbacks = set()
-            for suite, callback, inherited, trail, transaction, bypasses in regions:
-                paths = [path for path in body.continuation(suite, PathState(), label, callback) if not path.fragment]
+            for suite, callback, inherited, trail, transaction, bypasses, caught in regions:
+                paths = [path for path in body.continuation(suite, PathState(), label, callback, caught) if not path.fragment]
                 if self.site:
-                    reached |= self.capture(body, suite, callback, paths, at, trail, inherited, transaction, bypasses)
+                    reached |= self.capture(body, suite, callback, paths, at, trail, inherited, transaction, bypasses, caught)
                 else:
                     self.local_value_lineage(body, suite, trail, inherited, transaction)
                 controls = Controls(body, label, trail)
-                for inner, local in self.loop_regions(body, suite, inherited, controls):
+                for inner, local, protected in self.loop_regions(body, suite, inherited, controls, caught):
                     if len(regions) >= MAX_CALLBACKS:
                         break
-                    regions.append((inner, callback, local, trail, transaction, bypasses))
+                    regions.append((inner, callback, local, trail, transaction, bypasses, protected))
                 for call, (target, name_, symbol, note) in links:
                     handoff = (*trail, *note.citations)
                     continuing, skipped = self.follow(body, paths, call, handoff, inherited)
+                    if continuing and self.site:
+                        skipped = (*skipped, *self.lexical_skips(body, suite, call, callback, handoff, inherited, caught))
                     for path, local in continuing:
-                        pending.append((target, name_, symbol, (*ancestry, ref), (*trail, *note.citations), local,
-                                        transaction if self.normal(path) else None, (*bypasses, *skipped)))
+                        pending.append((target, name_, symbol, (*ancestry, ref), handoff, local,
+                                        transaction if self.normal(path) else None, (*bypasses, *skipped),
+                                        caught or self.catches_at(body, suite, call)))
                 body.deferred(declaration, project=False)
                 for site, (owner, block, inner) in body.callback_scopes.items():
                     if site in visited_callbacks:
@@ -1577,18 +1631,19 @@ class FocusedWrite(Projector):
                     if not opens_transaction and site not in body.callback_inline:
                         continue
                     continuing, skipped = self.follow(body, paths, owner.site, trail, inherited)
+                    if continuing and self.site:
+                        skipped = (*skipped, *self.lexical_skips(body, suite, owner.site, callback, trail, inherited, caught))
                     for path, local in continuing:
                         visited_callbacks.add(site)
                         note = binding.evidence if opens_transaction else transaction
-                        regions.append((inner, block.label, local, trail, note if self.normal(path) else None, (*bypasses, *skipped)))
+                        regions.append((inner, block.label, local, trail, note if self.normal(path) else None, (*bypasses, *skipped),
+                                        caught or self.catches_at(body, suite, owner.site)))
         if not self.site:
             return list(self.output.values())[:12]
         if not reached:
             return [{"kind": "write_boundary", "text": "The retained Kotlin callback does not establish a reachable call at this exact write occurrence.",
                      "sources": [self.site["id"]]}]
-        order = {kind: index for index, kind in enumerate(("write_guard", "write_request", "write_commit", "write_lineage",
-                                                         "write_formation", "write_sql", "write_skip"))}
-        return sorted(self.output.values(), key=lambda row: order[row["kind"]])[:18]
+        return WRITE_FOCUS["ordered_details"](self.output.values(), retain_alternatives=True)[:18]
 
 
 def derive_write(process, context, graph, site):

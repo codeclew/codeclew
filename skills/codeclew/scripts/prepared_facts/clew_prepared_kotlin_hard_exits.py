@@ -20,6 +20,7 @@ class HardGuard:
     exception: str
     true: str = ""
     false: str = ""
+    predicate: object = None
 
     @property
     def verified(self):
@@ -131,7 +132,7 @@ def derive(body, statement):
         if assignments or statement.kind != "expression" or not (condition := argument(body, part)):
             return None
         return HardGuard(call, (*evidence, condition, call), bindings, exception,
-                         condition.text + " is true", condition.text + " is false")
+                         condition.text + " is true", condition.text + " is false", condition)
     if part.member != "error":
         return None
     receiver = body.note(unit.site(start, pivot))
