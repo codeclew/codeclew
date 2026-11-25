@@ -1300,16 +1300,21 @@ static class LedgerApi
             await append.ExecuteNonQueryAsync();
         }
     }"""
-        source = header + entry + "\n" + helper + "\n}\n"
-        process, context = selected("LedgerApi.cs", source, standalone=entry, start=header.count("\n") + 1)
-        helper_bindings, _ = selected("LedgerApi.cs", source, standalone=helper,
-                                      start=header.count("\n") + entry.count("\n") + 2)
-        bound = helper_bindings["sources"]["s1"]
-        process["sources"]["s2"] = bound
-        process["facts"].append({"kind": "BODY", "declaration": "helper", "sources": ["s2"]})
-        context["sourceRanges"].append({**bound, "id": "m123456789abc:e2", "references": ["s2"]})
-        context["_nativeFiles"]["LedgerApi.cs"] = captured_csharp(source, "LedgerApi.cs")
-        facts, _ = self.project(process, context)
+        def project(root, *bodies):
+            source = header + "\n".join((root, *bodies)) + "\n}\n"
+            process, context = selected("LedgerApi.cs", source, standalone=root, start=header.count("\n") + 1)
+            for number, body in enumerate(bodies, start=2):
+                binding, _ = selected("LedgerApi.cs", source, standalone=body,
+                                      start=source[:source.index(body)].count("\n") + 1)
+                bound = binding["sources"]["s1"]
+                ref = f"s{number}"
+                process["sources"][ref] = bound
+                process["facts"].append({"kind": "BODY", "declaration": f"helper-{number}", "sources": [ref]})
+                context["sourceRanges"].append({**bound, "id": f"m123456789abc:e{number}", "references": [ref]})
+            context["_nativeFiles"]["LedgerApi.cs"] = captured_csharp(source, "LedgerApi.cs")
+            return self.project(process, context)[0]
+
+        facts = project(entry, helper)
         skipped = [row for row in facts if row["kind"] == "conditional-no-write" and "audit_log" in row["text"]]
         normal = [row for row in skipped if "is not null` is false" in row.get("condition", "")]
         fault = [row for row in skipped if "lookup.ExecuteScalarAsync()` faults or is cancelled" in row.get("condition", "")]
@@ -1322,6 +1327,35 @@ static class LedgerApi
                                 row)
         self.assertTrue(all("is not null` is false" not in row["condition"] for row in fault), fault)
         self.assertTrue(any(row["kind"] == "sql-write" and "audit_log" in row["text"] for row in facts), facts)
+
+        unrelated = entry.replace("int mode)", "int mode, string? caption)").replace(
+            '        var label = mode switch', '        var title = caption ?? "entry";\n        var label = mode switch'
+        ).replace("Results.Ok(label)", "Results.Ok(title + label)")
+        prefixed = project(unrelated, helper)
+        local = [row for row in prefixed if row["kind"] == "conditional-no-write" and "audit_log" in row["text"]
+                 and "control reaches the guard in `RecordIfFound`" in row["condition"]]
+        self.assertTrue(local, prefixed)
+        self.assertTrue(all("lookup.ExecuteScalarAsync() is not null` is false" in row["condition"]
+                            and "caption" not in row["condition"] for row in local), local)
+        self.assertTrue(any(row["kind"] == "sql-write" and "audit_log" in row["text"] for row in prefixed), prefixed)
+
+        write = helper[helper.index("            var append"):helper.rindex("\n        }")]
+        nested = helper.replace(write, "            await AppendAudit(connection);")
+        append = ("    private static async Task AppendAudit(DbConnection connection)\n    {\n"
+                  + "\n".join(line[4:] for line in write.splitlines()) + "\n    }")
+        nested_facts = project(unrelated, nested, append)
+        self.assertTrue(any(row["kind"] == "conditional-no-write"
+                            and "invocation of `AppendAudit(connection)`" in row["text"]
+                            and "lookup.ExecuteScalarAsync() is not null` is false" in row["condition"]
+                            and "audit_log" in row["text"] for row in nested_facts), nested_facts)
+
+        shared = nested.replace("            await AppendAudit(connection);\n        }",
+                                "            var selected = true;\n        }\n        await AppendAudit(connection);")
+        shared_facts = project(unrelated, shared, append)
+        self.assertTrue(any(row["kind"] == "sql-write" and "audit_log" in row["text"] for row in shared_facts), shared_facts)
+        self.assertFalse(any(row["kind"] == "conditional-no-write" and "audit_log" in row["text"]
+                             and "lookup.ExecuteScalarAsync() is not null` is false" in row["condition"]
+                             for row in shared_facts), shared_facts)
 
     def test_roslyn_stored_row_delivery_uses_matching_key_receiver_and_order(self):
         self.require_roslyn()

@@ -134,6 +134,9 @@ class Facts:
         self.root = graph.get("root", {})
         self.root_refs = set(self.root.get("sources", ()))
         self.helpers = {row["id"]: method(row["symbol"]) for row in graph.get("retainedHelpers", ())}
+        self.helper_blocks = {row["id"]: {block["id"]: block for block in row.get("blocks", ())}
+                              for row in graph.get("retainedHelpers", ())}
+        self.branch_calls = {}
         self.commands = {row["path"]: row["commands"] for row in graph.get("relationalCommandPaths", ())}
         self.local_commands = {row["path"]: row["commands"] for row in graph.get("boundedCallableCommands", ())}
         self.transactions = defaultdict(list)
@@ -1109,6 +1112,94 @@ class Facts:
                 return {}
         return reasons
 
+    def exclusive_branch_calls(self, condition, taken):
+        identity = condition, taken
+        if identity not in self.branch_calls:
+            self.branch_calls[identity] = self.local_branch_calls(condition, taken)
+        return self.branch_calls[identity]
+
+    def local_branch_calls(self, condition, taken):
+        owner, _, ordinal = condition.rpartition("/if")
+        if not ordinal.isdecimal() or owner not in self.helper_blocks:
+            return set()
+        guard_id = int(ordinal)
+        blocks = self.helper_blocks[owner]
+        guard = blocks.get(guard_id, {})
+        decision = guard.get("decision", {}).get("step")
+        if (not decision or self.steps[decision]["site"] != self.steps[condition]["site"]
+                or guard.get("branch") not in {"WhenTrue", "WhenFalse"}):
+            return set()
+        edges = guard.get("conditional"), guard.get("next")
+        if any(not edge or edge["kind"] != "Regular" or edge.get("cleanups") for edge in edges):
+            return set()
+
+        def reached(edge):
+            seen, pending = set(), [edge]
+            while pending:
+                edge = pending.pop()
+                if edge["kind"] not in {"Regular", "Return"}:
+                    continue
+                target = edge.get("target")
+                if target == guard_id or target in seen:
+                    continue
+                if target not in blocks:
+                    return None
+                seen.add(target)
+                pending.extend(blocks[target][name] for name in ("next", "conditional") if name in blocks[target])
+            return seen
+
+        taken_edge, alternative_edge = edges if taken == (guard["branch"] == "WhenTrue") else edges[::-1]
+        active, alternative = reached(taken_edge), reached(alternative_edge)
+        if not active or not alternative or not active & alternative:
+            return set()
+        if any(blocks[block][name].get("cleanups") for block in active ^ alternative
+               for name in ("next", "conditional") if name in blocks[block]):
+            return set()
+        return {op["step"] for block in alternative - active for op in blocks[block]["operations"]
+                if self.steps[op["step"]]["kind"] == "CALL"}
+
+    @staticmethod
+    def guarded_write_call(events, guard_index, key, calls):
+        active, write = {}, None
+        for index, event in enumerate(events[guard_index + 1:], start=guard_index + 1):
+            step = event["step"]
+            if event["outcome"] == "INVOKED":
+                if step == key:
+                    if key in calls:
+                        return key
+                    write = index
+                if step in calls:
+                    active[step] = index
+            call = event.get("call")
+            if call in active:
+                start = active.pop(call)
+                if event.get("composed") and write is not None and start < write < index:
+                    return call
+        return None
+
+    def local_write_bypass(self, events, writers, key):
+        for event in reversed(events):
+            guard, outcome = event["step"], event["outcome"]
+            if outcome not in {"TRUE", "FALSE"} or self.steps[guard].get("loopTest"):
+                continue
+            if sum(row["step"] == guard for row in events) != 1:
+                continue
+            truth = outcome == "TRUE"
+            calls = self.exclusive_branch_calls(guard, truth)
+            if not calls or not (label := self.condition(guard, truth, event)):
+                continue
+            owner = code(self.helpers[guard.split("/", 1)[0]])
+            for path_id, other in writers.items():
+                observations = [(i, row) for i, row in enumerate(other) if row["step"] == guard]
+                if len(observations) != 1 or observations[0][1]["outcome"] != ("FALSE" if truth else "TRUE"):
+                    continue
+                if call := self.guarded_write_call(other, observations[0][0], key, calls):
+                    if call == key or (callsite := self.text(call)):
+                        scope = f"control reaches the guard in {owner} and {label}"
+                        suffix = "the" if call == key else f"the invocation of {code(callsite)} and its"
+                        return scope, suffix, [guard, call], path_id
+        return None
+
     def skipped_writes(self, path, events, focus=None):
         if path["outcome"] not in TERMINAL:
             return
@@ -1142,6 +1233,18 @@ class Facts:
             compared.add(key)
             writers = {identity: other for identity, other in alternatives.items()
                        if any(item["step"] == key and item["outcome"] == "INVOKED" for item in other)}
+            if local := self.local_write_bypass(events, writers, key):
+                condition, invocation, proof, writer = local
+                selected = next((row for row in self.commands.get(writer, ()) if row["call"] == key), {})
+                selected_sql = selected.get("sourceSql") or step.get("sourceSql")
+                if not selected_sql or selected_sql["verb"] == "SELECT":
+                    continue
+                self.add_path("conditional-no-write",
+                              f"When {condition}, the normal branch bypasses {invocation} "
+                              f"call configured for {self.sql_label(selected_sql)}.",
+                              path, events, [*proof, key, *selected.get("evidenceSteps", ())], [writer],
+                              condition=condition)
+                continue
             # A single outer divergence can pair this non-write leaf with
             # another branch's write while a sibling still writes in this arm.
             if not writers or not (reasons := self.bypass_conditions(events, writers.values())):
