@@ -77,7 +77,7 @@ def discover(process, context):
                                           prepared=(parsed, fields, predicates), declaration_only=True)
                 else:
                     rows = []
-                rows.extend(CHAIN['project_frame'](units, owner, method, ref, owner.site(method), {}, {}))
+                rows.extend(CHAIN['project_frame'](units, owner, method, ref, owner.site(method), {}, {}, publication=False))
                 for row in rows:
                     subject = f'within the cited source declaration `{declaration}`'
                     condition = row.get('condition')

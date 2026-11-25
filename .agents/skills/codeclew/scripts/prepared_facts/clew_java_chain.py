@@ -23,6 +23,7 @@ MAX_FACTS = 16
 MAX_FACT_BYTES = 6500
 MAX_LOOKUP_FACTS = 2
 FILTERED_LOOKUP = runpy.run_path(str(Path(__file__).with_name("clew_prepared_java_control.py")))["filtered_lookup"]
+PUBLICATIONS = runpy.run_path(str(Path(__file__).with_name("clew_prepared_java_publication.py")))
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class Value:
     provenance: tuple[Site, ...] = ()
     arguments: tuple = ()
     type_sources: tuple[Site, ...] = ()
+    publication_operand: object = None
 
 
 UNKNOWN = Value()
@@ -294,11 +296,12 @@ class Units:
 
 
 class Projection:
-    def __init__(self, units, selected, compiler_targets, *, lookup_only=False):
+    def __init__(self, units, selected, compiler_targets, *, lookup_only=False, publications=None):
         self.units = units
         self.selected = selected
         self.compiler_targets = compiler_targets
         self.lookup_only = lookup_only
+        self.publications = publications
         self.steps = MAX_STEPS
 
     def code(self, frame, node):
@@ -441,11 +444,14 @@ class Projection:
             return [(state, self.field_value(frame, frame.this, name, literal))]
         if kind == "literal":
             tag = data[0]
-            value = replace(literal, truth=(tag == "TRUE") if tag in {"TRUE", "FALSE"} else None,
+            proof = self.publications.literal(frame.owner, node) if self.publications else None
+            value = replace(literal, publication_operand=proof, truth=(tag == "TRUE") if tag in {"TRUE", "FALSE"} else None,
                             nullable=(tag == "NULL"), type={"TRUE": "boolean", "FALSE": "boolean",
                                                            "EMPTY_STRING": "java.lang.String", "NONEMPTY_STRING": "java.lang.String"}.get(tag, ""))
             return [(state, value)]
         if kind == "member":
+            if self.publications and (proof := self.publications.class_operand(frame.owner, node, frame.method[12])):
+                return [(state, replace(literal, publication_operand=proof))]
             return [(row, self.field_value(frame, receiver, data[1], literal))
                     for row, receiver in self.evaluate(frame, state, data[0])]
         if kind == "choose":
@@ -581,6 +587,14 @@ class Projection:
             if known is not None:
                 return known
         compiler_target = self.compiler_targets.get(site)
+        if self.publications:
+            operands = tuple(value.publication_operand for value in values)
+            if name in {"publish", "publishById"}:
+                self.publications.submit(frame, state, node, receiver, name, operands, compiler_target)
+            if name in {"of", "singletonList", "getName", "getEvents"}:
+                projected = self.publications.call_operand(frame, state, node, receiver.publication_operand, name, operands, compiler_target)
+                if projected:
+                    local = replace(local, publication_operand=projected)
         compiler_owner, compiler_method = self.units.compiler_method(frame.owner, compiler_target)
         linked_owner, linked_method, fixed = self.linked_method(site, compiler_target, name)
         owner = compiler_owner or linked_owner or self.units.lookup(frame.owner, receiver.type)
@@ -879,9 +893,12 @@ class Projection:
     def construct(self, frame, state, node, type_name, args, values):
         if state.exit:
             return [(state, UNKNOWN)]
-        type_name = self.qualify(frame, type_name)
         site = frame.site(node)
-        value = Value(self.code(frame, node), site, type_name, type_name, nullable=False, constructed=True, arguments=values)
+        proof = (self.publications.construct(frame, node, type_name, tuple(value.publication_operand for value in values),
+                                             self.compiler_targets.get(site)) if self.publications else None)
+        type_name = self.qualify(frame, type_name)
+        value = Value(self.code(frame, node), site, type_name, type_name, nullable=False, constructed=True, arguments=values,
+                      publication_operand=proof)
         state = self.shared_construction(frame, state, value, values)
         owner = self.units.lookup(frame.owner, type_name)
         if not owner:
@@ -1026,8 +1043,9 @@ def obligation(process, context):
         for ref in target.get("sources", ()):
             if ref in local:
                 selected.append((local[ref][1], target_source))
-    targets = [(local[ref][1], event["target"]) for event in events.values()
-               if isinstance(event.get("target"), str) and event["target"].startswith("method:class:")
+    targets = [(local[ref][1], event["target"]) for event in process.get("facts", ())
+               if event.get("event") in {"CALL", "CONSTRUCT"} and event.get("resolution") == "COMPILER_EXACT"
+               and isinstance(event.get("target"), str) and event["target"].startswith("method:class:")
                for ref in event.get("sources", ()) if ref in local]
     return root_id, source, selected, targets
 
@@ -1253,15 +1271,21 @@ def open_units(snapshot, *, dispatch=False):
                 pass
 
 
-def project_frame(units, owner, method, identifier, entry, selected_bodies, compiler_targets):
-    projection = Projection(units, selected_bodies, compiler_targets)
+def project_frame(units, owner, method, identifier, entry, selected_bodies, compiler_targets, *, publication=True):
+    selected_publication = any(PUBLICATIONS["member_identity"](target)[0] in (
+        PUBLICATIONS["DIRECT"], PUBLICATIONS["AGGREGATE"], PUBLICATIONS["PORT"]) for target in compiler_targets.values())
+    enabled = publication and (selected_publication or re.search(rb"\b(?:publish|publishById)\s*\(",
+                                                                 units.snapshot.read(owner.path) or b""))
+    publications = PUBLICATIONS["Publications"](units) if enabled else None
+    projection = Projection(units, selected_bodies, compiler_targets, publications=publications)
     frame, bindings = entry_frame(units, owner, method)
     initial = State(bindings=bindings)
     states = projection.statement(frame, initial, method[8])
+    submissions = publications.facts(units.snapshot, identifier) if publications else []
     original = facts(units.snapshot, states, identifier)
     lookups = Projection(units, selected_bodies, compiler_targets, lookup_only=True)
     events = lookup_events(lookups, frame, initial, entry)
-    return [*original, *lookup_facts(units.snapshot, events, identifier)]
+    return [*submissions, *original, *lookup_facts(units.snapshot, events, identifier)]
 
 
 def derive(process, context, snapshot, *, native=None, native_ranges=None):

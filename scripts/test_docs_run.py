@@ -2529,6 +2529,47 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         self.assertEqual({condition.endswith('`entry.changed` is false')
                           for conditions in guarded.values() for condition in conditions}, {False, True})
 
+    def test_typed_java_publication_requires_wired_matching_protocol_channel_and_class(self):
+        config = {"adapter": "EVENTUATE_TRAM_DOMAIN_EVENT", "channel": "library.Reservation",
+                  "eventType": "library.events.Placed"}
+        qualified = {"kind": "java-typed-publication", "authority": "COMPILER_SELECTED_JAVA_PUBLICATION",
+                     "text": "The publisher submits the retained typed event.", "sources": ["origin-body"],
+                     "_edge": {"kind": "JAVA_TYPED_PUBLISH", "site": "origin-body", **config}}
+
+        def listener(name, configuration, *, registered=True, declaration=True, callback=True):
+            return self.retained(name, entry_kind="JAVA_TYPED_DISPATCH", proof=registered,
+                                 trigger={"kind": "JAVA_TYPED_DISPATCH",
+                                          "authority": "RETAINED_JAVA_DISPATCHER_WIRING" if declaration else "INFERRED",
+                                          "configuration": configuration, "registration": name + "-registration",
+                                          "callback": name + ("-body" if callback else "-absent"),
+                                          "assemblySources": [name + "-assembly"]},
+                                 events=[("assembly", 'builder.onEvent(Placed.class, this::record)', {"kind": "CALL"})])
+
+        owner = self.retained("orders", name="origin", facts=[qualified])
+        eligible = listener("ledger", config)
+        peers = [listener("different-package", {**config, "eventType": "other.events.Placed"}),
+                 listener("different-channel", {**config, "channel": "library.Archive"}),
+                 listener("untyped", {**config, "eventType": "Placed"}),
+                 listener("wrong-adapter", {**config, "adapter": "KAFKA"}),
+                 listener("unregistered", config, registered=False),
+                 listener("missing-callback-source", config, callback=False),
+                 listener("compatible-function", config, declaration=False)]
+        result = self.project(owner, eligible, *peers)
+        row, = result[owner[0]["id"]]
+        self.assertEqual(row["kind"], "typed-message-peer")
+        self.assertIn("compiler selected", row["text"])
+        self.assertIn("adapter event mapping", row["uncertainty"])
+        self.assertEqual(row["sources"], ["origin-body", "ledger-registration", "ledger-assembly", "ledger-body"])
+        self.assertTrue(all(peer[0]["id"] not in result for peer in peers))
+        nominal = self.retained("orders", name="origin",
+                                facts=[{**qualified, "authority": "RETAINED_JAVA_PUBLICATION_CANDIDATE"}])
+        local, = self.project(nominal, eligible)[nominal[0]["id"]]
+        self.assertIn("receiver and operands corroborate", local["text"])
+        open_call = {**qualified, "_edge": {**qualified["_edge"], "channel": None}}
+        owner = self.retained("orders", name="origin", facts=[open_call])
+        row, = self.project(owner, eligible)[owner[0]["id"]]
+        self.assertEqual((row["kind"], row["status"]), ("typed-message-peer-boundary", "UNKNOWN"))
+
     def test_http_peer_return_and_failure_are_source_qualified_in_the_normal_author_view(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
             "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units/42"}}

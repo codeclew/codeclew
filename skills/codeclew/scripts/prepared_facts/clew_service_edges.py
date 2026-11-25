@@ -17,6 +17,10 @@ MAX_CHAIN_SOURCES = 36
 POLLERS = {"HOSTED_BACKGROUND_WORKER", "SCHEDULED_JOB"}
 HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"}
 TOPIC = re.compile(r"[A-Za-z0-9._-]{1,249}")
+JAVA_CHANNEL = re.compile(r"[A-Za-z0-9._$-]{1,249}", re.ASCII)
+JAVA_EVENT_CLASS = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+", re.ASCII)
+JAVA_TYPED_ADAPTER = "EVENTUATE_TRAM_DOMAIN_EVENT"
+JAVA_DISPATCH_AUTHORITY = "RETAINED_JAVA_DISPATCHER_WIRING"
 TABLE = re.compile(r'[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*){0,2}', re.ASCII)
 PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
@@ -46,11 +50,21 @@ HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown
 MESSAGE_OPEN = ("Broker or adapter binding, handler activation, delivery, acknowledgement, ordering and "
                 "payload compatibility remain unknown.")
 STORAGE_OPEN = ("Database and schema binding, key or row identity, commit, visibility and timing remain unknown.")
+JAVA_DISPATCH_OPEN = ("Deployment destination, dispatcher activation, adapter event mapping, delivery, acknowledgement "
+                      "and callback completion remain open.")
 ASYNC_OPEN = "Any wait for downstream completion and its order relative to an original HTTP response remain open."
 
 
 def topic(value):
     return value if isinstance(value, str) and TOPIC.fullmatch(value) and value not in {".", ".."} else None
+
+
+def typed_route(configuration):
+    adapter, channel, event = (configuration.get(key) for key in ("adapter", "channel", "eventType"))
+    if (adapter == JAVA_TYPED_ADAPTER and isinstance(channel, str) and channel not in {".", ".."}
+            and JAVA_CHANNEL.fullmatch(channel) and isinstance(event, str) and JAVA_EVENT_CLASS.fullmatch(event)):
+        return adapter, channel, event
+    return None
 
 
 def topics(requirement):
@@ -192,14 +206,16 @@ def record(requirement, process, context, facts, exact):
                for row in context["sourceRanges"] for ref in row["references"] if row["id"] in exact}
     trigger = process.get("trigger") or {}
     subscription_refs = [*trigger.get("subscriptions", ()), *trigger.get("subscriptionSources", ())]
-    trigger_refs = tuple(filter(None, (trigger.get("registration"), trigger.get("callback"), *subscription_refs)))
+    assembly = trigger.get("assemblySources", ()) if trigger.get("kind") == "JAVA_TYPED_DISPATCH" else ()
+    trigger_refs = tuple(dict.fromkeys(filter(None, (trigger.get("registration"), trigger.get("callback"),
+                                                    *subscription_refs, *assembly))))
     for ref in trigger_refs:
         if ref in sources or ref not in process["sources"]:
             continue
         witness = process["sources"][ref]
         if handle := context["_bindWitness"](witness):
             sources[ref] = {**witness, "handle": handle}
-    registration = cite_refs(sources, [trigger.get("registration"), *subscription_refs])
+    registration = cite_refs(sources, [trigger.get("registration"), *subscription_refs, *assembly])
     if not registration:
         registration = cite_refs(sources, process["entrySources"],
                                  source_ids=set(requirement.get("registrationSourceIds", ())) or None)
@@ -211,7 +227,13 @@ def record(requirement, process, context, facts, exact):
                               if fact["kind"] == "BODY" and fact.get("declaration") == process["root"]
                               for ref in fact["sources"]])[:1]
     callbacks = cite_refs(sources, [trigger.get("callback")])
-    calls, publishes, reads, writes = {}, {}, {}, {}
+    typed_registration = None
+    if (requirement.get("entryKind") == trigger.get("kind") == "JAVA_TYPED_DISPATCH"
+            and trigger.get("authority") == JAVA_DISPATCH_AUTHORITY
+            and trigger.get("registration") in sources and callbacks
+            and all(ref in sources for ref in assembly) and len(registration) <= MAX_SITES):
+        typed_registration = typed_route(trigger.get("configuration") or {})
+    calls, publishes, typed_publishes, reads, writes = {}, {}, {}, {}, {}
 
     def keep(index, key, face, limit=MAX_SITES):
         if len(index) < limit:
@@ -261,6 +283,10 @@ def record(requirement, process, context, facts, exact):
         elif link["kind"] == "PUBLISH":
             value = topic(link.get("topic"))
             keep(publishes, (face["occurrence"] or site, value), {**face, "topic": value})
+        elif link["kind"] == "JAVA_TYPED_PUBLISH" and link.get("adapter") == JAVA_TYPED_ADAPTER:
+            route = typed_route(link)
+            keep(typed_publishes, (face["occurrence"] or site, route, face.get("condition")),
+                 {**face, "route": route, "compiler": fact["authority"] == "COMPILER_SELECTED_JAVA_PUBLICATION"})
         elif link["kind"] in {"SELECT", "INSERT", "UPDATE", "DELETE"}:
             table = link.get("table")
             # Quoted identifiers preserve spelling. Conservatively leave the
@@ -290,6 +316,7 @@ def record(requirement, process, context, facts, exact):
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
+            "typedPublishes": list(typed_publishes.values()), "typedRegistration": typed_registration,
             "reads": list(reads.values()), "writes": [
                 {**write, "focus": write_focus.get(write["occurrence"], {}),
                  "uniqueWrite": len(write_shapes[write["occurrence"]]) == 1 and len(write_sites[write["occurrence"]]) <= 1}
@@ -308,11 +335,14 @@ def project(requirements, records, *, contracts=None, isolated=False):
     """Index each protocol once and bound per-page evidence fan-out."""
     routes = Routes(requirements)
     contracts = contracts or {}
-    subscriptions, readers, reader_services = defaultdict(list), defaultdict(dict), defaultdict(dict)
+    subscriptions, typed_dispatchers = defaultdict(list), defaultdict(list)
+    readers, reader_services = defaultdict(dict), defaultdict(dict)
     for row in requirements:
         for name in topics(row):
             subscriptions[name].append(row)
     for identity, row in records.items():
+        if route := row["typedRegistration"]:
+            typed_dispatchers[route].append(identity)
         for read in row["reads"]:
             if row["body"] and row["registration"]:
                 service, table = row["requirement"]["service"], read["table"]
@@ -670,6 +700,31 @@ def project(requirements, records, *, contracts=None, isolated=False):
                      boundary + " Persistence and rollback of any earlier effects remain unknown. "
                      + outcome.get("uncertainty", ""), call, cited[0], outcome)
 
+        for publication in local["typedPublishes"]:
+            boundary = " ".join(filter(None, (JAVA_DISPATCH_OPEN, publication.get("uncertainty"))))
+            route = publication["route"]
+            candidates = [peer for peer in typed_dispatchers.get(route, ()) if peer != owner]
+            if not candidates or len(candidates) > MAX_MATCHES:
+                text = ("Multiple retained Java dispatcher candidates match this protocol, channel and event class."
+                        if candidates else "A source-qualified Java dispatcher for this publication remains open.")
+                emit(owner, "typed-message-peer-boundary", publication["text"] + " " + text, boundary, publication,
+                     status="AMBIGUOUS" if candidates else "UNKNOWN")
+                continue
+            _, channel, event = route
+            basis = ("The compiler selected the publication call." if publication["compiler"]
+                     else "The retained publication receiver and operands corroborate the library call.")
+            for peer in candidates:
+                receiver = records[peer]
+                target = receiver["requirement"]
+                title = f"`{target['service']}` (`{target['page']}`)"
+                evidence = (publication, registration(receiver), callback(receiver))
+                emit(owner, "typed-message-peer", basis + f" Channel `{channel}` and qualified event `{event}` "
+                     f"match the retained dispatcher registration in {title}.",
+                     boundary, *evidence)
+                emit(peer, "typed-message-peer", f"`{service}` has a retained submission for channel `{channel}` "
+                     f"and qualified event `{event}`. " + basis,
+                     boundary, *evidence)
+
         for publication in local["publishes"]:
             name = publication["topic"]
             matching = subscriptions.get(name, ())
@@ -838,6 +893,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                  "further-subscriber-readback",
                  "message-storage-reader", "http-message-storage-reader", "storage-poll-activation", "further-subscriber-outbox",
                  "message-peer-write-detail", "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
+                 "typed-message-peer", "typed-message-peer-boundary",
                  "further-outbox-limit-boundary", "further-outbox-boundary")
     for owner, rows in result.items():
         if len(rows) <= MAX_LINKS:
