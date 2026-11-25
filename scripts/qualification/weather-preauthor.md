@@ -77,6 +77,9 @@ same component. Record the connection in that atom's `scopeLinks` map keyed by
 the file witness ID, with `via` set to the supporting entry witness ID and
 `symbol` set to the exact shared source symbol. The named symbol and source
 must refer to the same target. Sharing a code file alone is insufficient.
+For isolated authoring, every graded component must use facts and source bytes
+visible in its target operation's own packet. Facts available solely to another
+operation, discovery, guide or process-map author do not qualify that component.
 
 ```sh
 python3 -I -S scripts/qualification/weather-preauthor.py \

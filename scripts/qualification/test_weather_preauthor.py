@@ -37,6 +37,26 @@ class WeatherQualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing component'):
             Q['coverage'](self.report, self.review)
 
+    def test_isolated_components_require_same_operation_packet_and_visible_source_bytes(self):
+        self.report['mode'] = 'ISOLATED_PAGES'
+        for fact in self.statements.values():
+            fact.update(operationPacket=fact['scopes'][0],
+                        locations={'m123:a': {'bodySha256': Q['sha'](b'visible retained bytes')}})
+        self.assertEqual((45, {'m123:a'}), Q['coverage'](self.report, self.review))
+        fact = next(iter(self.statements.values()))
+        original = fact.pop('operationPacket')
+        with self.assertRaisesRegex(ValueError, 'outside its isolated operation prompt'):
+            Q['coverage'](self.report, self.review)
+        fact['operationPacket'] = 'different-operation'
+        with self.assertRaisesRegex(ValueError, 'outside its isolated operation prompt'):
+            Q['coverage'](self.report, self.review)
+        fact['operationPacket'] = original
+        fact['locations'] = {}
+        with self.assertRaisesRegex(ValueError, 'lacks visible source'):
+            Q['coverage'](self.report, self.review)
+        self.report['mode'] = 'WORKSPACE'
+        self.assertEqual((45, {'m123:a'}), Q['coverage'](self.report, self.review))
+
     def test_wrong_scope_rejected_even_with_cited_statement(self):
         key = 'route-scheduled-refresh.html/core/2/1'
         self.statements[key]['scopes'] = ['operation-602619abba89']
@@ -142,6 +162,7 @@ class WeatherQualificationTests(unittest.TestCase):
             _, result = Q['collect'](run, inventory, plan)
             fact = next(iter(result.values()))
             self.assertEqual(['m123:c (lines 2)'], fact['anchors'])
+            self.assertIn('operationPacket', fact)
             self.assertEqual(Q['sha'](b'retained body'), fact['locations']['m123:c']['bodySha256'])
             packet['page'] = 'foreign-page.md'
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))

@@ -139,10 +139,12 @@ def visible_view(path):
         yield number, labels, assertion, [match[0] for match in ANCHOR.finditer(anchors)]
 
 
-def record(result, scopes, location, text, anchors, files=(), locations=None):
+def record(result, scopes, location, text, anchors, files=(), locations=None, operation_packet=None):
     if (scopes or files) and anchors:
         row = {'scopes': sorted(scopes), 'files': sorted(files), 'location': location,
                'text': text, 'anchors': anchors, 'locations': locations or {}}
+        if operation_packet is not None:
+            row['operationPacket'] = operation_packet
         key = sha(json.dumps(row, sort_keys=True, ensure_ascii=False).encode())
         result[key] = row
 
@@ -151,7 +153,7 @@ def prompt_packet(path):
     return json.loads(path.read_text().strip().rsplit('\n\n', 1)[1])
 
 
-def structured_records(result, path, targets, alias_map, citations, refs, files, source_ranges=None):
+def structured_records(result, path, targets, alias_map, citations, refs, files, source_ranges=None, operation_packet=None):
     for identity, target in targets.items():
         for category in ('facts', 'boundaries'):
             for i, fact in enumerate(target.get(category, [])):
@@ -171,7 +173,8 @@ def structured_records(result, path, targets, alias_map, citations, refs, files,
                         locations[handle]['authority'] = cite['authority']
                 visible = {key: value for key, value in fact.items() if key not in {'sources', 'lines', 'alsoFor'}}
                 record(result, relevant, f'{path}#{identity}/{category}/{i}',
-                       json.dumps(visible, ensure_ascii=False, sort_keys=True), anchors, local_files, locations)
+                       json.dumps(visible, ensure_ascii=False, sort_keys=True), anchors, local_files, locations,
+                       operation_packet)
 
 
 def collect(run, inventory, plan):
@@ -194,8 +197,9 @@ def collect(run, inventory, plan):
             require((packet['slot'], packet['page'], packet['type'], packet.get('requirement', {}).get('id')) ==
                     (slot['key'], slot['page'], slot['kind'], slot['requirement']),
                     'Isolated author packet identity differs from its frozen slot')
+            operation_packet = refs.get(slot['requirement']) if slot['kind'] == 'OPERATION' else None
             structured_records(statement_rows, path.relative_to(run), packet['facts'], slot['citations'],
-                               packet['citations'], refs, files, packet['sourceRanges'])
+                               packet['citations'], refs, files, packet['sourceRanges'], operation_packet)
     elif plan['mode'] == 'WORKSPACE':
         source = run / 'inputs/author-source'
         for service in inventory['services']:
@@ -232,6 +236,17 @@ def linked_scope(key, answer, evidence, facts, eligible):
             and bool(re.search(token, facts[via]['text']) and re.search(token, facts[key]['text'])))
 
 
+def visible_in_operation(fact, scope):
+    if fact.get('operationPacket') != scope:
+        return False
+    locations = fact.get('locations', {})
+    for anchor in fact['anchors']:
+        handle = anchor.split(' (lines ', 1)[0]
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', locations.get(handle, {}).get('bodySha256', '')):
+            return False
+    return True
+
+
 def coverage(report, review):
     require(report['runDigest'] == review['runDigest'] and report['rubricSha256'] == review['rubricSha256'],
             'Review targets a changed kit or rubric')
@@ -256,6 +271,8 @@ def coverage(report, review):
             for key in evidence:
                 require(key in facts, f'Stale or unavailable prepared statement for {atom} component {part}')
                 fact = facts[key]
+                require(report.get('mode') != 'ISOLATED_PAGES' or visible_in_operation(fact, row['route']),
+                        f'Witness outside its isolated operation prompt or lacks visible source for {atom} component {part}')
                 require(bool(eligible.intersection(fact['scopes'])) or linked_scope(key, answer, evidence, facts, eligible),
                         f'Wrong operation scope for {atom} component {part}')
                 anchors.update(fact['anchors'])
