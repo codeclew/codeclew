@@ -191,7 +191,8 @@ class Facts:
     def condition(self, key, truth):
         if self.steps[key].get("sourcePredicate") and (text := self.text(key)):
             if self.steps[key].get("selectionPredicate"):
-                return f"the retained row {'matches' if truth else 'fails'} {code(text)}"
+                return (f"the remaining candidate matches {code(text)}" if truth else
+                        f"no row in the tracked collection matches {code(text)}")
             return f"{code(text)} is {'true' if truth else 'false'}"
         return None
 
@@ -817,6 +818,11 @@ class Facts:
                     proof.append(f"{arg[1]}/op{arg[2]}")
                 label += ". The tracked list is empty at this call, so the result is `null` on this path"
                 proof.extend(key for _, key in self.first_empty_reads(path, events))
+            elif "selectedValue" in event and predicate:
+                if null_literal(event["selectedValue"]):
+                    label += ". No row in the tracked collection satisfies that predicate on this path"
+                else:
+                    label += ". This path selects the first tracked row that satisfies the predicate"
             self.add_path("lookup", label + ".", path, events, proof)
 
     def object_arguments(self, path, events):

@@ -651,6 +651,42 @@ sealed class Relay
                 else:
                     self.assertFalse(deliveries or retries, facts)
 
+    def test_roslyn_lookup_checks_later_rows_before_claiming_no_match(self):
+        self.require_roslyn()
+        header = """using System.Collections.Generic;
+using System.Linq;
+using Microsoft.AspNetCore.Http;
+sealed record Candidate(int Id);
+static class Finder
+{
+"""
+        declaration = """    public static IResult Find(int id)
+    {
+        var candidates = new List<Candidate>();
+        candidates.Add(new Candidate(1));
+        candidates.Add(new Candidate(2));
+        var found = candidates.FirstOrDefault(row => row.Id == TARGET);
+        if (found is null) return Results.NotFound();
+        return Results.Ok(found.Id);
+    }"""
+        for target, missing in (("2", False), ("3", True), ("id", None)):
+            with self.subTest(target=target):
+                body = declaration.replace("TARGET", target)
+                text = header + body + "\n}\n"
+                process, context = selected("Finder.cs", text, standalone=body, start=header.count("\n") + 1)
+                context["_nativeFiles"]["Finder.cs"] = captured_csharp(text, "Finder.cs")
+                facts, _ = self.project(process, context)
+                labels = [row["text"] for row in facts]
+                self.assertTrue(all("retained row fails" not in label for label in labels), labels)
+                if missing is None:
+                    self.assertFalse(any("tracked collection satisfies" in label for label in labels), labels)
+                elif missing:
+                    self.assertTrue(any("No row in the tracked collection satisfies" in label for label in labels), labels)
+                else:
+                    self.assertTrue(any("selects the first tracked row" in label for label in labels), labels)
+                    self.assertFalse(any("No row in the tracked collection satisfies" in label or
+                                         "HTTP 404" in label for label in labels), labels)
+
     def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
         captured = CSHARP.replace("using Microsoft.AspNetCore.Http;", "using Results = Other.Results;")
