@@ -63,7 +63,7 @@ def work_blob(row, file, revision, snapshot):
     origin = row.get("occurrence") or {}
     blob = origin.get("blob")
     text = row.get("text")
-    if (row.get("file") != file or row.get("revision") != revision or origin.get("snapshot") != snapshot
+    if (not snapshot or row.get("file") != file or row.get("revision") != revision or origin.get("snapshot") != snapshot
             or origin.get("generatedOrigin") or not isinstance(blob, str)
             or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", blob) or not isinstance(text, str)):
         return None
@@ -78,12 +78,14 @@ def work_blob(row, file, revision, snapshot):
 
 
 class Snapshot:
-    def __init__(self, process, occurrences, repository, *, revision, work_files, citation_sources, deadline=None):
+    def __init__(self, process, occurrences, repository, *, revision, work_files, citation_sources,
+                 allow_legacy_pinned=False, deadline=None):
         self.operation = process["id"]
         self.repository = repository
         self.work_files = {file: row for file, row in work_files.items() if java_path(file)}
         self.deadline = deadline
         self.coverage = {}
+        self.legacy_coverage = {}
         self.missing_authority = False
         self.ranges = {}
         self.total_bytes = 0
@@ -111,21 +113,26 @@ class Snapshot:
         self.revision = next(iter(revisions)) if len(revisions) == 1 else None
         snapshots = {(row.get("occurrence") or {}).get("snapshot") for row in roots}
         self.snapshot = next(iter(snapshots)) if len(snapshots) == 1 else None
-        if not self.revision or not self.snapshot:
+        # Earlier compiler observations can be exact line-addressed excerpts.
+        # The runner attests that the capture did not select a working tree.
+        legacy = (not self.snapshot and allow_legacy_pinned and bool(roots)
+                  and all(row.get("occurrence") is None for row in roots))
+        if not self.revision or (not self.snapshot and not legacy):
             return
         self.retained = {ref: row for ref, row in retained.items()
                          if (row.get("occurrence") or {}).get("snapshot") == self.snapshot}
         for row in citation_sources.values():
+            origin = row.get("occurrence") or {}
             if (java_path(row.get("file")) and row.get("revision") == self.revision
-                    and (row.get("occurrence") or {}).get("snapshot") == self.snapshot
+                    and origin.get("snapshot") == self.snapshot and not origin.get("generatedOrigin")
                     and row.get("authority") == "EXACT_SNAPSHOT_TEXT" and isinstance(row.get("text"), str)
                     and row.get("textDigest") == "sha256:" + sha256(row["text"].encode()).hexdigest()):
-                bounds = retained_bounds(row)
-                if bounds:
+                if bounds := retained_bounds(row):
                     self.coverage.setdefault(row["file"], []).append((bounds, row["text"].encode()))
-        for row in retained.values():
-            if row["revision"] == self.revision:
-                self.owners.setdefault(row["file"], []).append(row)
+                elif legacy and row.get("occurrence") is None:
+                    self.legacy_coverage.setdefault(row["file"], []).append(row)
+        for row in self.retained.values():
+            self.owners.setdefault(row["file"], []).append(row)
         for row in roots:
             raw = work_blob(self.work_files.get(row["file"], {}), row["file"], self.revision, self.snapshot)
             if self.match(raw, row) is not None:
@@ -134,14 +141,17 @@ class Snapshot:
             if self.git("cat-file", "-t", self.revision) == b"commit\n":
                 for row in roots:
                     raw = self.pinned_blob(row["file"])
-                    origin = row.get("occurrence") or {}
-                    object_id = self.git("rev-parse", "--verify", self.revision + ":" + row["file"])
-                    if (not origin.get("generatedOrigin") and object_id
-                            and object_id.strip().decode("ascii", errors="replace") == origin.get("blob")
-                            and self.match(raw, row) is not None):
-                        self.files[row["file"]] = raw
-                        self.pinned = True
-                        break
+                    if self.match(raw, row) is None:
+                        continue
+                    if not legacy:
+                        object_id = self.git("rev-parse", "--verify", self.revision + ":" + row["file"])
+                        origin = row["occurrence"]
+                        if (origin.get("generatedOrigin") or not object_id
+                                or object_id.strip().decode("ascii", errors="replace") != origin.get("blob")):
+                            continue
+                    self.files[row["file"]] = raw
+                    self.pinned = True
+                    break
 
     def remaining(self, limit):
         return limit if self.deadline is None else max(0, min(limit, self.deadline - time.monotonic()))
@@ -207,7 +217,7 @@ class Snapshot:
                      if path == suffix or path.endswith("/" + suffix))
 
     def read(self, file):
-        if not self.revision or not self.snapshot or not java_path(file):
+        if not self.revision or not (self.snapshot or self.pinned) or not java_path(file):
             return None
         if file not in self.files and len(self.files) < MAX_LOOKUPS and sum(map(bool, self.files.values())) < MAX_FILES:
             raw = work_blob(self.work_files.get(file, {}), file, self.revision, self.snapshot)
@@ -216,7 +226,11 @@ class Snapshot:
 
     def match(self, raw, source):
         bounds = retained_bounds(source)
-        return locate(raw, source["text"].encode(), source["startLine"], bounds[0] if bounds else None)
+        literal = source["text"].encode()
+        first = source["startLine"]
+        if type(first) is not int or source.get("endLine") != first + literal.removesuffix(b"\n").count(b"\n"):
+            return None
+        return locate(raw, literal, first, bounds[0] if bounds else None)
 
     def file_for(self, source):
         if source.get("revision") != self.revision:
@@ -229,6 +243,11 @@ class Snapshot:
         if not raw or not 0 <= start < end <= len(raw) or end - start > (24 * 1024 if declaration else MAX_CITATION_BYTES):
             return None
         payload = raw[start:end]
+        if self.pinned:
+            for row in self.legacy_coverage.pop(file, ()):
+                if (first := self.match(raw, row)) is not None:
+                    text = row["text"].encode()
+                    self.coverage.setdefault(file, []).append(((first, first + len(text)), text))
         if not any(first <= start < end <= last and covered[start - first:end - first] == payload
                    for (first, last), covered in self.coverage.get(file, ())):
             self.missing_authority = True

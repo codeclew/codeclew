@@ -57,11 +57,15 @@ def source(file, full, text, *, revision='a' * 40, ref='s1', corrupt_blob=False)
 
 
 def fixture(*, discovery=False, subranges=False, helper_cited=True, revision='a' * 40, repository=None,
-            corrupt_blob=False):
+            corrupt_blob=False, legacy=False, committed=True):
     selected = BODY if subranges else FILE
     exact = {'C1': source(PATH, FILE, selected, revision=revision, corrupt_blob=corrupt_blob)}
     if helper_cited:
         exact['C2'] = source(HELPER_PATH, HELPER, HELPER, revision=revision, ref='s2')
+    if legacy:
+        exact = {handle: {key: value for key, value in row.items()
+                          if key not in ('occurrence', 'startByte', 'endByte')}
+                 for handle, row in exact.items()}
     requirement = {'kind': 'DISCOVERY' if discovery else 'ENTRY', 'file': PATH if discovery else None,
                    'id': 'sample', 'rootDeclarations': [] if discovery else ['root'], 'sourceReferences': ['s1'],
                    'service': 'catalog', 'page': 'Change catalog'}
@@ -69,9 +73,15 @@ def fixture(*, discovery=False, subranges=False, helper_cited=True, revision='a'
     operation = [{'id': 'BODY:root', 'obligationKind': 'BODY',
                   'record': {'declaration': 'root', 'sourceIds': ['body']}, 'sourceReferences': ['s1']}]
     process, context = TRANSPORT['operation'](requirement, [] if discovery else operation, exact, units)
-    context.update(_revision=revision, _snapshot='sha256:' + 'c' * 64 + '/1', _repository=repository)
+    context.update(_revision=revision, _snapshot='sha256:' + 'c' * 64 + '/1', _repository=repository,
+                   _allowLegacyPinned=committed)
     rows, ranges = JAVA['project'](process, context, node=None)
-    facts, rejected = TRANSPORT['bound_facts'](rows, ranges, exact, {site['id'] for site in context['sourceRanges']})
+
+    def read_pinned(file, selected_revision):
+        return subprocess.check_output(['git', '-C', repository, 'show', f'{selected_revision}:{file}']).decode()
+
+    facts, rejected = TRANSPORT['bound_facts'](rows, ranges, exact, {site['id'] for site in context['sourceRanges']},
+                                               read_pinned if repository and committed else None)
     return facts, ranges, rejected
 
 
@@ -120,6 +130,15 @@ class PackagedJava(unittest.TestCase):
             wrong, _, rejected = fixture(discovery=True, subranges=True, helper_cited=False, revision=revision,
                                          repository=directory, corrupt_blob=True)
             self.assertEqual([row.get('status') for row in wrong], ['SNAPSHOT_SOURCE_UNAVAILABLE'])
+            self.assertEqual(rejected, 0)
+            legacy, _, rejected = fixture(subranges=True, revision=revision, repository=directory, legacy=True)
+            mutation = next(row for row in legacy if row['kind'] == 'java-callee-path')
+            self.assertIn('C2', mutation['sources'])
+            self.assertEqual(rejected, 0)
+            working_tree, _, rejected = fixture(subranges=True, revision=revision, repository=directory,
+                                                legacy=True, committed=False)
+            self.assertFalse(any(row['kind'] == 'java-callee-path' for row in working_tree))
+            self.assertTrue(any(row.get('status') == 'SNAPSHOT_SOURCE_UNAVAILABLE' for row in working_tree))
             self.assertEqual(rejected, 0)
 
 

@@ -19,7 +19,7 @@ def snapshot_for(process, context):
         process, context['_sourceOccurrences'], context.get('_repository'),
         revision=context.get('_revision'),
         work_files=context.get('_nativeFiles', {}), citation_sources=context.get('_citationSources', {}),
-        deadline=context.get('_deadline'),
+        allow_legacy_pinned=context.get('_allowLegacyPinned') is True, deadline=context.get('_deadline'),
     )
 
 
