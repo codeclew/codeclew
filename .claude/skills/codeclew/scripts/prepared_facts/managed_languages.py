@@ -191,11 +191,12 @@ def kotlin_receivers(process, context):
 
 
 
-def kotlin_scheduled_state(process, context):
-    """Bind loop, helper and state witnesses to the same retained Kotlin source."""
+def kotlin_callback_state(process, context):
+    """Bind scheduler and listener state witnesses to the same retained Kotlin source."""
     roots = root_sources(process) & process["sources"].keys()
     bind_witness = context.get("_bindWitness")
-    if process.get("entryKind") != "SCHEDULED_JOB" or len(roots) != 1 or not bind_witness:
+    kind = process.get("entryKind")
+    if kind not in {"SCHEDULED_JOB", "KAFKA_LISTENER"} or len(roots) != 1 or not bind_witness:
         return [], {}
     root, = roots
     source = process["sources"][root]
@@ -242,7 +243,7 @@ def kotlin_scheduled_state(process, context):
 
     facts = module("prepared_kotlin_scheduled_state")["project"](
         unit, method, syntax, module("prepared_kotlin_protocols"), module("prepared_kotlin_hard_exits"),
-        bind, native_calls)
+        bind, native_calls, kind)
     used = {ref for row in facts for ref in row["sources"]}
     return facts, {ref: value for ref, value in witnesses.items() if ref in used}
 
@@ -470,7 +471,7 @@ def project(process, context, *, node):
         if process.get("root"):
             process, context, witnesses = kotlin_receivers(process, context)
             rows = module("prepared_kotlin")["derive"](process, context)
-            state_rows, state_witnesses = kotlin_scheduled_state(process, context)
+            state_rows, state_witnesses = kotlin_callback_state(process, context)
             rows = [*state_rows, *rows]
             witnesses.update(state_witnesses)
         else:

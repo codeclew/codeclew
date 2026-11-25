@@ -1,4 +1,4 @@
-"""Connect a scheduled iteration to a narrowly bound heap-state continuation."""
+"""Follow keyed heap state through retained scheduler and message callbacks."""
 
 from dataclasses import dataclass, field, replace
 
@@ -19,7 +19,7 @@ class Key:
 
 @dataclass(frozen=True)
 class MapAlias:
-    member: str
+    members: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -40,25 +40,27 @@ class Flow:
     last_external: tuple | None = None
 
 
-def project(unit, root, syntax, protocols, hard_guards, bind, native_calls):
+def project(unit, root, syntax, protocols, hard_guards, bind, native_calls, entry_kind):
     """Recognize ordered source effects without assuming scheduler or transaction activation."""
     owner = unit.enclosing_owner(root)
     if owner is None or root.expression_body:
         return []
-    projector = ScheduledState(unit, syntax, protocols, hard_guards, bind, owner, native_calls)
+    projector = ScheduledState(unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind)
     try:
         body = unit.suite(root.body + 1, root.end)
-        projector.walk(body, {param.name: None for param in root.params}, Flow(),
-                       (root.name,), 0)
+        inputs = {param.name: Key(param.site, (), (param.site,)) if projector.listener else None for param in root.params}
+        projector.walk(body, inputs, Flow(), (root.name,), 0)
     except syntax["Unsupported"]:
         return []
     return list(projector.rows.values())
 
 
 class ScheduledState:
-    def __init__(self, unit, syntax, protocols, hard_guards, bind, owner, native_calls):
+    def __init__(self, unit, syntax, protocols, hard_guards, bind, owner, native_calls, entry_kind):
         self.unit, self.bind, self.native_calls = unit, bind, native_calls
+        self.listener = entry_kind == "KAFKA_LISTENER"
         self.functions, self.fields = unit.members(owner)
+        self.maps = frozenset(field.name for field in self.fields.values() if field.storage == "MAP")
         self.name, self.literal, self.site, self.words = (
             syntax[key] for key in ("name", "literal", "token_site", "strings"))
         self.invoke, self.named, self.split = (syntax[key] for key in ("invocation", "named_argument", "groups"))
@@ -81,7 +83,8 @@ class ScheduledState:
         if not all(refs := [self.bind(site) for site in proof]):
             return
         conditions = " and ".join(dict.fromkeys(flow.conditions))
-        row = {"kind": kind, "text": text, "authority": "BOUNDED_KOTLIN_SCHEDULED_STATE",
+        authority = "BOUNDED_KOTLIN_LISTENER_STATE" if self.listener else "BOUNDED_KOTLIN_SCHEDULED_STATE"
+        row = {"kind": kind, "text": text, "authority": authority,
                "sources": list(dict.fromkeys(refs))}
         if conditions:
             row["condition"] = conditions
@@ -123,15 +126,18 @@ class ScheduledState:
             return Key(origin.loop, tuple(parts), sites)
         return None
 
-    def receiver(self, labels, env, *, aliases=False):
-        if len(labels) == 1:
-            if labels[0] not in env:
-                return self.fields.get(labels[0])
-            if aliases and isinstance(alias := env[labels[0]], MapAlias):
-                return self.fields[alias.member]
+    def receiver(self, labels, env):
+        if len(labels) == 1 and labels[0] not in env:
+            return self.fields.get(labels[0])
         if len(labels) == 3 and labels[:2] == ("this", "."):
             return self.fields.get(labels[2])
         return None
+
+    def map_targets(self, labels, env):
+        if len(labels) == 1 and isinstance(alias := env.get(labels[0]), MapAlias):
+            return alias.members
+        field = self.receiver(labels, env)
+        return frozenset((field.name,)) if field and field.name in self.maps else frozenset()
 
     def map_part(self, tokens, env, allow_suffix):
         words = self.words(tokens)
@@ -161,13 +167,13 @@ class ScheduledState:
             return self.words(callee), args, self.site(tokens[:end]), end
         return None
 
-    def receiver_call(self, tokens, env, names, *, aliases=False):
+    def receiver_call(self, tokens, env, names):
         if not (call := self.call(tokens)):
             return None
         labels, args, site, end = call
         if labels[-1] not in names or labels[-2:-1] != (".",):
             return None
-        if field := self.receiver(labels[:-2], env, aliases=aliases):
+        if field := self.receiver(labels[:-2], env):
             return field, labels[-1], args, site, end
         return None
 
@@ -213,7 +219,7 @@ class ScheduledState:
 
     def foreach_loop(self, name, header, suite, env, flow, stack, depth):
         child = {**env, name: Key(header, ())}
-        premise = "a scheduled iteration supplies " + '`' + name + '`'
+        premise = ("the listener's loop supplies " if self.listener else "a scheduled iteration supplies ") + '`' + name + '`'
         self.walk(suite, child, replace(flow, evidence=(*flow.evidence, header),
                                         conditions=(*flow.conditions, premise)), stack, depth + 1)
 
@@ -275,7 +281,7 @@ class ScheduledState:
         child = replace(flow, evidence=(*flow.evidence, site, self.unit.function_site(helper)),
                         conditions=(*flow.conditions, "the call selects the retained same-owner implementation"))
         for param, actual in parameter_sites:
-            self.add("SCHEDULED_ARGUMENT",
+            self.add("LISTENER_ARGUMENT" if self.listener else "SCHEDULED_ARGUMENT",
                      f"The source handoff passes {self.code(actual)} to the {param.name} parameter of {name}.",
                      child, actual, param.site,
                      uncertainty="The local call must be reached and the argument must evaluate normally.")
@@ -308,47 +314,92 @@ class ScheduledState:
                         or write.receiver in flow.invalidated):
                     continue
                 rollback = " This heap mutation has its own lifetime through database rollback." if flow.transaction else ""
+                retry = "A later message-listener invocation" if self.listener else "A later scheduled iteration"
                 self.add("SAME_KEY_HEAP_RETRY",
-                         f"A later scheduled iteration can read the value written to {self.code(write.site)} "
+                         f"{retry} can read the value written to {self.code(write.site)} "
                          f"even if {self.code(call)} failed after the write." + rollback,
                          flow, *proof, read.site, *read.key.origins,
                          uncertainty="Requires the same receiver, equal derived keys, the earlier write to have completed, "
                                      "and no intervening write, removal, clearing or replacement. "
                                      "Accessor return values can vary across evaluations.")
 
-    def invalidate(self, flow, receiver):
-        return replace(flow, writes=tuple(row for row in flow.writes if row.receiver != receiver),
-                       invalidated=flow.invalidated | {receiver})
+    def invalidate(self, flow, receivers):
+        if not receivers:
+            return flow
+        return replace(flow, reads=tuple(row for row in flow.reads if row.receiver not in receivers),
+                       writes=tuple(row for row in flow.writes if row.receiver not in receivers),
+                       invalidated=flow.invalidated | receivers)
 
     def bind_local(self, env, labels, rhs, *, site=None):
         name = labels[1]
-        field = self.receiver(self.words(rhs), env, aliases=True)
-        if field and field.storage == "MAP":
-            env[name] = MapAlias(field.name)
+        if targets := self.map_targets(self.words(rhs), env):
+            env[name] = MapAlias(targets)
         else:
             value = self.value(rhs, env) if labels[0] == "val" else None
             env[name] = replace(value, origins=(*value.origins, site)) if value and site else value
 
-    def cleanup_writes(self, suites, env):
+    def map_effects(self, tokens, env):
+        """Invalidate a map when it is mutated, escapes as a value, or reaches an opaque owner call."""
+        if not tokens:
+            return frozenset()
+        words = self.words(tokens)
+        first = self.unit.token_indices[tokens[0].start]
+        names = set()
+        for index, word in enumerate(words):
+            previous = words[index - 1:index] if index else ()
+            following = words[index + 1:index + 3]
+            explicit = index >= 2 and words[index - 2:index] == ("this", ".")
+            if word == "this" and following[:1] != (".",):
+                names.update(self.maps)
+            if previous in {(".",), ("?.",)} and not explicit:
+                continue
+            labels = ("this", ".", word) if explicit else (word,)
+            if fields := self.map_targets(labels, env):
+                if following[:1] == ("[",):
+                    close = self.unit.pairs.get(first + index + 1, first + len(tokens)) - first
+                    read = (words[close + 1:close + 2] not in {("=",), ("+=",), ("-=",), ("*=",), ("/=",),
+                                                               ("%=",), ("++",), ("--",)} and
+                            previous not in {("++",), ("--",)})
+                else:
+                    read = following in {(".", "get"), (".", "containsKey"), (".", "isEmpty"), (".", "size")}
+                if not read:
+                    names.update(fields)
+            if following[:1] == ("(",) and word in self.functions and (explicit or word not in env):
+                names.update(self.maps)
+        return frozenset(names)
+
+    def cleanup_writes(self, suites, env, rebindings=None):
         names = set()
         for suite in suites:
             local = dict(env)
             for statement in suite:
                 tokens = statement.expression
-                words = self.words(tokens)
-                if (assignment := self.assignment(tokens)) and (lhs := self.words(assignment[0]))[:1] in {("val",), ("var",)}:
-                    if len(lhs) > 1 and self.name(lhs[1]):
-                        self.bind_local(local, lhs, assignment[1])
-                        continue
-                for index, word in enumerate(words[:-1]):
-                    owner = self.receiver((word,), local, aliases=True)
-                    if owner and owner.storage == "MAP" and words[index + 1] in {".", "["}:
-                        # A known direct read cannot clear or overwrite this receiver.
-                        if words[index + 1:index + 3] not in {(".", "get"), (".", "containsKey")}:
-                            names.add(owner.name)
+                assignment = self.assignment(tokens)
+                evaluated = assignment[1] if assignment else tokens
+                if assignment:
+                    lhs = self.words(assignment[0])
+                    if lhs[:1] in {("val",), ("var",)} and len(lhs) > 1 and self.name(lhs[1]):
+                        self.bind_local(local, lhs, evaluated)
+                        if self.map_targets(self.words(evaluated), local):
+                            continue
+                    elif len(lhs) == 1 and lhs[0] in local:
+                        targets = self.map_targets(self.words(evaluated), local)
+                        if targets:
+                            if rebindings is not None and lhs[0] in env:
+                                rebindings[lhs[0]] = rebindings.get(lhs[0], frozenset()) | targets
+                            local[lhs[0]] = self.merge_binding(local[lhs[0]], MapAlias(targets))
+                            continue
+                    else:
+                        names.update(self.write_targets(assignment[0], local))
+                        names.update(self.map_targets(lhs, local))
+                names.update(self.map_effects(evaluated, local))
                 names.update(self.cleanup_writes((statement.body, statement.alternative, statement.cleanup,
-                                                  *(branch for _, _, branch in statement.handlers)), local))
+                                                  *(branch for _, _, branch in statement.handlers)), local, rebindings))
         return names
+
+    def write_targets(self, tokens, env):
+        words = self.words(tokens)
+        return self.map_targets(words[:words.index("[")], env) if "[" in words else frozenset()
 
     def with_write(self, flow, write):
         if flow.last_external:
@@ -463,8 +514,22 @@ class ScheduledState:
                 break
         return tuple(sites[:3])
 
+    def scoped(self, suite, env, flow, stack, depth):
+        local, shadowed = dict(env), {}
+        result = self.walk(suite, local, flow, stack, depth, shadowed=shadowed)
+        local.update(shadowed)
+        return result, local
+
+    @staticmethod
+    def merge_binding(left, right):
+        if left == right and (not isinstance(left, Key) or left.origins == right.origins):
+            return left
+        aliases = frozenset(member for value in (left, right) if isinstance(value, MapAlias) for member in value.members)
+        return MapAlias(aliases) if aliases else None
+
     def branch(self, statement, env, flow, stack, depth, following):
         guard = self.site(statement.expression)
+        flow = self.invalidate(flow, self.map_effects(statement.expression, env))
         read = self.guard_read(statement.expression, env)
         if read:
             flow = replace(flow, reads=(*flow.reads, read))
@@ -472,13 +537,14 @@ class ScheduledState:
         for suite, holds in ((statement.body, True), (statement.alternative, False)):
             condition = f"{self.code(guard)} is {str(holds).lower()}"
             selected = replace(flow, conditions=(*flow.conditions, condition), evidence=(*flow.evidence, guard))
-            self.walk(suite, dict(env), selected, stack, depth + 1)
+            result, local = self.scoped(suite, env, selected, stack, depth + 1)
+            if result is not None:
+                continuing.append((result, local))
+                continue
             exit_site = self.hard_stop(suite[-1], env) if suite else None
-            if exit_site is None:
-                continuing.append((suite, selected))
-            elif following and all(item.kind == "expression" for item in suite[:-1]):
+            if exit_site and following and all(item.kind == "expression" for item in suite[:-1]):
                 continuation = ", ".join(self.code(site) for site in following)
-                kind = "HEAP_GUARD_EXIT" if read else "SCHEDULED_GUARD_EXIT"
+                kind = "HEAP_GUARD_EXIT" if read else "LISTENER_GUARD_EXIT" if self.listener else "SCHEDULED_GUARD_EXIT"
                 subject = "The in-memory guard" if read else "The guard"
                 proof = (self.fields[read.receiver].site, read.site, *read.key.origins) if read else ()
                 self.add(kind, f"{subject} can reach {self.code(exit_site)} before the normal continuation to {continuation}.",
@@ -486,63 +552,88 @@ class ScheduledState:
                          uncertainty="The selected arm and its preceding evaluations must reach the cited exit.")
         if not continuing:
             return None
-        if len(continuing) == 1 and not continuing[0][0]:
-            return continuing[0][1]
-        return replace(flow, reads=(), writes=())
+        if len(continuing) == 1:
+            result, local = continuing[0]
+            env.update({name: local[name] for name in env})
+            return result
+        (left, left_env), (right, right_env) = continuing
+        env.update({name: self.merge_binding(left_env[name], right_env[name]) for name in env})
+        # Only the same reached source events support facts on both normal arms.
+        intersect = {field: tuple(item for item in getattr(left, field) if item in getattr(right, field))
+                     for field in ("reads", "writes", "conditions", "evidence")}
+        return replace(flow, **intersect, invalidated=left.invalidated | right.invalidated,
+                       last_external=left.last_external if left.last_external == right.last_external else None)
 
-    def walk(self, suite, env, flow, stack, depth):
+    def merge_possible_aliases(self, suites, env):
+        rebindings = {}
+        hazards = self.cleanup_writes(suites, env, rebindings)
+        for name, members in rebindings.items():
+            if name in env:
+                env[name] = self.merge_binding(env[name], MapAlias(members))
+        return hazards
+
+    def walk(self, suite, env, flow, stack, depth, *, shadowed=None):
         if depth > MAX_DEPTH:
-            return
+            return self.invalidate(flow, self.maps)
         for index, statement in enumerate(suite):
             self.steps -= 1
-            if self.steps <= 0 or statement.kind in {"return", "throw", "break", "continue", "unsupported"}:
-                return
+            if statement.kind in {"return", "throw", "break", "continue"}:
+                return None
+            if self.steps <= 0 or statement.kind == "unsupported":
+                return self.invalidate(flow, self.maps)
             tokens, words = statement.expression, self.words(statement.expression)
             assignment = self.assignment(tokens) if statement.kind == "expression" else None
             local = self.rhs_control(assignment) or statement
             if statement.kind == "for" and len(words) > 2 and self.name(words[0]) and words[1] == "in":
                 self.foreach_loop(words[0], self.site(tokens), statement.body, env, flow, stack, depth)
+                flow = self.invalidate(flow, self.merge_possible_aliases((statement.body,), env))
                 continue
             if local.kind == "try":
                 hazard = self.cleanup_writes((local.cleanup, *(branch for _, _, branch in local.handlers)), env)
                 self.walk(local.body, dict(env), replace(flow, invalidated=flow.invalidated | hazard), stack, depth + 1)
-                flow = replace(flow, reads=(), writes=(), invalidated=flow.invalidated | hazard)
+                self.merge_possible_aliases((local.body, local.cleanup, *(branch for _, _, branch in local.handlers)), env)
+                flow = replace(flow, reads=(), writes=(), invalidated=flow.invalidated | hazard, last_external=None)
             if local.kind == "if":
                 following = self.following_sites(suite[index + 1:], env) or tuple(
                     item.site for item in suite[index + 1:index + 3] if item.kind == "expression")
                 flow = self.branch(local, env, flow, stack, depth, following)
                 if flow is None:
-                    return
+                    return None
             if statement.kind in {"try", "if"}:
                 continue
             if statement.kind != "expression":
-                return
+                return self.invalidate(flow, self.maps)
             self.callbacks(statement, env, flow, stack, depth)
             evaluated = assignment[1] if assignment else tokens
             flow = self.expression_guard(evaluated, env, flow)
             if flow is None:
-                return
+                return None
             self.helper(evaluated, env, flow, stack, depth)
+            write = self.access(assignment[0] if assignment else tokens, env, write=True)
+            labels = self.words(assignment[0]) if assignment else ()
+            local_declaration = len(labels) > 1 and labels[0] in {"val", "var"} and self.name(labels[1])
+            local_alias = local_declaration or len(labels) == 1 and labels[0] in env
+            if local is statement and not (local_alias and self.map_targets(self.words(evaluated), env)):
+                if write and not assignment:
+                    direct = self.receiver_call(evaluated, env, {"put", "set"})
+                    effects = set().union(*(self.map_effects(arg, env) for arg in direct[2])) if direct else set()
+                else:
+                    effects = self.map_effects(evaluated, env)
+                flow = self.invalidate(flow, effects)
             if external := self.external(evaluated, env):
                 self.outcome(external, flow, self.later(suite, index))
                 flow = replace(flow, last_external=external)
-            if assignment:
-                lhs, rhs = assignment
-                labels = self.words(lhs)
-                if labels[0] in {"val", "var"} and len(labels) > 1 and self.name(labels[1]):
-                    self.bind_local(env, labels, rhs, site=statement.site)
-                    if read := self.access(rhs, env):
+            if write:
+                flow = self.with_write(flow, replace(write, site=statement.site) if assignment else write)
+            elif assignment:
+                if local_declaration:
+                    if shadowed is not None and labels[1] in env:
+                        shadowed.setdefault(labels[1], env[labels[1]])
+                    self.bind_local(env, labels, evaluated, site=statement.site)
+                    if read := self.access(evaluated, env):
                         flow = replace(flow, reads=(*flow.reads, read))
-                elif write := self.access(lhs, env, write=True):
-                    flow = self.with_write(flow, replace(write, site=statement.site))
-                elif labels[1:2] == ("[",) and isinstance(alias := env.get(labels[0]), MapAlias):
-                    flow = self.invalidate(flow, alias.member)
-                elif len(labels) == 1:
-                    self.bind_local(env, ("var", labels[0]), rhs)
-            elif write := self.access(tokens, env, write=True):
-                flow = self.with_write(flow, write)
-            elif mutation := self.receiver_call(tokens, env, {
-                    "clear", "remove", "replace", "replaceAll", "putAll", "put", "set", "compute"}, aliases=True):
-                field = mutation[0]
-                if field.storage == "MAP":
-                    flow = self.invalidate(flow, field.name)
+                elif len(labels) == 1 and labels[0] in env:
+                    self.bind_local(env, ("var", labels[0]), evaluated)
+                else:
+                    flow = self.invalidate(flow, self.write_targets(assignment[0], env) | self.map_targets(labels, env))
+        return flow

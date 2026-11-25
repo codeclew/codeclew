@@ -306,9 +306,12 @@ async function main(dynamic: string, enabled: boolean) {
         root = SCHEDULED_ROOT
         if root not in text:
             root = text[text.index("@Scheduled"):text.index("\n\n    private fun transmit")]
+        return self.kotlin_callback_facts(text, root, "SCHEDULED_JOB", "dispatch")
+
+    def kotlin_callback_facts(self, text, root, kind, symbol):
         first = text[:text.index(root)].count("\n") + 1
         process, context = selected("ParcelDispatcher.kt", text, standalone=root, start=first)
-        process.update(entryKind="SCHEDULED_JOB", entrySymbol="dispatch")
+        process.update(entryKind=kind, entrySymbol=symbol)
         raw = text.encode()
 
         def bind(witness):
@@ -386,6 +389,62 @@ data class Label(val value: String) {
         self.assertIn("equal derived keys", found["SAME_KEY_HEAP_RETRY"]["uncertainty"])
         proof = [witnesses[ref]["text"] for ref in found["SAME_KEY_HEAP_RETRY"]["sources"] if ref in witnesses]
         self.assertTrue(any('parcel["lookup-key"].asText()' in text for text in proof), proof)
+
+    def test_kotlin_scheduled_map_state_survives_only_intact_join_arms(self):
+        source = (SCHEDULED.replace("import java.net.http.HttpClient", "import java.net.URI\nimport java.net.http.HttpClient")
+                  .replace("val prior = attempts[key]", "val prior = attempts[key]\n        if (attempts[key] == 99L) error(\"paused\")")
+                  .replace("relay.send(request, HttpResponse.BodyHandlers.discarding())", """val opts = HttpRequest.newBuilder(URI.create("https://example.test/dispatch"))
+        val extra = request.headers().firstValue("X-Extra").orElse(null)
+        BRANCH
+        val response = relay.send(opts.build(), HttpResponse.BodyHandlers.discarding())""")
+                  .replace("private fun remember(key: String, previous: Long?) { }", """private fun remember(key: String, previous: Long?) { }
+
+    private fun opaque(target: MutableMap<String, Long>) { target.clear() }
+    private fun clearOwner() { attempts.clear() }"""))
+        cases = {
+            "unrelated builder": ('if (extra != null) opts.header("X-Extra", extra)', True),
+            "other map": ('if (extra != null) otherAttempts.clear()', True),
+            "unchanged alias": ('var copy = otherAttempts\n        if (extra != null) copy = otherAttempts\n'
+                                '        copy.clear()', True),
+            "divergent alias": ('var copy = otherAttempts\n        if (extra != null) copy = attempts\n'
+                                '        copy.clear()', False),
+            "branch write": ('if (extra != null) attempts[key] = 7L', False),
+            "opaque argument": ('val copy = attempts\n        if (extra != null) opaque(copy)', False),
+            "implicit owner": ('if (extra != null) clearOwner()', False),
+        }
+        for label, (branch, survives) in cases.items():
+            with self.subTest(label=label):
+                facts, _ = self.scheduled_facts(source.replace("BRANCH", branch))
+                repeats = [row for row in facts if row["kind"] == "SAME_KEY_HEAP_RETRY"]
+                self.assertEqual(bool(repeats), survives, facts)
+                if survives:
+                    result = repeats[0]
+                    self.assertIn("attempts[key] == 99L", result["condition"])
+                    self.assertNotIn("extra != null", result["condition"])
+                    self.assertIn("opts.build()", result["text"])
+
+    def test_kotlin_native_listener_cites_later_same_key_invocation_through_transaction(self):
+        root = """@KafkaListener(topics = ["parcel.received"])
+    fun accept(parcel: Parcel) {
+        transactions.executeWithoutResult {
+            transmit(parcel.key)
+        }
+    }"""
+        text = (SCHEDULED.replace(SCHEDULED_ROOT, root)
+                .replace("org.springframework.scheduling.annotation.Scheduled", "org.springframework.kafka.annotation.KafkaListener"))
+        for source, expected in ((text, True), (text.replace("attempts[key] = 4L", "otherAttempts[key] = 4L"), False)):
+            with self.subTest(same_receiver=expected):
+                facts, witnesses = self.kotlin_callback_facts(source, root, "KAFKA_LISTENER", "accept")
+                repeats = [row for row in facts if row["kind"] == "SAME_KEY_HEAP_RETRY"]
+                self.assertEqual(bool(repeats), expected, facts)
+                self.assertTrue(any(row["kind"] == "LISTENER_ARGUMENT" for row in facts), facts)
+                if expected:
+                    result, = repeats
+                    self.assertIn("A later message-listener invocation", result["text"])
+                    self.assertIn("same receiver, equal derived keys", result["uncertainty"])
+                    self.assertIn("transaction template invokes its callback", result["condition"])
+                    proof = [witnesses[ref]["text"] for ref in result["sources"] if ref in witnesses]
+                    self.assertTrue(any("parcel: Parcel" in excerpt for excerpt in proof), proof)
 
     def test_kotlin_scheduled_alias_mutations_invalidate_the_actual_map_only(self):
         for replacement in ("same.clear()", "same[key] = 8L", "same.put(key, 8L)"):
