@@ -22,6 +22,19 @@ internal static class RetainedSdkEffects
     internal static bool Publication(string? method, string? family) => family == "broker" && method is
         "Produce" or "ProduceAsync" or "BasicPublish" or "BasicPublishAsync" or "SendMessageAsync" or "SendMessagesAsync";
 
+    internal static bool KafkaProducer(SemanticModel model, ExpressionSyntax receiver, string? method) =>
+        method is "Produce" or "ProduceAsync" &&
+        Name(model, receiver, 0) is "Confluent.Kafka.IProducer" or "Confluent.Kafka.Producer";
+
+    internal static int? SelectedKafkaTopic(IMethodSymbol method) =>
+        method.Name is "Produce" or "ProduceAsync" &&
+        method.ContainingType.Name is "IProducer" or "Producer" &&
+        method.ContainingNamespace.ToDisplayString() == "Confluent.Kafka" &&
+        method.ContainingAssembly.Name == "Confluent.Kafka"
+        ? method.Parameters.FirstOrDefault(parameter => parameter.Name == "topic" &&
+            parameter.Type.SpecialType == SpecialType.System_String)?.Ordinal
+        : null;
+
     internal static bool Dapper(SemanticModel model, ExpressionSyntax receiver, string? method, string? resource) =>
         method is ("Query" or "QueryAsync" or "QueryFirst" or "QueryFirstAsync" or "QueryFirstOrDefault" or
             "QueryFirstOrDefaultAsync" or "QuerySingle" or "QuerySingleAsync" or "QuerySingleOrDefault" or

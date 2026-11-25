@@ -941,6 +941,9 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
         var effectFamily = operation is not IDynamicInvocationOperation && access is not null
             ? RetainedSdkEffects.Family(model, access.Expression, name, family) : null;
         var dapper = effectFamily == "database" && access is not null && RetainedSdkEffects.Dapper(model, access.Expression, name, family);
+        var kafkaTopic = operation is not IDynamicInvocationOperation && candidate is null && access is not null &&
+            RetainedSdkEffects.KafkaProducer(model, access.Expression, name)
+            ? NominalKafkaTopic(invocation) : null;
         var asyncResourceApi = name is "BeginTransactionAsync" or "CommitAsync" or "RollbackAsync" or
             "ExecuteNonQueryAsync" or "ExecuteReaderAsync" or "ExecuteScalarAsync" or "ReadAsync" or "DisposeAsync";
         Add(operation, "CALL", ("symbol", null), ("spelling", name), ("receiver", receiver),
@@ -949,6 +952,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             ("receiverFamily", family),
             ("candidateEffectFamily", effectFamily),
             ("nominalPublication", candidate is null && RetainedSdkEffects.Publication(name, effectFamily)),
+            ("kafkaTopicPosition", kafkaTopic),
             ("dapperCandidate", candidate is null && dapper),
             ("resultFamily", ManagedValues.ResourceFamily(candidate?.ReturnType)),
             ("predicateSite", selector.Length == 1 ? Site(selector[0]) : null),
@@ -973,6 +977,18 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             IsUnboundCancellationParameter(parameter))
             return parameter.Ordinal;
         return null;
+    }
+
+    private static int? NominalKafkaTopic(InvocationExpressionSyntax invocation)
+    {
+        var arguments = invocation.ArgumentList.Arguments;
+        if (arguments.Count < 2 || arguments.Any(argument => argument.RefKindKeyword != default))
+            return null;
+        var named = arguments.Select((argument, index) => (argument, index))
+            .Where(row => row.argument.NameColon?.Name.Identifier.ValueText == "topic").ToArray();
+        if (named.Length == 1)
+            return named[0].index == 0 || arguments[0].NameColon is not null ? named[0].index : null;
+        return named.Length == 0 && arguments[0].NameColon is null ? 0 : null;
     }
 
     private object SyntaxArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IMethodSymbol? candidate = null)
@@ -1053,6 +1069,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                     ("candidateEffectFamily", operation.Syntax is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax access } ?
                         RetainedSdkEffects.Family(model, access.Expression, target.Name, ManagedValues.ResourceFamily(invocation.Instance?.Type)) : null),
                     ("directEffectFamily", DirectEffectFamily(target, role)),
+                    ("kafkaTopicPosition", RetainedSdkEffects.SelectedKafkaTopic(target)),
                     ("httpResult", ManagedValues.HttpResult(target, invocation.Arguments)),
                     ("responseConstruction", ManagedValues.IsResponseConstruction(target)),
                     ("receiverFamily", ManagedValues.ResourceFamily(invocation.Instance?.Type)),

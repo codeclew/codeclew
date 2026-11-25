@@ -464,6 +464,10 @@ sealed class Relay
             "matched": helper,
             "different receiver": helper.replace('await connection.ExecuteAsync', 'await other.ExecuteAsync'),
             "different key": helper.replace('new { id = row.Id }', 'new { id = 100 }'),
+            "dynamic topic": helper.replace('"parcel.available"', 'row.Payload'),
+            "unbound receiver": helper.replace("IProducer<int, string> broker", "object broker"),
+            "other overload": helper.replace('"parcel.available"', 'topicPartition: row.Id').replace(
+                'topicPartition: row.Id, new Message', 'topicPartition: row.Id, message: new Message'),
             "prior commit": helper.replace('        await tx.CommitAsync();\n', '').replace(
                 '        await broker.ProduceAsync', '        await tx.CommitAsync();\n        await broker.ProduceAsync'),
         }.items():
@@ -481,6 +485,14 @@ sealed class Relay
                 facts, _ = self.project(process, context)
                 deliveries = [row for row in facts if row["kind"] == "worker-row-delivery"]
                 retries = [row for row in facts if row["kind"] == "worker-reselection" and "broker may" in row["text"]]
+                publications = [row for row in facts if row.get("_edge", {}).get("kind") == "PUBLISH"]
+                if label in {"dynamic topic", "unbound receiver", "other overload"}:
+                    self.assertEqual(publications, [])
+                    continue
+                self.assertTrue(publications, facts)
+                self.assertEqual({row["_edge"]["topic"] for row in publications}, {"parcel.available"})
+                self.assertTrue(all("declared receiver binds" in row["uncertainty"] and
+                                    row["_edge"]["site"] == "m123456789abc:e2" for row in publications))
                 if label == "matched":
                     self.assertTrue(deliveries and retries, facts)
                     self.assertIn("CommitAsync", deliveries[0]["text"])

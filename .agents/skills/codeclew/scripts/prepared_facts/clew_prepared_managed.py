@@ -931,8 +931,12 @@ class Facts:
                           **({"condition": " and ".join(text for text, _ in guards)} if guards else {}))
 
     def dispatches(self, path, events):
-        for event in events:
-            if event["outcome"] != "INVOKED":
+        scope = path.get("scope")
+        if scope and not scope.get("call"):
+            return
+        prefix = scope["prefixEvents"] if scope else 0
+        for index, event in enumerate(events):
+            if index < prefix or event["outcome"] != "INVOKED":
                 continue
             key = event["step"]
             step = self.steps[key]
@@ -940,18 +944,34 @@ class Facts:
             symbol = step.get("symbol") or ""
             if not (name := self.name(key)):
                 continue
+            uncertainty = None
             if step.get("directEffectFamily") == "HTTP" and symbol.startswith("M:System.Net.Http.HttpClient."):
                 value = next((arg["value"] for arg in event.get("arguments", ()) if arg.get("name") == "requestUri"), None)
                 verb = HTTP_CLIENT_METHODS.get(method(symbol))
                 uri = value[1] if value and value[0] == "literal" and isinstance(value[1], str) else None
                 edge = {"kind": "HTTP", "method": verb, "uri": uri, "site": site, "occurrence": key}
                 label = "The source calls the framework HTTP client " + name + "."
-            elif step.get("role") == "PUBLICATION_CANDIDATE" and step.get("topic"):
-                edge = {"kind": "PUBLISH", "topic": step["topic"], "site": site, "occurrence": key}
-                label = "The source reaches the candidate publication call " + name + "."
+            elif step.get("role") == "PUBLICATION_CANDIDATE":
+                position = step.get("kafkaTopicPosition")
+                topic = step.get("topic")
+                if position is not None:
+                    values = [argument["value"] for argument in event.get("arguments", ())
+                              if argument["position"] == position and not argument.get("byRef")]
+                    value = values[0] if len(values) == 1 else None
+                    topic = value[1] if value and value[0] == "literal" and isinstance(value[1], str) else None
+                if not isinstance(topic, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,249}", topic) or topic in {".", ".."}:
+                    continue
+                edge = {"kind": "PUBLISH", "topic": topic, "site": site, "occurrence": key}
+                label = f"The source reaches {name} with Kafka topic {code(topic)}."
+                if step.get("roleAuthority") == "CONDITIONAL_NOMINAL_BROKER_API":
+                    uncertainty = "This assumes the retained declared receiver binds to the Confluent Kafka producer API."
             else:
                 continue
-            self.add_path("protocol-request", label, path, events, [key], _edge=edge)
+            guards = self.path_condition(events[:index])
+            self.add_path("protocol-request", self.when(guards) + label, path, events,
+                          [*(key for _, key in guards), key], _edge=edge,
+                          **({"condition": " and ".join(text for text, _ in guards)} if guards else {}),
+                          **({"uncertainty": uncertainty} if uncertainty else {}))
 
     def effects(self, path, events, is_http):
         actions = self.actions(path, events)
@@ -1299,6 +1319,7 @@ def derive(process, context, graph):
         facts.list_lookup(path, events)
         facts.object_arguments(path, events)
         facts.sql(path, events)
+        facts.dispatches(path, events)
         facts.callable_order(path, events)
     return facts.output()
 

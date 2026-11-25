@@ -712,7 +712,8 @@ class Trace:
         evidence = self.roles.get((ref, call["id"]), {})
         role = call["role"] or evidence.get("role")
         nominal_publication = role is None and call.get("nominalPublication")
-        if nominal_publication:
+        kafka_position = call.get("kafkaTopicPosition")
+        if nominal_publication or kafka_position is not None:
             role = "PUBLICATION_CANDIDATE"
         receiver = data_value(symbol(call["receiver"], frame), state.data_fields)
         actuals = {arg["id"]: symbol(arg["value"], frame) for arg in call["arguments"] if arg["id"] is not None}
@@ -723,9 +724,11 @@ class Trace:
         step = key(symbol=call["symbol"], spelling=call.get("spelling"), role=role, dispatch=call["dispatch"],
                    binding=binding, taskLike=call.get("taskLike", False),
                    roleAuthority=(NOMINAL_FRAMEWORK if call.get("nominalFramework") else "ROSLYN_FRAMEWORK_DECLARATION")
-                   if call["role"] else "CONDITIONAL_NOMINAL_BROKER_API" if nominal_publication else evidence.get("roleAuthority"),
+                   if call["role"] else "CONDITIONAL_NOMINAL_BROKER_API" if nominal_publication else
+                   "ROSLYN_PACKAGE_DECLARATION" if kafka_position is not None else evidence.get("roleAuthority"),
                    **{name: call[name] for name in ("dapperCandidate", "candidateEffectFamily") if call.get(name)},
                    **{key: evidence[key] for key in ("sql", "sourceSql", "topic") if key in evidence},
+                   **({"kafkaTopicPosition": kafka_position} if kafka_position is not None else {}),
                    **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault", "directEffectFamily")
                       if call.get(key)},
                    **({"predicateSite": fn.site(call["predicateSite"])} if call.get("predicateSite") else {}),
@@ -1167,6 +1170,8 @@ class Trace:
                   NULL_DISPATCH not in path["open"] and LIST_SELECTION_OPEN not in path["open"]}
         visible = {cmd["call"] for group in executions for cmd in group["commands"]
                    if group["path"] in normal and cmd["outcome"] in {"RETURNED", "RESUMED"}}
+        visible.update(event["step"] for path in paths for event in path["sequence"]
+                       if event["outcome"] == "INVOKED" and self.steps[event["step"]].get("kafkaTopicPosition") is not None)
         visible.update(event["call"] for path in paths if path["id"] in normal
                        for event in path["sequence"] if event.get("call") and
                        self.steps[event["call"]].get("spelling") == "FirstOrDefault")
@@ -1181,7 +1186,7 @@ class Trace:
             wanted = {f"{fn.citation}/op{op['id']}" for op in operations if op.get("spelling") in {
                 "ExecuteReader", "ExecuteReaderAsync", "ExecuteScalar", "ExecuteScalarAsync", "ExecuteNonQuery",
                 "ExecuteNonQueryAsync", "FirstOrDefault", *TRANSACTION_METHODS} or
-                self.roles.get((ref, op["id"]), {}).get("sourceSql")}
+                op.get("kafkaTopicPosition") is not None or self.roles.get((ref, op["id"]), {}).get("sourceSql")}
             if ref == root and not (wanted - visible):
                 continue
             if len(round_robin) == LOCAL_CALLABLES:
@@ -1243,10 +1248,12 @@ class Trace:
             commands = self.commands["project_callable"](row, self.steps, self.sql_tables, self.storage)
             material = tuple(dict.fromkeys(event.get("call") or event["step"] for event in suffix if
                 event.get("call") in wanted and event["outcome"] in {"RETURNED", "RESUMED"} or
-                event["step"] in wanted and event["outcome"] == "INVOKED" and self.steps[event["step"]].get("sourceSql")))
+                event["step"] in wanted and event["outcome"] == "INVOKED" and
+                (self.steps[event["step"]].get("sourceSql") or self.steps[event["step"]].get("kafkaTopicPosition") is not None)))
             if not commands and not any(self.steps[key].get("spelling") == "FirstOrDefault" or
                                         self.steps[key].get("spelling") in TRANSACTION_METHODS or
-                                        self.steps[key].get("sourceSql") for key in material):
+                                        self.steps[key].get("sourceSql") or
+                                        self.steps[key].get("kafkaTopicPosition") is not None for key in material):
                 continue
             identity = exit_.kind, material, tuple((command["call"], command["outcome"]) for command in commands)
             if identity not in seen:
