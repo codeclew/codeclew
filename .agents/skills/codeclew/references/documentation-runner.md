@@ -10,6 +10,23 @@ route](compose-original.md#update-an-existing-checked-export). It preserves the
 original, bound index and citation manifests and applies the requested edits.
 Use a fresh run for a new documentation set.
 
+## New full documentation sets
+
+Use the installed skill's standard profile for a new full service, process, or
+multi-service documentation request. Put both selectors in the job alongside
+the required fields.
+
+```json
+{
+  "evidenceMode": "PREPARED_FACTS",
+  "authorMode": "ISOLATED_PAGES"
+}
+```
+
+Prepared facts and verbatim evidence go to the individually scoped page authors.
+The runner assembles the originals and checks the rendered local export. Existing
+jobs retain the runner API defaults for omitted selectors.
+
 Create a job matching [docs-run-job](../schemas/docs-run-job.schema.json). Pin the
 supported clew launcher, exact saved snapshot, selected services, language, current
 skill and unchanged packaged renderer. Install that renderer's locked dependencies
@@ -66,8 +83,9 @@ blocks discovery; never pad gaps, read source privately or recapture as a shortc
 
 ## Prepared evidence propositions
 
-Set `"evidenceMode": "PREPARED_FACTS"` to use the packaged deterministic
-source projectors before authoring. The default is `RETAINED_SOURCE`.
+The standard full documentation job selects `"evidenceMode": "PREPARED_FACTS"`
+to run the packaged deterministic source projectors before authoring. The
+runner API uses `RETAINED_SOURCE` when the field is omitted.
 Each entry or discovery file can have scoped propositions in the required
 retained source views the author already reads. A short section before the code
 shows facts and evidence boundaries with their conditions, authority, uncertainty
@@ -143,7 +161,7 @@ checks and renderer still apply to every final claim.
 
 ## Author delivery
 
-Prepare returns the author mode and the reason it was selected. A single service
+Prepare returns the author mode and the reason it was selected. In `AUTO`, a single service
 with proven complete executable file bodies, at most four files and three native
 HTTP entries, no deferred resources or declaration components, at most 24 cite
 aliases, at most 12 KiB of source, and at most 20 KiB of inline prompt uses the
@@ -168,24 +186,23 @@ the same cumulative token accounting.
 
 ### Isolated page authoring
 
-Set the job's `"authorMode": "ISOLATED_PAGES"` for an isolated full
-documentation run. Use the same installed `prepare` and `run` commands above.
-A job with no author mode, or with `"authorMode": "AUTO"`, continues to select
-inline or workspace authoring. The job also selects the configured model and
-reasoning effort for every page. Add `"evidenceMode": "PREPARED_FACTS"` to
-deliver attributed prepared facts beside the retained code.
+The standard profile selects `ISOLATED_PAGES` and `PREPARED_FACTS` using the
+installed `prepare` and `run` commands above. The configured model and reasoning
+effort apply to every page. A job with no author mode, or with
+`"authorMode": "AUTO"`, uses inline or workspace authoring.
 
 Prepare freezes a service guide and data and contracts page per service, the
 operation pages and canonical handler targets, and one process map. A source
 discovery slot reviews each required executable file for additional starts.
 Each slot's input is listed in `inputs/author-plan.json`. The named packet
 contains verbatim source ranges, citation aliases, the slot's navigation and
-coverage, and any in-scope prepared propositions. Qualified peer excerpts
-come from exact, unique retained interaction declarations. Declaration,
-source evidence and runtime evidence retain their distinct authority. Deferred
-resources and omitted optional evidence are visible in the packet. Preparation
-reports the named slot and limit if essential source exceeds its 192 KiB
-packet budget.
+coverage, and any in-scope prepared propositions. Reached declaration facts
+keep exact call or callback witnesses and source slices. Qualified peer facts
+show their HTTP or subscription evidence and preserve the delivery boundary.
+Declaration, source evidence and runtime evidence retain their distinct authority.
+The packet reports deferred resources, preparation omissions and omitted optional
+evidence. Preparation reports the named slot and limit if essential source exceeds
+its 192 KiB packet budget.
 
 Run starts an independent tool-free Codex session for each slot, with up to
 three sessions active. The [page response contract](../schemas/docs-run-page-author.schema.json)

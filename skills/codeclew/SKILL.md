@@ -12,11 +12,10 @@ metadata:
 
 ## Prepared documentation author
 
-If the runner supplied an inline documentation packet, it contains the request,
-complete selected retained bodies and permitted citations. Follow that prompt
-and respond directly in the supplied schema. The runner has already admitted the
-release and will assemble and verify the draft. Use the workspace workflow only
-when the runner supplies the workspace prompt.
+If the runner supplied a documentation packet, it contains the request,
+selected retained source and permitted citations. Follow that prompt and respond
+in the supplied schema. The runner admits the release and assembles and verifies
+the draft. Use the workspace workflow when the runner supplies a workspace prompt.
 
 ## Choose the requested result
 
@@ -28,24 +27,20 @@ handler-started sequence.
 
 | Result | Read next |
 | --- | --- |
-| Generate durable service or process documentation | [Bounded documentation run](references/documentation-runner.md) |
+| Generate durable service or process documentation | [Standard full documentation job](references/documentation-runner.md#new-full-documentation-sets) |
 | Update existing service or process documentation | [Update the prior original and checked export](references/compose-original.md#update-an-existing-checked-export) |
 | Bounded SOURCE Q&A or saved-answer maintenance | [Prepared SOURCE](README.md) |
 | Inspect shared semantic candidates across retained service caches | [Shared catalog inputs](references/shared-semantic-catalog.md) |
 
-New broad documentation requests use the bounded runner with authored originals
-and the packaged renderer for checked local HTML. For an update, locate the
-previous checked export and its original/index/manifests first. Keep agreed editor
-changes in that original and update only the requested fragments. The calling agent fills the job and
-launcher; the author follows [guided human pages](references/compose-original.md#frozen-source-to-reviewed-pages)
-and writes the draft and self-review, without starting another runner.
-For an explicitly isolated full run, use [isolated page
-authoring](references/documentation-runner.md#isolated-page-authoring) on the same
-bounded runner. Reuse frozen evidence. A new repository first
-needs [registration/capture](references/service-documentation.md#start-or-recover),
-then the same human route. Native output is not the fallback for new repositories.
-`EXPORT_CHECKED` is technical success; completion also requires requested pages/
-sequences and the same-author scope check.
+For a new full documentation set, fill a bounded runner job with
+`"evidenceMode": "PREPARED_FACTS"` and `"authorMode": "ISOLATED_PAGES"`.
+Use the installed skill's `prepare` and `run` commands to assemble originals
+and check local HTML with the packaged renderer. A new repository first needs
+[registration and capture](references/service-documentation.md#start-or-recover).
+For an update, locate the previous checked export and its original, bound index
+and citation manifests. Preserve agreed edits and revise only the requested
+fragments. Completion requires the requested pages and sequences, checked
+provenance, and each author's scope review.
 
 ## Prepared SOURCE shortcut
 
