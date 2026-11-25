@@ -119,10 +119,10 @@ class ClewPreparedJavaSyntax {
 
     Object compilationUnit() {
         var namespace = unit.getPackageName();
-        var imports = unit.getImports().stream().filter(entry -> !entry.isStatic())
+        var imports = unit.getImports().stream().filter(entry -> dispatchSyntax || !entry.isStatic())
                 .map(entry -> {
                     nodes = 0;
-                    return node(entry, "import", entry.getQualifiedIdentifier().toString());
+                    return node(entry, entry.isStatic() ? "static-import" : "import", entry.getQualifiedIdentifier().toString());
                 }).toList();
         var declarations = unit.getTypeDecls().stream().filter(ClassTree.class::isInstance)
                 .map(ClassTree.class::cast).map(this::typeDeclaration).toList();
@@ -234,7 +234,7 @@ class ClewPreparedJavaSyntax {
 
     List<String> typeArguments(Tree type) {
         return switch (type) {
-            case ParameterizedTypeTree generic -> generic.getTypeArguments().stream().map(this::typeName).toList();
+            case ParameterizedTypeTree generic -> generic.getTypeArguments().stream().map(argument -> parameterized(argument) ? "" : typeName(argument)).toList();
             case AnnotatedTypeTree annotated -> typeArguments(annotated.getUnderlyingType());
             default -> List.of();
         };
@@ -322,10 +322,14 @@ class ClewPreparedJavaSyntax {
             case NewClassTree value -> node(tree, "new", expression(value.getEnclosingExpression()),
                     fullUnit ? node(value.getIdentifier(), "type", typeName(value.getIdentifier())) : node(value.getIdentifier(), "type"),
                     value.getArguments().stream().map(this::expression).toList());
+            case NewArrayTree array when dispatchSyntax && array.getType() == null && array.getInitializers() != null ->
+                    node(tree, "annotation-array", array.getInitializers().stream().map(this::expression).toList());
             case AssignmentTree binding -> node(tree, "set", expression(binding.getVariable()), expression(binding.getExpression()));
             case ConditionalExpressionTree select -> node(tree, "choose", expression(select.getCondition()),
                     expression(select.getTrueExpression()), expression(select.getFalseExpression()));
             case BinaryTree op -> switch (op.getKind()) {
+                case PLUS -> node(tree, dispatchSyntax ? "concat" : "ordered",
+                        expression(op.getLeftOperand()), expression(op.getRightOperand()));
                 case CONDITIONAL_AND -> node(tree, "and", expression(op.getLeftOperand()), expression(op.getRightOperand()));
                 case CONDITIONAL_OR -> node(tree, "or", expression(op.getLeftOperand()), expression(op.getRightOperand()));
                 case EQUAL_TO, NOT_EQUAL_TO -> node(tree, op.getKind() == Tree.Kind.EQUAL_TO ? "eq" : "neq",

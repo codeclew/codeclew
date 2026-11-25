@@ -51,8 +51,8 @@ HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown
 MESSAGE_OPEN = ("Broker or adapter binding, handler activation, delivery, acknowledgement, ordering and "
                 "payload compatibility remain unknown.")
 STORAGE_OPEN = ("Database and schema binding, key or row identity, commit, visibility and timing remain unknown.")
-JAVA_DISPATCH_OPEN = ("Deployment destination, dispatcher activation, adapter event mapping, delivery, acknowledgement "
-                      "and callback completion remain open.")
+JAVA_DISPATCH_OPEN = ("Deployment destination, dispatcher activation, adapter event mapping, delivery, acknowledgement, "
+                      "callback completion and runtime execution order remain open.")
 ASYNC_OPEN = "Any wait for downstream completion and its order relative to an original HTTP response remain open."
 
 

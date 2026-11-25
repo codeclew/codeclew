@@ -719,6 +719,8 @@ def background_operation(service, found, files, exact):
             return None
         trigger['configuration'] = {'adapter': found['adapter'], 'channel': found['channel'],
                                     'eventType': found['eventType']}
+        if 'subscriberId' in found:
+            trigger['configuration']['subscriberId'] = found['subscriberId']
         trigger['assemblySources'] = list(dict.fromkeys(assembly))
         refs = list(dict.fromkeys([*refs, *assembly]))
     origins = list(dict.fromkeys(handles[ref] for ref in refs))
@@ -754,7 +756,7 @@ def background_operation(service, found, files, exact):
                                'anchored': list(dict.fromkeys([first for first, _ in calls] +
                                                             [row[0] for row in (*offsets, *publications)]))}}
     uncertainty = ('The source candidate assumes the declared dispatcher, bean and handler bindings. '
-                   'Activation, transport, wire compatibility, delivery and execution timing remain open.'
+                   'Runtime activation, transport and wire bindings, delivery and execution order remain open.'
                    if kind == 'JAVA_TYPED_DISPATCH' else
                    'Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
                    + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))
@@ -777,6 +779,9 @@ def background_registration(found, trigger):
     if found['kind'] == 'INTERVAL':
         return f'`setInterval` selects the cited callback and supplies `{found["interval"]}` milliseconds as its repeat interval.'
     if found['kind'] == 'JAVA_TYPED_DISPATCH':
+        if 'subscriberId' in found:
+            return (f'The retained Spring bean wiring and `@EventuateDomainEventHandler` select `{name}` '
+                    f'for `{found["eventType"]}` on channel `{found["channel"]}`.')
         return (f'The retained dispatcher bean uses the handler table that registers `{name}` '
                 f'for `{found["eventType"]}` on channel `{found["channel"]}`.')
     topics = trigger.get('configuration', {}).get('topics', ())

@@ -58,7 +58,7 @@ class Type:
 
     @property
     def imports(self):
-        return tuple(node[3] for node in self.import_nodes)
+        return tuple(node[3] for node in self.import_nodes if node[0] == "import")
 
     def fields(self, name=None):
         return [member for member in self.members if member[0] == "field"
@@ -74,7 +74,7 @@ class Type:
     def import_proof(self, written, qualified):
         if written == qualified or not qualified:
             return ()
-        return tuple(self.site(node) for node in self.import_nodes if node[3] == qualified)
+        return tuple(self.site(node) for node in self.import_nodes if node[0] == "import" and node[3] == qualified)
 
 
 @dataclass(frozen=True)
