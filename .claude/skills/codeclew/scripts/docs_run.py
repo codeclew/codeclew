@@ -664,6 +664,7 @@ def prepare_facts(job, inventory, prepared):
     })
     deadline = time.monotonic() + 180
     summaries = {}
+    remaining = prepared['bounds']['visibleBytes'] - prepared['visibleBytes']
     for service, scope in prepared['services'].items():
         home = Path(scope['sourceIndex']).parent
         if scope['manifest']:
@@ -674,21 +675,19 @@ def prepare_facts(job, inventory, prepared):
                     if row['service'] == service and row['kind'] in ('ENTRY', 'DISCOVERY')]
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline)
-        citations, views = selected.pop('citations'), selected.pop('authorViews')
-        summaries[service] = selected
-        if not views:
-            continue
-        scope['preparedFacts'] = {'views': {identity: str(home / view['path']) for identity, view in views.items()},
-                                  'citations': citations}
-        with (home / 'index.md').open('a', encoding='utf-8') as index:
-            index.write('\n## Prepared evidence propositions\n\n'
-                        'Open the individual views for the entries and files relevant to the request. '
-                        'Preserve each condition, authority and uncertainty when using a proposition. '
-                        'Use its listed source handles and check it against retained evidence. '
-                        'Use the ordinary retained source workflow for gaps identified in a view. '
-                        'The separate prepared-facts.json sidecar records full witness coordinates and coverage.\n\n')
-            for view in views.values():
-                index.write(f"- {view['label']}: {view['path']} ({view['status']})\n")
+        citations, rows = selected.pop('citations'), selected.pop('authorEntries')
+        destinations, view_files = {}, {}
+        if rows:
+            scope['preparedFacts'] = {'entries': rows, 'citations': citations}
+            ready = load(home / 'requirements.json')
+            for row in required:
+                label = ('Discovery file ' + helper['single_line'](row['file']) if row['kind'] == 'DISCOVERY'
+                         else 'Page ' + row['page'])
+                destinations[row['id']] = (ready[row['id']]['views'][0], label)
+            view_files = {view['view']: view['file'] for view in scope['views'].values()}
+        delivery = helper['workspace_views'](home, destinations, rows, citations, view_files, remaining)
+        remaining -= delivery['authorViewBytes']
+        summaries[service] = {**selected, **delivery}
     tree(Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1])
     return summaries
 
@@ -804,11 +803,21 @@ def prepare(job_path, run):
     workspace = run / 'workspace'; workspace.mkdir(mode=0o700)
     (workspace / 'draft').mkdir(mode=0o700)
     save(workspace / 'inventory.json', inventory)
+    fact_guidance = ''
+    if fact_summary and any(row['authorViewBytes'] for row in fact_summary.values()):
+        fact_guidance = ('   Use the prepared facts and boundaries at the top of the source views for the named pages\n'
+                         '   or discovery files. Check them against retained source, preserve conditions and uncertainty,\n'
+                         '   and cite the listed handles. Read any additional items for the relevant scope below the\n'
+                         '   source. Manifest paths are relative to the service index. Inspect an extra manifest\n'
+                         '   with author_citations.py inspect and the cited file.\n')
+    if fact_summary and any(row['omittedAuthorViews'] for row in fact_summary.values()):
+        fact_guidance += ('   The prepared view size limit withheld some annotations. Use the retained source for\n'
+                          '   those scopes.\n')
     prompt = (SKILL / 'templates/docs-run-prompt.txt').read_text().format(
         request=job['request'], language=job['language'], skill=str(SKILL), clew=job['clew'], root=job['root'], run=str(run),
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
         prepared_sources=str(inputs / 'author-source/index.md'), starter=str(inputs / 'starter'),
-        model=job['author']['model'], repairs=job['budget']['maxRepairs'])
+        model=job['author']['model'], repairs=job['budget']['maxRepairs'], prepared_fact_guidance=fact_guidance)
     if inline_prompt is not None:
         (inputs / 'workspace-prompt.txt').write_text(prompt, encoding='utf-8')
         prompt = inline_prompt

@@ -68,16 +68,21 @@ blocks discovery; never pad gaps, read source privately or recapture as a shortc
 
 Set `"evidenceMode": "PREPARED_FACTS"` to use the packaged deterministic
 source projectors before authoring. The default is `RETAINED_SOURCE`.
-The prepared source index points to compact views for individual entries and files.
-Each view records its coverage and supplies propositions with their conditions,
-authority, uncertainty and ordinary citation handles. Inline authoring uses the
-same fields with short cite aliases. The separate `prepared-facts.json` reviewer
-sidecar retains the original narrow witness coordinates and digests. The author
-compares propositions to retained source and fills gaps using the same Work.
-An unavailable adapter,
-unsupported source shape, missing operations or unbound propositions leave the
-ordinary retained source available. Prepared facts do not establish runtime
-execution, deployment, registration, or completeness.
+Each entry or discovery file can have scoped propositions in the required
+retained source views the author already reads. A short section before the code
+shows facts and evidence boundaries with their conditions, authority, uncertainty
+and ordinary citation handles. On a shared view the opening section samples
+across scopes. If it fills up, the view lists the number of remaining items and
+shows them in a named section after the verbatim source. Inline authoring places
+facts and boundaries inside the matching entry and file records with short cite
+aliases. Both modes show narrower witness line ranges when available. The
+`prepared-facts.json` reviewer sidecar retains full witness coordinates, digests
+and preparation coverage.
+
+The author checks propositions against retained source and fills gaps using the
+same Work. An unavailable adapter, unsupported source shape, missing operations
+or unbound propositions leave the ordinary source views available. Prepared facts
+do not establish runtime execution, deployment, registration, or completeness.
 
 Preparation has a separate bounded window for the optional projectors. Java
 uses an available JDK 21 or later. The TypeScript projector uses the companion

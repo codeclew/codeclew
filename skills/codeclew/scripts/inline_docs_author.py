@@ -88,7 +88,8 @@ def plan(job, inventory, prepared, instructions):
     citation_locations = {handle: {key: row['source'][key] for key in ('file', 'startLine', 'endLine')}
                           for handle, row in bindings.items()}
     if prepared_facts:
-        citation_locations.update(prepared_facts['citations'])
+        citation_locations.update({handle: {key: row[key] for key in ('file', 'startLine', 'endLine')}
+                                   for handle, row in prepared_facts['citations'].items()})
     packet = {
         'request': job['request'], 'language': job['language'], 'service': service,
         'coverage': scope['coverage']['coverage'], 'limits': scope['coverage'].get('boundaries', []),
@@ -102,19 +103,12 @@ def plan(job, inventory, prepared, instructions):
                     for ref, row in return_refs.items()},
     }
     if prepared_facts:
-        entry_aliases = {row['id']: ref for ref, row in entry_refs.items()}
-        file_aliases = {row['id']: ref for ref, row in files.items()}
-        packet['preparedFacts'] = {}
-        for identity, alias in {**entry_aliases, **file_aliases}.items():
-            view = load(prepared_facts['views'][identity])
-            row = {key: value for key, value in view.items()
-                   if key not in ('schema', 'requirement', 'page', 'file', 'kind', 'propositions')}
-            row['propositions'] = [{**fact, 'sources': [handle_to_alias[handle] for handle in fact['sources']]}
-                                   for fact in view['propositions']]
-            packet['preparedFacts'][alias] = row
-        instructions += ('\n\nUse relevant preparedFacts for the named entry or file. Preserve their conditions, '
-                         'authority and uncertainty, and use the supplied citation aliases. '
-                         'Consult the retained source to cover gaps and check each fact.')
+        targets = {ref: (row['id'], packet[group][ref]) for group, refs in (('entries', entry_refs), ('files', files))
+                   for ref, row in refs.items()}
+        add_prepared_facts(targets, prepared_facts['entries'], handle_to_alias)
+        instructions += ('\n\nUse the facts and boundaries on the corresponding entry or file, including any shared '
+                         'through alsoFor. Check retained source, preserve conditions and uncertainty, '
+                         'and cite the supplied aliases. Line anchors narrow the location within a citation.')
     prompt = instructions + '\n\n' + json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n'
     prompt_bytes = len(prompt.encode())
     if prompt_bytes > MAX_PROMPT_BYTES:
@@ -126,6 +120,28 @@ def plan(job, inventory, prepared, instructions):
         'files': {ref: row['id'] for ref, row in files.items()},
         'returns': {ref: {'id': row['id'], 'page': row['page']} for ref, row in return_refs.items()},
     }, prompt)
+
+
+def add_prepared_facts(targets, prepared, aliases):
+    """Add scoped source annotations to the records already read by the author."""
+    seen = {}
+    for ref, (identity, target) in targets.items():
+        row = prepared.get(identity, {})
+        if limits := row.get('factLimits'):
+            target['factLimits'] = limits
+        for category in ('facts', 'boundaries'):
+            for fact in row.get(category, ()):
+                key = (category, json.dumps(fact, ensure_ascii=False, sort_keys=True))
+                if key in seen:
+                    original_ref, value = seen[key]
+                    if ref != original_ref and ref not in value.get('alsoFor', ()):
+                        value.setdefault('alsoFor', []).append(ref)
+                    continue
+                value = {**fact, 'sources': [aliases[handle] for handle in fact['sources']]}
+                if lines := fact.get('lines'):
+                    value['lines'] = {aliases[handle]: ranges for handle, ranges in lines.items()}
+                target.setdefault(category, []).append(value)
+                seen[key] = ref, value
 
 
 def referenced(rows, expected, field):

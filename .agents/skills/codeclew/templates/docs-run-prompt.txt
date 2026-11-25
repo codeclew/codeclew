@@ -13,7 +13,7 @@ Prepared source index: {prepared_sources}
    Frozen manifests already bind automatically. Use retained APIs only. Do not
    capture, refresh, read repositories/caches directly, consult previous drafts
    or reviewers, use other models, change inputs, or publish.
-
+{prepared_fact_guidance}
 2. Copy {starter}/original.json and navigation.json into {draft}/ and edit them.
    Required filenames, anchors, entry links, HTTP diagrams' first steps and
    handler targets are already in place. Write the requested explanation over

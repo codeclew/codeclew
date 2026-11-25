@@ -22,10 +22,10 @@ MAX_ROOTS = 32
 MAX_REFS = 384
 MAX_FACTS = 128
 MAX_PACKET_BYTES = 256 * 1024
+MAX_SOURCE_VIEW_PREFIX_BYTES = 6 * 1024
 MAX_FILE_BYTES = 128 * 1024
 CSHARP_FILE_LIMIT = 12
 FACT_SCHEMA = 'codeclew-docs-run-prepared-facts/1.0'
-VIEW_SCHEMA = 'codeclew-docs-run-fact-view/1.0'
 
 
 def exact_sources(entries, packet):
@@ -195,7 +195,7 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
         if not refs or any(ref not in local and ref not in bindings for ref in refs):
             rejected += 1
             continue
-        if not isinstance(row.get('text'), str) or not row['text'].strip() or not row.get('kind') or not row.get('authority'):
+        if any(not isinstance(row.get(key), str) or not row[key].strip() for key in ('text', 'kind', 'authority')):
             rejected += 1
             continue
         # These fields are the accepted human-facing assertion and its scope.
@@ -206,6 +206,9 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
             if isinstance(values.get(key), (list, tuple)):
                 details = [value.get('text') if isinstance(value, dict) else value for value in values[key]]
                 values[key] = ' '.join(value for value in details if isinstance(value, str) and value)
+        if any(not isinstance(value, str) for value in values.values()):
+            rejected += 1
+            continue
         values['sources'] = list(dict.fromkeys(bindings.get(ref, ref) for ref in refs))
         if witnesses := [dict(cite=bindings[ref], **{key: lifted[ref][key] for key in (
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in lifted[ref]})
@@ -332,7 +335,7 @@ def acquire_sources(job, service, scope, home, selections, exact, deadline):
             if manifest.is_file():
                 manifest.rename(directory / 'unadmitted-citations.json')
             return {}, directory / 'packet.json'
-        return exact_sources(entries, packet), None
+        return {handle: {**source, 'manifest': manifest} for handle, source in exact_sources(entries, packet).items()}, None
 
     selected = [{'sourceId': key, 'sourceReference': value} for key, value in list(wanted.items())[:MAX_REFS]]
     if not selected or deadline - time.monotonic() <= 1:
@@ -413,27 +416,140 @@ def is_boundary(fact):
     return 'boundary' in kind or kind.endswith(('scope-limit', 'coverage-limit'))
 
 
-def author_views(home, entries):
-    """Write per-requirement answers and explicit gaps without repeated witness metadata."""
-    if not entries:
-        return {}, 0
-    directory = home / 'fact-views'
-    directory.mkdir(mode=0o700)
-    views, byte_count = {}, 0
+def author_entries(entries, citations):
+    """Keep reader-facing fields and narrower line anchors without replay metadata."""
+    result = {}
     for identity, row in entries.items():
-        name = sha(identity.encode()).split(':', 1)[1][:20] + '.json'
-        path = directory / name
-        packet = {'schema': VIEW_SCHEMA, 'requirement': identity, **row}
-        packet['propositions'] = [{key: value for key, value in fact.items() if key != 'witnesses'}
-                                  for fact in row.get('propositions', ())]
-        raw = (json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
-        with path.open('xb') as output:
-            output.write(raw)
-        byte_count += len(raw)
-        relative = str(path.relative_to(home))
-        row['authorView'] = relative
-        views[identity] = {'label': row.get('file', row['page']), 'path': relative, 'status': row['status']}
-    return views, byte_count
+        facts = defaultdict(list)
+        for fact in row.get('propositions', ()):
+            value = {key: item for key, item in fact.items() if key != 'witnesses'}
+            lines = defaultdict(list)
+            for witness in fact.get('witnesses', ()):
+                handle = witness['cite']
+                site = line_range(witness)
+                if site != line_range(citations[handle]) and site not in lines[handle]:
+                    lines[handle].append(site)
+            if lines:
+                value['lines'] = dict(lines)
+            facts['boundaries' if is_boundary(fact) else 'facts'].append(value)
+        limits = row.get('scopeLimits', []) + row.get('projectionLimits', [])
+        if limits:
+            facts['factLimits'] = limits
+        if facts:
+            result[identity] = dict(facts)
+    return result
+
+
+def line_range(source):
+    first, last = source['startLine'], source['endLine']
+    return str(first) if first == last else f'{first}-{last}'
+
+
+def single_line(value):
+    return ' '.join(value.splitlines())
+
+
+def workspace_sections(groups, citations, file, heading):
+    if not any(groups.values()):
+        return b''
+    headings = {'facts': 'Facts', 'boundaries': 'Boundaries', 'factLimits': 'Coverage limits'}
+    lines, sources = [heading, ''], {}
+    for (labels, category), items in groups.items():
+        if not items:
+            continue
+        label = f"{headings[category]} for {', '.join(labels)}"
+        if category == 'factLimits':
+            lines += [label, *('- ' + ', '.join(limits) for limits in items), '']
+            continue
+        authority = items[0]['authority']
+        common_authority = len(items) > 1 and all(fact['authority'] == authority for fact in items)
+        lines.append(f'{label} [{authority}]' if common_authority else label)
+        for fact in items:
+            scope = [fact['kind']]
+            if not common_authority:
+                scope.append(fact['authority'])
+            if status := fact.get('status'):
+                scope.append(status)
+            details = [single_line(fact['text'])]
+            for key in ('condition', 'uncertainty'):
+                if fact.get(key):
+                    details.append(f'{key.title()} {single_line(fact[key])}')
+            anchors = []
+            for handle in fact['sources']:
+                sources[handle] = citations[handle]
+                ranges = fact.get('lines', {}).get(handle)
+                anchors.append(handle if not ranges else f"{handle} (lines {', '.join(ranges)})")
+            lines.append(f"- [{', '.join(scope)}] {' | '.join(details)} | Cite {', '.join(anchors)}")
+        lines.append('')
+    if sources:
+        lines.append('Source anchors (file lines)')
+        for handle, source in sources.items():
+            prefix = '' if source['file'] == file else single_line(source['file']) + ':'
+            proof = f" ({source['manifest']})" if 'manifest' in source else ''
+            lines.append(f"- {handle} {prefix}{line_range(source)}{proof}")
+        lines.append('')
+    return ('\n'.join(lines) + '\n').encode()
+
+
+def split_workspace_sections(groups, citations, file):
+    """Keep an early sample across page, fact and boundary groups on shared views."""
+    heading = '## Prepared source evidence'
+    additional_heading = '## Additional prepared source evidence'
+    full = workspace_sections(groups, citations, file, heading)
+    if len(full) <= MAX_SOURCE_VIEW_PREFIX_BYTES:
+        return full, b'', sum(map(len, groups.values())), 0
+
+    def guidance(count):
+        return (f'{count} additional prepared items follow the retained source under '
+                f'"{additional_heading[3:]}".\n\n').encode()
+
+    limit = MAX_SOURCE_VIEW_PREFIX_BYTES - len(guidance(sum(map(len, groups.values()))))
+    first, rest = defaultdict(list), defaultdict(list)
+    for offset in range(max(map(len, groups.values()))):
+        for key, items in groups.items():
+            if offset >= len(items):
+                continue
+            item = items[offset]
+            first[key].append(item)
+            if len(workspace_sections(first, citations, file, heading)) > limit:
+                first[key].pop()
+                rest[key].append(item)
+    front_count, rest_count = sum(map(len, first.values())), sum(map(len, rest.values()))
+    front = workspace_sections(first, citations, file, heading) + guidance(rest_count)
+    return front, workspace_sections(rest, citations, file, additional_heading), front_count, rest_count
+
+
+def workspace_views(home, required, rows, citations, view_files, budget):
+    """Annotate one existing required view per scope and preserve verbatim source bytes."""
+    views = defaultdict(dict)
+    for identity, row in rows.items():
+        view, label = required[identity]
+        for category in ('facts', 'boundaries', 'factLimits'):
+            values = (row[category],) if category == 'factLimits' and category in row else row.get(category, ())
+            for value in values:
+                key = (category, digest(value))
+                labels, _ = views[view].setdefault(key, ([], value))
+                labels.append(label)
+
+    summary = {'authorViewBytes': 0, 'maxAuthorPrefixBytes': 0, 'frontAuthorItems': 0,
+               'additionalAuthorItems': 0, 'omittedAuthorViews': 0}
+    for view, rows in views.items():
+        groups = defaultdict(list)
+        for (category, _), (labels, value) in rows.items():
+            groups[tuple(dict.fromkeys(labels)), category].append(value)
+        front, rest, first_count, rest_count = split_workspace_sections(groups, citations, view_files[view])
+        added = len(front) + len(rest) + bool(rest)
+        if summary['authorViewBytes'] + added > budget:
+            summary['omittedAuthorViews'] += 1
+            continue
+        path = home / view
+        header, separator, body = path.read_bytes().partition(b'\n\n')
+        path.write_bytes(header + separator + front + body + (b'\n' + rest if rest else b''))
+        summary['authorViewBytes'] += added
+        summary['maxAuthorPrefixBytes'] = max(summary['maxAuthorPrefixBytes'], len(front))
+        summary['frontAuthorItems'] += first_count
+        summary['additionalAuthorItems'] += rest_count
+    return summary
 
 
 def prepare(job, service, scope, requirements, entries, packet, home, deadline):
@@ -531,7 +647,10 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
             visible.append(fact)
             total_bytes += size
             for handle in fact['sources']:
-                cite_index[handle] = {key: exact[handle][key] for key in ('file', 'startLine', 'endLine')}
+                source = exact[handle]
+                cite_index[handle] = {key: source[key] for key in ('file', 'startLine', 'endLine')}
+                if 'manifest' in source:
+                    cite_index[handle]['manifest'] = source['manifest'].relative_to(home).as_posix()
         limits = sorted({code for code in projection_limits
                          if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z_0-9]{0,79}', code)})
         status = 'NO_CITABLE_FACTS'
@@ -549,10 +668,9 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if limits:
             row['projectionLimits'] = limits
     summary = dict(Counter(row['status'] for row in result.values()))
-    views, author_bytes = author_views(home, result)
     save(home / 'prepared-facts.json', {'schema': FACT_SCHEMA, 'snapshot': job['snapshot'], 'service': service,
                                        'entries': result, 'summary': summary})
     propositions = [fact for row in result.values() for fact in row.get('propositions', ())]
     return {'statusCounts': summary, 'facts': sum(not is_boundary(fact) for fact in propositions),
             'boundaries': sum(map(is_boundary, propositions)),
-            'authorViewBytes': author_bytes, 'authorViews': views, 'citations': cite_index}
+            'authorEntries': author_entries(result, cite_index), 'citations': cite_index}

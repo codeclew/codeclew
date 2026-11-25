@@ -426,8 +426,6 @@ else:
 
     def test_prepared_facts_deliver_only_bound_witnesses_and_use_the_normal_renderer(self):
         def project(process, context, *, node):
-            if process['root'] is None:
-                return [], {}
             proof, = context['sourceRanges']
             self.assertEqual(proof['references'], ['s9'])
             text = 'return 0'
@@ -437,23 +435,32 @@ else:
             accepted = {'kind': 'return', 'authority': 'SOURCE_EVIDENCE', 'status': 'SUPPORTED',
                         'text': 'The handler returns zero.', 'condition': [{'text': 'The count is negative.'}],
                         'uncertainty': 'Serialization remains open.', 'sources': ['exact-witness']}
+            if process['root'] is None:
+                return [accepted, {'kind': 'CALL_BOUNDARY', 'authority': 'SOURCE_EVIDENCE',
+                                   'text': 'Callback invocation remains open.', 'sources': [proof['id']]}], {
+                    'exact-witness': witness}
             return [accepted, {**accepted, 'text': 'Foreign body.', 'sources': ['wrong-revision']}], {
                 'exact-witness': witness, 'wrong-revision': {**witness, 'revision': '0' * 40}}
 
         run, prepared, _, _ = self.prepare_inline_fixture(project=project)
         self.assertEqual(prepared['authorMode'], 'INLINE')
-        self.assertEqual(prepared['preparedFacts'][self.service]['facts'], 1)
-        self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'PREPARED': 1, 'NO_CITABLE_FACTS': 1})
+        self.assertEqual(prepared['preparedFacts'][self.service]['facts'], 2)
+        self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'PREPARED': 2})
         prompt = (run / 'prompt.txt').read_text()
         packet = json.loads(prompt.split('\n\n')[-1])
-        coverage = packet['preparedFacts']['E1']
-        self.assertEqual(coverage['unboundPropositions'], 1)
-        fact, = coverage['propositions']
+        self.assertNotIn('preparedFacts', packet)
+        fact, = packet['entries']['E1']['facts']
         self.assertEqual(fact['sources'], ['S1'])
+        self.assertEqual(fact['lines'], {'S1': ['2']})
+        self.assertEqual(fact['alsoFor'], ['F1'])
+        self.assertNotIn('facts', packet['files']['F1'])
+        boundary, = packet['files']['F1']['boundaries']
+        self.assertEqual(boundary['text'], 'Callback invocation remains open.')
         self.assertNotIn('witnesses', fact)
         self.assertEqual(fact['condition'], 'The count is negative.')
         home = run / 'inputs/author-source' / self.service
         reviewer = D['load'](home / 'prepared-facts.json')['entries'][self.entry['id']]
+        self.assertEqual(reviewer['unboundPropositions'], 1)
         witness, = reviewer['propositions'][0]['witnesses']
         self.assertEqual(witness['textDigest'], D['sha'](b'return 0'))
         self.assertEqual(witness['cite'], reviewer['propositions'][0]['sources'][0])
@@ -465,30 +472,69 @@ else:
         html = Path(result['ready']) / 'html/reservations-post-reservations.html'
         self.assertIn('Return the updated list size', html.read_text())
 
-    def test_prepared_facts_workspace_points_to_compact_boundary_and_empty_views(self):
+    def test_prepared_facts_workspace_includes_page_scoped_evidence_before_verbatim_source(self):
         def project(process, context, *, node):
-            if not process['root']:
-                return [], {}
             proof, = context['sourceRanges']
-            return [{'kind': 'CALL_BOUNDARY', 'authority': 'SOURCE_EVIDENCE',
-                     'text': 'The dynamic call target remains open.', 'sources': [proof['id']]}], {}
+            fact = {'kind': 'RETURN', 'authority': 'SOURCE_EVIDENCE', 'status': 'SUPPORTED',
+                    'text': 'The method can return zero.', 'condition': 'The count is negative.',
+                    'sources': [proof['id']]}
+            boundary = {'kind': 'CALL_BOUNDARY', 'authority': 'SOURCE_EVIDENCE',
+                        'text': 'The dynamic call target remains open.', 'sources': [proof['id']]}
+            return ([fact, boundary] if process['root'] else [fact]), {}
 
-        run, prepared, _, _ = self.prepare_inline_fixture(project=project, extra_resource=True)
+        self.job['language'] = 'ru'
+        run, prepared, _, source = self.prepare_inline_fixture(project=project, extra_resource=True)
         self.assertEqual(prepared['authorMode'], 'WORKSPACE')
         summary = prepared['preparedFacts'][self.service]
-        self.assertEqual((summary['facts'], summary['boundaries']), (0, 1))
+        self.assertEqual((summary['facts'], summary['boundaries']), (2, 1))
         home = run / 'inputs/author-source' / self.service
-        sidecar = home / 'prepared-facts.json'
-        reviewer = D['load'](sidecar)['entries']
-        view = home / reviewer[self.entry['id']]['authorView']
-        packet = D['load'](view)
-        index = (home / 'index.md').read_text()
-        self.assertIn(self.entry['page'] + ': ' + reviewer[self.entry['id']]['authorView'], index)
-        self.assertIn('(NO_CITABLE_FACTS)', index)
-        self.assertEqual(packet['status'], 'BOUNDARIES_ONLY')
-        self.assertEqual(packet['propositions'], reviewer[self.entry['id']]['propositions'])
-        self.assertEqual(summary['authorViewBytes'], sum(p.stat().st_size for p in (home / 'fact-views').glob('*.json')))
-        self.assertLess(view.stat().st_size, sidecar.stat().st_size)
+        reviewer = D['load'](home / 'prepared-facts.json')['entries'][self.entry['id']]
+        requirements = D['load'](home / 'requirements.json')
+        view, = requirements[self.entry['id']]['views']
+        text = (home / view).read_text()
+        evidence, body = text[text.index('## Prepared source evidence'):].split('```', 1)
+        self.assertIn('Cite ' + reviewer['propositions'][1]['sources'][0], evidence)
+        self.assertIn('Facts for Page ' + self.entry['page'] + ', Discovery file ' + source['file'], evidence)
+        self.assertIn('Boundaries for Page ' + self.entry['page'], evidence)
+        self.assertIn('[RETURN, SOURCE_EVIDENCE, SUPPORTED]', evidence)
+        self.assertIn('Condition The count is negative.', evidence)
+        self.assertIn('The dynamic call target remains open.', evidence)
+        self.assertEqual(evidence.count('The method can return zero.'), 1)
+        self.assertEqual(body, '\n' + source['text'] + '\n```\n')
+        self.assertEqual(summary['authorViewBytes'], len(evidence.encode()))
+        self.assertEqual(summary['omittedAuthorViews'], 0)
+        self.assertNotIn('fact-views', (home / 'index.md').read_text())
+        self.assertFalse((home / 'fact-views').exists())
+        prompt = (run / 'prompt.txt').read_text()
+        self.assertIn('at the top of the source views', prompt)
+        self.assertIn('Write the reader pages in ru', prompt)
+
+    def test_prepared_workspace_bounds_shared_prefix_and_keeps_all_anchored_facts_in_view(self):
+        def project(process, context, *, node):
+            scope = 'Entry' if process['root'] else 'File'
+            proof, = context['sourceRanges']
+            anchor = {'authority': 'SOURCE_EVIDENCE', 'sources': [proof['id']]}
+            return [
+                {'kind': 'RETURN', 'text': f'{scope} observation {i:02d}. ' + 'A retained detail. ' * 25, **anchor}
+                for i in range(12)
+            ] + [{'kind': 'CALL_BOUNDARY', 'text': scope + ' dynamic call target remains open.', **anchor}], {}
+
+        run, prepared, _, source = self.prepare_inline_fixture(project=project, extra_resource=True)
+        home = run / 'inputs/author-source' / self.service
+        view, = D['load'](home / 'requirements.json')[self.entry['id']]['views']
+        prefix, tail = (home / view).read_bytes().split(b'```\n' + source['text'].encode() + b'\n```\n')
+        summary = prepared['preparedFacts'][self.service]
+        self.assertLessEqual(summary['maxAuthorPrefixBytes'], 6 * 1024)
+        self.assertIn(b'Entry observation 00.', prefix)
+        self.assertIn(b'File observation 00.', prefix)
+        self.assertIn(b'Entry dynamic call target remains open.', prefix)
+        self.assertIn(b'File dynamic call target remains open.', prefix)
+        self.assertIn(b'## Additional prepared source evidence', tail)
+        self.assertIn(f"{summary['additionalAuthorItems']} additional prepared items".encode(), prefix)
+        self.assertEqual(summary['frontAuthorItems'] + summary['additionalAuthorItems'], 26)
+        for scope in ('Entry', 'File'):
+            for i in range(12):
+                self.assertEqual((prefix + tail).count(f'{scope} observation {i:02d}.'.encode()), 1)
 
     def test_prepared_csharp_context_requires_the_whole_typed_cas_original(self):
         helper = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run_prepared.py'), init_globals={'sha': D['sha']})
@@ -556,8 +602,12 @@ else:
         self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'NO_CITABLE_FACTS': 2})
         prompt = (run / 'prompt.txt').read_text()
         packet = json.loads(prompt.split('\n\n')[-1])
-        self.assertEqual(packet['preparedFacts']['E1']['status'], 'NO_CITABLE_FACTS')
-        self.assertEqual(packet['preparedFacts']['E1']['propositions'], [])
+        self.assertNotIn('facts', packet['entries']['E1'])
+        self.assertNotIn('boundaries', packet['entries']['E1'])
+        home = run / 'inputs/author-source' / self.service
+        view, = D['load'](home / 'requirements.json')[self.entry['id']]['views']
+        self.assertNotIn('Prepared source evidence', (home / view).read_text())
+        self.assertEqual(prepared['preparedFacts'][self.service]['authorViewBytes'], 0)
         self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
 
     def test_prepared_facts_projector_failure_preserves_retained_source_and_reason(self):
@@ -583,6 +633,8 @@ else:
         self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
         self.assertIn('"path":"/reservations"', prompt)
         self.assertNotIn('citation-index.json', prompt)
+        self.assertNotIn('preparedFacts', prepared)
+        self.assertNotIn('Use the facts and boundaries', prompt)
         self.assertNotIn('compose-original.md', prompt)
         self.assertNotIn(str(self.root), prompt)
         response = self.inline_response()
