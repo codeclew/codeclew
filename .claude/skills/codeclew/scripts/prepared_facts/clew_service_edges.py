@@ -29,7 +29,8 @@ PEER_FACETS = (("lookup-guard-return", "http-peer-guarded-return"),
                ("sql-row", "http-peer-value-lineage"),
                ("lookup", "http-peer-value-lineage"),
                ("finite-mapping", "http-peer-value-lineage"),
-               ("helper-return", "http-peer-helper-result"))
+               ("helper-return", "http-peer-helper-result"),
+               ("awaited-list-selection", "http-peer-list-selection"))
 PEER_CONTRACTS = {"openapi-declared-response": "http-peer-declared-response",
                   "openapi-overlay-boundary": "http-peer-declaration-boundary",
                   "openapi-response-boundary": "http-peer-declaration-boundary"}
@@ -220,7 +221,7 @@ def record(requirement, process, context, facts, exact):
             keep(publishes, (refs[0], value), {**face, "topic": value, "precise": True})
 
     write_focus, poll_paths = defaultdict(lambda: defaultdict(list)), defaultdict(dict)
-    write_statements = defaultdict(list)
+    write_statements, write_shapes = defaultdict(list), defaultdict(set)
     response_facts = defaultdict(list)
     for fact in facts:
         response_facts[fact["kind"]].append(fact)
@@ -252,6 +253,7 @@ def record(requirement, process, context, facts, exact):
                 index = reads if link["kind"] == "SELECT" else writes
                 keep(index, (*identity, face.get("condition")), indexed, MAX_WRITE_SITES)
                 if index is writes:
+                    write_shapes[face["occurrence"]].add((table, link["kind"]))
                     write_statements[identity].append({**indexed, "bound": fact.get("_writeBinding") is True})
 
     registration_witnesses = []
@@ -263,8 +265,10 @@ def record(requirement, process, context, facts, exact):
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
-            "reads": list(reads.values()), "writes": [{**write, "focus": write_focus.get(write["occurrence"], {})}
-                                                     for write in writes.values()],
+            "reads": list(reads.values()), "writes": [
+                {**write, "focus": write_focus.get(write["occurrence"], {}),
+                 "singleShape": len(write_shapes[write["occurrence"]]) == 1}
+                for write in writes.values()],
             "writeStatements": dict(write_statements),
             "responses": response_representatives(fact for fact in facts if fact["kind"] in PEER_RESPONSES),
             "facets": [(target, response_representatives(response_facts[kind]))
@@ -295,7 +299,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 reader_services[table].setdefault(service, read)
     result, seen, requester_links = defaultdict(list), defaultdict(set), defaultdict(list)
     nested_visits = defaultdict(int)
-    first_outbox_hops, guarded_terminal_effects = {}, {}
+    first_outbox_hops, guarded_terminal_effects = defaultdict(list), {}
 
     def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE",
              authority="RETAINED_SOURCE_EDGE"):
@@ -376,26 +380,45 @@ def project(requirements, records, *, contracts=None, isolated=False):
             return next(row for row in rows if row["_writeFocus"].get("compatibility") == "INCOMPATIBLE")
         return None
 
-    def exact_write(write, topic):
+    def selected_writes(write, topic):
         rows = focused_rows(write, topic)
+        guard = write.get("condition")
         for kind in ("write_request", "sql-write", "write_guard", "write_lineage"):
-            candidates = [item for item in rows if item["kind"] == kind]
-            guard = write.get("condition")
-            if guard:
-                candidates = [item for item in candidates if item.get("condition") == guard]
-            elif len({item.get("condition") for item in candidates}) > 1:
-                continue
-            if candidates:
-                row = candidates[0]
-                return {**write, "sources": list(dict.fromkeys([*write["sources"], *row["sources"]])),
+            candidates = [item for item in rows if item["kind"] == kind
+                          and item["_writeFocus"].get("compatibility") != "INCOMPATIBLE"]
+            independent = write["singleShape"] and kind in {"write_request", "sql-write"}
+            variants = {}
+            for row in candidates:
+                premise = row.get("condition")
+                if premise != guard and not (independent and premise):
+                    continue
+                if premise in variants:
+                    continue
+                if independent and premise != guard:
+                    # This replay is its own reached path at the exact slot.
+                    # Do not append conditions or bindings from another path.
+                    variants[premise] = {
+                        **write, "text": row["text"], "condition": premise,
+                        "sources": list(dict.fromkeys([write["site"], *row["sources"]])),
+                        "witnesses": row.get("witnesses", ()),
+                        "uncertainty": " ".join(filter(None, (write["uncertainty"], row.get("uncertainty")))),
+                    }
+                else:
+                    variants[premise] = {
+                        **write, "sources": list(dict.fromkeys([*write["sources"], *row["sources"]])),
                         "witnesses": [*write.get("witnesses", ()), *row.get("witnesses", ())],
-                        **({"condition": row["condition"]} if row.get("condition") else {})}
-        return write
+                        **({"condition": premise} if premise else {}),
+                    }
+            if variants and (independent or len(variants) == 1):
+                return variants.values() if isolated else [next(iter(variants.values()))]
+        return (write,)
 
     def add_focused(owner, write, topic, message, qualifier, *proof):
         details = focused_rows(write, topic)
         for kind in ("write_lineage", "write_guard", "write_commit", "transactional-write-completion"):
-            if detail := next((row for row in details if row["kind"] == kind), None):
+            if detail := next((row for row in details if row["kind"] == kind
+                               and (not write.get("condition") or not row.get("condition")
+                                    or row["condition"] == write["condition"])), None):
                 emit(owner, "message-peer-write-detail", message + " " + detail["text"],
                      qualifier + " " + detail.get("uncertainty", ""), *proof, detail)
 
@@ -425,15 +448,19 @@ def project(requirements, records, *, contracts=None, isolated=False):
         if len(selected) < 4:
             selected.extend(islice((write for _, group in sorted(groups.items()) for write in group[1:]),
                                    4 - len(selected)))
-        return selected
+        variants = {}
+        for write in selected:
+            for branch in selected_writes(write, topic):
+                key = branch["occurrence"] or branch["site"], branch["table"], branch["verb"], branch.get("condition")
+                variants.setdefault(key, branch)
+        return variants.values()
 
     def further_outbox(owner, writer, write, topic, visited, evidence):
         queue = deque([(writer, write, topic, visited, evidence, True)])
         while queue:
-            writer, raw_write, topic, visited, evidence, initial = queue.popleft()
-            if raw_write["verb"] == "DELETE":
+            writer, write, topic, visited, evidence, initial = queue.popleft()
+            if write["verb"] == "DELETE":
                 continue
-            write = exact_write(raw_write, topic)
             table = write["table"]
             candidates = [(publisher, read, poll_publications(records[publisher], read))
                           for publisher, read in local_readers(writer, table, ("poll",))]
@@ -495,18 +522,17 @@ def project(requirements, records, *, contracts=None, isolated=False):
                                    + selection["text"] + f" `{subscriber['page']}` has the cited registration for that topic.",
                                    qualifier, *proof)
                         if hop and initial:
-                            first_outbox_hops.setdefault(owner, hop)
+                            first_outbox_hops[owner].append(hop)
                         for effect in representative_writes(target, next_topic):
                             if conflict := incompatible_write(effect, next_topic):
                                 emit(owner, "message-peer-write-boundary", prefix + conflict["text"],
                                      qualifier, *proof, conflict, status="INCOMPATIBLE_IN_RETAINED_PATHS")
                                 continue
-                            selected = exact_write(effect, next_topic)
                             emit(owner, "further-subscriber-effect",
                                  prefix + f"If delivery reaches the cited callback in `{subscriber['page']}`, it can reach this write. "
-                                 + selected["text"], qualifier, *proof, selected)
+                                 + effect["text"], qualifier, *proof, effect)
                             add_focused(owner, effect, next_topic, prefix, qualifier, *proof)
-                            readbacks(owner, target, selected, *proof, prefix=prefix, uncertainty=qualifier, nested=True)
+                            readbacks(owner, target, effect, *proof, prefix=prefix, uncertainty=qualifier, nested=True)
                             queue.append((target, effect, next_topic, visited | {writer, publisher, target}, proof, False))
 
     for owner, local in records.items():
@@ -635,12 +661,11 @@ def project(requirements, records, *, contracts=None, isolated=False):
                         emit(owner, "message-peer-write-boundary", conflict["text"], boundary, *proof, conflict,
                              status="INCOMPATIBLE_IN_RETAINED_PATHS")
                         continue
-                    selected = exact_write(effect, name)
                     emit(owner, "message-peer-effect", f"If the subscribed callback in {title} reaches this write, "
-                         + selected["text"], boundary + " " + STORAGE_OPEN, *proof, selected)
+                         + effect["text"], boundary + " " + STORAGE_OPEN, *proof, effect)
                     add_focused(owner, effect, name, f"The selected callback in {title} has this retained write path.",
                                 boundary, *proof)
-                    readbacks(owner, peer, selected, *proof, prefix="After the subscribed callback reaches the write, ",
+                    readbacks(owner, peer, effect, *proof, prefix="After the subscribed callback reaches the write, ",
                               uncertainty=boundary + " " + STORAGE_OPEN)
                     further_outbox(owner, peer, effect, name, {owner, peer}, proof)
 
@@ -700,15 +725,14 @@ def project(requirements, records, *, contracts=None, isolated=False):
                                 emit(owner, "message-peer-write-boundary", prefix + conflict["text"], boundary,
                                      *evidence, conflict, status="INCOMPATIBLE_IN_RETAINED_PATHS")
                                 continue
-                            selected = exact_write(effect, publication["topic"])
                             reached = emit(owner, "storage-message-effect", prefix
-                                           + f"delivery to `{subscriber['page']}` can reach the cited write path. " + selected["text"],
-                                           boundary, *evidence, selected)
-                            if (reached and owner not in guarded_terminal_effects and selected.get("condition")
-                                    and not next(local_readers(subscriber["id"], selected["table"]), None)):
+                                           + f"delivery to `{subscriber['page']}` can reach the cited write path. " + effect["text"],
+                                           boundary, *evidence, effect)
+                            if (reached and owner not in guarded_terminal_effects and effect.get("condition")
+                                    and not next(local_readers(subscriber["id"], effect["table"]), None)):
                                 guarded_terminal_effects[owner] = reached
                             add_focused(owner, effect, publication["topic"], prefix, boundary, *evidence)
-                            readbacks(owner, subscriber["id"], selected, *evidence,
+                            readbacks(owner, subscriber["id"], effect, *evidence,
                                       prefix=prefix + f"and delivery reaches `{subscriber['page']}`, ",
                                       uncertainty=boundary)
                             further_outbox(owner, subscriber["id"], effect, publication["topic"],
@@ -727,9 +751,9 @@ def project(requirements, records, *, contracts=None, isolated=False):
         by_kind = {}
         for row in rows:
             by_kind.setdefault(row["kind"], row)
-        reserved = [row for row in (next((item for item in result[handler] if item["kind"] == "storage-poll-activation"), None),
-                                    first_outbox_hops.get(handler)) if row]
-        rows = [*reserved, *islice(by_kind.values(), 3)]
+        activation = next((item for item in result[handler] if item["kind"] == "storage-poll-activation"), None)
+        initial = first_outbox_hops[handler] if isolated else first_outbox_hops[handler][:1]
+        rows = [*([activation] if activation else ()), *initial, *islice(by_kind.values(), 3)]
         name = records[handler]["requirement"]["page"]
         for requester, call, registration_proof, boundary in requesters:
             for row in rows:

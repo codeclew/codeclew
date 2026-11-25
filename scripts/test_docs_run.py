@@ -2381,8 +2381,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         row = self.edges["record"](requirement, process, context, accepted, exact)
         return requirement, row, exact
 
-    def project(self, *retained):
-        return self.edges["project"]([row[0] for row in retained], {row[0]["id"]: row[1] for row in retained})
+    def project(self, *retained, isolated=False):
+        return self.edges["project"]([row[0] for row in retained], {row[0]["id"]: row[1] for row in retained},
+                                     isolated=isolated)
 
     def test_http_peer_return_and_failure_are_source_qualified_in_the_normal_author_view(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
@@ -2816,6 +2817,8 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                         facet("conditional-no-write", "If the nested lookup returns no list entry, this path bypasses the enqueue.",
                               condition="the collection lookup misses"),
                         facet("helper-return", "The nested lookup returns its retained list of candidate books."),
+                        facet("awaited-list-selection", "The awaited result supplies the list searched by book ID.",
+                              condition="the list is returned normally"),
                         facet("lookup-guard-return", "When lookup yields no book, the handler returns HTTP 400 with INVALID_BOOK.",
                               _httpStatus=400, condition="lookup yields no book"),
                         facet("guard-return-bypass", "The missing lookup's early return bypasses the enqueue."),
@@ -2895,6 +2898,8 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 self.assertTrue(any("nested lookup returns no list entry" in row["text"]
                                     and row.get("condition") == "the collection lookup misses" for row in negative))
                 self.assertTrue(any(row["kind"] == "http-peer-helper-result" and "list of candidate books" in row["text"]
+                                    for row in facts))
+                self.assertTrue(any(row["kind"] == "http-peer-list-selection" and "list searched by book ID" in row["text"]
                                     for row in facts))
                 self.assertTrue(any(row["kind"] == "http-failure-after-peer-commit" and "REMOTE_UNAVAILABLE" in row["text"]
                                     for row in facts))
@@ -3049,6 +3054,56 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertTrue(any(row["kind"] == "further-outbox-boundary" and
                             "previously considered callback" in row["text"] for row in facts))
         self.assertLessEqual(len(facts), self.edges["MAX_LINKS"])
+
+    def test_isolated_outbox_preserves_distinct_reached_write_guards_by_topic(self):
+        def fact(name, kind, **metadata):
+            return {"kind": kind, "authority": "RETAINED_PATH", "text": "Reached " + kind + ".",
+                    "sources": [name + "-body"], **metadata}
+
+        def relay(service, name, table, topic):
+            return self.retained(service, name=name, entry_kind="SCHEDULED_JOB", facts=[
+                fact(name, "sql-read", _edge={"kind": "SELECT", "site": name + "-body", "table": table, "occurrence": "select"}),
+                fact(name, "broker-send", _edge={"kind": "PUBLISH", "site": name + "-body", "topic": topic, "occurrence": "send"}),
+                self.poll_proof(name),
+            ])
+
+        client = self.retained("gateway", path="/start", events=[("call", "client.get()", {
+            "kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+                "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units"}})])
+        origin = self.retained("intake", name="reserve", facts=[
+            fact("reserve", "sql-write", _edge={"kind": "INSERT", "site": "reserve-body", "table": "drafts"})])
+        first = relay("intake", "relay", "drafts", "draft.queued")
+        second = relay("processor", "flush", "edits", "draft.saved")
+        subscriber = self.retained("catalogue", name="view", entry_kind="KAFKA_LISTENER",
+                                   trigger={"configuration": {"topics": ["draft.saved"]}})
+        operation = {"kind": "UPDATE", "site": "apply-body", "table": "edits", "occurrence": "one-write"}
+        paths = [
+            fact("apply", "sql-write", _edge=operation, condition="deduplication allows the event"),
+            *[fact("apply", "write_request", condition=guard,
+                   _writeFocus={"occurrence": "one-write", "topic": topic, "compatibility": "COMPATIBLE"})
+              for guard, topic in (
+                  ("deduplication allows the event and the cache has no version", "draft.queued"),
+                  ("deduplication allows the event and durable replay mode is on", "draft.queued"),
+                  ("an unrelated schema version is present", "draft.old"),
+              )],
+        ]
+        def callback(facts):
+            return self.retained("processor", name="apply", entry_kind="KAFKA_LISTENER",
+                                 trigger={"configuration": {"topics": ["draft.queued", "draft.old"]}}, facts=facts)
+
+        def first_hops(consumer):
+            rows = self.project(client, origin, first, consumer, second, subscriber, isolated=True)[client[0]["id"]]
+            return [row for row in rows if row["kind"] == "http-further-subscriber-outbox"]
+
+        hops = first_hops(callback(paths))
+        self.assertEqual({row["condition"] for row in hops}, {
+            "deduplication allows the event and the cache has no version",
+            "deduplication allows the event and durable replay mode is on",
+        })
+        self.assertTrue(all("UPDATE on `edits` in `apply.md`" in row["text"] for row in hops))
+        ambiguous, = first_hops(callback([*paths, fact("apply", "sql-write",
+                                                      _edge={**operation, "table": "other_table"})]))
+        self.assertEqual(ambiguous["condition"], "deduplication allows the event")
 
     def test_continuation_budget_retains_a_cited_frontier(self):
         def fact(site, kind, **identity):
