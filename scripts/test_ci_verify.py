@@ -139,6 +139,13 @@ class CiDispatchTests(unittest.TestCase):
         self.assertNotIn('"status":"PASSED"', result.stdout)
         self.assertFalse(any(c[:2] == ["cargo", "clippy"] for c in commands))
 
+    def test_prepared_projector_qualification_is_required_in_checks(self):
+        task = ["python3", "-I", "-S", "scripts/qualify_prepared_projectors.py"]
+        result, commands = self.run_ci("--suite", "checks", failure=" ".join(task))
+        self.assertEqual(result.returncode, 23)
+        self.assertIn(task, commands)
+        self.assertNotIn('"status":"PASSED"', result.stdout)
+
     def test_csharp_function_failure_cannot_be_masked(self):
         result, commands = self.run_ci("--suite", "checks", failure="dotnet publish")
         self.assertEqual(result.returncode, 23)

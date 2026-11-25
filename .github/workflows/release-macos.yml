@@ -123,6 +123,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install the required C# preview SDK
         uses: actions/setup-dotnet@v6
         with:
@@ -136,6 +139,8 @@ jobs:
           test "$(uname -m)" = '${{ matrix.arch }}'
       - name: Qualify the real C# Roslyn worker on this release architecture
         run: ./scripts/ci-verify.sh --csharp-only
+      - name: Qualify packaged prepared evidence projectors
+        run: python3 -I -S scripts/qualify_prepared_projectors.py
       - name: Build sealed release bundle
         env:
           CODECLEW_VERSION: ${{ env.RELEASE_VERSION }}
