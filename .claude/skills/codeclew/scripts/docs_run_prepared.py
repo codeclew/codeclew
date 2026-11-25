@@ -365,8 +365,9 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
             continue
         roots = requirement.get('rootDeclarations', [])
         process, context = operation(requirement, contexts[roots[0]] if roots else (), exact, files)
+        projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
-                       _loadPinnedFile=read_pinned, _deadline=deadline,
+                       _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
                        _bindWitness=lambda witness: extra_binding(witness, exact, read_pinned))
         if file := context['file']:
             languages = {Path(file).suffix.lower()} if context['sourceRanges'] else set()
@@ -403,12 +404,16 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
             total_bytes += size
             for handle in fact['sources']:
                 cite_index[handle] = {key: exact[handle][key] for key in ('file', 'startLine', 'endLine')}
-        status = 'PROJECTOR_UNAVAILABLE' if unavailable and not visible else 'NO_CITABLE_FACTS'
+        limits = sorted({code for code in projection_limits
+                         if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z_0-9]{0,79}', code)})
+        status = 'PROJECTOR_UNAVAILABLE' if unavailable or limits else 'NO_CITABLE_FACTS'
         if visible:
             status = 'PREPARED' if any('boundary' not in fact['kind'] for fact in visible) else 'BOUNDARIES_ONLY'
         row.update(status=status, propositions=visible, unboundPropositions=unbound, omittedForLimit=limited)
         if unavailable:
             row['unavailableProjectors'] = unavailable
+        if limits:
+            row['projectionLimits'] = limits
     summary = dict(Counter(row['status'] for row in result.values()))
     save(home / 'prepared-facts.json', {'schema': FACT_SCHEMA, 'snapshot': job['snapshot'], 'service': service,
                                        'entries': result, 'summary': summary})
