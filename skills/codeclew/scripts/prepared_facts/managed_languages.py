@@ -115,16 +115,19 @@ def kotlin_discovery(process, context):
         text = unit.excerpt(span)
         first = 1 + unit.text.count("\n", 0, span.start)
         start = len(unit.text[:span.start].encode())
-        alias = f"S{len(context['sourceRanges']) + count:03d}"
+        alias = f"S{len(context['sourceRanges']) + len(witnesses) + 1:03d}"
         narrowed = {**site, "id": alias, "text": text, "textDigest": fingerprint(text), "references": [alias],
                     "startLine": first, "endLine": first + text.count("\n"),
                     "startByte": start, "endByte": start + len(text.encode())}
         branch = {**process, "root": alias, "entrySymbol": function.name, "entryKind": None, "trigger": None,
                   "sources": {alias: narrowed}, "facts": [{"kind": "BODY", "declaration": alias, "sources": [alias]}]}
-        rows = projector["derive"](branch, {**context, "sourceRanges": [narrowed], "_sourceOccurrences": {alias: narrowed}})
+        frame = {**context, "sourceRanges": [narrowed], "_sourceOccurrences": {alias: narrowed}}
+        rows = projector["derive"](branch, frame)
         facts.extend(rows)
         if rows:
             witnesses[alias] = narrowed
+            witnesses.update(module("prepared_write_focus")["add_sites"](
+                frame, rows, set(witnesses) | {row["id"] for row in context["sourceRanges"]}))
     return facts, {ref: witnesses[ref] for row in facts for ref in row["sources"] if ref in witnesses}
 
 
@@ -507,6 +510,7 @@ _roslyn_builds = {}
 
 def project(process, context, *, node):
     """Return supported propositions using Work handles or exact narrower witnesses."""
+    replay_target = context.get("_deferredWriteFocus")
     root = (process.get("sources", {}).get(ref, {}) for ref in sorted(root_sources(process)))
     extensions = {Path(row["file"]).suffix.lower() for row in root if "file" in row}
     if not process.get("root") and context.get("file"):
@@ -531,11 +535,25 @@ def project(process, context, *, node):
             process, context = kotlin_selected_calls(process, context, selected, state_witnesses,
                                                      adapter["SYNTAX"], adapter["FAILURE"]["UNIQUE_SYNTAX"])
             rows = adapter["derive"](process, context)
-            focus, found = module("prepared_write_focus")["project"](
-                process, context, rows, lambda operation, frame, site, _: adapter["derive_write"](operation, frame, None, site),
-                reserved=state_witnesses)
-            rows.extend(focus)
-            witnesses.update(found)
+            focus = module("prepared_write_focus")
+            invoke = lambda operation, frame, site, _: adapter["derive_write"](operation, frame, None, site)
+            limit = adapter["MAX_FACTS"]["SQL_LITERAL"]
+            if replay_target is not None:
+                anchors = focus["add_sites"](context, rows, state_witnesses)
+                witnesses.update(anchors)
+                fixed_sources = {**witnesses, **state_witnesses}
+
+                def replay(candidates):
+                    details, found = focus["project_sites"](process, context, candidates, invoke,
+                                                            reserved=fixed_sources, limit=limit, retain_alternatives=True)
+                    return public_rows(details, aliases, {**fixed_sources, **found}, authority)
+
+                replay_target.append(replay)
+            else:
+                details, found = focus["project"](process, context, rows, invoke, reserved=state_witnesses, limit=limit,
+                                                    retain_alternatives=True)
+                rows.extend(details)
+                witnesses.update(found)
             rows = [*state_rows, *rows]
             witnesses.update(state_witnesses)
         else:
@@ -544,6 +562,10 @@ def project(process, context, *, node):
         rows = typescript(process, context, node, witnesses)
     else:
         rows = managed(process, context, witnesses)
+    return public_rows(rows, aliases, witnesses, authority)
+
+
+def public_rows(rows, aliases, witnesses, authority):
     allowed = set(aliases) | witnesses.keys()
     facts = []
     for row in rows:
@@ -553,7 +575,8 @@ def project(process, context, *, node):
         values = {key: row[key] for key in ("kind", "text", "condition", "uncertainty", "status") if key in row}
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
-        for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication", "_httpStatus", "_writeBinding", "_httpCompletion"):
+        for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication", "_httpStatus", "_writeBinding",
+                        "_httpCompletion", "_writeSite"):
             if private in row:
                 values[private] = row[private]
         declared = row.get("authority")

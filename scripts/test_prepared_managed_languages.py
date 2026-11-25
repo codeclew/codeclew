@@ -816,8 +816,14 @@ class Codec {
         start = text.index(call)
         utf16 = lambda char: len(text[:char].encode("utf-16-le")) // 2
         address = {"host": "S001", "start": utf16(start), "end": utf16(start + len(call)), "units": "UTF16"}
-        rows = [{"_edge": {"kind": "INSERT", "site": "S001", "occurrence": occurrence},
-                 "_writeRange": address, "sources": ["S001"]} for occurrence in ("local-a", "local-b")]
+        narrowed = {**host, "id": "S002", "references": ["alias"], "text": call, "textDigest": digest(call),
+                    "startByte": len(text[:start].encode()), "endByte": len(text[:start + len(call)].encode()),
+                    "occurrence": original["occurrence"]}
+        context["sourceRanges"].append(narrowed)
+        context["_sourceOccurrences"]["alias"] = narrowed
+        addresses = [address, {"host": "S002", "start": 0, "end": len(call), "units": "CHARACTERS"}]
+        rows = [{"_edge": {"kind": "INSERT", "site": site["host"], "occurrence": occurrence},
+                 "_writeRange": site, "sources": [site["host"]]} for occurrence, site in zip(("local-a", "local-b"), addresses)]
         replayed = []
 
         def invoke(_process, _context, site, _timeout):
@@ -828,6 +834,8 @@ class Codec {
         facts, witnesses = projector(process, context, rows, invoke, specialize_topics=True)
         self.assertEqual(replayed, [(call, "parcel.received"), (call, "parcel.retried")])
         self.assertEqual(len(facts), 4)
+        self.assertEqual({(row['_writeFocus']['occurrence'], row['_writeFocus']['topic']) for row in facts},
+                         {(site, topic) for site in ('local-a', 'local-b') for topic in ('parcel.received', 'parcel.retried')})
         self.assertEqual(len(witnesses), 1)
         witness, = witnesses.values()
         self.assertEqual(witness["startByte"], len(text[:start].encode()))

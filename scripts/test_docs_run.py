@@ -2247,7 +2247,14 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         val first = message.items.first()
         val id = first.external
         db.update("INSERT INTO parcel (id) VALUES (?)", id)
-        db.update("INSERT INTO relay_queue (id) VALUES (?)", id)
+        db.update("INSERT INTO incoming_record (id) VALUES (?)", id)
+        db.update("INSERT INTO visible_record (id) VALUES (?)", id)
+        db.update("INSERT INTO revisions (id) VALUES (?)", id)
+        if (message.live) {
+            db.update("INSERT INTO relay_queue (id) VALUES (?)", id)
+        } else {
+            db.update("INSERT INTO relay_queue (id) VALUES (?)", "cached")
+        }
     }
 }
 
@@ -2300,7 +2307,23 @@ class Unrelated {
                               'model': 'unused-test-author', 'reasoningEffort': 'high'},
                            'budget': {'wallSeconds': 30, 'maxRepairs': 0}})
             run = directory / 'run'
-            result = D['prepare'](job, run)
+            records = {}
+            load_script = runpy.run_path
+
+            def inspect_record(path, **kwargs):
+                script = load_script(path, **kwargs)
+                if Path(path).name != 'clew_service_edges.py':
+                    return script
+
+                def record(requirement, process, context, facts, exact):
+                    value = script['record'](requirement, process, context, facts, exact)
+                    records[requirement['entrySymbol']] = value
+                    return value
+
+                return {**script, 'record': record}
+
+            with patch.object(runpy, 'run_path', inspect_record):
+                result = D['prepare'](job, run)
             self.assertEqual(result['authorMode'], 'ISOLATED_PAGES')
             plan = D['load'](run / 'inputs/author-plan.json')
             packets = [json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
@@ -2326,6 +2349,26 @@ class Unrelated {
                             [(fact['kind'], fact.get('condition')) for fact in facts])
             self.assertIn('INSERT INTO parcel', output)
             self.assertIn('INSERT INTO relay_queue', output)
+            entry = received['requirement']['entrySymbol']
+            writes = [write for write in records[entry]['writes'] if write['table'] == 'relay_queue']
+            self.assertGreaterEqual(len(writes), 2, writes)
+            polarities = set()
+            for write in writes:
+                rows = [row for row in write['focus'].get(None, ()) if row['kind'] == 'write_request']
+                self.assertTrue(rows, write)
+                requests = [row for row in facts if row['kind'] == 'write_request'
+                            and any(row['text'] == request['text'] and row['condition'] == request['condition'] for request in rows)]
+                self.assertTrue(requests, rows)
+                signs = {row['condition'].endswith('`message.live`') for row in rows}
+                self.assertEqual(len(signs), 1, rows)
+                self.assertTrue(all(row['condition'].endswith(('`message.live`', '`message.live` is false')) for row in rows), rows)
+                polarities.update(signs)
+                self.assertTrue(any('relay_queue' in received['sourceRanges'][region]['text']
+                                    for row in requests for alias in row['sources']
+                                    for region in received['citations'][alias].get('regions', [received['citations'][alias]['region']])))
+            self.assertEqual(polarities, {False, True})
+            shadow = packet_for('shadowed')['requirement']['entrySymbol']
+            self.assertFalse(records[shadow]['writes'])
             self.assertNotIn('selected kind required', json.dumps(packet_for('shadowed')))
             self.assertNotIn('ambiguous string marker', json.dumps(packet_for('ambiguous')))
             self.assertNotIn('98765', json.dumps(packet_for('ambiguous')))
@@ -2384,6 +2427,96 @@ class PreparedServiceEdgeTests(unittest.TestCase):
     def project(self, *retained, isolated=False):
         return self.edges["project"]([row[0] for row in retained], {row[0]["id"]: row[1] for row in retained},
                                      isolated=isolated)
+
+    def test_kotlin_replays_direct_and_reached_declaration_write_aliases(self):
+        text = """import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.transaction.support.TransactionTemplate
+
+class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplate) {
+    @Scheduled(fixedDelay = 300)
+    fun apply(entries: List<Parcel>) {
+        tx.executeWithoutResult {
+            for (entry in entries) {
+                if (entry.ready) persist(entry)
+            }
+        }
+    }
+
+    private fun persist(entry: Parcel) {
+        if (entry.changed) {
+            db.update("INSERT INTO delivery (id) VALUES (?)", entry.id)
+        } else {
+            db.update("INSERT INTO delivery (id) VALUES (?)", "unchanged")
+        }
+    }
+}
+"""
+        file, service, revision = 'Inventory.kt', 'inventory', 'a' * 40
+        raw = text.encode()
+        blob = 'b' * 40
+
+        def source(handle, literal):
+            first = raw.index(literal.encode())
+            end = first + len(literal.encode())
+            line = 1 + raw[:first].count(b'\n')
+            return {'id': handle, 'service': service, 'file': file, 'revision': revision,
+                    'text': literal, 'textDigest': D['sha'](literal.encode()), 'authority': 'EXACT_SNAPSHOT_TEXT',
+                    'startByte': first, 'endByte': end, 'startLine': line,
+                    'endLine': line + literal.removesuffix('\n').count('\n'), 'references': [handle],
+                    'occurrence': {'snapshot': F['SNAPSHOT'], 'blob': blob, 'startByte': first, 'endByte': end}}
+
+        declaration = text[text.index('@Scheduled'):text.index('\n\n    private fun persist')]
+        exact = {'unit': source('unit', text), 'root': source('root', declaration)}
+        captured = {file: exact['unit']}
+        binder = lambda witness: self.prepared['extra_binding'](witness, exact)
+        project = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/prepared_facts/managed_languages.py'))['project']
+
+        def derive(requirement, rows):
+            process, context = self.prepared['operation'](requirement, rows, exact, captured)
+            context.update(_sourceCallSelections=[], _deferredWriteFocus=[], _bindWitness=binder)
+            propositions, narrow = project(process, context, node=None)
+            local = {site['id'] for site in context['sourceRanges']}
+            facts, unbound = self.prepared['bound_facts'](propositions, narrow, exact, local)
+            self.assertEqual(unbound, 0)
+            return process, context, facts
+
+        base = {'service': service, 'page': 'inventory.md'}
+        discovery = {'id': 'discovery', 'kind': 'DISCOVERY', 'file': file, **base}
+        requirement = {'id': 'entry', 'entrySymbol': 'apply', 'kind': 'ENTRY', 'entryKind': 'SCHEDULED_JOB',
+                       'rootDeclarations': ['apply'], 'sourceReferences': ['root'], **base}
+        root = {'id': 'BODY:apply', 'obligationKind': 'BODY', 'record': {'declaration': 'apply', 'sourceIds': ['root']},
+                'sourceReferences': ['root']}
+        _, _, discovery_facts = derive(discovery, ())
+        process, context, local = derive(requirement, [root])
+        reached = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run_reached.py'))
+        index = reached['index_discovery']([discovery_facts], exact)
+        joined, limited = reached['select'](process, index, exact, binder, context['_sourceCallSelections'])
+        self.assertEqual(limited, 0)
+        local_writes = [fact for fact in local if fact.get('_edge', {}).get('kind') == 'INSERT']
+        reached_writes = [fact for fact in joined if fact.get('_edge', {}).get('kind') == 'INSERT']
+        self.assertEqual(len(local_writes), 2)
+        self.assertEqual(len(reached_writes), 2)
+        self.assertTrue(all(fact['_reachedDeclaration'] for fact in reached_writes))
+        for pair in zip(local_writes, reached_writes):
+            self.assertEqual(len({fact['_writeSite']['startByte'] for fact in pair}), 1)
+            self.assertEqual(len({fact['_edge']['occurrence'] for fact in pair}), 2)
+        composed = [*local, *joined]
+        focused, rejected = self.prepared['replay_reached_writes'](context, composed, exact, None)
+        self.assertEqual(rejected, 0)
+        result = self.edges['record'](requirement, process, context, [*composed, *focused], exact)
+        guarded = {}
+        for write in result['writes']:
+            requests = [fact for fact in write['focus'].get(None, ()) if fact['kind'] == 'write_request']
+            self.assertTrue(requests, write)
+            for request in requests:
+                # The same physical call may have two retained aliases, with identical predicates.
+                guarded.setdefault(request['_writeSite']['startByte'], set()).add(request['condition'])
+        self.assertEqual(len(guarded), 2)
+        self.assertEqual(sorted(map(len, guarded.values())), [1, 1])
+        self.assertTrue(all('entry.ready' in condition for conditions in guarded.values() for condition in conditions))
+        self.assertEqual({condition.endswith('`entry.changed` is false')
+                          for conditions in guarded.values() for condition in conditions}, {False, True})
 
     def test_http_peer_return_and_failure_are_source_qualified_in_the_normal_author_view(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {

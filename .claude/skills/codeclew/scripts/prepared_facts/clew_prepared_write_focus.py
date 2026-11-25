@@ -96,7 +96,7 @@ def incoming_topics(process):
     return tuple(dict.fromkeys(value for value in topics if isinstance(value, str)))[:MAX_TOPICS]
 
 
-def unique_details(results):
+def unique_details(results, retain_alternatives=False):
     """Keep distinct kinds visible within the per-occurrence delivery bound."""
     groups = {}
     for result in results:
@@ -112,47 +112,31 @@ def unique_details(results):
         chosen.append(result)
         if len(chosen) == MAX_FACTS_PER_WRITE:
             break
+    if retain_alternatives:
+        represented = {row.get("condition") for row in chosen if row["kind"] == "write_request"}
+        for row in groups.get("write_request", ()):
+            if row.get("condition") not in represented:
+                chosen.append(row)
+                represented.add(row.get("condition"))
     return chosen
 
 
-def project_write(process, context, site, invoke, memo, deadline, topic):
-    """Replay one already validated write; reuse results only within this operation."""
-    identity = tuple(site[key] for key in ("file", "revision", "startByte", "endByte", "textDigest"))
-    retained = site.get("occurrence") or {}
-    key = identity, retained.get("snapshot"), retained.get("blob"), topic
-    if key in memo:
-        return memo[key]
-    timeout = deadline - time.monotonic()
-    if timeout <= 0:
-        return None
-    identifier = site["id"]
-    allowed = {row["id"] for row in context["sourceRanges"]} | {identifier}
-    frame = {**context, "sourceRanges": [*context["sourceRanges"], site],
-             "_sourceOccurrences": {**context.get("_sourceOccurrences", {}), identifier: site}}
-    operation = {**process, "sources": {**process["sources"], identifier: site}}
-    results = invoke(operation, frame, {**site, "incomingTopic": topic}, timeout)
-    details = unique_details(result for result in results if result.get("sources") and set(result["sources"]) <= allowed)
-    memo[key] = site, details
-    return memo[key]
+def site_identity(site):
+    occurrence = site.get("occurrence") or {}
+    fields = ("file", "revision", "startByte", "endByte", "textDigest")
+    return (*(site[key] for key in fields), occurrence.get("snapshot"), occurrence.get("blob"))
 
 
-def project(process, context, rows, invoke, *, specialize_topics=False, reserved=()):
-    """Use ordinary reached writes to select exact sites for the existing focused projectors."""
-    if not process.get("root"):
-        return [], {}
+def add_sites(context, rows, reserved=()):
+    """Retain the exact selected invocation independently of adapter-local aliases."""
     sources = {site["id"]: site for site in context["sourceRanges"]}
     occupied = set(sources) | set(reserved)
-    matches, witnesses, output, memo = set(), {}, [], {}
-    topics = incoming_topics(process) if specialize_topics else ()
-    deadline = min(context.get("_deadline", float("inf")), time.monotonic() + 5)
+    witnesses, known = {}, {}
     for row in rows:
         edge, address = row.get("_edge") or {}, row.get("_writeRange")
-        occurrence = edge.get("occurrence")
-        if (edge.get("kind") not in WRITES or not occurrence or occurrence in matches or edge.get("site") not in row.get("sources", ())
+        if (edge.get("kind") not in WRITES or not edge.get("occurrence") or edge.get("site") not in row.get("sources", ())
                 or not address or address.get("host") not in sources):
             continue
-        if len(matches) >= MAX_WRITES or deadline <= time.monotonic():
-            break
         parent = admitted_parent(sources[address["host"]], context)
         index = len(occupied) + 1
         while (identifier := f"S{index:03d}") in occupied:
@@ -160,18 +144,71 @@ def project(process, context, rows, invoke, *, specialize_topics=False, reserved
         site = selected_site(parent, address, identifier) if parent else None
         if site is None or ((bind := context.get("_bindWitness")) and not bind(site)):
             continue
+        identity = site_identity(site)
+        if identity not in known:
+            known[identity] = identifier
+            witnesses[identifier] = site
+            occupied.add(identifier)
+        chosen = known[identity]
+        row["_writeSite"] = chosen
+        row["sources"] = list(dict.fromkeys([*row["sources"], chosen]))
+    return witnesses
+
+
+def project_sites(process, context, candidates, invoke, *, specialize_topics=False, reserved=(), limit=MAX_WRITES,
+                  retain_alternatives=False, reuse_aliases=False):
+    """Replay at most once per source coordinate and topic within this operation."""
+    if not process.get("root"):
+        return [], {}
+    known, output, witnesses = {}, [], {}
+    occupied = {site["id"] for site in context["sourceRanges"]} | set(reserved)
+    topics = incoming_topics(process) if specialize_topics else ()
+    deadline = min(context.get("_deadline", float("inf")), time.monotonic() + 5)
+    for site, occurrence in candidates:
+        known.setdefault(site_identity(site), (site, {}))[1][occurrence] = None
+    limitations = context.get("_projectionUnavailable")
+    if len(known) > limit and limitations is not None:
+        limitations.append("WRITE_FOCUS_SITE_LIMIT")
+    for site, occurrences in list(known.values())[:limit]:
+        identifier = site["id"] if reuse_aliases else None
+        if identifier is None:
+            index = len(occupied) + 1
+            while (identifier := f"S{index:03d}") in occupied:
+                index += 1
         occupied.add(identifier)
-        matches.add(occurrence)
+        anchor = {**site, "id": identifier, "references": [identifier]}
+        allowed = {row["id"] for row in context["sourceRanges"]} | {identifier}
+        frame = {**context, "sourceRanges": [*context["sourceRanges"], anchor],
+                 "_sourceOccurrences": {**context.get("_sourceOccurrences", {}), identifier: anchor}}
+        operation = {**process, "sources": {**process["sources"], identifier: anchor}}
         for topic in topics or (None,):
-            if not (replayed := project_write(process, context, site, invoke, memo, deadline, topic)):
-                break
-            anchor, details = replayed
-            ref = anchor["id"]
-            for result in details:
-                details_only = {key: value for key, value in result.items() if key not in {"_edge", "_writeRange"}}
-                output.append({**details_only, "sources": list(dict.fromkeys([ref, *result["sources"]])),
-                               "_writeFocus": {"occurrence": occurrence, "topic": topic,
-                                               "compatibility": result.get("compatibility")}})
-            if details:
-                witnesses[ref] = anchor
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                if limitations is not None:
+                    limitations.append("WRITE_FOCUS_TIMEOUT")
+                return output, witnesses
+            results = invoke(operation, frame, {**anchor, "incomingTopic": topic}, timeout)
+            supported = (row for row in results if row.get("sources") and set(row["sources"]) <= allowed)
+            selected = unique_details(supported, retain_alternatives)
+            if selected:
+                witnesses[identifier] = anchor
+            for result in selected:
+                details = {key: value for key, value in result.items() if key not in {"_edge", "_writeRange"}}
+                for occurrence in occurrences:
+                    output.append({**details, "sources": list(dict.fromkeys([identifier, *result["sources"]])),
+                                   "_writeSite": identifier,
+                                   "_writeFocus": {"occurrence": occurrence, "topic": topic,
+                                                   "compatibility": result.get("compatibility")}})
     return output, witnesses
+
+
+def project(process, context, rows, invoke, *, specialize_topics=False, reserved=(), limit=MAX_WRITES,
+            retain_alternatives=False):
+    """Use ordinary reached write events to select their independent focused paths."""
+    anchors = add_sites(context, rows, reserved)
+    candidates = [(anchors[row["_writeSite"]], row["_edge"]["occurrence"])
+                  for row in rows if row.get("_writeSite") in anchors]
+    output, witnesses = project_sites(process, context, candidates, invoke, specialize_topics=specialize_topics,
+                                      reserved=reserved, limit=limit, retain_alternatives=retain_alternatives,
+                                      reuse_aliases=True)
+    return output, {**anchors, **witnesses}

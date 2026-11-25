@@ -224,6 +224,8 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
             handle = bindings[ref]
             source, site = exact[handle], lifted[ref]
             proof = REACHED['witness'](source, {**site, 'service': source['service']}, handle)
+            if ref == row.get('_writeSite') and proof and all(type(proof.get(key)) is int for key in ('startByte', 'endByte')):
+                values['_writeSite'] = proof
             witnesses.append(proof or dict(cite=handle, **{key: site[key] for key in (
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in site}))
         if witnesses:
@@ -785,6 +787,29 @@ def background_entries(service, requirements, units, exact, files, projector, jo
     return entries
 
 
+def replay_reached_writes(context, propositions, exact, read_pinned):
+    """Select only rebound write sites and replay them in the original operation."""
+    replays = context.pop('_deferredWriteFocus', ())
+    if not replays:
+        return [], 0
+    candidates = []
+    for fact in propositions:
+        proof, edge = fact.get('_writeSite'), fact.get('_edge')
+        if not proof or not edge or not edge.get('occurrence'):
+            continue
+        if (site := REACHED['excerpt'](exact[proof['cite']], proof)) and all(
+                site.get(key) == proof[key] for key in ('startByte', 'endByte')):
+            candidates.append((site, edge['occurrence']))
+    accepted, rejected = [], 0
+    local = {site['id'] for site in context['sourceRanges'] if site['id'] in exact}
+    for replay in replays if candidates else ():
+        rows, extra = replay(candidates)
+        bound, unbound = bound_facts(rows, extra, exact, local, read_pinned)
+        accepted.extend(bound)
+        rejected += unbound
+    return accepted, rejected
+
+
 def prepare(job, service, scope, requirements, entries, packet, home, deadline, *,
             page_slots=0, view_budget=0, edge_records=None, base_manifest=None, contract_resources=()):
     """Produce a bounded author packet and explicit per-entry coverage."""
@@ -872,7 +897,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
                        _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
-                       _allowLegacyPinned=allow_legacy_pinned, _sourceCallSelections=[],
+                       _allowLegacyPinned=allow_legacy_pinned, _sourceCallSelections=[], _deferredWriteFocus=[],
                        _bindWitness=lambda witness: extra_binding(witness, exact, read_pinned))
         if file := context['file']:
             languages = {Path(file).suffix.lower()} if context['sourceRanges'] else set()
@@ -916,8 +941,15 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             additional, limited_reach = REACHED['select'](process, indexed, exact, context['_bindWitness'],
                                                          context['_sourceCallSelections'])
             direct = {(fact['kind'], fact['text'], fact.get('condition')) for fact in propositions}
-            propositions.extend(fact for fact in additional
-                                if (fact['kind'], fact['text'], fact.get('condition')) not in direct)
+            propositions.extend(fact for fact in additional if (fact.get('_writeSite') and fact.get('_edge'))
+                                or (fact['kind'], fact['text'], fact.get('condition')) not in direct)
+            try:
+                focused, rejected = replay_reached_writes(context, propositions, exact, read_pinned)
+            except (AttributeError, IndexError, KeyError, RecursionError, TypeError, ValueError) as error:
+                failed['managed_languages'] = type(error).__name__
+            else:
+                propositions.extend(focused)
+                unbound += rejected
             if limited_reach:
                 row['omittedReachedDeclarations'] = limited_reach
                 projection_limits.append('REACHED_DECLARATION_LIMIT')
