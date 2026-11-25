@@ -132,8 +132,9 @@ def derive(process, evidence, grouped, repo, project, load_source, storage, sql_
     if not requested:
         return report("OPEN", sorted(gaps | {"RETAINED_CALLABLE_SOURCE_UNAVAILABLE"}))
     is_http = process.get("entryKind") in {"HTTP_ENDPOINT", "SOURCE_HTTP_MAPPING"}
+    allow_sdk_imports = is_http or process.get("entryKind") == "HOSTED_BACKGROUND_WORKER"
     result = project({"files": files, "selections": list(requested.values()),
-                      **({"allowSdkImports": True} if is_http else {})})
+                      **({"allowSdkImports": True} if allow_sdk_imports else {})})
     if result is None:
         return report("OPEN", sorted(gaps | {"ROSLYN_PROJECTOR_UNAVAILABLE"}))
     functions = {}

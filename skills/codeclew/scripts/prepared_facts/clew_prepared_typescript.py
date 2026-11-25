@@ -271,3 +271,39 @@ def derive_write(process, context, graph, site, typescript_module=None):
                         **({"topic": site["incomingTopic"]} if isinstance(site.get("incomingTopic"), str) else {})}
     return [fact for fact in project(request, typescript_module)
             if fact["sources"] and set(fact["sources"]) <= allowed]
+
+
+def background_anchors(request, references, sources, background):
+    """Map checker-selected relationships into exact offsets within callback excerpts."""
+    excerpts = {row["id"]: row for row in request["excerpts"]}
+    hosts = sorted((sources[ref] for ref in background["bodies"] if ref in references),
+                   key=lambda site: len(site["text"].encode()))
+    attached = set()
+    for child in background["anchored"]:
+        if child not in references:
+            continue
+        witness = sources[child]
+        start, end = span(witness)
+        for host in hosts:
+            first, last = span(host)
+            if position(witness)[:2] != position(host)[:2] or not first <= start < end <= last:
+                continue
+            raw = host["text"].encode()
+            if raw[start - first:end - first] != witness["text"].encode():
+                continue
+            offsets = [len(raw[:byte - first].decode().encode("utf-16-le")) // 2 for byte in (start, end)]
+            identifier = references[child]
+            excerpts[references[host["id"]]]["anchors"].append(
+                {"id": identifier, "start": offsets[0], "end": offsets[1]})
+            attached.add(identifier)
+            break
+    request["excerpts"] = [row for row in request["excerpts"] if row["id"] not in attached]
+    for call, target in background["calls"]:
+        if call in references and target in references:
+            request["calls"].append({"call": references[call], "target": references[target]})
+    for use, declaration, consumer in background["offsets"]:
+        if all(ref in references for ref in (use, declaration, consumer)):
+            request["offsetReceivers"].append(
+                {"use": references[use], "declaration": references[declaration], "consumer": references[consumer]})
+    if registration := next(iter(request["callback"]["sources"]), None):
+        request["setup"].append({"role": "Registration", "action": registration, "guards": []})

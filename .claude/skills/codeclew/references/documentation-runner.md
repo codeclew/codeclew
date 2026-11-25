@@ -79,6 +79,15 @@ aliases. Both modes show narrower witness line ranges when available. The
 `prepared-facts.json` reviewer sidecar retains full witness coordinates, digests
 and preparation coverage.
 
+Preparation also looks for background entries in supported retained source.
+C# discovery binds the framework `AddHostedService<T>()` call to a retained
+`BackgroundService.ExecuteAsync` override. TypeScript and JavaScript discovery
+binds a supported `setInterval` call or KafkaJS `eachMessage` registration to
+the selected callback, including a uniquely resolved relative import. Existing
+Spring scheduled and listener entries use the ordinary captured entry roots.
+A discovered background entry has its own starter page, sequence template,
+registration and callback source view, and review requirement.
+
 The author checks propositions against retained source and fills gaps using the
 same Work. An unavailable adapter, unsupported source shape, missing operations
 or unbound propositions leave the ordinary source views available. Prepared facts

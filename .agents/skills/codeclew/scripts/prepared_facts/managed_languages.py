@@ -205,6 +205,8 @@ def typescript(process, context, node):
                                             allow_retained_body=True)
         if not (request and (request["roots"] or request["setup"])):
             return []
+    if background := process.get("_background"):
+        projector["background_anchors"](request, references, process["sources"], background)
     timeout = remaining(context, 12)
     if timeout <= 0:
         return []
@@ -321,39 +323,55 @@ def managed(process, context):
         return []
     if selections.keys() - covered:
         limitation(context, "CSHARP_HELPER_COMPILATION_UNITS_INCOMPLETE")
-    dotnet = shutil.which("dotnet")
-    timeout = remaining(context, 35)
-    if timeout <= 0:
-        return []
-    if dotnet is None:
-        return unavailable(context, "ROSLYN_SDK_OR_BUILD_UNAVAILABLE")
-    if dotnet not in _roslyn_builds:
-        _roslyn_builds[dotnet] = build_roslyn(dotnet, timeout)
-    compiled = _roslyn_builds[dotnet]
-    if compiled is None:
-        return unavailable(context, "ROSLYN_SDK_OR_BUILD_UNAVAILABLE")
-    build, dll = compiled
-
-    def project_cfg(request):
-        timeout = remaining(context, 12)
-        if timeout <= 0:
-            return None
-        try:
-            result = subprocess.run([dotnet, str(dll)], input=json.dumps(request), encoding="utf-8",
-                                    cwd=build.name, capture_output=True, check=True, timeout=timeout)
-            return json.loads(result.stdout)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
-
     # Entry requirements already carry declared route metadata. A body
     # citation by itself does not attest to a route via the surrounding registration.
+    if roslyn_command(context) is None:
+        return unavailable(context, "ROSLYN_SDK_OR_BUILD_UNAVAILABLE")
     graph = effects["derive"]({**process, "routes": []}, managed_evidence, grouped, verified,
-                              project_cfg, lambda blobs, source: blobs[source["file"], source["revision"]].decode(),
+                              lambda request: roslyn_request(request, context), lambda blobs, source: blobs[source["file"], source["revision"]].decode(),
                               module("effect_storage"), module("source_candidates")["sql_tables"],
                               module("effect_commands"))
     if graph and graph.get("status") == "OPEN":
         limitation(context, "CSHARP_CONTROL_FLOW_PROJECTION_OPEN")
     return module("prepared_managed")["derive"]({**process, "routes": []}, context, graph)
+
+def roslyn_command(context):
+    dotnet = shutil.which("dotnet")
+    timeout = remaining(context, 35)
+    if dotnet is None or timeout <= 0:
+        return None
+    if dotnet not in _roslyn_builds:
+        _roslyn_builds[dotnet] = build_roslyn(dotnet, timeout)
+    if compiled := _roslyn_builds[dotnet]:
+        directory, dll = compiled
+        return [dotnet, str(dll)], directory.name
+    return None
+
+
+def roslyn_request(request, context):
+    command = roslyn_command(context)
+    timeout = remaining(context, 12)
+    if command is None or timeout <= 0:
+        return None
+    argv, cwd = command
+    try:
+        result = subprocess.run(argv, input=json.dumps(request), encoding="utf-8",
+                                cwd=cwd, capture_output=True, check=True, timeout=timeout)
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def discover_background(files, *, node, deadline, family):
+    payload = {file: row["text"] for file, row in files.items()}
+    context = {"_deadline": deadline}
+    if family == "csharp":
+        return roslyn_request({"files": payload, "discoverHostedWorkers": True}, context)
+    timeout = remaining(context, 12)
+    if not node or timeout <= 0:
+        return None
+    return module("prepared_typescript")["project"](
+        {"backgroundFiles": payload, "roots": [], "setup": []}, None, node=node, timeout=timeout)
 
 
 _roslyn_builds = {}

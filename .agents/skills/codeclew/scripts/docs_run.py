@@ -656,6 +656,49 @@ def _prepare_sources(job, inventory, directory):
     return result
 
 
+def background_source_views(home, scope, required, discovered):
+    """Add a dedicated authored view from the exact detected registration and callback ranges."""
+    ready = load(home / 'requirements.json')
+    views = load(home / 'views.json')
+    index = []
+    added = 0
+    for requirement in required:
+        identity = requirement['id']
+        if identity not in discovered:
+            continue
+        retained = discovered[identity]
+        citations = retained['citations']
+        view_id = requirement['handlerId']
+        view = 'views/' + view_id + '.md'
+        lines = ['# ' + requirement['entrySymbol'], '']
+        for handle, source in citations.items():
+            proof = (' (' + str(source['manifest'].relative_to(home)) + ')') if 'manifest' in source else ''
+            lines.append('Cite: ' + handle + ' ' + source['file'] + proof)
+        lines.append('')
+        for source in retained['sources'].values():
+            raw = source['text']
+            fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', raw)), default=3))
+            lines.extend([f"{source['file']} lines {source['startLine']}-{source['endLine']}", '', fence, raw, fence, ''])
+        content = ('\n'.join(lines) + '\n').encode()
+        (home / view).write_bytes(content)
+        ready[identity] = {'page': requirement['page'], 'kind': 'ENTRY',
+                           'evidenceCandidates': list(citations), 'views': [view], 'meaningReviewed': False}
+        views[view_id] = {'file': next(iter(retained['sources'].values()))['file'], 'view': view,
+                          'codeBytes': sum(len(row['text'].encode()) for row in retained['sources'].values()),
+                          'coveringCitations': [], 'originalCitations': list(citations)}
+        scope['requirements'][identity] = list(citations)
+        index.append('- ' + requirement['page'] + ': ' + view + '; cite ' + ', '.join(citations))
+        added += len(content)
+    scope['views'].update(views)
+    save(home / 'requirements.json', ready)
+    save(home / 'views.json', views)
+    path = home / 'index.md'
+    section = ('\n## Prepared background process reads\n\n' + '\n'.join(index) + '\n').encode()
+    with path.open('ab') as file:
+        file.write(section)
+    return added + len(section)
+
+
 def prepare_facts(job, inventory, prepared):
     helper = runpy.run_path(str(HERE / 'docs_run_prepared.py'), init_globals={
         'load': load, 'save': save, 'command': command, 'need': need, 'sha': sha,
@@ -673,9 +716,16 @@ def prepare_facts(job, inventory, prepared):
             packet, entries = {'outcomes': [], 'texts': {}}, {}
         required = [row for row in inventory['requirements']
                     if row['service'] == service and row['kind'] in ('ENTRY', 'DISCOVERY')]
+        page_slots = max(0, M['MAX_PAGES'] - len({row['page'] for row in inventory['requirements']}))
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
-                                     packet, home, deadline)
+                                     packet, home, deadline, page_slots=page_slots if remaining >= 32 * 1024 else 0,
+                                     view_budget=min(256 * 1024, remaining // 2))
         citations, rows = selected.pop('citations'), selected.pop('authorEntries')
+        discovered = selected.pop('discovered')
+        if discovered:
+            added = background_source_views(home, scope, required, discovered)
+            remaining -= added
+            inventory['requirements'].extend(row for row in required if row['id'] in discovered)
         destinations, view_files = {}, {}
         if rows:
             scope['preparedFacts'] = {'entries': rows, 'citations': citations}
@@ -688,7 +738,13 @@ def prepare_facts(job, inventory, prepared):
         delivery = helper['workspace_views'](home, destinations, rows, citations, view_files, remaining)
         remaining -= delivery['authorViewBytes']
         summaries[service] = {**selected, **delivery}
-    tree(Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1])
+    directory = Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1]
+    if len(prepared['requirements']) != len(inventory['requirements']):
+        prepared['requirements'] = inventory['requirements']
+    prepared['visibleBytes'] = prepared['bounds']['visibleBytes'] - remaining
+    need(remaining >= 0, 'SOURCE_PREPARATION_VISIBLE_LIMIT')
+    save(directory / 'index.json', prepared)
+    tree(directory)
     return summaries
 
 
@@ -714,17 +770,25 @@ def starter(inventory, language, directory):
             page = requirement['page']
             target = page + '#handler'
             method = requirement['method']
-            title = method + ' ' + requirement['path'] if method else requirement['entrypoint']
+            background = 'registration' in (requirement.get('trigger') or {})
+            title = method + ' ' + requirement['path'] if method else (
+                requirement['entrySymbol'] if background else requirement['entrypoint'])
             fence = '`' * (1 + max((len(token) for token in re.findall(r'`+', title)), default=0))
             markdown_label = fence + ' ' + ' '.join(title.splitlines()) + ' ' + fence
             output_target = page.removesuffix('.md') + '.html#handler'
             overview_fragments.append({'text': '- [' + markdown_label + '](' + output_target + ')\n'})
             fragments = [{'text': '# ' + markdown_label + '\n\n<a id="handler"></a>\n\n'}]
-            if method:
+            if method or background:
                 entry = requirement['handlerId']
-                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': labels['client']},
+                initiator = labels['client']
+                if background:
+                    kind = requirement['entryKind']
+                    initiator = {'SCHEDULED_JOB': ('Timer', 'Таймер'), 'KAFKA_LISTENER': ('Kafka broker', 'Брокер Kafka'),
+                                 'HOSTED_BACKGROUND_WORKER': ('Service host', 'Хост службы')}[kind][language == 'ru']
+                sequence = {'title': title, 'participants': [{'id': 'caller', 'title': initiator},
                              {'id': entry, 'title': labels['handler'], 'target': target}],
-                            'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call', 'target': target}]}
+                            'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call' if method else 'async',
+                                       'target': target}]}
                 fragments.append({'text': '```clew-sequence\n' + encode(sequence).decode() + '```\n\n'})
             pages.append({'page': page, 'fragments': fragments})
             entry_pages.append(page)
@@ -790,6 +854,7 @@ def prepare(job_path, run):
          nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
     prepared_sources = prepare_sources(job, inventory, inputs / 'author-source')
     fact_summary = prepare_facts(job, inventory, prepared_sources) if prepared_facts else None
+    save(inputs / 'inventory.json', inventory)
     selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
                                        (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
     save(inputs / 'author-plan.json', selected)

@@ -13,12 +13,18 @@ const ts = require(compilerPath);
 const sqlRequest = require("./clew_prepared_typescript_sql.cjs");
 const directInventory = require("./clew_prepared_typescript_effects.cjs");
 const request = JSON.parse(fs.readFileSync(0, "utf8"));
+if (request.backgroundFiles) {
+    const discover = require("./clew_prepared_typescript_background.cjs");
+    process.stdout.write(JSON.stringify(discover(ts, request.backgroundFiles)));
+    return;
+}
 const locations = new Map(), facts = [], seen = new Set();
 const limit = 58;
 const BODY_READS = new Set(["json", "text", "arrayBuffer", "blob", "formData", "bytes"]);
 const priority = [
     "registered_callback", "registration_step", "transaction_step", "sql_request", "sql_columns", "sql_parameters", "sql_result_check", "sql_result_flow",
-    "post_commit_call", "post_helper_call", "broker_replay_window", "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
+    "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write",
+    "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
     "return_rejection", "await_bypass", "result_continuation", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
     "awaited_binding", "awaited_call", "retained_effect", "call_order", "callback_binding", "unawaited_call",
 ];
@@ -739,7 +745,11 @@ function scan(scope, inherited) {
         if (separate && state.helpers?.length) {
             downstreamCalls.push({...later, helpers: state.helpers});
         }
-        if (offset) replayWindow(later, state.commit, [], state.guards);
+        if (offset) {
+            emit("broker_offset_call", "The callback awaits the registered consumer's commitOffsets call.",
+                [site, ...offset], state, "The broker determines whether the requested offsets advance. If the call fails, redelivery remains possible.");
+            replayWindow(later, state.commit, [], state.guards);
+        }
         if (separate && state.commit) {
             emit("post_commit_call", place + " is a separate call reached after the awaited " +
                 state.commit.name + " fulfills.", [state.commit.site, site], state,
@@ -1126,6 +1136,28 @@ function scan(scope, inherited) {
             let next = compatibility && assignment && !binding
                 ? bindMessage(evaluated.state, symbol(value.left), undefined) : evaluated.state;
             if (query && assignment && !binding) next = query.escape(next, [value.right], evaluated.evaluated);
+            if (request.callback.active && request.roots.includes(scope.id)) {
+                const op = ts.isBinaryExpression(value) && value.operatorToken.kind;
+                const target = op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment &&
+                    ![ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken,
+                        ts.SyntaxKind.QuestionQuestionEqualsToken].includes(op) ? value.left :
+                    (ts.isPrefixUnaryExpression(value) || ts.isPostfixUnaryExpression(value)) &&
+                    [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(value.operator) ? value.operand : undefined;
+                if (target && (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target) ||
+                        ts.isIdentifier(target) && !localBinding(target))) {
+                    const site = source(scope, value);
+                    const write = caption(value) || short(value.getText(scope.file), 160) || "the cited state assignment";
+                    const preceding = next.last?.awaited ? next.last : undefined;
+                    const text = "The callback reaches " + write +
+                        (preceding ? " after " + preceding.name + " fulfills." : ".");
+                    emit("guarded_state_write", text, [site, preceding?.site], next,
+                        "Reaching the write depends on the cited control path and evaluation of its operands.");
+                    for (const exit of next.awaitExits || []) {
+                        emit("await_bypass", "If the await of " + exit.name + " rejects, control leaves this path before " + write + ".",
+                            [exit.site, ...exit.sites, site], {guards: exit.guards});
+                    }
+                }
+            }
             return {normal: [next], exits: [], errors: evaluated.errors};
         }
         if (compatibility) focus.incomplete();

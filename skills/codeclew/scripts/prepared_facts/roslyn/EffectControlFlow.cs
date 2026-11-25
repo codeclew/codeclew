@@ -14,7 +14,8 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
     bool sdkImports = false)
 {
     internal sealed record Selection(string Reference, string File, int Start, int End);
-    internal sealed record Request(Dictionary<string, string> Files, Selection[] Selections, bool AllowSdkImports = false);
+    internal sealed record Request(Dictionary<string, string> Files, Selection[]? Selections, bool AllowSdkImports = false,
+        bool DiscoverHostedWorkers = false);
 
     private readonly Dictionary<CaptureId, int> captures = [];
     private readonly Dictionary<IOperation, int> results = new(ReferenceEqualityComparer.Instance);
@@ -37,7 +38,12 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                  file.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal)))
             .Select(path => MetadataReference.CreateFromFile(path));
         var compilation = CSharpCompilation.Create("RetainedEffectProjection", trees.Values, references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            new CSharpCompilationOptions(request.DiscoverHostedWorkers ? OutputKind.ConsoleApplication : OutputKind.DynamicallyLinkedLibrary));
+        if (request.DiscoverHostedWorkers)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(HostedWorkers.Discover(compilation)));
+            return;
+        }
         // SDK-generated imports may be outside the sealed files. Keep a
         // fallback compilation conditional and restricted to framework names.
         var withSdkImports = request.AllowSdkImports ? compilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText("""
@@ -49,7 +55,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             global using Microsoft.AspNetCore.Http;
             """)) : null;
         var selected = new Dictionary<string, object?>();
-        foreach (var group in request.Selections.GroupBy(selection => selection.File))
+        foreach (var group in (request.Selections ?? []).GroupBy(selection => selection.File))
         {
             if (!trees.TryGetValue(group.Key, out var tree)) continue;
             var root = tree.GetRoot();

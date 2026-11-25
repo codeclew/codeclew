@@ -148,6 +148,10 @@ def extra_binding(witness, exact, read_pinned=None):
     for handle, row in exact.items():
         if (witness.get('file'), witness.get('revision')) != (row['file'], row['revision']):
             continue
+        if occurrence := witness.get('occurrence'):
+            retained = row.get('occurrence') or {}
+            if any(occurrence.get(key) != retained.get(key) for key in ('snapshot', 'blob')):
+                continue
         text = row['text'].encode()
         if (first, last, payload) == (row['startLine'], row['endLine'], text):
             matches.append((len(text), handle))
@@ -240,16 +244,18 @@ def csharp_units(job, scope, home, exact, deadline):
             break
         rows = work_rows(job, scope, home / ('csharp-unit-' + str(number)),
                          {'kind': 'SOURCE_FILE', 'symbolContains': file}, deadline)
-        for row in rows or ():
-            record = row['record']
-            fact = record.get('normalized', {})
-            if (record.get('service') == scope['coverage']['id']
-                    and record.get('symbol') == fact.get('file') == file
-                    and fact.get('schema') == 'codeclew-csharp-compiler-fact/1.0'
-                    and fact.get('kind') == 'SOURCE_FILE' and fact.get('resolution') == 'SOURCE_MEMBERSHIP_EXACT'
-                    and fact.get('sourceStatus') == 'SOURCE_RETAINED' and len(row_bindings(row)) == 1):
-                units.append(row)
+        units.extend(row for row in rows or () if csharp_unit_row(row, scope) and row['record']['symbol'] == file)
     return units
+
+
+def csharp_unit_row(row, scope):
+    record = row['record']
+    fact = record.get('normalized', {})
+    return (record.get('service') == scope['coverage']['id']
+            and record.get('symbol') == fact.get('file')
+            and fact.get('schema') == 'codeclew-csharp-compiler-fact/1.0'
+            and fact.get('kind') == 'SOURCE_FILE' and fact.get('resolution') == 'SOURCE_MEMBERSHIP_EXACT'
+            and len(row_bindings(row)) == 1)
 
 
 def csharp_files(units, exact):
@@ -552,7 +558,174 @@ def workspace_views(home, required, rows, citations, view_files, budget):
     return summary
 
 
-def prepare(job, service, scope, requirements, entries, packet, home, deadline):
+
+def csharp_background_units(job, scope, home, exact, deadline):
+    extractor = (scope['coverage'].get('extractor') or '').lower()
+    if 'csharp' not in extractor and not any(source['file'].lower().endswith('.cs') for source in exact.values()):
+        return []
+    rows = work_rows(job, scope, home / 'csharp-compilation-units', {'kind': 'SOURCE_FILE'}, deadline)
+    return [row for row in rows or () if csharp_unit_row(row, scope)]
+
+
+def background_units(units, exact):
+    """Group verified compiler units by their original retained compilation."""
+    groups = defaultdict(list)
+    for row in units:
+        record = row['record']
+        fact = record.get('normalized', {})
+        if fact.get('kind') == 'SOURCE_FILE' and fact.get('scope') and fact.get('sourceStatus') != 'EMPTY_SOURCE_FILE':
+            groups[fact['scope']].append(row)
+    for rows in groups.values():
+        paths = {row['record']['normalized'].get('file') for row in rows}
+        if len(paths) > 48 or any(row['record']['normalized'].get('sourceStatus') != 'SOURCE_RETAINED' for row in rows):
+            continue
+        files = csharp_files(rows, exact)
+        if files.keys() == paths and sum(len(row['text'].encode()) for row in files.values()) <= 2 * 1024 * 1024:
+            yield files
+
+
+BACKGROUND_KINDS = {
+    'HOSTED_SERVICE': ('HOSTED_BACKGROUND_WORKER', 'ROSLYN_FRAMEWORK_REGISTRATION'),
+    'INTERVAL': ('SCHEDULED_JOB', 'TIMER_RETAINED_SOURCE'),
+    'EACH_MESSAGE': ('KAFKA_LISTENER', 'KAFKAJS_RETAINED_SOURCE'),
+}
+
+
+def background_operation(service, found, files, exact):
+    """Build a source-only root and rebind every range to retained Work."""
+    sources, handles = {}, {}
+    kind, authority = BACKGROUND_KINDS[found['kind']]
+
+    def bind(place):
+        file = place['file']
+        if file not in files:
+            return None
+        unit = files[file]
+        first, end = place['start'], place['end']
+        raw = unit['text'].encode()
+        if not 0 <= first < end <= len(raw):
+            return None
+        ref = 'range-' + hashlib.sha256(encode((file, first, end))).hexdigest()[:20]
+        if ref not in handles:
+            part = raw[first:end]
+            try:
+                text = part.decode()
+            except UnicodeError:
+                return None
+            line = raw.count(b'\n', 0, first) + 1
+            row = {**unit, 'id': ref, 'text': text, 'textDigest': sha(part),
+                   'startByte': first, 'endByte': end, 'startLine': line,
+                   'endLine': line + part.removesuffix(b'\n').count(b'\n'), 'references': [ref],
+                   'authority': 'EXACT_SNAPSHOT_TEXT',
+                   'occurrence': {**unit['occurrence'], 'startByte': first, 'endByte': end}}
+            if handle := extra_binding(row, exact):
+                # A textual match alone cannot join different snapshots or source objects.
+                origin = exact[handle].get('occurrence') or {}
+                if any(origin.get(key) != unit['occurrence'].get(key) for key in ('snapshot', 'blob')):
+                    return None
+                handles[ref] = handle
+                sources[ref] = row
+        return ref if ref in handles else None
+
+    registration, callback = bind(found['registration']), bind(found['callback'])
+    if not registration or not callback:
+        return None
+    name = found['name']
+    identity = hashlib.sha256(encode((service, kind, registration, callback))).hexdigest()[:16]
+    trigger = {'name': name, 'kind': found['kind'], 'authority': authority, 'registration': registration,
+               'callback': callback}
+    subscriptions = [bind(row) for row in found.get('subscriptions', ())]
+    if found.get('topics') and subscriptions and all(subscriptions):
+        trigger['configuration'] = {'topics': found['topics']}
+        trigger['subscriptions'] = subscriptions
+    if found.get('sdkImports'):
+        trigger['assumesSdkImports'] = True
+    refs = [registration, callback]
+    if subscriptions and all(subscriptions):
+        refs.extend(subscriptions)
+    origins = list(dict.fromkeys(handles[ref] for ref in refs))
+    page = service + '-background-' + identity + '.md'
+    requirement = {'id': service + ':background:' + identity, 'kind': 'ENTRY', 'service': service,
+                   'page': page, 'entrypoint': identity, 'entrySymbol': name, 'entryKind': kind,
+                   'sourceIds': [exact[handle]['id'] for handle in origins],
+                   'sourceReferences': [ref for handle in origins for ref in exact[handle]['references']],
+                   'rootDeclarations': [callback], 'handlerId': 'entry-' + identity,
+                   'method': None, 'path': None, 'authority': authority,
+                   'trigger': trigger, 'boundaries': ['RUNTIME_ACTIVATION_NOT_ESTABLISHED']}
+    helpers = [ref for row in found.get('helpers', ()) if (ref := bind(row))]
+    bodies = list(dict.fromkeys([callback, *helpers]))
+    calls, offsets = [], []
+    for row in found.get('calls', ()):
+        if (site := bind(row['site'])) and (target := bind(row['target'])) and target in bodies:
+            calls.append((site, target))
+    for row in found.get('offsets', ()):
+        references = [bind(row[key]) for key in ('use', 'declaration', 'consumer', 'call')]
+        if all(references):
+            offsets.append(references)
+    process = {'id': identity, 'root': callback, 'service': service, 'title': name,
+               'entrySymbol': name, 'entryKind': kind, 'trigger': trigger, 'routes': [],
+               'entrySources': refs, 'sources': sources,
+               'facts': [{'kind': 'BODY', 'declaration': ref, 'sources': [ref]} for ref in bodies],
+               '_background': {'bodies': bodies, 'calls': calls, 'offsets': [row[:3] for row in offsets],
+                               'anchored': list(dict.fromkeys([first for first, _ in calls] +
+                                                            [row[0] for row in offsets]))}}
+    facts = [dict(kind='background-registration', authority=authority, sources=refs,
+                  text=background_registration(found, trigger),
+                  uncertainty='Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
+                              + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))]
+    if found.get('manualOffsets'):
+        facts.append(dict(kind='background-offset-policy', authority=authority, sources=[registration],
+                          text='The KafkaJS run options declare `autoCommit: false`.',
+                          uncertainty='Offset advancement and redelivery depend on the broker and reached commit calls.'))
+    return requirement, process, sources, origins, facts
+
+
+def background_registration(found, trigger):
+    name = trigger['name']
+    if found['kind'] == 'HOSTED_SERVICE':
+        return f'`AddHostedService` registers the type whose `BackgroundService` override is `{name}`.'
+    if found['kind'] == 'INTERVAL':
+        return f'`setInterval` selects the cited callback and supplies `{found["interval"]}` milliseconds as its repeat interval.'
+    topics = trigger.get('configuration', {}).get('topics', ())
+    suffix = ' The same consumer has declared topic subscriptions ' + ', '.join(repr(topic) for topic in topics) + '.' if topics else ''
+    return f'KafkaJS `consumer.run` selects `{name}` as `eachMessage`.' + suffix
+
+
+def background_entries(service, requirements, units, exact, files, projector, job, deadline, page_slots, view_budget):
+    typescript = {file: source for file, source in files.items()
+                  if Path(file).suffix.lower() in projector['TYPESCRIPT']}
+    selections = []
+    if typescript and sum(len(row['text'].encode()) for row in typescript.values()) <= 2 * 1024 * 1024:
+        selections.append(('typescript', typescript))
+    selections.extend(('csharp', scope) for scope in background_units(units, exact))
+    entries, remaining = {}, min(page_slots, MAX_ROOTS)
+    for family, complete in selections:
+        if remaining <= 0 or deadline - time.monotonic() <= 1:
+            break
+        found = projector['discover_background'](complete, node=job['node'], deadline=deadline, family=family)
+        for candidate in found or ():
+            if candidate.get('kind') not in BACKGROUND_KINDS:
+                continue
+            result = background_operation(service, candidate, complete, exact)
+            if result is None:
+                continue
+            requirement, process, witnesses, origins, facts = result
+            # Reserve the code bytes plus the formatter's headings, cites and line ranges.
+            size = sum(len(witnesses[ref]['text'].encode()) + 1024 for ref in process['entrySources']) + 2048
+            if size > view_budget:
+                continue
+            identity = requirement['id']
+            if identity in entries:
+                continue
+            entries[identity] = (process, witnesses, origins, facts)
+            requirements.append(requirement)
+            remaining -= 1
+            view_budget -= size
+            if remaining <= 0:
+                break
+    return entries
+
+def prepare(job, service, scope, requirements, entries, packet, home, deadline, page_slots=0, view_budget=0):
     """Produce a bounded author packet and explicit per-entry coverage."""
     # Preparation is a treatment. A refusal still leaves the original read kit.
     service_root = home / 'fact-evidence'
@@ -564,7 +737,8 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
                      Path(entry['source']['file']).suffix.lower() in extensions for entry in entries.values()
                      if entry['source']['id'] in row['sourceIds'])]
     contexts, states = collect_contexts(job, scope, service_root, supported, deadline)
-    units = csharp_units(job, scope, service_root, exact, deadline)
+    all_units = csharp_background_units(job, scope, service_root, exact, deadline) if page_slots else []
+    units = all_units or csharp_units(job, scope, service_root, exact, deadline)
     exact.update(acquire_sources(job, service, scope, service_root, [units, *contexts.values()], exact, deadline))
     admitted_references = {ref for row in exact.values() for ref in row['references']}
     files = {**full_files(exact), **csharp_files(units, exact)}
@@ -580,9 +754,19 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
             pinned_cache[file] = pinned_file(repository, revision, file, deadline)
         return pinned_cache.get(file)
 
-    projectors = {}
+    projectors, background = {}, {}
+    background_extensions = {'.cs', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}
+    if page_slots and any(Path(file).suffix.lower() in background_extensions for file in files):
+        path = DIRECTORY / 'prepared_facts' / 'managed_languages.py'
+        managed = runpy.run_path(str(path))
+        projectors[path.name] = managed['project']
+        if 'discover_background' in managed:
+            background = background_entries(service, requirements, all_units, exact, files, managed, job, deadline,
+                                            page_slots, view_budget)
+    discovered = {}
     result, cite_index, total_bytes = {}, {}, 0
-    for requirement in requirements:
+    ordered = sorted(requirements, key=lambda row: row['kind'] != 'ENTRY') if background else requirements
+    for requirement in ordered:
         entry_id = requirement['id']
         row = {'page': requirement['page'], 'kind': requirement['kind']}
         if requirement.get('file'):
@@ -591,18 +775,28 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if states.get(entry_id):
             row['status'] = states[entry_id]
             continue
-        if requirement not in supported:
+        synthetic = background.get(entry_id)
+        if requirement not in supported and not synthetic:
             row['status'] = 'NO_SUPPORTED_ENTRY_SOURCE'
             continue
-        if deadline - time.monotonic() <= 1:
+        if not synthetic and deadline - time.monotonic() <= 1:
             row['status'] = 'PREPARATION_LIMIT'
             continue
-        roots = requirement.get('rootDeclarations', [])
-        thread = contexts[roots[0]] if roots else ()
-        missing = {ref for item in thread for ref in row_bindings(item).values()} - admitted_references
-        if missing:
-            row['missingSourceReferences'] = len(missing)
-        process, context = operation(requirement, thread, exact, files)
+        witnesses, registration_facts = {}, []
+        if synthetic:
+            process, witnesses, origins, registration_facts = synthetic
+            context = {'operation': process['id'], 'sourceRanges': list(witnesses.values()),
+                       '_sourceOccurrences': witnesses, '_nativeFiles': files, '_citationSources': exact,
+                       'file': None, 'entrySources': process['entrySources']}
+            discovered[entry_id] = {'sources': {ref: witnesses[ref] for ref in process['entrySources']},
+                                    'citations': {handle: exact[handle] for handle in origins}}
+        else:
+            roots = requirement.get('rootDeclarations', [])
+            thread = contexts[roots[0]] if roots else ()
+            missing = {ref for item in thread for ref in row_bindings(item).values()} - admitted_references
+            if missing:
+                row['missingSourceReferences'] = len(missing)
+            process, context = operation(requirement, thread, exact, files)
         projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
                        _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
@@ -617,10 +811,11 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if not languages:
             row['status'] = 'NO_RETAINED_ROOT_BODY'
             continue
-        if languages & {'.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}:
+        if not synthetic and languages & {'.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}:
             row['scopeLimits'] = ['TYPESCRIPT_CROSS_METHOD_RELATIONSHIPS_OPEN']
-        propositions, unbound, unavailable, failed = [], 0, [], {}
-        local = {site['id'] for site in context['sourceRanges']}
+        local = {site['id'] for site in context['sourceRanges']} - witnesses.keys()
+        propositions, unbound = bound_facts(registration_facts, witnesses, exact, local, read_pinned)
+        unavailable, failed = [], {}
         for filename, allowed in ADAPTERS.items():
             if not languages & allowed:
                 continue
@@ -629,7 +824,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
                 if filename not in projectors:
                     projectors[filename] = runpy.run_path(str(path))['project']
                 raw, extra = projectors[filename](process, context, node=job['node'])
-                accepted, rejected = bound_facts(raw, extra, exact, local, read_pinned)
+                accepted, rejected = bound_facts(raw, {**witnesses, **extra}, exact, local, read_pinned)
             except (OSError, ImportError, subprocess.SubprocessError):
                 unavailable.append(path.stem)
                 continue
@@ -673,4 +868,4 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
     propositions = [fact for row in result.values() for fact in row.get('propositions', ())]
     return {'statusCounts': summary, 'facts': sum(not is_boundary(fact) for fact in propositions),
             'boundaries': sum(map(is_boundary, propositions)),
-            'authorEntries': author_entries(result, cite_index), 'citations': cite_index}
+            'authorEntries': author_entries(result, cite_index), 'citations': cite_index, 'discovered': discovered}
