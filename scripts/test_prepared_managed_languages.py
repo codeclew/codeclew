@@ -462,6 +462,34 @@ class Relay(private val db: JdbcTemplate, private val broker: KafkaTemplate<Stri
                     self.assertIn(term, repeat["text"])
                 self.assertEqual(repeat["sources"], [HANDLE])
 
+    def test_kotlin_poll_boolean_and_null_predicates_match_sql_three_valued_selection(self):
+        source = (ROOT / "fixtures/documentation-background-processes/producer/DeliveryPoll.kt").read_text()
+        cases = (
+            ("sent", "FALSE", True), ("sent = TRUE", "FALSE", True),
+            ("NOT sent", "TRUE", True), ("sent = FALSE", "TRUE", True),
+            ("not deliveries.sent", "TRUE", True), ("NOT sent", "NULL", True),
+            ("sent IS TRUE", "NULL", True), ("sent IS FALSE", "TRUE", True),
+            ("sent IS NOT TRUE", "TRUE", True), ("sent IS NOT FALSE", "FALSE", True),
+            ("sent IS UNKNOWN", "FALSE", True), ("sent IS NOT UNKNOWN", "NULL", True),
+            ("sent IS NULL", "TRUE", True), ("sent IS NOT NULL", "NULL", True),
+            ("sent", "TRUE", False), ("NOT sent", "FALSE", False),
+            ("sent IS NOT TRUE", "NULL", False), ("sent IS NOT FALSE", "NULL", False),
+            ("sent IS NULL", "NULL", False), ("sent IS NOT NULL", "FALSE", False),
+            ("NOT sent OR forced", "TRUE", False), ("sent IS TRUE OR hinted", "FALSE", False),
+        )
+        for predicate, value, changes in cases:
+            with self.subTest(predicate=predicate, value=value):
+                text = source.replace("sent_at IS NULL", predicate).replace("sent_at = CURRENT_TIMESTAMP", f"sent = {value}")
+                root = text[text.index("@Scheduled"):text.index("\n}\n\ndata class")]
+                rows, _ = self.kotlin_callback_facts(text, root, "SCHEDULED_JOB", "poll")
+                repeats = [row for row in rows if row["kind"] == "POSSIBLE_REPEAT_AFTER_MARK_FAILURE"]
+                self.assertIn("WAIT_TRANSACTION_BOUNDARY", {row["kind"] for row in rows})
+                self.assertEqual(len(repeats), int(changes), [row["text"] for row in repeats])
+                for repeat in repeats:
+                    self.assertIn(f"still satisfies `{predicate}`", repeat["text"])
+                    self.assertIn("row.id", repeat["text"])
+                    self.assertIn("returns normally", repeat["text"])
+
     def require_roslyn(self):
         dotnet = shutil.which("dotnet")
         if not dotnet:

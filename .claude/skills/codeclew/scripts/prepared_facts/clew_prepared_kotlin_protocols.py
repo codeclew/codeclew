@@ -23,6 +23,14 @@ FOREACH = re.compile(r"(?:callable:kotlin/collections/(?:CollectionsKt(?:__\w+Kt
                      r"method:class:java\.lang\.Iterable#forEach\()")
 SQL_MARKER = r"(?:NULL|TRUE|FALSE|-?\d+|'(?:''|[^'])*')"
 SQL_MARK_TIMESTAMP = re.compile(r"(?:CURRENT_TIMESTAMP(?:\(\d*\))?|NOW\(\))\Z", re.I)
+SQL_MARK_FILTER = re.compile(
+    rf"(?:(NOT)\s+)?(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)(?:\s+(IS\s+(?:NOT\s+)?(?:NULL|TRUE|FALSE|UNKNOWN))"
+    rf"|\s*=\s*({SQL_MARKER}))?\Z", re.I)
+SQL_BOOLEAN_FILTERS = {
+    "IS TRUE": {"TRUE"}, "IS FALSE": {"FALSE"}, "IS UNKNOWN": {"NULL"},
+    "IS NOT TRUE": {"FALSE", "NULL"}, "IS NOT FALSE": {"TRUE", "NULL"},
+    "IS NOT UNKNOWN": {"FALSE", "TRUE"},
+}
 TRANSFERS = {"return", "throw", "break", "continue"}
 
 
@@ -55,6 +63,36 @@ def contract(owner, member, descriptor, arity):
     if owner in KAFKA and member == "send" and (descriptor.startswith("(Ljava/lang/String;") or not descriptor and arity >= 2):
         return "publication"
     return None
+
+
+def mark_excludes(predicate, assignments):
+    """An UPDATE value must leave the TRUE set of the selected WHERE conjunct."""
+    match = SQL_MARK_FILTER.fullmatch(predicate)
+    if not match:
+        return False
+    negate, column, test, previous = match.groups()
+    if (negate and (test or previous)) or not (value := assignments.get(column.lower())):
+        return False
+    assigned = value.upper()
+    if test:
+        test = " ".join(test.upper().split())
+        if test == "IS NULL":
+            return ((bool(re.fullmatch(SQL_MARKER, value, re.I)) and assigned != "NULL")
+                    or bool(SQL_MARK_TIMESTAMP.fullmatch(value)))
+        if test == "IS NOT NULL":
+            return assigned == "NULL"
+        return assigned in {"TRUE", "FALSE", "NULL"} - SQL_BOOLEAN_FILTERS[test]
+    if previous is None or previous.upper() in {"TRUE", "FALSE"}:
+        allowed = previous.upper() if previous is not None else ("FALSE" if negate else "TRUE")
+        return assigned in {"TRUE", "FALSE", "NULL"} - {allowed}
+    if assigned == "NULL":
+        return previous.upper() != "NULL"
+    # Same-kind literals prevent implying changes under implicit SQL casts.
+    integer = r"-?\d{1,18}"
+    if re.fullmatch(integer, previous) and re.fullmatch(integer, value):
+        return int(previous) != int(value)
+    label = r"'[A-Za-z_][A-Za-z_0-9]*'"
+    return bool(re.fullmatch(label, previous) and re.fullmatch(label, value) and previous.lower() != value.lower())
 
 
 @dataclass(frozen=True)
@@ -800,26 +838,8 @@ class Projection:
                 if column in assignments:
                     return None
                 assignments[column] = parts[2]
-        for term in SQL_TERMS(filters, "AND", blocked="OR"):
-            predicate = re.fullmatch(rf"(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*(IS\s+NULL|=\s*{SQL_MARKER})", term, re.I)
-            if not predicate or not (value := assignments.get(predicate[1].lower())):
-                continue
-            if predicate[2].upper().startswith("IS"):
-                if ((re.fullmatch(SQL_MARKER, value, re.I) and value.upper() != "NULL")
-                        or SQL_MARK_TIMESTAMP.fullmatch(value)):
-                    return term
-            else:
-                previous = predicate[2][1:].strip()
-                # Same-kind literals prevent implying changes under implicit SQL casts.
-                if (previous.upper(), value.upper()) in {("TRUE", "FALSE"), ("FALSE", "TRUE")}:
-                    return term
-                integer = r"-?\d{1,18}"
-                if re.fullmatch(integer, previous) and re.fullmatch(integer, value) and int(previous) != int(value):
-                    return term
-                label = r"'[A-Za-z_][A-Za-z_0-9]*'"
-                if re.fullmatch(label, previous) and re.fullmatch(label, value) and previous.lower() != value.lower():
-                    return term
-        return None
+        return next((term for term in SQL_TERMS(filters, "AND", blocked="OR")
+                     if mark_excludes(term, assignments)), None)
 
     def publication_result(self, part, frame, wait, publications):
         if not part.receiver:
