@@ -1404,6 +1404,59 @@ public static class Intake
                 self.assertIn(write["occurrence"], {row["_edge"]["occurrence"] for row in rows
                                                    if row.get("_edge", {}).get("kind") == "INSERT"})
 
+    def test_roslyn_http_closes_target_typed_record_only_with_matched_reader_values(self):
+        self.require_roslyn()
+        source = '''using Microsoft.AspNetCore.Http;
+using Npgsql;
+using System.Collections.Generic;
+using System.Data.Common;
+using System.Threading.Tasks;
+
+public static class Intake
+{
+    public static async Task<IResult> Submit(NpgsqlDataSource source, DbConnection database)
+    {
+        var query = source.CreateCommand();
+        query.CommandText = "SELECT label, segment, east, north FROM coordinates";
+        var reader = await query.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) return Results.NotFound();
+        var candidates = new List<ReceiptCoordinate>();
+        candidates.Add(new(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetDouble(3)));
+        var tx = await database.BeginTransactionAsync();
+        var command = database.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "INSERT INTO active_receipts (id) VALUES (1)";
+        await command.ExecuteNonQueryAsync();
+        await tx.CommitAsync();
+        return Results.Ok();
+    }
+}
+
+public sealed record ReceiptCoordinate(string Label, string Segment, double East, double North);
+'''
+        cases = {
+            "positional record": source,
+            "different primitive": source.replace("reader.GetDouble(2)", "reader.GetString(2)"),
+            "record has custom construction": source.replace('double North);', '''double North)
+{
+    private static readonly int Readiness = Task.Run(() => 1).GetAwaiter().GetResult();
+}'''),
+        }
+        for label, text in cases.items():
+            with self.subTest(label=label):
+                start = text.index("    public static async Task<IResult>")
+                root = text[start:text.index("\n    }", start) + len("\n    }")]
+                process, context = selected("Intake.cs", text, standalone=root, start=text[:start].count("\n") + 1)
+                context["_nativeFiles"]["Intake.cs"] = captured_csharp(text, "Intake.cs")
+                rows, _ = self.project(process, context)
+                completions = [row for row in rows if row["kind"] == "http-local-completion"]
+                self.assertTrue(any(row["kind"] == "http-outcome" and row.get("_httpStatus") == 200 for row in rows))
+                if label == "positional record":
+                    self.assertEqual(len(completions), 1, {row["kind"] for row in rows})
+                    self.assertIn("target-typed", completions[0]["uncertainty"])
+                else:
+                    self.assertFalse(completions, completions)
+
     def test_managed_write_bypass_needs_the_selected_leaf_even_with_only_an_outer_comparison(self):
         managed = runpy.run_path(str(MANAGED / "clew_prepared_managed.py"))
         facts = managed["Facts"]({}, {})

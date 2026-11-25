@@ -685,7 +685,8 @@ class Trace:
             step = key(symbol=operation["symbol"], command=operation.get("command"), unresolved=operation.get("unresolved"),
                        parameter=operation.get("parameter"),
                        **{name: operation[name] for name in ("httpResult", "objectType", "recordFields", "resourceFamily",
-                                                            "emptyList", "candidateEffectFamily", "transparentRecord", "freshJsonOptions")
+                                                            "emptyList", "candidateEffectFamily", "transparentRecord", "freshJsonOptions",
+                                                            "targetTypedRecord")
                           if operation.get(name)})
             arguments = argument_values(operation.get("arguments", ()), frame)
             work = forget_lists(replace(state, memory={}), tuple(arg["value"] for arg in arguments))
@@ -862,7 +863,8 @@ class Trace:
                                                          result: (list_source, call["selector"], frame)},
                                   nonnull=resumed.nonnull | {result})
             proven_projection = projection and collection_items(result, resumed) is not None
-            return resume(resumed, result, **({"localProjection": True} if proven_projection else {}))
+            return resume(resumed, result, **({"localProjection": True} if proven_projection else {}),
+                          **({"localListOperation": True} if list_update else {}))
 
         def interrupt(failed):
             failed = self.record(failed, awaited or step, "FAULT_OR_CANCELLATION" if awaited else "CALL_EXCEPTION",

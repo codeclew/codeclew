@@ -1018,6 +1018,40 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
         unboundTokenInput = argument.IsImplicit ? null : UnboundTokenInput((argument.Syntax as ArgumentSyntax)?.Expression),
     }).ToArray();
 
+    private object? TargetTypedRecord(BaseObjectCreationExpressionSyntax creation)
+    {
+        if (creation is not ImplicitObjectCreationExpressionSyntax { Initializer: null } implicitCreation ||
+            creation.Parent is not ArgumentSyntax { NameColon: null, RefKindKeyword.RawKind: 0,
+                Parent: ArgumentListSyntax { Arguments.Count: 1, Parent: InvocationExpressionSyntax invocation } }) return null;
+        var add = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol ?? SourceCandidate(invocation);
+        if (add?.Name != "Add" || !ManagedValues.IsList(add.ContainingType) ||
+            add.Parameters is not [{ Type: INamedTypeSymbol record }]) return null;
+        var arguments = implicitCreation.ArgumentList.Arguments;
+        var candidates = record.InstanceConstructors.Where(ctor => ctor.Parameters.Length == arguments.Count).Take(2).ToArray();
+        if (candidates is not [var constructor] || !ManagedValues.IsTransparentRecordConstruction(constructor) ||
+            arguments.Any(argument => argument.NameColon is not null || argument.RefKindKeyword != default)) return null;
+        var slots = new List<object>();
+        var unresolved = false;
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            var expression = arguments[index].Expression;
+            var expected = constructor.Parameters[index];
+            var actual = model.GetTypeInfo(expression).Type;
+            var getter = (string?)null;
+            if (!SymbolEqualityComparer.Default.Equals(actual, expected.Type))
+            {
+                if (actual is { TypeKind: not TypeKind.Error } || expected.Type.SpecialType == SpecialType.None ||
+                    expression is not InvocationExpressionSyntax { ArgumentList.Arguments.Count: 1,
+                        Expression: MemberAccessExpressionSyntax { Name: IdentifierNameSyntax selected } } ||
+                    AdoOperations.ReaderPrimitive(selected.Identifier.ValueText) != expected.Type.SpecialType) return null;
+                getter = selected.Identifier.ValueText;
+                unresolved = true;
+            }
+            slots.Add(new { name = expected.Name, position = index, getter });
+        }
+        return unresolved ? new { type = record.ToDisplayString(), slots } : null;
+    }
+
     private object? OperationValue(IOperation operation) =>
         Value(operation) ?? (operation.Syntax is ExpressionSyntax expression ? LexicalValue(expression) : null);
 
@@ -1128,6 +1162,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                 break;
             case IInvalidOperation when operation.Syntax is BaseObjectCreationExpressionSyntax creation:
                 Add(operation, "CONSTRUCT", ("symbol", null), ("arguments", SyntaxArguments(creation.ArgumentList?.Arguments ?? default)),
+                    ("targetTypedRecord", TargetTypedRecord(creation)),
                     ("candidateEffectFamily", RetainedSdkEffects.Construction(model, creation)),
                     ("resourceFamily", ManagedValues.ResourceFamily(model.GetTypeInfo(creation).Type)),
                     ("objectType", creation is ObjectCreationExpressionSyntax named && named.Type.Span.Length <= 100 ? named.Type.ToString() : null),

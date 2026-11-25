@@ -35,6 +35,20 @@ internal static class AdoOperations
         named.ContainingAssembly.Name == "System.Private.CoreLib" &&
         named.ContainingNamespace.ToDisplayString() == "System.Threading";
 
+    internal static SpecialType ReaderPrimitive(string method) => method switch
+    {
+        "GetBoolean" => SpecialType.System_Boolean,
+        "GetByte" => SpecialType.System_Byte,
+        "GetInt16" => SpecialType.System_Int16,
+        "GetInt32" => SpecialType.System_Int32,
+        "GetInt64" => SpecialType.System_Int64,
+        "GetDecimal" => SpecialType.System_Decimal,
+        "GetDouble" => SpecialType.System_Double,
+        "GetFloat" => SpecialType.System_Single,
+        "GetString" => SpecialType.System_String,
+        _ => SpecialType.None,
+    };
+
     private static bool IsTransactionCommit(IMethodSymbol method)
     {
         while (method.OverriddenMethod is { } overridden) method = overridden;

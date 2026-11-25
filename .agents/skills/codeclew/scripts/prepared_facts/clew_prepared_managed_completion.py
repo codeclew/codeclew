@@ -36,6 +36,8 @@ class ClosedReturn:
         self.commits = {row["commitIndex"]: row for row in facts.transactions[path["id"]] if "status" in row}
         self.pending, self.resources = {}, {}
         self.records, self.serializer_options = {}, set()
+        self.reader_values = {}
+        self.target_typed = False
         self.proof, self.writes, self.reader_loops = [], [], set()
         self.awaited = False
 
@@ -49,6 +51,17 @@ class ClosedReturn:
         if step.get("transparentRecord"):
             self.records[event["result"]] = (step["objectType"], {argument.get("name"): argument["value"]
                                                                   for argument in arguments})
+            return True
+        if candidate := step.get("targetTypedRecord"):
+            values = {arg["position"]: arg["value"] for arg in arguments if not arg.get("byRef")}
+            if set(values) != {slot["position"] for slot in candidate["slots"]} or any(
+                    values[slot["position"]] is None or slot.get("getter") and
+                    self.reader_values.get(values[slot["position"]]) != slot["getter"]
+                    for slot in candidate["slots"]):
+                return False
+            self.records[event["result"]] = (candidate["type"], {slot["name"]: values[slot["position"]]
+                                                               for slot in candidate["slots"]})
+            self.target_typed = True
             return True
         if step.get("httpResult") or step.get("emptyList") and symbol.startswith("M:System.Collections.Generic.List"):
             return True
@@ -109,6 +122,8 @@ class ClosedReturn:
                 or tracked and name in RESOURCE_CALLS.get(tracked, ())):
             if family := PROVIDER_FACTORY.get(name) or step.get("resultFamily"):
                 self.resources[invoked["result"]] = family
+            if tracked == "reader":
+                self.reader_values[invoked["result"]] = name
             return True
         if (name in {"Add", "AddWithValue"} and receiver and receiver[:2] == ("ado-member", "Parameters") and
                 self.resources.get(receiver[2]) == "command" and (not symbol or typed or nominal)):
@@ -127,7 +142,7 @@ class ClosedReturn:
         if step.get("httpResult") or step.get("valueFactory") == "GUID_NEW":
             return True
         role, factory = step.get("role"), step.get("valueFactory")
-        if role in {"LIST_ADD", "LIST_CLEAR"} and step.get("directEffectFamily") == "local":
+        if role in {"LIST_ADD", "LIST_CLEAR"} and (step.get("directEffectFamily") == "local" or done.get("localListOperation")):
             return True
         if factory == "LINQ_FIRST_OR_DEFAULT" and ("selectedValue" in done or done.get("emptyListDefault")):
             return True
@@ -195,9 +210,12 @@ def project(facts, path, events):
         return
     guards = facts.path_condition(events)
     marker = {"status": status, "writeOccurrences": [row["occurrence"] for row in writes], "writes": writes}
+    uncertainty = ("The proof assumes the selected providers perform the cited local operations. Provider hooks, "
+                   "durability, response transmission and downstream observation order remain open.")
+    if closed.target_typed:
+        uncertainty += " The target-typed record uses the retained list and positional constructor signatures and the traced reader getters."
     facts.add_path("http-local-completion", facts.when(guards) + f"finishes its cited local calls and returns an HTTP {status} result.",
                    path, events, [*(key for _, key in guards), *closed.proof, *returned[1]],
                    authority="RETAINED_CLOSED_HTTP_CONTINUATION", _httpCompletion=marker,
-                   uncertainty="The proof assumes the selected providers perform the cited local operations. Provider hooks, "
-                               "durability, response transmission and downstream observation order remain open.",
+                   uncertainty=uncertainty,
                    **({"condition": " and ".join(text for text, _ in guards)} if guards else {}))
