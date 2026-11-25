@@ -2449,25 +2449,73 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             operation("index", "INSERT", table="incoming"),
             operation("index", "INSERT", table="bookkeeping"),
             operation("index", "UPDATE", table="availability", condition="revision passes the stale-input test"),
+            operation("index", "INSERT", table="retained_views", condition="visibility is requested"),
         ])
         query = self.retained("reader", name="availability", path="/availability", facts=[
             operation("availability", "SELECT", table="availability")])
-        result = self.project(origin, first, validator, second, index, query)
+        third = self.retained("reader", name="view-poll", entry_kind="SCHEDULED_JOB", facts=[
+            operation("view-poll", "SELECT", table="retained_views"),
+            operation("view-poll", "PUBLISH", topic="booking.visible"),
+        ])
+        viewer = consumer("public", "receive", "booking.visible", [
+            operation("receive", "UPDATE", table="visible_records", condition="the projection key is accepted")])
+        public_read = self.retained("public", name="read", path="/visible", facts=[
+            operation("read", "SELECT", table="visible_records")])
+        result = self.project(origin, first, validator, second, index, query, third, viewer, public_read)
         facts = result[origin[0]["id"]]
-        reached, = (row for row in facts if row["kind"] == "further-subscriber-readback")
+        reached = next(row for row in result[first[0]["id"]]
+                       if row["kind"] == "further-subscriber-readback" and "availability.md" in row["text"])
         self.assertIn("booking.allocated", reached["text"])
         self.assertIn("availability.md", reached["text"])
         self.assertIn("payload passes validation", reached["condition"])
         self.assertIn("revision passes the stale-input test", reached["condition"])
-        self.assertEqual(reached["sources"], ["request-body", "booking-poll-registration", "booking-poll-body",
+        self.assertEqual(reached["sources"], ["booking-poll-body",
                                               "validator-registration", "validator-body", "change-poll-registration",
                                               "change-poll-body", "index-registration", "index-body",
                                               "availability-registration", "availability-body"])
         self.assertTrue(any(row["kind"] == "storage-message-effect" and
                             "payload lacks a required member" in row.get("condition", "") for row in facts))
+        terminal = next(row for row in facts if row["kind"] == "further-subscriber-readback"
+                        and "booking.visible" in row["text"])
+        self.assertTrue({"request-body", "view-poll-registration", "receive-registration", "read-body"} <= set(terminal["sources"]))
+        self.assertIn("visibility is requested", terminal["condition"])
+        self.assertIn("projection key is accepted", terminal["condition"])
         self.assertTrue(any(row["kind"] == "further-outbox-boundary" and
                             "previously considered callback" in row["text"] for row in facts))
         self.assertLessEqual(len(facts), self.edges["MAX_LINKS"])
+
+    def test_focused_write_guards_apply_to_the_matching_topic_only(self):
+        def fact(kind, sources, text, **metadata):
+            return {"kind": kind, "sources": sources, "text": text, "authority": "RETAINED_PATH", **metadata}
+        first = self.retained("publisher", facts=[fact(
+            "publisher", ["publisher-body"], "Publish one message.",
+            _edge={"kind": "PUBLISH", "site": "publisher-body", "topic": "books.ready"})])
+        second = self.retained("alternate", facts=[fact(
+            "publisher", ["alternate-body"], "Publish a different message.",
+            _edge={"kind": "PUBLISH", "site": "alternate-body", "topic": "books.old"})])
+        callback = self.retained("library", name="apply", entry_kind="KAFKA_LISTENER",
+            trigger={"configuration": {"topics": ["books.ready", "books.old"]}}, facts=[
+                fact("sql-write", ["apply-body"], "The source reaches a write.",
+                     _edge={"kind": "UPDATE", "site": "apply-body", "table": "visible_books", "occurrence": "apply-write"}),
+                fact("write_compatibility", ["apply-body"], "The old topic cannot reach this write in the retained paths.",
+                     _writeFocus={"occurrence": "apply-write", "topic": "books.old", "compatibility": "INCOMPATIBLE"}),
+                fact("write_request", ["apply-body"], "The qualified path reaches the write.", condition="revision is current",
+                     _writeFocus={"occurrence": "apply-write", "topic": "books.ready"}),
+                fact("write_lineage", ["apply-body"], "The write supplies the validated title.",
+                     _writeFocus={"occurrence": "apply-write", "topic": "books.ready"}),
+            ])
+        read = self.retained("library", name="read", facts=[fact(
+            "sql-read", ["read-body"], "Read the visible record.",
+            _edge={"kind": "SELECT", "table": "visible_books", "site": "read-body"})])
+        rows = self.project(first, second, callback, read)
+        current = rows[first[0]["id"]]
+        checked, = (row for row in current if row["kind"] == "message-storage-reader")
+        self.assertIn("revision is current", checked["condition"])
+        self.assertTrue(any(row["kind"] == "message-peer-write-detail" and "validated title" in row["text"]
+                            for row in current))
+        prior = rows[second[0]["id"]]
+        self.assertTrue(any(row["status"] == "INCOMPATIBLE_IN_RETAINED_PATHS" for row in prior))
+        self.assertFalse(any(row["kind"] in {"message-peer-effect", "message-storage-reader"} for row in prior))
 
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):

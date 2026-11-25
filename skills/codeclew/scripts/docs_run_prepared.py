@@ -226,7 +226,7 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in site}))
         if witnesses:
             values['witnesses'] = witnesses
-        for private in ('_edgeCause', '_edgePhase'):
+        for private in ('_edgeCause', '_edgePhase', '_writeFocus'):
             if private in row:
                 values[private] = row[private]
         if edge := row.get('_edge'):

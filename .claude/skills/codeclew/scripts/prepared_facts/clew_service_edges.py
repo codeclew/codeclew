@@ -1,6 +1,6 @@
 """Join bounded Work propositions by explicit retained protocol identities."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from itertools import islice
 from urllib.parse import urlsplit
 import re
@@ -12,8 +12,8 @@ MAX_SITES = 8
 MAX_LINKS = 16
 MAX_COLLECTED_LINKS = 48
 MAX_WRITE_SITES = 16
-MAX_NESTED_HOPS = 1
 MAX_NESTED_VISITS = 24
+MAX_CHAIN_SOURCES = 36
 POLLERS = {"HOSTED_BACKGROUND_WORKER", "SCHEDULED_JOB"}
 HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"}
 TOPIC = re.compile(r"[A-Za-z0-9._-]{1,249}")
@@ -188,7 +188,10 @@ def record(requirement, process, context, facts, exact):
             value = topic(kafka.get("topic"))
             keep(publishes, (refs[0], value), {**face, "topic": value, "precise": True})
 
+    write_focus = defaultdict(lambda: defaultdict(list))
     for fact in facts:
+        if (focus := fact.get("_writeFocus")) and focus.get("occurrence"):
+            write_focus[focus["occurrence"]][focus.get("topic")].append(fact)
         if not (link := fact.get("_edge")):
             continue
         site = link["site"]
@@ -221,7 +224,8 @@ def record(requirement, process, context, facts, exact):
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()),
-            "reads": list(reads.values()), "writes": list(writes.values()),
+            "reads": list(reads.values()), "writes": [{**write, "focus": write_focus.get(write["occurrence"], {})}
+                                                     for write in writes.values()],
             "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
             "commits": [fact for fact in facts if fact["kind"] == "http-commit-before-response"][:2],
             "exits": list(source_exits(process, sources))[:MAX_MATCHES],
@@ -308,16 +312,45 @@ def project(requirements, records):
                 and records[row["id"]]["registration"] and records[row["id"]]["topicProven"] and records[row["id"]]["body"]
                 and ((row.get("trigger") or {}).get("configuration") or {}).get("autoStartup") not in (False, "false")]
 
-    def representative_writes(writer):
+    def focused_rows(write, topic):
+        # A topic-specific callback path is kept separate from other subscriptions.
+        focus = write["focus"]
+        return focus.get(topic, focus.get(None, ()))
+
+    def incompatible_write(write, topic):
+        rows = focused_rows(write, topic)
+        verdicts = {row["_writeFocus"].get("compatibility") for row in rows} - {None}
+        if verdicts == {"INCOMPATIBLE"}:
+            return next(row for row in rows if row["_writeFocus"].get("compatibility") == "INCOMPATIBLE")
+        return None
+
+    def exact_write(write, topic):
+        rows = focused_rows(write, topic)
+        for kind in ("write_request", "sql-write", "write_guard", "write_lineage"):
+            if row := next((item for item in rows if item["kind"] == kind), None):
+                return {**write, "sources": list(dict.fromkeys([*write["sources"], *row["sources"]])),
+                        "witnesses": [*write.get("witnesses", ()), *row.get("witnesses", ())],
+                        **({"condition": row["condition"]} if row.get("condition") else {})}
+        return write
+
+    def add_focused(owner, write, topic, message, qualifier, *proof):
+        details = focused_rows(write, topic)
+        for kind in ("write_lineage", "write_guard", "write_commit", "transactional-write-completion"):
+            if detail := next((row for row in details if row["kind"] == kind), None):
+                emit(owner, "message-peer-write-detail", message + " " + detail["text"],
+                     qualifier + " " + detail.get("uncertainty", ""), *proof, detail)
+
+    def representative_writes(writer, topic=None):
         groups = defaultdict(list)
         for write in records[writer]["writes"]:
+            if incompatible_write(write, topic):
+                groups[3].append(write)
+                continue
             table = write["table"]
             rank = (0 if next(local_readers(writer, table, ("http",)), None) else
                     1 if write["verb"] != "DELETE" and any(records[reader]["publishes"]
                                                           for reader, _ in local_readers(writer, table, ("poll",))) else 2)
             groups[rank].append(write)
-        # A terminal guarded branch is still informative even when another
-        # branch has a longer route to a public read.
         groups[2].sort(key=lambda effect: not effect.get("condition"))
         selected = [group[0] for _, group in sorted(groups.items()) if group]
         if len(selected) < 4:
@@ -325,50 +358,68 @@ def project(requirements, records):
                                    4 - len(selected)))
         return selected
 
-    def further_outbox(owner, writer, write, topic, visited, evidence, hops=MAX_NESTED_HOPS):
-        if write["verb"] == "DELETE":
-            return
-        table = write["table"]
-        publishers = list(islice((row for row in local_readers(writer, table, ("poll",))
-                                  if records[row[0]]["publishes"]), MAX_MATCHES))
-        if not publishers:
-            return
-        for publisher, read in publishers:
-            poller = records[publisher]
-            if hops == 0 or publisher in visited or nested_visits[owner] >= MAX_NESTED_VISITS:
-                emit(owner, "further-outbox-boundary", "The next registered poll is repeated or beyond the retained chain budget.",
-                     STORAGE_OPEN + " " + MESSAGE_OPEN, *evidence, write, registration(poller), read, status="UNKNOWN")
+    def further_outbox(owner, writer, write, topic, visited, evidence):
+        queue = deque([(writer, write, topic, visited, evidence)])
+        while queue:
+            writer, raw_write, topic, visited, evidence = queue.popleft()
+            if raw_write["verb"] == "DELETE":
                 continue
-            for publication in poller["publishes"][:2]:
-                subscribers = qualified_subscribers(publisher, publication["topic"])
-                if not subscribers:
-                    emit(owner, "further-outbox-boundary", "The next publication has no unique bounded set of proven active callback candidates.",
-                         MESSAGE_OPEN, *evidence, write, registration(poller), read, publication, status="UNKNOWN")
-                for subscriber in subscribers:
-                    target = subscriber["id"]
-                    if nested_visits[owner] >= MAX_NESTED_VISITS:
-                        return
-                    nested_visits[owner] += 1
-                    continuation = (*evidence, write, registration(poller), read, publication, registration(records[target]))
-                    if target in visited or target == writer:
-                        emit(owner, "further-outbox-boundary", "The next publication can revisit a previously considered callback.",
-                             MESSAGE_OPEN, *continuation, status="UNKNOWN")
-                        continue
-                    title = poller["requirement"]["page"]
-                    next_topic = publication["topic"]
-                    prior_topic = f"After delivery on `{topic}`, " if topic else ""
-                    prefix = (prior_topic + f"if the cited callback write becomes visible and the registered poller in `{title}` "
-                              f"selects the same key, it can reach the publication on `{next_topic}`. ")
-                    qualifier = STORAGE_OPEN + " " + MESSAGE_OPEN + " Row-to-payload lineage remains unknown."
-                    proof = (*continuation, callback(records[target]))
-                    emit(owner, "further-subscriber-outbox", prefix
-                         + f"`{subscriber['page']}` has the cited registration for that topic.", qualifier, *proof)
-                    for effect in representative_writes(target):
-                        emit(owner, "further-subscriber-effect",
-                             prefix + f"If delivery reaches the cited callback in `{subscriber['page']}`, it can reach this write. "
-                             + effect["text"], qualifier, *proof, effect)
-                        readbacks(owner, target, effect, *proof, prefix=prefix, uncertainty=qualifier, nested=True)
-                        further_outbox(owner, target, effect, next_topic, visited | {writer, publisher, target}, proof, hops - 1)
+            write = exact_write(raw_write, topic)
+            table = write["table"]
+            publishers = list(islice((row for row in local_readers(writer, table, ("poll",))
+                                      if records[row[0]]["publishes"]), MAX_MATCHES))
+            for publisher, read in publishers:
+                poller = records[publisher]
+                title = poller["requirement"]["page"]
+                frontier = (write, registration(poller), read)
+                proof_sources = {ref for face in (*evidence, *frontier) for ref in face["sources"]}
+                if publisher in visited:
+                    emit(owner, "further-outbox-boundary", f"The next poll can revisit the cited root in `{title}`.",
+                         STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
+                    continue
+                if nested_visits[owner] >= MAX_NESTED_VISITS or len(proof_sources) >= MAX_CHAIN_SOURCES:
+                    emit(owner, "further-outbox-boundary",
+                         f"More continuation remains beyond the prepared path limit at the cited poll root in `{title}`.",
+                         STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
+                    return
+                for publication in poller["publishes"][:2]:
+                    subscribers = qualified_subscribers(publisher, publication["topic"])
+                    if not subscribers:
+                        emit(owner, "further-outbox-boundary", "The next publication has no bounded set of proven active callback candidates.",
+                             MESSAGE_OPEN, *evidence, *frontier, publication, status="UNKNOWN")
+                    for subscriber in subscribers:
+                        target = subscriber["id"]
+                        if nested_visits[owner] >= MAX_NESTED_VISITS:
+                            emit(owner, "further-outbox-boundary",
+                                 f"More continuation remains beyond the prepared visit limit from the cited poll root in `{title}`.",
+                                 MESSAGE_OPEN + " " + STORAGE_OPEN, *frontier, publication, status="UNKNOWN")
+                            return
+                        nested_visits[owner] += 1
+                        continuation = (*evidence, *frontier, publication, registration(records[target]))
+                        if target in visited or target == writer:
+                            emit(owner, "further-outbox-boundary", "The next publication can revisit a previously considered callback.",
+                                 MESSAGE_OPEN, *continuation, status="UNKNOWN")
+                            continue
+                        next_topic = publication["topic"]
+                        prior_topic = f"After delivery on `{topic}`, " if topic else ""
+                        prefix = (prior_topic + f"if the cited callback write becomes visible and the registered poller in `{title}` "
+                                  f"selects the same key, it can reach the publication on `{next_topic}`. ")
+                        qualifier = STORAGE_OPEN + " " + MESSAGE_OPEN + " Row-to-payload lineage remains unknown."
+                        proof = (*continuation, callback(records[target]))
+                        emit(owner, "further-subscriber-outbox", prefix
+                             + f"`{subscriber['page']}` has the cited registration for that topic.", qualifier, *proof)
+                        for effect in representative_writes(target, next_topic):
+                            if conflict := incompatible_write(effect, next_topic):
+                                emit(owner, "message-peer-write-boundary", prefix + conflict["text"],
+                                     qualifier, *proof, conflict, status="INCOMPATIBLE_IN_RETAINED_PATHS")
+                                continue
+                            selected = exact_write(effect, next_topic)
+                            emit(owner, "further-subscriber-effect",
+                                 prefix + f"If delivery reaches the cited callback in `{subscriber['page']}`, it can reach this write. "
+                                 + selected["text"], qualifier, *proof, selected)
+                            add_focused(owner, effect, next_topic, prefix, qualifier, *proof)
+                            readbacks(owner, target, selected, *proof, prefix=prefix, uncertainty=qualifier, nested=True)
+                            queue.append((target, effect, next_topic, visited | {writer, publisher, target}, proof))
 
     for owner, local in records.items():
         service = local["requirement"]["service"]
@@ -461,15 +512,20 @@ def project(requirements, records):
                     emit(owner, "message-publication-continuation", outcome["text"],
                          boundary + " Persistence and rollback of earlier effects remain unknown. "
                          + outcome.get("uncertainty", ""), publication, registration(target), outcome)
-                for effect in representative_writes(peer):
+                proof = (publication, registration(target), callback(target))
+                for effect in representative_writes(peer, name):
+                    if conflict := incompatible_write(effect, name):
+                        emit(owner, "message-peer-write-boundary", conflict["text"], boundary, *proof, conflict,
+                             status="INCOMPATIBLE_IN_RETAINED_PATHS")
+                        continue
+                    selected = exact_write(effect, name)
                     emit(owner, "message-peer-effect", f"If the subscribed callback in {title} reaches this write, "
-                         + effect["text"], boundary + " " + STORAGE_OPEN,
-                         publication, registration(target), callback(target), effect)
-                    readbacks(owner, peer, effect, publication, registration(target), callback(target),
-                              prefix="After the subscribed callback reaches the write, ",
+                         + selected["text"], boundary + " " + STORAGE_OPEN, *proof, selected)
+                    add_focused(owner, effect, name, f"The selected callback in {title} has this retained write path.",
+                                boundary, *proof)
+                    readbacks(owner, peer, selected, *proof, prefix="After the subscribed callback reaches the write, ",
                               uncertainty=boundary + " " + STORAGE_OPEN)
-                    further_outbox(owner, peer, effect, name, {owner, peer},
-                                   (publication, registration(target), callback(target)))
+                    further_outbox(owner, peer, effect, name, {owner, peer}, proof)
 
         for write in local["writes"]:
             table = write["table"]
@@ -515,11 +571,17 @@ def project(requirements, records):
                         emit(owner, "storage-message-continuation", prefix
                              + f"`{subscriber['page']}` declares the same topic `{publication['topic']}`.",
                              boundary, *evidence)
-                        for effect in representative_writes(subscriber["id"]):
+                        for effect in representative_writes(subscriber["id"], publication["topic"]):
+                            if conflict := incompatible_write(effect, publication["topic"]):
+                                emit(owner, "message-peer-write-boundary", prefix + conflict["text"], boundary,
+                                     *evidence, conflict, status="INCOMPATIBLE_IN_RETAINED_PATHS")
+                                continue
+                            selected = exact_write(effect, publication["topic"])
                             emit(owner, "storage-message-effect", prefix
-                                 + f"delivery to `{subscriber['page']}` can reach the cited write path. " + effect["text"],
-                                 boundary, *evidence, effect)
-                            readbacks(owner, subscriber["id"], effect, *evidence,
+                                 + f"delivery to `{subscriber['page']}` can reach the cited write path. " + selected["text"],
+                                 boundary, *evidence, selected)
+                            add_focused(owner, effect, publication["topic"], prefix, boundary, *evidence)
+                            readbacks(owner, subscriber["id"], selected, *evidence,
                                       prefix=prefix + f"and delivery reaches `{subscriber['page']}`, ",
                                       uncertainty=boundary)
                             further_outbox(owner, subscriber["id"], effect, publication["topic"],
@@ -528,12 +590,13 @@ def project(requirements, records):
     # Attach a bounded prefix of the selected handler's storage continuation to
     # the caller's view. The source-qualified route remains a prerequisite.
     followups = ("further-subscriber-readback", "further-subscriber-effect", "further-subscriber-outbox",
-                 "message-storage-reader", "storage-message-effect", "storage-message-continuation",
+                 "message-peer-write-detail", "message-peer-write-boundary", "message-storage-reader",
+                 "storage-message-effect", "storage-message-continuation",
                  "storage-message-boundary", "storage-reader", "storage-peer-boundary")
     priority = {kind: index for index, kind in enumerate(followups)}
     for handler, requesters in requester_links.items():
         rows = sorted((row for row in result[handler] if row["kind"] in priority),
-                      key=lambda row: priority[row["kind"]])[:3]
+                      key=lambda row: (priority[row["kind"]], -len(row["sources"])))[:3]
         name = records[handler]["requirement"]["page"]
         for requester, call, registration_proof, boundary in requesters:
             for row in rows:
@@ -543,14 +606,17 @@ def project(requirements, records):
                      status=row["status"])
     preferred = ("http-failure-after-peer-commit", "http-further-subscriber-readback", "further-subscriber-readback",
                  "message-storage-reader", "http-message-storage-reader", "further-subscriber-outbox",
-                 "message-peer-effect", "storage-message-effect")
+                 "message-peer-write-detail", "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
+                 "further-outbox-boundary")
     for owner, rows in result.items():
         if len(rows) <= MAX_LINKS:
             continue
         groups = defaultdict(list)
         for row in rows:
             groups[row["kind"]].append(row)
-        sampled = [groups[kind][0] for kind in preferred if groups[kind]]
+        deepest = {"further-subscriber-readback", "http-further-subscriber-readback"}
+        sampled = [max(groups[kind], key=lambda row: len(row["sources"])) if kind in deepest else groups[kind][0]
+                   for kind in preferred if groups[kind]]
         for row in rows:
             if len(sampled) >= MAX_LINKS - 1:
                 break
