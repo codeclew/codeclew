@@ -154,6 +154,46 @@ for needing more retained evidence or a richer layout, the next permitted repair
 supplies the workspace prompt. Both modes share the time and repair limits and
 the same cumulative token accounting.
 
+### Isolated page authoring
+
+Set the job's `"authorMode": "ISOLATED_PAGES"` for an isolated full
+documentation run. Use the same installed `prepare` and `run` commands above.
+A job with no author mode, or with `"authorMode": "AUTO"`, continues to select
+inline or workspace authoring. The job also selects the configured model and
+reasoning effort for every page. Add `"evidenceMode": "PREPARED_FACTS"` to
+deliver attributed prepared facts beside the retained code.
+
+Prepare freezes a service guide and data and contracts page per service, the
+operation pages and canonical handler targets, and one process map. A source
+discovery slot reviews each required executable file for additional starts.
+Each slot's input is listed in `inputs/author-plan.json`. The named packet
+contains verbatim source ranges, citation aliases, the slot's navigation and
+coverage, and any in-scope prepared propositions. Qualified peer excerpts
+come from exact, unique retained interaction declarations. Declaration,
+source evidence and runtime evidence retain their distinct authority. Deferred
+resources and omitted optional evidence are visible in the packet. Preparation
+reports the named slot and limit if essential source exceeds its 192 KiB
+packet budget.
+
+Run starts an independent tool-free Codex session for each slot, with up to
+three sessions active. The [page response contract](../schemas/docs-run-page-author.schema.json)
+binds replies to the slot and its citation aliases. The runner assembles
+reader pages deterministically, keeps the fixed start edges, and renders the
+authored typed trace, field/type/meaning tables, and source-supported routes
+with ordinary Codeclew navigation and styling. Dedicated narrative pages
+belong to the process catalog. When no complete route is supported, the map
+preserves the documented starts and the evidence boundary. A source-supported
+partial route may explicitly leave its terminal outcome or recipient open.
+
+A repair resumes only the identified slot, with the immutable packet and its
+local failure. The job's repair allowance applies to each slot and all slots
+share the wall budget. Per-slot attempts, raw terminal counters, and responses
+are retained under `page-attempts/`. The normal report aggregates each
+unique thread's cumulative usage once. Verify and promote repeat the ordinary
+provenance, entry identity, route ownership, and rendered export gates.
+Independent semantic and visual qualification remains separate from these
+mechanical checks.
+
 ### Workspace authoring
 
 The runner provides a short author prompt and starter original/navigation files.

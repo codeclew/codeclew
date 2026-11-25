@@ -12,6 +12,8 @@
     "snapshot": {"type": "string", "description": "Exact immutable docs snapshot, distinct from Git revision or source occurrence snapshot"},
     "services": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string"}},
     "language": {"enum": ["en", "ru"]},
+    "authorMode": {"enum": ["AUTO", "ISOLATED_PAGES"], "default": "AUTO",
+      "description": "Select one independent retained-source author session per operation and fixed reader page."},
     "evidenceMode": {"enum": ["RETAINED_SOURCE", "PREPARED_FACTS"], "default": "RETAINED_SOURCE",
       "description": "Opt in to bounded, attributed prepared propositions alongside the ordinary retained sources."},
     "renderer": {"type": "string", "description": "Absolute directory of the unchanged packaged renderer, with locked dependencies installed"},

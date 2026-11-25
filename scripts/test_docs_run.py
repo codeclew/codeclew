@@ -34,14 +34,19 @@ class DocsRunTests(unittest.TestCase):
 import json,shutil,sys,time
 from pathlib import Path
 seed=Path({str(self.seed)!r});mode=Path({str(self.mode)!r}).read_text()
-sys.stdin.read()
+prompt=sys.stdin.read()
+page='docs-run-page-author.schema.json' in ' '.join(sys.argv)
+slot=json.loads(prompt.split('\\n\\n')[-1])['slot'] if page else None
+thread=('owned-page-'+slot) if page else 'owned-test-session'
+if mode=='duplicate-page-thread':thread='owned-shared-page'
 if mode!='missing-thread':
- print(json.dumps({{'type':'thread.started','thread_id':'other-test-session' if mode=='thread-switch' and 'resume' in sys.argv else 'owned-test-session'}}),flush=True)
+ print(json.dumps({{'type':'thread.started','thread_id':'other-test-session' if mode=='thread-switch' and 'resume' in sys.argv else thread}}),flush=True)
 if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
 draft=Path.cwd()/'draft'
 if '--output-schema' in sys.argv:
- source=seed/('inline-repair.json' if 'resume' in sys.argv and (seed/'inline-repair.json').exists() else 'inline-response.json')
+ name=slot if page else 'inline'
+ source=seed/(name+'-repair.json' if 'resume' in sys.argv and (seed/(name+'-repair.json')).exists() else name+'-response.json')
  Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(source.read_bytes())
 else:
  if mode!='empty':
@@ -62,7 +67,7 @@ if mode=='high-usage-missing-cache':
  usage.pop('cached_input_tokens')
  usage['output_tokens']=433917
 if mode=='high-usage-invalid-cache': usage['cached_input_tokens']=usage['input_tokens']+1
-counter=Path.cwd()/'owned-cumulative-usage.json'
+counter=(seed/('usage-'+slot+'.json')) if page else Path.cwd()/'owned-cumulative-usage.json'
 if 'resume' in sys.argv and counter.exists():
  previous=json.loads(counter.read_text());usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
 counter.write_text(json.dumps(usage))
@@ -360,6 +365,8 @@ else:
                 rows = [{'id': source['id'], 'kind': 'SOURCE_NAVIGATION', 'record': {
                     'source': {key: value for key, value in source.items() if key != 'text'},
                     'recordDigest': F['digest'](source), 'textDelivered': False, 'authority': 'NAVIGATION_ONLY'}}]
+            elif selected == 'DECLARED_INTERACTION':
+                rows = []
             elif selected == 'THREAD_CONTEXT':
                 rows = [{'kind': 'THREAD_OBLIGATION', 'id': 'BODY:owned-symbol', 'obligationKind': 'BODY',
                          'record': {'declaration': 'owned-symbol', 'sourceIds': [source['id']]},
@@ -423,6 +430,169 @@ else:
                     'discovery': 'ADDITIONAL_STARTS' if added else 'NO_ADDITIONAL_STARTS', 'starts': [start] if added else []}],
                 'unresolved': ['Wire response and registration remain unknown.'],
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
+
+    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None):
+        self.job.update(authorMode='ISOLATED_PAGES', language=language)
+        run, receipt, _, source = self.prepare_inline_fixture(repairs=repairs, project=project)
+        self.assertEqual(receipt['authorMode'], 'ISOLATED_PAGES')
+        plan = D['load'](run / 'inputs/author-plan.json')
+        packets = {row['kind']: json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
+                   for row in plan['slots']}
+        self.assertEqual(set(packets), {'GUIDE', 'CONTRACTS', 'OPERATION', 'DISCOVERY', 'PROCESS_MAP'})
+        localized = language == 'ru'
+        for slot in plan['slots']:
+            kind = slot['kind']
+            packet = packets[kind]
+            alias = next(iter(packet['citations']))
+            text = '\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 \u044d\u043b\u0435\u043c\u0435\u043d\u0442.' if localized else 'The handler adds the accepted reservation.'
+            claim = {'heading': '', 'text': text, 'cites': [alias], 'assessment': 'SUPPORTED', 'returns': []}
+            answer = {'slot': slot['key'], 'reviewed': True, 'disposition': 'EXPLAINED', 'title': None,
+                      'claims': [claim], 'participants': [], 'steps': [], 'discovery': None, 'starts': [],
+                      'contracts': [], 'routes': [], 'limitations': []}
+            if kind == 'GUIDE':
+                answer['title'] = '\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435' if localized else 'Reservations'
+            if kind == 'CONTRACTS':
+                answer['contracts'] = [{'scope': 'LOCAL', 'name': 'Reservation', 'cites': [alias],
+                    'fields': [{'name': 'count', 'type': 'Int', 'meaning': '\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e' if localized else 'Item count'}]}]
+            if kind == 'DISCOVERY':
+                answer.update(claims=[], discovery='NO_ADDITIONAL_STARTS')
+            if kind == 'OPERATION':
+                ref, = packet['returns']
+                cited = packet['returns'][ref]['cite']
+                literal_text = '\u0415\u0441\u043b\u0438 `count < 0`, \u043c\u0435\u0442\u043e\u0434 \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 `0`.' if localized else 'When `count < 0`, the method returns `0`.'
+                answer['claims'].append({**claim, 'text': literal_text, 'cites': [cited], 'returns': [ref]})
+                answer['steps'] = [
+                    {'from': 'handler', 'to': 'caller', 'kind': 'return', 'label': '0', 'condition': 'count < 0'},
+                    {'from': 'handler', 'to': 'handler', 'kind': 'note', 'label': 'accepted.add(count)', 'condition': None},
+                ]
+                if wrong_literal:
+                    D['save'](self.seed / (slot['key'] + '-repair.json'), answer)
+                    answer['claims'][-1]['text'] = literal_text.replace('`0`', '`9`')
+            if kind == 'PROCESS_MAP':
+                operation, = packet['context']['operations']
+                answer['routes'] = [{'origin': operation['id'], 'participants': [], 'result': 'normal',
+                    'title': '\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f' if localized else 'Accept a reservation', 'condition': 'count >= 0',
+                    'summary': text, 'outcome': '\u0420\u0430\u0437\u043c\u0435\u0440 \u0441\u043f\u0438\u0441\u043a\u0430' if localized else 'Updated list size',
+                    'terminal': operation['id'], 'boundary': 'return', 'recipient': 'Caller contract is not captured.',
+                    'steps': [{'from': operation['id'], 'to': 'caller', 'kind': 'return', 'label': 'accepted.size',
+                               'condition': 'count >= 0'}], 'cites': [alias]}]
+            D['save'](self.seed / (slot['key'] + '-response.json'), answer)
+        return run, plan, packets, source
+
+    def test_isolated_normal_entry_uses_distinct_authors_and_native_reader(self):
+        run, plan, packets, source = self.isolated_fixture(language='ru')
+        operation = packets['OPERATION']
+        ranges = list(operation['sourceRanges'].values())
+        self.assertEqual(len(ranges), 1)
+        self.assertEqual(ranges[0]['text'], source['text'])
+        self.assertNotIn('operations', operation['context'])
+        self.assertEqual(operation['context']['operation']['id'], self.entry['handlerId'])
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(len({row['threadId'] for row in state['attempts']}), len(plan['slots']))
+        self.assertEqual(state['modelTokens'], 20 * len(plan['slots']))
+        html = Path(result['ready']) / 'html'
+        operation_html = (html / self.entry['page'].replace('.md', '.html')).read_text()
+        self.assertIn('POST /reservations', operation_html)
+        self.assertIn('sequence-message return', operation_html)
+        self.assertIn('\u041a\u0430\u0440\u0442\u0430 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432', (html / 'process-map.html').read_text())
+        self.assertIn('<th>\u041f\u043e\u043b\u0435</th>', (html / 'reservations-contracts.html').read_text())
+        route, = html.glob('route-*.html')
+        self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
+        self.assertIn('sequence-message return', route.read_text())
+
+    def test_isolated_literal_repair_reuses_only_operation_thread(self):
+        run, plan, packets, _ = self.isolated_fixture(repairs=1, wrong_literal=True)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(len(state['attempts']), len(plan['slots']) + 1)
+        attempt = state['attempts'][-1]
+        self.assertEqual(packets['OPERATION']['slot'], attempt['slot'])
+        self.assertEqual(attempt['resumeThread'], attempt['threadId'])
+        self.assertEqual(state['modelTokens'], 20 * (len(plan['slots']) + 1))
+        repair = (run / 'page-attempts' / attempt['slot'] / '1/prompt.txt').read_text()
+        self.assertIn('LITERAL_RETURN_VALUE_MISMATCH', repair)
+        self.assertNotIn('"expected"', repair)
+        self.assertEqual(json.loads(repair.split('\n\n')[-1]), packets['OPERATION'])
+
+    def test_isolated_reused_thread_cannot_qualify(self):
+        run, _, _, _ = self.isolated_fixture()
+        self.mode.write_text('duplicate-page-thread')
+        with self.assertRaises(D['Stop']) as error:
+            D['execute'](run)
+        self.assertEqual(error.exception.code, 'PAGE_AUTHOR_THREAD_REUSED_ACROSS_SLOTS')
+        self.assertFalse((run / 'ready').exists())
+
+    def test_isolated_declared_peer_packet_and_route_keep_exact_service_ownership(self):
+        reservation = self.entry | {'entrySymbol': 'demo.Reservations.reserve'}
+        warehouse = reservation | {'id': 'warehouse:entry', 'handlerId': 'entry-warehouse', 'service': 'warehouse',
+                                   'page': 'warehouse-get-stock.md', 'method': 'GET', 'path': '/stock',
+                                   'entrySymbol': 'demo.Stock.find'}
+        unrelated = warehouse | {'id': 'warehouse:other', 'handlerId': 'entry-other', 'page': 'warehouse-get-other.md',
+                                  'path': '/other', 'entrySymbol': 'demo.Stock.other'}
+        declaration = {'id': 'stock-check', 'title': 'Declared stock lookup',
+                       'from': {'service': self.service, 'selector': {'owner': 'demo.Reservations', 'name': 'reserve'}},
+                       'to': {'service': 'warehouse'}, 'transport': {'kind': 'HTTP', 'method': 'GET', 'path': '/stock'}}
+        inventory = {'requirements': [reservation, warehouse, unrelated, *(
+            {'id': service + ':service-scope', 'service': service, 'kind': 'SERVICE', 'page': service + '.md'}
+            for service in (self.service, 'warehouse'))], 'services': {
+                self.service: {'peerDeclarations': [{'kind': 'DEPENDENCY', 'record': {
+                    'kind': 'DECLARED_INTERACTION', 'normalized': declaration}}]}, 'warehouse': {}}}
+        by_service = {}
+        for row, code in zip((reservation, warehouse, unrelated), ('CALL_SITE', 'PEER_BODY', 'UNRELATED_BODY'), strict=True):
+            sources = by_service.setdefault(row['service'], {}).setdefault('sources', {})
+            cite = 'cite:' + row['handlerId']
+            sources[cite] = {'file': 'src/' + row['handlerId'] + '.kt', 'service': row['service'], 'startLine': 1,
+                             'endLine': 1, 'textDigest': D['sha'](code.encode()), 'text': code}
+            by_service[row['service']].setdefault('ready', {})[row['id']] = {'evidenceCandidates': [cite]}
+            by_service[row['service']].setdefault('facts', {})[row['id']] = {
+                'facts': [{'text': code + ' fact', 'kind': 'BODY', 'authority': 'SOURCE', 'sources': [cite]}]}
+        for index in by_service.values():
+            index.update(returns=[], coverage={'coverage': 'SYNTAX'}, deferred=[])
+        pages = D['P']
+        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service: by_service[service]}):
+            job = dict(self.job, services=[self.service, 'warehouse'])
+            directory = self.root / 'page-prompts'
+            plan = pages['page_jobs'](job, inventory, {'services': {key: key for key in by_service}},
+                                      directory, D['M']['MAX_PAGES'], 'Owned instructions.')
+        own = next(slot for slot in plan['slots'] if slot['requirement'] == reservation['id'])
+        packet = json.loads((self.root / own['prompt']).read_text().split('\n\n')[-1])
+        self.assertEqual({row['text'] for row in packet['sourceRanges'].values()}, {'CALL_SITE', 'PEER_BODY'})
+        self.assertEqual(set(packet['facts']), {reservation['id'], warehouse['id']})
+        interaction, = packet['context']['declaredInteractions']
+        self.assertEqual(interaction['peer'], warehouse['handlerId'])
+        self.assertEqual(interaction['authority'], 'RETAINED_DECLARATION_NOT_EXECUTED')
+        D['starter'](inventory, 'en', self.root / 'starter', all_entries=True)
+        original = D['load'](self.root / 'starter/original.json')
+        navigation = D['load'](self.root / 'starter/navigation.json')
+        process = next(slot for slot in plan['slots'] if slot['kind'] == 'PROCESS_MAP')
+        aliases = [alias for alias, cite in process['citations'].items()
+                   if cite in ('cite:' + reservation['handlerId'], 'cite:' + warehouse['handlerId'])]
+        response = {'claims': [{'heading': '', 'text': 'Stock lookup follows the reservation request.',
+                                'cites': aliases, 'assessment': 'SUPPORTED', 'returns': []}],
+                    'routes': [{'title': 'Check stock', 'summary': 'Inspect stock before accepting a request.',
+                                'origin': reservation['handlerId'], 'participants': [{'entry': warehouse['handlerId'], 'role': 'Read stock'}],
+                                'condition': 'A reservation requests stock.', 'outcome': 'Read completes.',
+                                'result': 'normal', 'terminal': warehouse['handlerId'], 'boundary': 'return',
+                                'recipient': 'The observed receiver returns to its caller.',
+                                'steps': [{'from': reservation['handlerId'], 'to': warehouse['handlerId'],
+                                           'kind': 'await', 'label': 'Wait for stock', 'condition': None}], 'cites': aliases}]}
+        catalog = pages['add_processes'](original, {'claims': {}}, navigation, plan, process, response,
+                                         job, pages['LABELS']['en'], plan['citationOwners'])
+        route, = catalog['routes']
+        self.assertEqual(route['outcomes'][0]['internal']['occurrences'], [])
+        draft = self.root / 'isolated-multi-draft'
+        D['save'](draft / 'navigation.json', navigation)
+        D['save'](draft / 'routes.json', catalog)
+        _, checked = D['route_preflight'](job, draft, [row['page'] for row in original['pages']])
+        self.assertTrue(checked['localNarratives'])
+        response['routes'][0]['cites'] = list(aliases)[:1]
+        with self.assertRaises(D['Stop']) as error:
+            pages['add_processes']({'pages': []}, {'claims': {}}, navigation, plan, process, response,
+                                    job, pages['LABELS']['en'], plan['citationOwners'])
+        self.assertEqual(error.exception.code, 'PAGE_ROUTE_PARTICIPANT_EVIDENCE_REQUIRED')
 
     def test_prepared_facts_deliver_only_bound_witnesses_and_use_the_normal_renderer(self):
         def project(process, context, *, node):

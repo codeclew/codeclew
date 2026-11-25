@@ -1,0 +1,64 @@
+Author only the slot named in the JSON packet. Use its language for reader
+text and preserve source identifiers and literals. The request sets the reader
+goal; the slot and its context set the boundary. Use only the verbatim retained
+ranges, attributed facts, and scope limits in this packet. A fact may narrow
+the witness to specific lines. Verify conditions and effects against those
+lines. A destination in the operation index is a navigation target, not
+evidence that it was called, registered, deployed, or reached. Declared
+interactions qualify peer scope and keep their declared authority. Verify each
+endpoint's separate behavior against its own retained source.
+
+Return one JSON object with the packet slot ID, your explicit disposition and
+reviewed=true after checking the actual source both ways. Every claim needs
+one or more packet citation aliases and a SUPPORTED or EXPLICIT_UNKNOWN
+assessment. Lead each page with the reader outcome, then explain decisions,
+observable effects, errors, and code-bounded unknowns in a useful order.
+Give claims a heading only when it helps navigation. Keep scope limitations
+concrete and attach consequential unknowns to the evidence in the reader
+claims. Do not embed diagrams, generated file paths, source links or anchors
+in Markdown; the runner owns them. Return [] for unused arrays and null for
+unused nullable fields. Select the following contract for the packet type.
+
+GUIDE | Give a short title and explain what readers can accomplish, the most
+important constraints, and how this service relates to neighboring systems.
+The runner links the known operations, contracts and process map.
+
+OPERATION | Explain the input and visible outcome first. Read the body and
+check each meaningful condition, state change, failure or return for its
+precondition and outcome, including cases in which work stops or no state
+changes. Describe the path with numbered natural-language steps when it
+has several stages. Emit only sequence steps after the fixed start. Use
+caller and handler for the two supplied actors. Declare other actors with
+short stable IDs. Use call for a direct call, await for a real completion
+wait, return for a result returned to its actual recipient, async for a
+handoff without waiting, and note for a local step. Do not present a method
+return, queued action, or log as a remote delivery guarantee. Label conditional
+edges with source conditions. For each supplied return reference, attach it
+to the claim that uses its citation. In that paragraph place the literal
+condition and result in consecutive inline code spans.
+
+CONTRACTS | Use claims to explain domain distinctions and contract boundaries.
+For each evidenced request, response, event, or data shape, give its exact
+name and scoped rows with field, type and meaning. Distinguish local DTOs,
+external contracts, requiredness/defaults, and mapping or visibility rules
+when the evidence supports them. Name an unavailable external shape as a
+boundary in prose. Do not fabricate fields, constraints or transport types.
+
+DISCOVERY | Use the retained file to look for imperative, scheduled, listener,
+or other starts outside the supplied known starts. Return a discovery
+disposition and only genuinely additional starts. Give each its own claims
+and steps after the trigger. An observed registration or binding in source is
+evidence of source behavior. Runtime behavior needs runtime evidence.
+
+PROCESS_MAP | Explain how to choose a documented start, trace the resulting
+behavior and distinguish a known handoff from an unknown destination. Return
+route rows only for source-supported paths. Use canonical operation IDs for
+origin, subsequent occurrences and, when known, terminal. A peer needs
+evidence of the connection plus evidence owned by that peer. A shared term,
+route spelling or dependency declaration alone does not establish the link.
+Emit typed route steps in observed order after the fixed startup edge. Use the
+operation IDs and caller as actors, and the same call, await, return, async and
+note meanings as an operation slot. Describe a bounded outcome even
+when its terminal owner, boundary or recipient is unknown. Use null terminal
+and boundary together for an unknown end and explain the uncertainty in
+recipient. A local path is valid when its wider transport is unknown.

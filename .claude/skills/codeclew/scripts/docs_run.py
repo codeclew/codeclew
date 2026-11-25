@@ -225,7 +225,8 @@ def command(argv, directory, label, *, timeout=120):
 
 def validate_job(job):
     closed(job, ('schema', 'request', 'clew', 'root', 'snapshot', 'services', 'language', 'renderer', 'node', 'author', 'budget'),
-           ('components', 'evidenceMode'))
+           ('components', 'evidenceMode', 'authorMode'))
+    need(job.get('authorMode', 'AUTO') in ('AUTO', 'ISOLATED_PAGES'), 'INVALID_AUTHOR_MODE')
     need(job.get('evidenceMode', 'RETAINED_SOURCE') in ('RETAINED_SOURCE', 'PREPARED_FACTS'),
          'INVALID_EVIDENCE_MODE')
     need(job['schema'] == SCHEMA and isinstance(job['request'], str) and job['request'].strip(), 'INVALID_JOB')
@@ -717,7 +718,8 @@ def prepare_facts(job, inventory, prepared):
             packet, entries = {'outcomes': [], 'texts': {}}, {}
         required = [row for row in inventory['requirements']
                     if row['service'] == service and row['kind'] in ('ENTRY', 'DISCOVERY')]
-        page_slots = max(0, M['MAX_PAGES'] - len({row['page'] for row in inventory['requirements']}))
+        fixed_pages = len(job['services']) + 1 if job.get('authorMode') == P['MODE'] else 0
+        page_slots = max(0, M['MAX_PAGES'] - fixed_pages - len({row['page'] for row in inventory['requirements']}))
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline, page_slots=page_slots if remaining >= 32 * 1024 else 0,
                                      view_budget=min(256 * 1024, remaining // 2), edge_records=records,
@@ -763,7 +765,7 @@ def start_kind(requirement):
             'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
 
 
-def starter(inventory, language, directory):
+def starter(inventory, language, directory, *, all_entries=False):
     """Render only fixed destinations and source-level entry identities."""
     pages, navigation_services = [], []
     labels = {'client': 'HTTP client', 'handler': 'Handler', 'timer': 'Timer',
@@ -789,13 +791,13 @@ def starter(inventory, language, directory):
             output_target = page.removesuffix('.md') + '.html#handler'
             overview_fragments.append({'text': '- [' + markdown_label + '](' + output_target + ')\n'})
             fragments = [{'text': '# ' + markdown_label + '\n\n<a id="handler"></a>\n\n'}]
-            if method or background:
+            if method or background or all_entries:
                 entry = requirement['handlerId']
                 initiator = labels['client']
-                if background:
+                if not method:
                     kind = requirement['entryKind']
                     initiator = labels[{'SCHEDULED_JOB': 'timer', 'KAFKA_LISTENER': 'kafkaBroker',
-                                        'HOSTED_BACKGROUND_WORKER': 'serviceHost'}[kind]]
+                                        'HOSTED_BACKGROUND_WORKER': 'serviceHost'}.get(kind, 'serviceHost')]
                 sequence = {'title': title, 'participants': [{'id': 'caller', 'title': initiator},
                              {'id': entry, 'title': labels['handler'], 'target': target}],
                             'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call' if method else 'async',
@@ -818,6 +820,16 @@ I = runpy.run_path(str(HERE / 'inline_docs_author.py'), init_globals={
     'COMPACT_REVIEW': COMPACT_REVIEW,
 })
 INLINE_SCHEMA = SKILL / 'schemas/docs-run-inline-author.schema.json'
+PAGE_SCHEMA = SKILL / 'schemas/docs-run-page-author.schema.json'
+P = runpy.run_path(str(HERE / 'docs_run_pages.py'), init_globals={
+    'load': load, 'encode': encode, 'need': need, 'closed': closed, 'start_kind': start_kind,
+    'citation_load': M['C']['load'], 'COMPACT_REVIEW': COMPACT_REVIEW,
+    'add_prepared_facts': I['add_prepared_facts'],
+})
+PX = runpy.run_path(str(HERE / 'docs_run_page_execution.py'), init_globals={
+    'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
+    'token_accounting': token_accounting,
+})
 
 
 def prepare(job_path, run):
@@ -832,6 +844,7 @@ def prepare(job_path, run):
     renderer = renderer_pins(job, inputs / 'receipts')
     scopes, expected = {}, []
     prepared_facts = job.get('evidenceMode') == 'PREPARED_FACTS'
+    isolated = job.get('authorMode') == P['MODE']
     request = {'schema': 'codeclew-documentation-work-request/1.0', 'audience': 'Service documentation',
                'documentationLanguage': job['language'], 'maxItems': 100, 'maxBytes': 49152}
     # --language is the supported CLI selector; keep the request schema portable.
@@ -852,24 +865,37 @@ def prepare(job_path, run):
             need(collection['identity']['snapshot'] == job['snapshot'], 'SNAPSHOT_MISMATCH')
         initial_rows = load(directory / 'initial/items.json')
         rows = load(directory / 'threads/items.json')
-        members, coverage = requirements(service, rows, initial_rows, prepared_facts=prepared_facts)
+        members, coverage = requirements(service, rows, initial_rows, prepared_facts=prepared_facts or isolated)
         expected.extend(members)
         scopes[service] = {'work': work, 'revision': coverage['revision'],
                            'contextDigest': selected['identity']['contextDigest'], 'inputDigest': selected['identity']['inputDigest'],
                            'coverage': coverage, 'sourceInventory': [r for r in rows if r['kind'] in ('THREAD_SCOPE', 'THREAD_FILE')]}
+        if isolated:
+            peers = T['collect'](job['clew'], job['root'], work, directory / 'declared-interactions',
+                                  kind='work-selection', selection={'query': {'kind': 'DECLARED_INTERACTION'}},
+                                  max_pages=8, timeout=15)
+            admitted = (peers['status'] == 'COMPLETE' and not peers['omittedRecords']
+                        and peers['identity']['snapshot'] == job['snapshot'])
+            scopes[service]['peerDeclarations'] = (load(directory / 'declared-interactions/items.json') if admitted else [])
+            scopes[service]['peerDeclarationCoverage'] = 'COMPLETE' if admitted else 'UNAVAILABLE'
     inventory = {'schema': 'codeclew-docs-run-inventory/1.0', 'snapshot': job['snapshot'], 'services': scopes,
                  'requirements': expected, 'scope': 'Retained captured source; unclassified surfaces and runtime registration remain explicit limits.'}
     save(inputs / 'inventory.json', inventory)
-    required_pages = len({item['page'] for item in expected})
+    required_pages = len({item['page'] for item in expected}) + (len(job['services']) + 1 if isolated else 0)
     need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
          nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
     prepared_sources = prepare_sources(job, inventory, inputs / 'author-source')
     fact_summary = prepare_facts(job, inventory, prepared_sources) if prepared_facts else None
     save(inputs / 'inventory.json', inventory)
-    selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
-                                       (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
+    if isolated:
+        selected = P['page_jobs'](job, inventory, prepared_sources, inputs / 'page-prompts', M['MAX_PAGES'],
+                                  (SKILL / 'templates/docs-run-page-prompt.txt').read_text())
+        inline_prompt = None
+    else:
+        selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
+                                           (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
     save(inputs / 'author-plan.json', selected)
-    starter(inventory, job['language'], inputs / 'starter')
+    starter(inventory, job['language'], inputs / 'starter', all_entries=isolated)
     pins = {'jobDigest': digest(job), 'inventoryDigest': digest(inventory), 'skillFiles': tree(SKILL, skill=True),
             'renderer': renderer, 'clewVersion': version, 'clewCapabilities': capabilities,
             'authorExecutableDigest': sha(Path(job['author']['executable']).read_bytes()),
@@ -894,6 +920,8 @@ def prepare(job_path, run):
         snapshot=job['snapshot'], inventory=str(workspace / 'inventory.json'), draft=str(workspace / 'draft'),
         prepared_sources=str(inputs / 'author-source/index.md'), starter=str(inputs / 'starter'),
         model=job['author']['model'], repairs=job['budget']['maxRepairs'], prepared_fact_guidance=fact_guidance)
+    if isolated:
+        prompt = 'Isolated author packets are pinned in inputs/author-plan.json.\n'
     if inline_prompt is not None:
         (inputs / 'workspace-prompt.txt').write_text(prompt, encoding='utf-8')
         prompt = inline_prompt
@@ -1303,12 +1331,16 @@ def verify(run, *, debug=False):
         accounting = load(run / 'state.json')
         checks[stage] = {'status': 'PASS'}
         stage = 'author'; draft = run / 'workspace/draft'
-        tokens = token_accounting(accounting.get('attempts', []))
-        need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-        need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
+        isolated = job.get('authorMode') == P['MODE']
         last = accounting.get('attempts', [])[-1:]
-        need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
-             and last[0].get('exitCode') == 0 and last[0].get('draftFiles') == tree(draft), 'AUTHOR_COMPLETION_REQUIRED')
+        if isolated:
+            tokens = isolated_authorship(run, accounting, draft)
+        else:
+            tokens = token_accounting(accounting.get('attempts', []))
+            need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
+            need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', blocked=True, accounting=tokens)
+            need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
+                 and last[0].get('exitCode') == 0 and last[0].get('draftFiles') == tree(draft), 'AUTHOR_COMPLETION_REQUIRED')
         checks[stage] = {'status': 'PASS', 'usageAvailable': tokens['status'] == 'MEASURED',
                          'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens}
         stage = 'output'; before = tree(draft)
@@ -1321,7 +1353,7 @@ def verify(run, *, debug=False):
         pages, composed, _ = M['compose_pages'](original)
         need(all(r['page'] in pages and pages[r['page']].strip() for r in inventory['requirements']), 'MISSING_REQUIRED_PAGE')
         route_catalog = None
-        if len(job['services']) > 1:
+        if isolated or len(job['services']) > 1:
             navigation, route_catalog = route_preflight(job, draft, pages)
         checks[stage] = {'status': 'PASS', 'pages': len(pages),
                          **({'routeCatalog': route_catalog} if route_catalog is not None else {})}
@@ -1378,7 +1410,7 @@ def verify(run, *, debug=False):
                 '--output-dir', str(directory / 'final')]
         if export_sequences:
             args += ['--require-sequences']
-        if len(job['services']) > 1:
+        if len(job['services']) > 1 and (not isolated or route_catalog['localNarratives']):
             args += ['--require-process-search']
         for manifest in manifests:
             args += ['--manifest', str(manifest)]
@@ -1477,8 +1509,8 @@ def author_prompt(run, state, selected, remaining, max_repairs):
                          'remainingRepairs': max_repairs - len(attempts)})
 
 
-def inline_cli_flags():
-    return ['--output-schema', str(INLINE_SCHEMA), '--ignore-rules', '--disable', 'shell_tool',
+def inline_cli_flags(schema=INLINE_SCHEMA):
+    return ['--output-schema', str(schema), '--ignore-rules', '--disable', 'shell_tool',
             '--disable', 'unified_exec', '-c', 'features.apps=false', '-c', 'features.plugins=false',
             '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
             '-c', 'skills.include_instructions=false', '-c', 'skills.bundled.enabled=false',
@@ -1487,6 +1519,8 @@ def inline_cli_flags():
 
 def author(run):
     run = Path(run).absolute(); job, inventory, _ = inputs_unchanged(run)
+    if job.get('authorMode') == P['MODE']:
+        return author_isolated(run, job, inventory)
     state = load(run / 'state.json'); attempts = state['attempts']
     previous_status = state.get('status')
     need(previous_status != 'AUTHOR_BUDGET_EXCEEDED', 'AUTHOR_NOT_COMPLETED', previousStatus=previous_status)
@@ -1573,8 +1607,101 @@ def author(run):
     return state
 
 
+def isolated_authorship(run, state, draft):
+    tokens = PX['check_author_state'](state)
+    plan = load(run / 'inputs/author-plan.json')
+    completed = {}
+    for row in state['attempts']:
+        completed[row['slot']] = row
+    need(state.get('status') == 'AUTHOR_COMPLETED' and state.get('pageDraftFiles') == tree(draft)
+         and completed.keys() == {slot['key'] for slot in plan['slots']}, 'PAGE_AUTHOR_COMPLETION_REQUIRED')
+    for key, row in completed.items():
+        path = PX['response_path'](run, row)
+        need(row['status'] == 'COMPLETED' and row['exitCode'] == 0 and path.is_file() and not path.is_symlink()
+             and path.stat().st_size <= P['MAX_RESPONSE_BYTES'] and sha(path.read_bytes()) == row.get('responseDigest'),
+             'PAGE_AUTHOR_RESPONSE_CHANGED', slot=key)
+    return tokens
+
+
+def author_isolated(run, job, inventory, repairs=None):
+    plan = load(run / 'inputs/author-plan.json')
+    need(plan['mode'] == P['MODE'], 'PAGE_AUTHOR_PLAN_REQUIRED')
+    starter = run / 'inputs/starter'
+    while True:
+        state, values = PX['execute_authors'](
+            run, job, plan, PAGE_SCHEMA, inline_cli_flags, P['validate_response'],
+            lambda path: load(path, maximum=P['MAX_RESPONSE_BYTES']), repairs=repairs)
+        inputs_unchanged(run)
+        try:
+            artifacts = P['assemble_pages'](job, inventory, plan, values, load(starter / 'original.json'),
+                                             load(starter / 'navigation.json'), I['assemble'], plan['citationOwners'])
+        except Stop as error:
+            repairs = isolated_repairs(plan, error.code, error.details)
+            if not repairs:
+                raise
+            continue
+        draft = run / 'workspace/draft'
+        for name, data in artifacts.items():
+            save(draft / name, data)
+        state.update(status='AUTHOR_COMPLETED', pageDraftFiles=tree(draft))
+        save(run / 'state.json', state)
+        return state
+
+
+def isolated_repairs(plan, code, details):
+    # Native failures may wrap their structured diagnostic one level deeper.
+    # Pass only bounded local fields, never an expected answer or another page.
+    local = {}
+    value = details
+    for _ in range(4):
+        if not isinstance(value, dict):
+            break
+        for key in ('page', 'requirement', 'predicate', 'claim', 'check', 'route', 'cause', 'path'):
+            item = value.get(key)
+            if isinstance(item, str) and len(item) <= 512:
+                local[key] = item
+        value = value.get('response') or value.get('details')
+    page = local.get('page', '').removesuffix('.html')
+    if page and not page.endswith('.md'):
+        page += '.md'
+    requirement = local.get('requirement', '').split(':discovered:')[0]
+    process_failure = (code.startswith('PAGE_ROUTE_') or page.startswith('route-')
+                       or 'route' in local or code == 'ROUTE_DECLARATION_FILE_INVALID')
+    if process_failure:
+        page = plan['processPage']
+    candidates = [slot for slot in plan['slots'] if (requirement and slot['requirement'] == requirement)
+                  or (not requirement and page and slot['page'] == page and slot['kind'] != 'DISCOVERY')]
+    if len(candidates) != 1:
+        return {}
+    return {candidates[0]['key']: {'code': code, 'details': local}}
+
+
+def execute_isolated(run, *, debug):
+    job, inventory, _ = inputs_unchanged(run)
+    state = load(run / 'state.json')
+    if state['status'] != 'AUTHOR_COMPLETED':
+        state = author_isolated(run, job, inventory)
+    plan = load(run / 'inputs/author-plan.json')
+    while True:
+        result = verify(run, debug=debug)
+        if result['status'] == 'READY':
+            return promote(run)
+        if result['status'] == 'BLOCKED':
+            return result
+        failed = [(name, check) for name, check in result['checks'].items() if check['status'] == 'FAIL']
+        repairs = {}
+        for stage, failure in failed:
+            if stage in ('output', 'selfReview', 'entrySequences', 'finalize'):
+                repairs.update(isolated_repairs(plan, failure['code'], failure.get('details', {})))
+        if not repairs:
+            return result
+        state = author_isolated(run, job, inventory, repairs)
+
 def execute(run, *, debug=False):
     run = Path(run).absolute(); state = load(run / 'state.json')
+    job = load(run / 'inputs/job.json')
+    if job.get('authorMode') == P['MODE']:
+        return execute_isolated(run, debug=debug)
     while True:
         if state['status'] != 'AUTHOR_COMPLETED':
             state = author(run)
