@@ -293,7 +293,8 @@ def requirements(service, rows, initial, *, prepared_facts=False):
                            'rootDeclarations': record.get('rootDeclarations', []),
                            'authority': trigger.get('authority'), 'boundaries': entry.get('boundaries', [])})
             if prepared_facts:
-                result[-1].update(entrySymbol=entry.get('symbol'), trigger=trigger)
+                result[-1].update(entrySymbol=entry.get('symbol'), trigger=trigger,
+                                  registrationSourceIds=entry.get('sourceIds', []))
     for row in rows:
         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') != 'FILE_ONLY':
             file = row['record']['path']
@@ -706,7 +707,7 @@ def prepare_facts(job, inventory, prepared):
         'citation_load': M['C']['load'], 'CitationStop': M['C']['Stop'],
     })
     deadline = time.monotonic() + 180
-    summaries = {}
+    summaries, pending, records, sources = {}, {}, {}, {}
     remaining = prepared['bounds']['visibleBytes'] - prepared['visibleBytes']
     for service, scope in prepared['services'].items():
         home = Path(scope['sourceIndex']).parent
@@ -719,13 +720,22 @@ def prepare_facts(job, inventory, prepared):
         page_slots = max(0, M['MAX_PAGES'] - len({row['page'] for row in inventory['requirements']}))
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline, page_slots=page_slots if remaining >= 32 * 1024 else 0,
-                                     view_budget=min(256 * 1024, remaining // 2))
-        citations, rows = selected.pop('citations'), selected.pop('authorEntries')
+                                     view_budget=min(256 * 1024, remaining // 2), edge_records=records,
+                                     base_manifest=scope['manifest'])
+        sources.update(selected.pop('edgeCitations'))
         discovered = selected.pop('discovered')
         if discovered:
-            added = background_source_views(home, scope, required, discovered)
-            remaining -= added
+            remaining -= background_source_views(home, scope, required, discovered)
             inventory['requirements'].extend(row for row in required if row['id'] in discovered)
+        pending[service] = home, required, selected
+
+    project_edges = runpy.run_path(str(HERE / 'prepared_facts/clew_service_edges.py'))['project']
+    edges = project_edges(inventory['requirements'], records)
+    for service, (home, required, selection) in pending.items():
+        scope = prepared['services'][service]
+        helper['merge_edges'](selection, edges, sources, home)
+        selected = helper['finish'](job, service, home, selection['entries'], selection['citations'])
+        citations, rows = selected.pop('citations'), selected.pop('authorEntries')
         destinations, view_files = {}, {}
         if rows:
             scope['preparedFacts'] = {'entries': rows, 'citations': citations}

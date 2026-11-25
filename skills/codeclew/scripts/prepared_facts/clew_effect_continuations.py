@@ -722,7 +722,7 @@ class Trace:
                    roleAuthority=(NOMINAL_FRAMEWORK if call.get("nominalFramework") else "ROSLYN_FRAMEWORK_DECLARATION")
                    if call["role"] else evidence.get("roleAuthority"),
                    **{key: evidence[key] for key in ("sql", "sourceSql", "topic") if key in evidence},
-                   **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault")
+                   **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault", "directEffectFamily")
                       if call.get(key)},
                    **({"predicateSite": fn.site(call["predicateSite"])} if call.get("predicateSite") else {}),
                    boundSources=[self.functions[target].citation] if target else [])

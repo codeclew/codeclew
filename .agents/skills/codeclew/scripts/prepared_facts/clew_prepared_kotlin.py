@@ -430,11 +430,14 @@ class Body:
             owner = self.note(call) or next((note for site, note in self.calls.items()
                                              if encloses(site, call)), None)
             if owner:
-                bound = key in self.sql_shapes
+                shape = self.sql_shapes.get(key)
+                bound = shape is not None
+                edge = ({"_edge": {"kind": shape[0], "table": shape[1], "site": owner.citations[0]}}
+                        if bound and "__clew_kotlin_value_" not in shape[1] else {})
                 self.projector.add("SQL_LITERAL", f"In {region(call)}, {owner.text} carries a literal {query.text}. "
                                    + ("Provider execution and storage outcome remain open." if bound else
                                       "SQL binding, provider execution and storage outcome remain open."),
-                                   [owner, query], scope="SOURCE_SQL_OPERAND" if bound else "SQL_LITERAL_BINDING_OPEN")
+                                   [owner, query], scope="SOURCE_SQL_OPERAND" if bound else "SQL_LITERAL_BINDING_OPEN", **edge)
         for text, earlier, later in self.chain_order.values():
             self.projector.add("ORDERED_EFFECTS", f"In {region(later.site)}, {text}", [earlier, later],
                                scope="CHAINED_CALL_RECEIVER")

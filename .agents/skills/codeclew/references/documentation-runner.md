@@ -88,6 +88,15 @@ Spring scheduled and listener entries use the ordinary captured entry roots.
 A discovered background entry has its own starter page, sequence template,
 registration and callback source view, and review requirement.
 
+The same views can cite across selected services when retained calls and
+registrations share an HTTP route or message topic. Storage links use matching
+retained table operands and can include a registered reader, publication and
+subscription. Conditions and explicit unknowns accompany these source links.
+A matching route carries no deployment guarantee, and matching topics or SQL
+tables leave delivery, database identity, row lineage and durability open.
+Cross-service source anchors identify the owning service and revision. Their
+citation manifests are relative to the service index of the annotated view.
+
 The author checks propositions against retained source and fills gaps using the
 same Work. An unavailable adapter, unsupported source shape, missing operations
 or unbound propositions leave the ordinary source views available. Prepared facts

@@ -80,7 +80,7 @@ function describe(text, additionalCommands) {
     if (operation !== "INSERT") {
         if (operation === "UPDATE" && key(head) !== "SET") return undefined;
         const prefix = operation === "DELETE" ? "DELETE FROM " : "UPDATE ";
-        return {kind: operation, write: true, label: prefix + table, parameters};
+        return {kind: operation, write: true, label: prefix + table, table, parameters};
     }
     const closes = start => tokens.findIndex((item, index) => index > start && item.key === ")" && !item.depth);
     let columns;
@@ -91,7 +91,7 @@ function describe(text, additionalCommands) {
         head = end + 1;
     }
     if (!(key(head) === "VALUES" || key(head) === "DEFAULT" && key(head + 1) === "VALUES")) return undefined;
-    const statement = {kind: "INSERT", write: true, label: "INSERT INTO " + table, columns, parameters};
+    const statement = {kind: "INSERT", write: true, label: "INSERT INTO " + table, table, columns, parameters};
     const indexOf = (from, ...words) => tokens.findIndex((item, index) => index >= from && !item.depth &&
         words.every((word, offset) => key(index + offset) === word && !tokens[index + offset].depth));
     const conflict = indexOf(head + 1, "ON", "CONFLICT");

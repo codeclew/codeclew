@@ -1861,5 +1861,135 @@ class SourceMembershipTests(unittest.TestCase):
             D['check_source_membership'](self.job,self.inventory,self.entry,self.root,{})
 
 
+class PreparedServiceEdgeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        scripts = ROOT / "skills/codeclew/scripts"
+        cls.edges = runpy.run_path(str(scripts / "prepared_facts/clew_service_edges.py"))
+        cls.prepared = runpy.run_path(str(scripts / "docs_run_prepared.py"), init_globals={
+            name: D[name] for name in ("digest", "encode", "sha", "save")})
+
+    def retained(self, service, *, verb="GET", path="/units", entry_kind="HTTP_ENDPOINT", trigger=None, proof=True,
+                 events=(), facts=()):
+        identity = service + ":entry"
+        registration = service + "-registration"
+        body = service + "-body"
+        exact = {}
+
+        def source(handle, text, start):
+            exact[handle] = {"id": handle, "file": "Operations.java", "service": service, "revision": D["sha"](service.encode()),
+                             "startLine": start, "endLine": start, "text": text, "textDigest": D["sha"](text.encode()),
+                             "authority": "EXACT_SNAPSHOT_TEXT", "references": [handle]}
+
+        source(body, "Object handle() { return value; }", 2)
+        if proof:
+            source(registration, "@Mapping", 1)
+        requirement = {"id": identity, "kind": "ENTRY", "service": service, "entrypoint": "entry", "entryKind": entry_kind,
+                       "rootDeclarations": ["root"], "method": verb if entry_kind == "HTTP_ENDPOINT" else None,
+                       "path": path, "page": service + ".md", "trigger": trigger,
+                       "sourceReferences": [registration, body], "registrationSourceIds": [registration]}
+
+        def obligation(kind, cite, event=None):
+            record = {"declaration": "root", "sourceIds": [cite]}
+            if event is not None:
+                record["event"] = event
+            return {"obligationKind": kind, "record": record, "id": kind + ":" + cite, "sourceReferences": [cite]}
+
+        rows = [obligation("BODY", body)]
+        for number, (name, text, event) in enumerate(events, 3):
+            cite = service + "-" + name
+            source(cite, text, number)
+            rows.append(obligation("EVENT", cite, event))
+        process, context = self.prepared["operation"](requirement, rows, exact, {})
+        accepted, rejected = self.prepared["bound_facts"](facts, {}, exact, set(exact))
+        self.assertEqual(rejected, 0)
+        row = self.edges["record"](requirement, process, context, accepted, exact)
+        return requirement, row, exact
+
+    def project(self, *retained):
+        return self.edges["project"]([row[0] for row in retained], {row[0]["id"]: row[1] for row in retained})
+
+    def test_http_peer_return_and_failure_are_source_qualified_in_the_normal_author_view(self):
+        call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units/42"}}
+        effect = {"kind": "error-path", "authority": "RETAINED_PATH", "sources": ["front-call", "front-body"],
+                  "text": "After the earlier write request returns, the call can throw and enter the local catch."}
+        front = self.retained("front", path="/start", events=[("call", "client.get()", call)], facts=[effect])
+        depot = self.retained("depot", path="/units/{key}",
+                              events=[("return", "return available;", {"kind": "RETURN"}),
+                                      ("throw", "throw missing;", {"kind": "THROW"})])
+        projected = self.project(front, depot)
+        outcomes = {row["kind"] for row in projected[front[0]["id"]]}
+        self.assertEqual(outcomes, {"http-peer", "http-peer-outcome", "http-caller-continuation"})
+        peer_outcomes = [row for row in projected[front[0]["id"]] if row["kind"] == "http-peer-outcome"]
+        self.assertTrue(any("return available" in row["text"] for row in peer_outcomes))
+        self.assertTrue(any("throw missing" in row["text"] for row in peer_outcomes))
+        self.assertTrue(all("wire mapping remain unknown" in row["uncertainty"] for row in peer_outcomes))
+        self.assertTrue(any("rollback of any earlier effects remain unknown" in row["uncertainty"]
+                            for row in projected[front[0]["id"]]))
+        self.assertIn("front-call", projected[depot[0]["id"]][0]["sources"])
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "front"
+            (home / "views").mkdir(parents=True)
+            path = home / "views/source.md"
+            path.write_text("Source header\n\n```java\nsource body\n```\n")
+            citations = {handle: {**row, "manifest": Path(directory) / row["service"] / "read/citations.json"}
+                         for _, _, exact in (front, depot) for handle, row in exact.items()}
+            selected = {"entries": {front[0]["id"]: {"status": "NO_CITABLE_FACTS"}}, "citations": {}, "bytes": 0}
+            self.prepared["merge_edges"](selected, projected, citations, home)
+            supported = selected["entries"][front[0]["id"]]
+            self.assertEqual(supported["status"], "PREPARED")
+            self.assertEqual(selected["citations"]["depot-return"]["manifest"], "../depot/read/citations.json")
+            rows = self.prepared["author_entries"](selected["entries"], selected["citations"])
+            self.prepared["workspace_views"](home, {front[0]["id"]: ("views/source.md", "Page front.md")},
+                                             rows, selected["citations"], {"views/source.md": "Operations.java"}, 8192)
+            text = path.read_text()
+            self.assertIn("[depot@", text)
+            self.assertIn("Cite front-call, depot-registration, depot-return", text)
+            self.assertIn("```java\nsource body\n```\n", text)
+
+    def test_http_peer_ambiguity_does_not_select_an_outcome_and_missing_proof_stays_open(self):
+        call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "method": "GET", "path": "/units"}}
+        front = self.retained("front", path="/start", events=[("call", "client.get()", call)])
+        first = self.retained("first")
+        unproven = self.retained("unproven", proof=False)
+        row, = self.project(front, first, unproven)[front[0]["id"]]
+        self.assertEqual((row["kind"], row["status"]), ("http-peer-boundary", "AMBIGUOUS"))
+        self.assertIn("first-registration", row["sources"])
+        for others in ((), (unproven,), (self.retained("wrong-method", verb="POST"),)):
+            row, = self.project(front, *others)[front[0]["id"]]
+            self.assertEqual((row["kind"], row["status"], row["sources"]),
+                             ("http-peer-boundary", "UNKNOWN", ["front-call"]))
+
+    def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
+        def effect(service, operation, **identity):
+            site = service + "-body"
+            return {"kind": "source-effect", "authority": "RETAINED_PATH", "sources": [site],
+                    "text": "The retained source reaches the cited request.",
+                    "_edge": {"kind": operation, "site": site, **identity}}
+
+        writer = self.retained("writer", facts=[effect("writer", "INSERT", table="pending_jobs")])
+        relay = self.retained("relay", entry_kind="SCHEDULED_JOB", facts=[
+            effect("relay", "SELECT", table="pending_jobs"), effect("relay", "PUBLISH", topic="jobs.ready")])
+        trigger = {"configuration": {"topics": ["jobs.ready"]}}
+        listener = self.retained("listener", entry_kind="KAFKA_LISTENER", trigger=trigger,
+                                 facts=[effect("listener", "INSERT", table="inbox")])
+        reader = self.retained("reader", facts=[effect("reader", "SELECT", table="inbox")])
+        wrong = self.retained("wrong", entry_kind="KAFKA_LISTENER", trigger={"configuration": {"topics": ["jobs.other"]}})
+        disabled = self.retained("disabled", entry_kind="KAFKA_LISTENER",
+                                 trigger={"configuration": {"topics": ["jobs.ready"], "autoStartup": False}})
+        result = self.project(writer, relay, listener, reader, wrong, disabled)
+        thread, = (fact for fact in result[writer[0]["id"]] if fact["kind"] == "storage-message-continuation")
+        self.assertEqual(thread["sources"], ["writer-body", "relay-registration", "relay-body",
+                                             "listener-registration", "listener-body"])
+        self.assertIn("Row-to-payload lineage", thread["uncertainty"])
+        self.assertTrue(any(row["kind"] == "storage-message-effect" for row in result[writer[0]["id"]]))
+        self.assertTrue(any(row["kind"] == "message-storage-reader" for row in result[relay[0]["id"]]))
+        self.assertNotIn(wrong[0]["id"], result)
+        self.assertEqual(result[disabled[0]["id"]][0]["status"], "DISABLED_IN_SOURCE")
+        self.assertIn("message-peer-boundary", {row["kind"] for row in self.project(relay, wrong)[relay[0]["id"]]})
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -84,6 +84,30 @@ class PreparedManagedLanguages(unittest.TestCase):
         if probe.returncode or probe.stdout.strip() != "5.9.3":
             self.skipTest("The locked TypeScript dependency is unavailable")
 
+
+    def test_typescript_retains_a_specific_fetch_failure_after_commit(self):
+        self.require_typescript()
+        text = """async function score() {
+    await store.query("COMMIT");
+    try { return await fetch("/jobs", { method: "POST" }); }
+    catch (error) { return 503; }
+}
+"""
+        process, context = selected("Jobs.ts", text)
+        rows, _ = self.project(process, context)
+        request, = (row for row in rows if row["kind"] == "http_request")
+        edge = request["_edge"]
+        self.assertEqual((edge["method"], edge["uri"], edge["site"]), ("POST", "/jobs", HANDLE))
+        failure = {row["kind"]: row for row in rows if row.get("_edgeCause") == edge["occurrence"]}
+        self.assertEqual(set(failure), {"exception_route", "request_after_commit_failure", "return"})
+        self.assertIn("COMMIT fulfills", failure["request_after_commit_failure"]["text"])
+        self.assertEqual(failure["return"]["text"], "Returns 503.")
+        self.assertIn("Durability", failure["request_after_commit_failure"]["uncertainty"])
+
+        process, context = selected("Jobs.ts", text.replace("score()", "score(fetch: LocalLookup)"))
+        rows, _ = self.project(process, context)
+        self.assertFalse(any("_edge" in row for row in rows))
+
     def require_roslyn(self):
         dotnet = shutil.which("dotnet")
         if not dotnet:

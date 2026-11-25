@@ -108,7 +108,7 @@ def operation(requirement, rows, exact, files):
         sources = [ref for ref in references if ref in lookup]
         prepared = {key: fact[key] for key in (
             'ordinal', 'parentOrdinal', 'target', 'targetMethodId', 'relationshipAuthority', 'resolution',
-            'ordering', 'targetStatus', 'accessMode', 'condition', 'eventId', 'kafka') if key in fact}
+            'ordering', 'targetStatus', 'accessMode', 'condition', 'eventId', 'http', 'kafka') if key in fact}
         prepared.update(kind=obligation, occurrence=row['id'].removeprefix('EVENT:'),
                         declaration=record.get('declaration') or fact.get('fromMethodId'),
                         event=fact.get('kind'), sources=sources)
@@ -218,6 +218,12 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in lifted[ref]})
                 for ref in dict.fromkeys(refs) if ref in bindings]:
             values['witnesses'] = witnesses
+        if '_edgeCause' in row:
+            values['_edgeCause'] = row['_edgeCause']
+        if edge := row.get('_edge'):
+            site = bindings.get(edge['site'], edge['site'])
+            if site in values['sources']:
+                values['_edge'] = {**edge, 'site': site}
         key = digest(values)
         if key not in seen:
             accepted.append(values)
@@ -490,7 +496,8 @@ def workspace_sections(groups, citations, file, heading):
     if sources:
         lines.append('Source anchors (file lines)')
         for handle, source in sources.items():
-            prefix = '' if source['file'] == file else single_line(source['file']) + ':'
+            qualified = ('[' + source['service'] + '@' + source['revision'] + '] ') if 'service' in source else ''
+            prefix = qualified + single_line(source['file']) + ':' if qualified or source['file'] != file else ''
             proof = f" ({source['manifest']})" if 'manifest' in source else ''
             lines.append(f"- {handle} {prefix}{line_range(source)}{proof}")
         lines.append('')
@@ -556,8 +563,6 @@ def workspace_views(home, required, rows, citations, view_files, budget):
         summary['frontAuthorItems'] += first_count
         summary['additionalAuthorItems'] += rest_count
     return summary
-
-
 
 def csharp_background_units(job, scope, home, exact, deadline):
     extractor = (scope['coverage'].get('extractor') or '').lower()
@@ -725,12 +730,15 @@ def background_entries(service, requirements, units, exact, files, projector, jo
                 break
     return entries
 
-def prepare(job, service, scope, requirements, entries, packet, home, deadline, page_slots=0, view_budget=0):
+
+def prepare(job, service, scope, requirements, entries, packet, home, deadline, *,
+            page_slots=0, view_budget=0, edge_records=None, base_manifest=None):
     """Produce a bounded author packet and explicit per-entry coverage."""
     # Preparation is a treatment. A refusal still leaves the original read kit.
     service_root = home / 'fact-evidence'
     service_root.mkdir(mode=0o700)
     exact = exact_sources(entries, packet)
+    edge_module = runpy.run_path(str(DIRECTORY / 'prepared_facts/clew_service_edges.py')) if edge_records is not None else None
     extensions = {ext for supported in ADAPTERS.values() for ext in supported}
     supported = [row for row in requirements if
                  Path(row.get('file', '')).suffix.lower() in extensions or any(
@@ -809,6 +817,8 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
                             for ref in fact['sources']}
             languages = {Path(process['sources'][ref]['file']).suffix.lower() for ref in root_sources}
         if not languages:
+            if edge_module and requirement['kind'] == 'ENTRY':
+                edge_records[entry_id] = edge_module['record'](requirement, process, context, [], exact)
             row['status'] = 'NO_RETAINED_ROOT_BODY'
             continue
         if not synthetic and languages & {'.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}:
@@ -833,8 +843,12 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
                 continue
             propositions.extend(accepted)
             unbound += rejected
+        if edge_module and requirement['kind'] == 'ENTRY':
+            edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
         visible, limited = [], 0
         for fact in propositions:
+            fact.pop('_edge', None)
+            fact.pop('_edgeCause', None)
             size = len(encode(fact))
             if len(visible) >= MAX_FACTS or total_bytes + size > MAX_PACKET_BYTES:
                 limited += 1
@@ -862,10 +876,42 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             row['unavailableProjectors'] = unavailable
         if limits:
             row['projectionLimits'] = limits
+    if edge_module:
+        edge_citations = {handle: {key: source[key] for key in ('file', 'service', 'revision', 'startLine', 'endLine')}
+                          | {'manifest': source.get('manifest', base_manifest)} for handle, source in exact.items()}
+        return {'entries': result, 'citations': cite_index, 'edgeCitations': edge_citations,
+                'bytes': total_bytes, 'discovered': discovered}
+    return {**finish(job, service, home, result, cite_index), 'discovered': discovered}
+
+
+def merge_edges(selection, edges, sources, home):
+    result, citations = selection['entries'], selection['citations']
+    for identity, row in result.items():
+        additions = []
+        for edge in edges.get(identity, ()):
+            size = len(encode(edge))
+            if (len(row.get('propositions', ())) + len(additions) >= MAX_FACTS
+                    or selection['bytes'] + size > MAX_PACKET_BYTES):
+                row['omittedForLimit'] = row.get('omittedForLimit', 0) + 1
+                continue
+            if any(handle not in sources or sources[handle]['manifest'] is None for handle in edge['sources']):
+                row['unboundPropositions'] = row.get('unboundPropositions', 0) + 1
+                continue
+            for handle in edge['sources']:
+                source = sources[handle]
+                citations[handle] = {**source, 'manifest': os.path.relpath(source['manifest'], home)}
+            additions.append(edge)
+            selection['bytes'] += size
+        if additions:
+            row['propositions'] = additions + row.get('propositions', [])
+            row['status'] = 'BOUNDARIES_ONLY' if all(map(is_boundary, row['propositions'])) else 'PREPARED'
+
+
+def finish(job, service, home, result, cite_index):
     summary = dict(Counter(row['status'] for row in result.values()))
     save(home / 'prepared-facts.json', {'schema': FACT_SCHEMA, 'snapshot': job['snapshot'], 'service': service,
                                        'entries': result, 'summary': summary})
     propositions = [fact for row in result.values() for fact in row.get('propositions', ())]
     return {'statusCounts': summary, 'facts': sum(not is_boundary(fact) for fact in propositions),
             'boundaries': sum(map(is_boundary, propositions)),
-            'authorEntries': author_entries(result, cite_index), 'citations': cite_index, 'discovered': discovered}
+            'authorEntries': author_entries(result, cite_index), 'citations': cite_index}

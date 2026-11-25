@@ -25,6 +25,7 @@ const priority = [
     "registered_callback", "registration_step", "transaction_step", "sql_request", "sql_columns", "sql_parameters", "sql_result_check", "sql_result_flow",
     "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write",
     "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
+    "http_request", "message_request", "request_after_commit_failure",
     "return_rejection", "await_bypass", "result_continuation", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
     "awaited_binding", "awaited_call", "retained_effect", "call_order", "callback_binding", "unawaited_call",
 ];
@@ -456,6 +457,39 @@ function scan(scope, inherited) {
         }
         return node;
     }
+    function transport(call, state, awaited) {
+        if (ts.isOptionalChain(call)) return;
+        const site = source(scope, call);
+        const occurrence = scope.id + ":" + call.getStart();
+        const target = unwrap(call.expression);
+        const args = call.arguments.map(unwrap);
+        const members = object => {
+            if (!object || !ts.isObjectLiteralExpression(object) ||
+                object.properties.some(item => !ts.isPropertyAssignment(item) || ts.isComputedPropertyName(item.name))) return;
+            const pairs = object.properties.map(item => [item.name.text, unwrap(item.initializer)]);
+            if (new Set(pairs.map(pair => pair[0])).size === pairs.length) return new Map(pairs);
+        };
+        if (ts.isIdentifier(target) && target.text === "fetch" && !symbol(target) &&
+            args.length <= 2 && args[0] && ts.isStringLiteralLike(args[0])) {
+            const options = members(args[1]);
+            if (args.length === 2 && !options) return;
+            const method = options?.get("method");
+            if (method && !ts.isStringLiteralLike(method)) return;
+            const uri = args[0].text;
+            emit("http_request", "The source " + (awaited ? "awaits" : "calls") + " the retained fetch expression.",
+                [site], state, "The fetch implementation and runtime destination remain open.",
+                {_edge: {kind: "HTTP", site, uri, occurrence, method: method?.text || "GET"}});
+            return occurrence;
+        } else if (ts.isPropertyAccessExpression(target) && target.name.text === "send" && args.length === 1) {
+            const options = members(args[0]);
+            const topic = options?.get("topic");
+            if (!topic || !ts.isStringLiteralLike(topic) || !options.has("messages")) return;
+            emit("message_request", "The source " + (awaited ? "awaits" : "calls") + " the retained message send expression.",
+                [site], state, "The producer implementation and runtime broker binding remain open.",
+                {_edge: {kind: "PUBLISH", site, occurrence, topic: topic.text}});
+            return occurrence;
+        }
+    }
     function sqlFact(sql, call, site, state, awaited) {
         const name = callName(call);
         const sites = [site, source(scope, sql.literal)];
@@ -469,16 +503,16 @@ function scan(scope, inherited) {
                 limit && "LIMIT " + limit, offset && "OFFSET " + offset].filter(Boolean);
             const projection = (distinct ? "DISTINCT " : "") + columns + " FROM " + table + (tableAlias ? " AS " + tableAlias : "");
             emit("sql_request", (awaited ? "Awaits " : "Calls ") + name + " with a static SELECT of " + projection +
-                (clauses.length ? " with " + clauses.join(", ") : "") + ".", sites, state, execution, {select: sql.select});
+                (clauses.length ? " with " + clauses.join(", ") : "") + ".", sites, state, execution, {select: sql.select, _edge: {kind: "SELECT", site, table}});
         } else if (sql.kind !== "INSERT") {
             emit("transaction_step", (awaited ? "Awaits " : "Calls ") + name + " with the SQL command " + sql.label + ".",
-                sites, state, execution);
+                sites, state, execution, sql.table ? {_edge: {kind: sql.kind, site, table: sql.table}} : {});
             return;
         } else {
             const suffix = [sql.conflict, sql.predicate && "(" + sql.predicate + ")", sql.returning && "RETURNING " + sql.returning]
                 .filter(Boolean).join(" ");
             emit("sql_request", (awaited ? "Awaits " : "Calls ") + name + " with " + sql.label + (suffix ? " and " + suffix : "") + ".",
-                sites, state, execution);
+                sites, state, execution, {_edge: {kind: "INSERT", site, table: sql.table}});
             if (sql.columns?.length || sql.conflictColumns?.length || sql.assignments?.length) {
                 const insert = sql.columns?.length ? "The insert names columns " + sql.columns.join(", ") + "." : undefined;
                 const target = sql.conflictColumns?.length ? " The conflict target names " + sql.conflictColumns.join(", ") + "." : "";
@@ -562,16 +596,24 @@ function scan(scope, inherited) {
         lexical(call);
         return JSON.stringify([text, bindings]);
     }
-    function failureAt(catcher, site, name, waited, state, signature) {
+    function failureAt(catcher, site, name, waited, state, signature, occurrence) {
         if (!catcher) return undefined;
         const failure = name + (waited ? " throws during evaluation or the await rejects" : " throws before returning");
         const route = catcher.kind === "escape" ? "evaluation leaves this finally abruptly" :
             "control enters " + destination(catcher);
-        emit("exception_route", "If " + failure + ", " + route + ".", [site, catcher.site], state);
+        emit("exception_route", "If " + failure + ", " + route + ".", [site, catcher.site], state, undefined,
+            occurrence ? {_edgeCause: occurrence} : {});
+        if (occurrence && state.commit) {
+            emit("request_after_commit_failure", "The source reaches this failure after the awaited " +
+                state.commit.name + " fulfills. The prior commit and the failing call take separate outcomes.",
+                [state.commit.site, site, catcher.site], state,
+                "Durability and server rollback depend on the earlier provider and transaction.",
+                {_edgeCause: occurrence});
+        }
         return {...state, last: undefined, exits: [], failed: signature && waited ? {signature, site} : undefined,
             ...(focus ? {writeTransactions: new Map()} : {}),
             ...(compatibility ? {messageValues: compatibility.dropRecords(state.messageValues)} : {}),
-            errorArrival: waited ? {name, site} : state.errorArrival,
+            errorArrival: waited ? {name, site, occurrence} : state.errorArrival,
             guards: [...state.guards, {text: failure, source: site}]};
     }
     function evaluate(expression, statement, state, catcher, ending, binding, depth = 0, evaluated = new Map()) {
@@ -674,6 +716,7 @@ function scan(scope, inherited) {
         const place = sql ? callName(call) + " with " + sql.label : effect.description || effect.name;
         inventory && inventory.record(call, {label: caption(call) || place, effect, target, sql});
         const argumentText = short(call.arguments.map(argument => caption(argument) || "an evaluated expression").join(", "), 208);
+        const occurrence = !focus && transport(call, state, awaited);
         if (sql) sqlFact(sql, call, site, state, awaited);
         else if (awaited || effect.kind === "http_forward" || effect.kind === "retained_effect") {
             emit(awaited && effect.kind === "call" ? "awaited_call" : effect.kind,
@@ -765,13 +808,13 @@ function scan(scope, inherited) {
             emit("conditional_repeat", "This path explicitly calls " + place + " again after the earlier awaited call fails.",
                 [state.failed.site, site], state, "The new call evaluates its operands again and takes its own runtime outcome.");
         }
-        const failure = failureAt(catcher, site, place, awaited, state, signature);
+        const failure = failureAt(catcher, site, place, awaited, state, signature, occurrence);
         if (failure) errors.push(failure);
         if (catcher?.kind === "catch" && !awaited && ending === "The returned expression" && (promise || !target)) {
             const resumed = state.cleanup ? " If finally allows the return to resume, its rejection propagates." : "";
             emit("return_rejection", "A later rejection of the promise returned from " + place +
                 " does not enter this local catch." + resumed, [site, catcher.site], state,
-                promise ? undefined : "This applies if the call returns a promise.");
+                promise ? undefined : "This applies if the call returns a promise.", occurrence ? {_edgeCause: occurrence} : {});
         }
         const passed = [...new Set(call.arguments.flatMap(argument => useSite(argument, state)))].filter(origin => !origin.awaited);
         if (binding && (awaited || helper && !helper.async)) {
@@ -901,7 +944,8 @@ function scan(scope, inherited) {
             : "Throws " + (value || "the evaluated value");
         const pending = state.cleanup ? " This " + (returning ? "return" : "exception") + " can remain pending through finally." : "";
         emit(returning ? "return" : "throw", text + "." + pending, [site, state.cleanup?.site], state, statement.expression ?
-            "The outcome applies if evaluation of the operand completes normally." : undefined);
+            "The outcome applies if evaluation of the operand completes normally." : undefined,
+            state.errorArrival?.occurrence ? {_edgeCause: state.errorArrival.occurrence} : {});
         if (!returning && catcher) {
             const transfer = catcher.kind === "escape" ? "leaves this finally abruptly" : "enters " + destination(catcher);
             emit("exception_route", "This explicit throw " + transfer + ".", [site, catcher.site], state,
@@ -1279,5 +1323,6 @@ const compact = require("./clew_prepared_typescript_alternatives.cjs");
 const output = compact(facts, priority, limit, evenly, request.roots);
 for (const fact of output) {
     fact.sources = [...new Set(fact.sources.map(id => discovered.has(id) ? request.fileRoot : id))];
+    if (fact._edge && discovered.has(fact._edge.site)) delete fact._edge;
 }
 process.stdout.write(JSON.stringify(output));

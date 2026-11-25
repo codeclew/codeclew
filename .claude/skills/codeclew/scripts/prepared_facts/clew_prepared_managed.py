@@ -17,6 +17,9 @@ EFFECT_ROLES = {
     "TRANSACTION_BEGIN_REQUEST", "TRANSACTION_COMMIT_REQUEST", "TRANSACTION_ROLLBACK_REQUEST",
     "SQL_READ_CANDIDATE", "SQL_WRITE_CANDIDATE", "ADO_EXECUTE_READER", "ADO_EXECUTE_SCALAR", "ADO_EXECUTE_WRITE",
 }
+HTTP_CLIENT_METHODS = {"GetAsync": "GET", "GetStringAsync": "GET", "GetByteArrayAsync": "GET",
+                       "GetStreamAsync": "GET", "PostAsync": "POST", "PutAsync": "PUT", "DeleteAsync": "DELETE",
+                       "PatchAsync": "PATCH"}
 DIRECT_EFFECT_FAMILIES = ("HTTP", "database", "broker", "file system", "process")
 LIMIT = 32
 MAPPINGS = runpy.run_path(str(Path(__file__).with_name("clew_prepared_managed_mappings.py")))["project"]
@@ -777,7 +780,8 @@ class Facts:
                     text += " with " + transaction + " as its transaction argument"
             else:
                 continue
-            self.add_path(kind, text + ".", path, events, proof, sources=refs)
+            self.add_path(kind, text + ".", path, events, proof, sources=refs,
+                          _edge={"kind": sql["verb"], "table": sql["table"], "site": step["sources"][0]})
             if command:
                 for check in command.get("rowChecks", ()):
                     if reader := self.name(check["readerCall"]):
@@ -925,6 +929,29 @@ class Facts:
                           authority=match["authority"],
                           **({"condition": " and ".join(text for text, _ in guards)} if guards else {}))
 
+    def dispatches(self, path, events):
+        for event in events:
+            if event["outcome"] != "INVOKED":
+                continue
+            key = event["step"]
+            step = self.steps[key]
+            site = step["sources"][0]
+            symbol = step.get("symbol") or ""
+            if not (name := self.name(key)):
+                continue
+            if step.get("directEffectFamily") == "HTTP" and symbol.startswith("M:System.Net.Http.HttpClient."):
+                value = next((arg["value"] for arg in event.get("arguments", ()) if arg.get("name") == "requestUri"), None)
+                verb = HTTP_CLIENT_METHODS.get(method(symbol))
+                uri = value[1] if value and value[0] == "literal" and isinstance(value[1], str) else None
+                edge = {"kind": "HTTP", "method": verb, "uri": uri, "site": site, "occurrence": key}
+                label = "The source calls the framework HTTP client " + name + "."
+            elif step.get("role") == "PUBLICATION_CANDIDATE" and step.get("topic"):
+                edge = {"kind": "PUBLISH", "topic": step["topic"], "site": site, "occurrence": key}
+                label = "The source reaches the candidate publication call " + name + "."
+            else:
+                continue
+            self.add_path("protocol-request", label, path, events, [key], _edge=edge)
+
     def effects(self, path, events, is_http):
         actions = self.actions(path, events)
         returned = self.root_return(path, events) if is_http else None
@@ -940,6 +967,7 @@ class Facts:
                 failure = "execution reaches an explicit throw" if self.steps[key].get("explicit") else "a modeled exception occurs"
                 interrupted.append((index, failure, [key]))
             elif outcome in INTERRUPTED and call and (caught_http or self.steps[call].get("role") in EFFECT_ROLES or
+                                                       self.steps[call].get("directEffectFamily") == "HTTP" or
                                                        self.steps[call].get("sourceSql") or index in command_interruptions
                                                        ) and (label := self.name(call)):
                 command = command_interruptions.get(index, {})
@@ -956,6 +984,7 @@ class Facts:
                            *(returned[1] if returned else ())])
         if interrupted:
             cut, failure, proof = interrupted[0]
+            failed_call = events[cut].get("call")
             earlier = [row for row in actions if row[0] < cut]
             earlier = earlier if len(earlier) <= 2 else [earlier[0], earlier[-1]]
             prior = ", then ".join(row[1] for row in earlier)
@@ -973,7 +1002,8 @@ class Facts:
                 continuation.append("exits by exception")
             if continuation:
                 proof.extend(step for _, _, keys in earlier for step in keys)
-                self.add_path("error-path", start + ", then ".join(continuation) + ".", path, events, proof)
+                self.add_path("error-path", start + ", then ".join(continuation) + ".", path, events, proof,
+                              **({"_edgeCause": failed_call} if failed_call else {}))
 
     def callable_order(self, path, events):
         prefix = path["scope"]["prefixEvents"]
@@ -1173,7 +1203,7 @@ class Facts:
 
     def output(self):
         order = ("http-entry", "input", "http-outcome", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
-                 "helper-return", "sql-read", "sql-row", "lookup", "argument-projection",
+                 "helper-return", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
                  "sql-write", "conditional-no-write", "callable-scope", "worker-control", "worker-poll", "worker-state",
                  "worker-reselection", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
         groups = [iter(self.rows[kind].values()) for kind in order]
@@ -1210,6 +1240,7 @@ def derive(process, context, graph):
         facts.list_lookup(path, events)
         facts.object_arguments(path, events)
         facts.sql(path, events)
+        facts.dispatches(path, events)
         facts.effects(path, events, is_http)
         facts.skipped_writes(path, events)
         if worker:
