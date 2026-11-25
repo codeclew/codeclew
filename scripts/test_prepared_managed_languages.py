@@ -370,6 +370,18 @@ data class Label(val value: String) {
         proof = [witnesses[ref]["text"] for ref in found["SAME_KEY_HEAP_RETRY"]["sources"] if ref in witnesses]
         self.assertTrue(any('parcel["lookup-key"].asText()' in text for text in proof), proof)
 
+    def test_kotlin_scheduled_alias_mutations_invalidate_the_actual_map_only(self):
+        for replacement in ("same.clear()", "same[key] = 8L", "same.put(key, 8L)"):
+            with self.subTest(replacement=replacement):
+                updated = SCHEDULED.replace("        attempts[key] = 4L",
+                                            "        attempts[key] = 4L\n        val same = attempts\n        " + replacement)
+                facts, _ = self.scheduled_facts(updated)
+                self.assertNotIn("SAME_KEY_HEAP_RETRY", {row["kind"] for row in facts}, facts)
+        unrelated = SCHEDULED.replace("        attempts[key] = 4L",
+                                     "        attempts[key] = 4L\n        val same = otherAttempts\n        same.clear()")
+        facts, _ = self.scheduled_facts(unrelated)
+        self.assertIn("SAME_KEY_HEAP_RETRY", {row["kind"] for row in facts}, facts)
+
     def test_kotlin_scheduled_state_excludes_unbound_receiver_key_and_order(self):
         cases = [
             (SCHEDULED.replace("        attempts[key] = 4L", "        attempts[key] = 4L\n        attempts.clear()"),

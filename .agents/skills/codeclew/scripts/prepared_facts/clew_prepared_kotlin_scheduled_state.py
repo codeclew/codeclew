@@ -18,6 +18,11 @@ class Key:
 
 
 @dataclass(frozen=True)
+class MapAlias:
+    member: str
+
+
+@dataclass(frozen=True)
 class Access:
     receiver: str
     key: Key
@@ -86,7 +91,8 @@ class ScheduledState:
 
     def value(self, tokens, env):
         words = self.words(tokens)
-        if not words or not (origin := env.get(words[0])):
+        origin = env.get(words[0]) if words else None
+        if not isinstance(origin, Key):
             return None
         parts = list(origin.projections)
         index = 1
@@ -117,9 +123,12 @@ class ScheduledState:
             return Key(origin.loop, tuple(parts), sites)
         return None
 
-    def receiver(self, labels, env):
-        if len(labels) == 1 and labels[0] not in env:
-            return self.fields.get(labels[0])
+    def receiver(self, labels, env, *, aliases=False):
+        if len(labels) == 1:
+            if labels[0] not in env:
+                return self.fields.get(labels[0])
+            if aliases and isinstance(alias := env[labels[0]], MapAlias):
+                return self.fields[alias.member]
         if len(labels) == 3 and labels[:2] == ("this", "."):
             return self.fields.get(labels[2])
         return None
@@ -152,13 +161,13 @@ class ScheduledState:
             return self.words(callee), args, self.site(tokens[:end]), end
         return None
 
-    def receiver_call(self, tokens, env, names):
+    def receiver_call(self, tokens, env, names, *, aliases=False):
         if not (call := self.call(tokens)):
             return None
         labels, args, site, end = call
         if labels[-1] not in names or labels[-2:-1] != (".",):
             return None
-        if field := self.receiver(labels[:-2], env):
+        if field := self.receiver(labels[:-2], env, aliases=aliases):
             return field, labels[-1], args, site, end
         return None
 
@@ -307,19 +316,38 @@ class ScheduledState:
                                      "and no intervening write, removal, clearing or replacement. "
                                      "Accessor return values can vary across evaluations.")
 
+    def invalidate(self, flow, receiver):
+        return replace(flow, writes=tuple(row for row in flow.writes if row.receiver != receiver),
+                       invalidated=flow.invalidated | {receiver})
+
+    def bind_local(self, env, labels, rhs, *, site=None):
+        name = labels[1]
+        field = self.receiver(self.words(rhs), env, aliases=True)
+        if field and field.storage == "MAP":
+            env[name] = MapAlias(field.name)
+        else:
+            value = self.value(rhs, env) if labels[0] == "val" else None
+            env[name] = replace(value, origins=(*value.origins, site)) if value and site else value
+
     def cleanup_writes(self, suites, env):
         names = set()
         for suite in suites:
+            local = dict(env)
             for statement in suite:
                 tokens = statement.expression
                 words = self.words(tokens)
+                if (assignment := self.assignment(tokens)) and (lhs := self.words(assignment[0]))[:1] in {("val",), ("var",)}:
+                    if len(lhs) > 1 and self.name(lhs[1]):
+                        self.bind_local(local, lhs, assignment[1])
+                        continue
                 for index, word in enumerate(words[:-1]):
-                    if word in self.fields and word not in env and words[index + 1] in {".", "["}:
-                        # Distinguish a known direct read from potential mutation or escape.
+                    owner = self.receiver((word,), local, aliases=True)
+                    if owner and owner.storage == "MAP" and words[index + 1] in {".", "["}:
+                        # A known direct read cannot clear or overwrite this receiver.
                         if words[index + 1:index + 3] not in {(".", "get"), (".", "containsKey")}:
-                            names.add(word)
+                            names.add(owner.name)
                 names.update(self.cleanup_writes((statement.body, statement.alternative, statement.cleanup,
-                                                  *(branch for _, _, branch in statement.handlers)), env))
+                                                  *(branch for _, _, branch in statement.handlers)), local))
         return names
 
     def with_write(self, flow, write):
@@ -502,18 +530,19 @@ class ScheduledState:
                 lhs, rhs = assignment
                 labels = self.words(lhs)
                 if labels[0] in {"val", "var"} and len(labels) > 1 and self.name(labels[1]):
-                    value = self.value(rhs, env) if labels[0] == "val" else None
-                    env[labels[1]] = replace(value, origins=(*value.origins, statement.site)) if value else None
+                    self.bind_local(env, labels, rhs, site=statement.site)
                     if read := self.access(rhs, env):
                         flow = replace(flow, reads=(*flow.reads, read))
                 elif write := self.access(lhs, env, write=True):
                     flow = self.with_write(flow, replace(write, site=statement.site))
+                elif labels[1:2] == ("[",) and isinstance(alias := env.get(labels[0]), MapAlias):
+                    flow = self.invalidate(flow, alias.member)
                 elif len(labels) == 1:
-                    env[labels[0]] = None
+                    self.bind_local(env, ("var", labels[0]), rhs)
             elif write := self.access(tokens, env, write=True):
                 flow = self.with_write(flow, write)
-            elif mutation := self.receiver_call(tokens, env, {"clear", "remove", "replace", "replaceAll", "putAll", "compute"}):
+            elif mutation := self.receiver_call(tokens, env, {
+                    "clear", "remove", "replace", "replaceAll", "putAll", "put", "set", "compute"}, aliases=True):
                 field = mutation[0]
                 if field.storage == "MAP":
-                    flow = replace(flow, writes=tuple(row for row in flow.writes if row.receiver != field.name),
-                                   invalidated=flow.invalidated | {field.name})
+                    flow = self.invalidate(flow, field.name)
