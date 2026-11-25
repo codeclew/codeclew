@@ -34,6 +34,12 @@ COMPILER_EDGES = {"RETAINED_K2_COMPILER_SELECTED_SYMBOL_NOT_RUNTIME_DISPATCH",
                   "JAVAC_SELECTED_DECLARATION_NOT_CONTROL_FLOW"}
 SYNTAX_AUTHORITY = "RETAINED_KOTLIN_SYNTAX_CANDIDATE"
 UNIQUE_SYNTAX = "UNIQUE_SYNTAX_CANDIDATE"
+HTTP_CLIENT = "java.net.http.HttpClient"
+HTTP_CLIENT_BUILDER_METHODS = frozenset({
+    "authenticator", "connectTimeout", "cookieHandler", "executor", "followRedirects", "localAddress",
+    "priority", "proxy", "sslContext", "sslParameters", "version",
+})
+
 MAP_FACTORIES = {
     "kotlin.collections.mutableMapOf": "kotlin.collections.MutableMap",
     "kotlin.collections.hashMapOf": "java.util.HashMap",
@@ -538,9 +544,45 @@ class Kotlin:
         return Function(self.words[index + 1], start, body, close_body,
                         self.parameters(params + 1, close), modifiers, kind == "=", self.file, returns, never_returns)
 
+    def http_client_builder(self, initializer, owner):
+        """Select the known factory, builder steps and terminal build from source syntax."""
+        words = strings(initializer)
+        if "(" not in words:
+            return ""
+        first = self.token_indices[initializer[0].start]
+        opening = words.index("(")
+        factory = self.qualify("".join(words[:opening]))
+        if factory != HTTP_CLIENT + ".newBuilder" or words[opening + 1:opening + 2] != (")",):
+            return ""
+        head = words[0]
+        if any(self.scope[index] in {owner.body, None} and self.words[index + 1] == head
+               for index, word in enumerate(self.words[:-1]) if word in {"val", "var", "fun"}):
+            return ""
+        # A constructor parameter can also shadow the package/type qualifier.
+        primary = next((index for index in range(owner.start + 2, owner.body)
+                        if self.words[index] in {"(", ":"}), None)
+        if primary is not None and self.words[primary] == "(" and any(
+                parameter.name == head for parameter in self.parameters(primary + 1, self.pairs[primary])):
+            return ""
+        position = opening + 2
+        while position < len(words):
+            if words[position] != "." or words[position + 2:position + 3] != ("(",):
+                return ""
+            method, arguments = words[position + 1], position + 2
+            end = self.pairs.get(first + arguments, -1) - first
+            if not arguments < end < len(words):
+                return ""
+            args = tuple(groups(initializer[arguments + 1:end]))
+            if method == "build" and not args and end == len(words) - 1:
+                return HTTP_CLIENT
+            if method not in HTTP_CLIENT_BUILDER_METHODS or len(args) != 1 or not args[0]:
+                return ""
+            position = end + 1
+        return ""
+
     def inferred_type(self, initializer, owner):
         if not (call := invocation(initializer)):
-            return "", False
+            return self.http_client_builder(initializer, owner), False
         callee, args = call
         spelling = "".join(strings(callee))
         qualified = self.qualify(spelling)

@@ -474,6 +474,74 @@ data class Label(val value: String) {
                     proof = [witnesses[ref]["text"] for ref in result["sources"] if ref in witnesses]
                     self.assertTrue(any("parcel: Parcel" in excerpt for excerpt in proof), proof)
 
+
+    def test_kotlin_http_client_builder_tracks_only_known_receiver_transitions(self):
+        source = (SCHEDULED.replace("    private val relay: HttpClient,\n", "")
+                  .replace("    private val attempts =", """    private val relay = java.net.http.HttpClient.newBuilder()
+        .connectTimeout(java.time.Duration.ofSeconds(2))
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .build()
+    private val attempts ="""))
+        for variant, expected in (
+            (source, True),
+            (source.replace(".followRedirects(HttpClient.Redirect.NORMAL)", ".customStep()"), False),
+            (source.replace(".connectTimeout(java.time.Duration.ofSeconds(2))", ".connectTimeout()"), False),
+            (source.replace("java.net.http.HttpClient.newBuilder()", "LocalClient.newBuilder()"), False),
+            (source.replace("    private val relay =", "    private val java = LocalJava()\n    private val relay ="), False),
+        ):
+            with self.subTest(supports_external=expected):
+                facts, _ = self.scheduled_facts(variant)
+                self.assertEqual(any(row["kind"] == "HEAP_WRITE_BEFORE_CALL" for row in facts), expected, facts)
+
+    def test_kotlin_listener_maps_successful_decode_result_into_bound_helper(self):
+        root = """@KafkaListener(topics = ["parcel.received"])
+    fun accept(record: Message) {
+        val decoded = try {
+            codec.readTree(record.value()).also { validate(it) }
+        } catch (failure: Exception) {
+            return
+        }
+        transactions.executeWithoutResult {
+            val key = decoded["identifier"]
+            transmit(key)
+        }
+    }"""
+        source = (SCHEDULED.replace(SCHEDULED_ROOT, root)
+                  .replace("org.springframework.scheduling.annotation.Scheduled", "org.springframework.kafka.annotation.KafkaListener")
+                  .replace("    private val attempts =", """    private val codec = Codec()
+    private fun validate(tree: Tree) { }
+    private val attempts =""")
+                  + """
+data class Message(private val parcel: Parcel) {
+    fun value(): Parcel = parcel
+}
+class Tree(private val parcel: Parcel) {
+    operator fun get(name: String): String = if (name == "identifier") parcel.key else parcel.token
+}
+class Codec {
+    fun readTree(parcel: Parcel): Tree = Tree(parcel)
+}
+""")
+        facts, witnesses = self.kotlin_callback_facts(source, root, "KAFKA_LISTENER", "accept")
+        by_kind = {row["kind"]: row for row in facts}
+        self.assertLessEqual({"LISTENER_ARGUMENT", "HEAP_WRITE_BEFORE_CALL", "SAME_KEY_HEAP_RETRY"}, by_kind.keys(), facts)
+        retry = by_kind["SAME_KEY_HEAP_RETRY"]
+        self.assertIn("completes normally", retry["condition"])
+        self.assertIn("equal derived keys", retry["uncertainty"])
+        proof = [witnesses[ref]["text"] for ref in retry["sources"] if ref in witnesses]
+        self.assertTrue(any("readTree(record.value())" in excerpt for excerpt in proof), proof)
+        self.assertTrue(any('decoded["identifier"]' in excerpt for excerpt in proof), proof)
+
+        for modified in (
+            root.replace("return", "Tree(Parcel(\"fallback\", \"token\"))"),
+            root.replace("record.value()", "unrelated()"),
+            root.replace(".also { validate(it) }", ".custom { validate(it) }"),
+        ):
+            with self.subTest(modified=modified):
+                absent, _ = self.kotlin_callback_facts(source.replace(root, modified), modified,
+                                                       "KAFKA_LISTENER", "accept")
+                self.assertFalse(any(row["kind"] == "SAME_KEY_HEAP_RETRY" for row in absent), absent)
+
     def test_kotlin_scheduled_alias_mutations_invalidate_the_actual_map_only(self):
         for replacement in ("same.clear()", "same[key] = 8L", "same.put(key, 8L)"):
             with self.subTest(replacement=replacement):

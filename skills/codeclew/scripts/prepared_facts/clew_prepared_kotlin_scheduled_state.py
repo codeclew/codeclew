@@ -1,6 +1,7 @@
 """Follow keyed heap state through retained scheduler and message callbacks."""
 
 from dataclasses import dataclass, field, replace
+import re
 
 
 MAX_DEPTH = 8
@@ -275,15 +276,15 @@ class ScheduledState:
                 return
             values[param.name] = self.value(value, env)
             if values[param.name] is not None:
-                parameter_sites.append((param, self.site(value)))
+                parameter_sites.append((param, self.site(value), values[param.name].origins))
         if not parameter_sites:
             return
         child = replace(flow, evidence=(*flow.evidence, site, self.unit.function_site(helper)),
                         conditions=(*flow.conditions, "the call selects the retained same-owner implementation"))
-        for param, actual in parameter_sites:
+        for param, actual, origins in parameter_sites:
             self.add("LISTENER_ARGUMENT" if self.listener else "SCHEDULED_ARGUMENT",
                      f"The source handoff passes {self.code(actual)} to the {param.name} parameter of {name}.",
-                     child, actual, param.site,
+                     child, actual, param.site, *origins,
                      uncertainty="The local call must be reached and the argument must evaluate normally.")
         suite = self.unit.suite(helper.body + 1, helper.end)
         self.walk(suite, values, replace(child, reads=(), writes=()), (*stack, name), depth + 1)
@@ -443,6 +444,57 @@ class ScheduledState:
             return None
         return node if after == end and node.kind in {"if", "try"} else None
 
+    def local_also(self):
+        for index, word in enumerate(self.unit.words[:-1]):
+            if word in {"val", "var"} and self.unit.words[index + 1] == "also":
+                return True
+            if word == "fun":
+                end = self.unit.until(index + 1, len(self.unit.tokens), {"(", "=", "{", "}"})
+                if end > index + 1 and self.unit.words[end - 1] == "also":
+                    return True
+        return False
+
+    def decoding_result(self, tokens, env):
+        """Tie a result identity to the reached initializer, with input provenance kept separate."""
+        if not (call := self.call(tokens)):
+            return None
+        _, arguments, decoder, end = call
+        inputs = [origin for argument in arguments if (origin := self.value(self.named(argument)[1], env))]
+        if not inputs:
+            return None
+        tail = self.words(tokens[end:])
+        evidence, premise = [decoder], f"{self.code(decoder)} completes normally"
+        if tail:
+            if tail[:3] != (".", "also", "{") or tail[-1] != "}":
+                return None
+            callback = self.unit.token_indices[tokens[end + 2].start]
+            if self.unit.pairs.get(callback) != self.unit.token_ends[tokens[-1].end]:
+                return None
+            whole = self.site(tokens)
+            targets = [target for target, _ in self.native(whole)
+                       if (api := self.make_call(target)) and api[1] == "also"]
+            standard = r"(?:callable:kotlin/(?:StandardKt(?:__StandardKt)?[.])?also#jvm:|method:class:kotlin[.]StandardKt(?:__StandardKt)?#also\()"
+            if targets and any(not re.match(standard, target) for target in targets):
+                return None
+            if not targets and (self.unit.stars or self.unit.imports.get("also", {"kotlin.also"}) != {"kotlin.also"}
+                                or self.local_also()):
+                return None
+            evidence.append(whole)
+            if not targets:
+                premise += " and the suffix selects Kotlin's also"
+            premise += " and that scope call and its invoked callback complete normally"
+        return Key(decoder, (), tuple(dict.fromkeys((*evidence, *(site for origin in inputs for site in origin.origins))))), premise
+
+    def listener_initializer(self, expression, local, env):
+        if not self.listener or local.cleanup or not local.body or not local.handlers or any(
+                not branch or not self.hard_stop(branch[-1], env) for _, _, branch in local.handlers):
+            return None
+        last = local.body[-1]
+        if last.kind != "expression" or not (selected := self.decoding_result(last.expression, env)):
+            return None
+        origin, premise = selected
+        return replace(origin, origins=(*origin.origins, expression.site)), premise
+
     def hard_atom(self, tokens, env):
         if not (call := self.call(tokens)):
             return None
@@ -584,13 +636,19 @@ class ScheduledState:
             tokens, words = statement.expression, self.words(statement.expression)
             assignment = self.assignment(tokens) if statement.kind == "expression" else None
             local = self.rhs_control(assignment) or statement
+            initialized = None
             if statement.kind == "for" and len(words) > 2 and self.name(words[0]) and words[1] == "in":
                 self.foreach_loop(words[0], self.site(tokens), statement.body, env, flow, stack, depth)
                 flow = self.invalidate(flow, self.merge_possible_aliases((statement.body,), env))
                 continue
             if local.kind == "try":
                 hazard = self.cleanup_writes((local.cleanup, *(branch for _, _, branch in local.handlers)), env)
-                self.walk(local.body, dict(env), replace(flow, invalidated=flow.invalidated | hazard), stack, depth + 1)
+                success, inside = self.scoped(local.body, env, replace(flow, invalidated=flow.invalidated | hazard),
+                                              stack, depth + 1)
+                if success is not None and assignment and (decoded := self.listener_initializer(statement, local, inside)):
+                    initialized, premise = decoded
+                    flow = replace(flow, conditions=(*flow.conditions, premise),
+                                   evidence=(*flow.evidence, statement.site))
                 self.merge_possible_aliases((local.body, local.cleanup, *(branch for _, _, branch in local.handlers)), env)
                 flow = replace(flow, reads=(), writes=(), invalidated=flow.invalidated | hazard, last_external=None)
             if local.kind == "if":
@@ -630,6 +688,8 @@ class ScheduledState:
                     if shadowed is not None and labels[1] in env:
                         shadowed.setdefault(labels[1], env[labels[1]])
                     self.bind_local(env, labels, evaluated, site=statement.site)
+                    if initialized:
+                        env[labels[1]] = initialized
                     if read := self.access(evaluated, env):
                         flow = replace(flow, reads=(*flow.reads, read))
                 elif len(labels) == 1 and labels[0] in env:
