@@ -49,7 +49,7 @@ def request_key(method, path):
         return None
     path = path.partition("?")[0]
     parts = tuple(None if PARAMETER.fullmatch(part) else part for part in path[1:].split("/"))
-    if any(part is not None and any(c in part for c in "{}*\\%") for part in parts):
+    if any(part is not None and (part in {".", ".."} or any(c in part for c in "{}*\\%")) for part in parts):
         return None
     return method, parts
 
@@ -61,7 +61,8 @@ def uri_path(value):
         return value
     try:
         url = urlsplit(value)
-        if url.scheme in {"http", "https"} and url.hostname and not url.username and not url.password:
+        if (url.scheme in {"http", "https"} and url.hostname and url.username is None and url.password is None
+                and (url.port is None or 0 < url.port <= 65535)):
             return url.path or "/"
     except ValueError:
         return None
@@ -83,15 +84,24 @@ class Routes:
 
     def matching(self, key):
         method, pieces = key
-        branches = [self.rows.get((method, len(pieces)), {})]
+        branches = [(self.rows.get((method, len(pieces)), {}), False)]
         for piece in pieces:
-            # A dynamic client component can be aligned only with a receiver
-            # parameter. Never widen it to a specific literal server route.
-            keys = (None,) if piece is None else (piece, None)
-            branches = [branch[candidate] for branch in branches for candidate in keys if candidate in branch]
-            if len(branches) > MAX_MATCHES * MAX_MATCHES:
-                return [], True
-        found = list(islice((row for branch in branches for row in branch.get(ENTRIES, ())), MAX_MATCHES + 1))
+            next_branches = []
+            for branch, depends_on_value in branches:
+                keys = branch.keys() if piece is None else (piece, None)
+                for key in keys:
+                    if key is not ENTRIES and key in branch:
+                        next_branches.append((branch[key], depends_on_value or piece is None and key is not None))
+                    if len(next_branches) > MAX_MATCHES * MAX_MATCHES:
+                        return [], True
+            branches = next_branches
+        whole = list(islice((row for branch, depends in branches if not depends
+                            for row in branch.get(ENTRIES, ())), MAX_MATCHES + 1))
+        if not whole:
+            return [], False
+        literals = list(islice((row for branch, depends in branches if depends
+                               for row in branch.get(ENTRIES, ())), MAX_MATCHES + 1))
+        found = whole + literals
         return found[:MAX_MATCHES], len(found) > MAX_MATCHES
 
 
@@ -103,7 +113,7 @@ def cite_refs(sources, refs, *, source_ids=None):
 def stored_face(fact):
     return {"sources": fact["sources"], "witnesses": fact.get("witnesses", ()),
             **({"condition": fact["condition"]} if fact.get("condition") else {}),
-            "text": fact["text"]}
+            "text": fact["text"], "uncertainty": fact.get("uncertainty", "")}
 
 
 def source_exits(process, sources):
@@ -132,19 +142,22 @@ def record(requirement, process, context, facts, exact):
     sources = {ref: {**exact[row["id"]], "handle": row["id"]}
                for row in context["sourceRanges"] for ref in row["references"] if row["id"] in exact}
     trigger = process.get("trigger") or {}
-    trigger_refs = tuple(filter(None, (trigger.get("registration"), trigger.get("callback"),
-                                       *trigger.get("subscriptions", ()))))
+    subscription_refs = [*trigger.get("subscriptions", ()), *trigger.get("subscriptionSources", ())]
+    trigger_refs = tuple(filter(None, (trigger.get("registration"), trigger.get("callback"), *subscription_refs)))
     for ref in trigger_refs:
         if ref in sources or ref not in process["sources"]:
             continue
         witness = process["sources"][ref]
         if handle := context["_bindWitness"](witness):
             sources[ref] = {**witness, "handle": handle}
-    registration = cite_refs(sources, [trigger.get("registration"), *trigger.get("subscriptions", ())])
+    registration = cite_refs(sources, [trigger.get("registration"), *subscription_refs])
     if not registration:
         registration = cite_refs(sources, process["entrySources"],
                                  source_ids=set(requirement.get("registrationSourceIds", ())) or None)
     registered = registration[:MAX_SITES]
+    topic_proven = trigger.get("authority") != "KAFKAJS_RETAINED_SOURCE" or (
+        bool(trigger.get("subscriptions")) and len(registration) <= MAX_SITES
+        and all(ref in sources for ref in subscription_refs))
     body = cite_refs(sources, [ref for fact in process["facts"]
                               if fact["kind"] == "BODY" and fact.get("declaration") == process["root"]
                               for ref in fact["sources"]])[:1]
@@ -178,6 +191,8 @@ def record(requirement, process, context, facts, exact):
         if link["kind"] == "HTTP":
             path = uri_path(link.get("uri"))
             key = request_key(link.get("method"), path)
+            if key and None in key[1] and not link.get("encodedSegment"):
+                key = None
             keep(calls, (face["occurrence"] or site, key), {**face, "key": key, "path": path})
         elif link["kind"] == "PUBLISH":
             value = topic(link.get("topic"))
@@ -197,7 +212,7 @@ def record(requirement, process, context, facts, exact):
             registration_witnesses.append({"cite": source["handle"], **{key: source[key] for key in (
                 "file", "revision", "startLine", "endLine", "startByte", "endByte", "textDigest") if key in source}})
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
-            "registrationWitnesses": registration_witnesses,
+            "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()),
             "reads": list(reads.values()), "writes": list(writes.values()),
             "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
@@ -207,15 +222,18 @@ def record(requirement, process, context, facts, exact):
 
 def project(requirements, records):
     """Index each protocol once and bound per-page evidence fan-out."""
-    routes, subscriptions, readers = Routes(requirements), defaultdict(list), defaultdict(list)
+    routes = Routes(requirements)
+    subscriptions, readers, reader_services = defaultdict(list), defaultdict(list), defaultdict(dict)
     for row in requirements:
         for name in topics(row):
             subscriptions[name].append(row)
     for identity, row in records.items():
         for read in row["reads"]:
             if row["body"] and row["registration"]:
-                readers[read["table"]].append((identity, read))
-    result, seen = defaultdict(list), defaultdict(set)
+                service, table = row["requirement"]["service"], read["table"]
+                readers[service, table].append((identity, read))
+                reader_services[table].setdefault(service, read)
+    result, seen, requester_links = defaultdict(list), defaultdict(set), defaultdict(list)
 
     def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE"):
         if len(result[owner]) >= MAX_LINKS:
@@ -246,20 +264,34 @@ def project(requirements, records):
             return row.get("_edgeCause") == call["occurrence"]
         return call["site"] in row["sources"]
 
+    def readbacks(owner, writer_id, effect, *evidence, prefix, uncertainty):
+        writer = records[writer_id]
+        service, table = writer["requirement"]["service"], effect["table"]
+        for reader, read in readers[service, table][:MAX_MATCHES]:
+            if reader == writer_id:
+                continue
+            observed = records[reader]
+            name = observed["requirement"]["page"]
+            emit(owner, "message-storage-reader", prefix
+                 + f"the retained read in `{name}` can see the affected row if "
+                   f"it uses the same database and row in `{table}` after the change becomes visible.",
+                 uncertainty, *evidence, effect, registration(observed), read)
+
     for owner, local in records.items():
         service = local["requirement"]["service"]
         for call in local["calls"]:
             matching, overflow = routes.matching(call["key"]) if call["key"] else ([], False)
+            boundary = " ".join(filter(None, (HTTP_OPEN, call.get("uncertainty"))))
             peers = [entry for entry in matching if entry["service"] != service]
             cited = [registration(records[row["id"]]) for row in peers if row["id"] in records]
             if overflow or len(matching) > 1:
                 emit(owner, "http-peer-boundary", "The request route has multiple retained handler candidates.",
-                     HTTP_OPEN, call, *cited, status="AMBIGUOUS")
+                     boundary, call, *cited, status="AMBIGUOUS")
                 continue
             if not peers or not cited or not cited[0]["sources"]:
                 if not matching or peers:
                     emit(owner, "http-peer-boundary", "A source-qualified peer handler is unavailable for this retained request.",
-                         HTTP_OPEN, call, status="UNKNOWN")
+                         boundary, call, status="UNKNOWN")
                 continue
             peer = peers[0]
             target = records[peer["id"]]
@@ -268,35 +300,38 @@ def project(requirements, records):
             name = f"`{peer['service']}` (`{peer['page']}`)"
             predicate = (f"If the deployed request reaches the matching handler in {name}, "
                          "the following are separately retained source outcomes.")
-            emit(owner, "http-peer", f"The request at {label} has a route candidate in {name}.", HTTP_OPEN, call, cited[0])
+            if len(requester_links[peer["id"]]) < MAX_MATCHES:
+                requester_links[peer["id"]].append((owner, call, cited[0], boundary))
+            emit(owner, "http-peer", f"The request at {label} has a route candidate in {name}.", boundary, call, cited[0])
             emit(peer["id"], "http-peer", f"`{service}` has a retained request matching this source route at {label}.",
-                 HTTP_OPEN, call, cited[0])
+                 boundary, call, cited[0])
             for outcome in target["responses"] or target["exits"]:
                 emit(owner, "http-peer-outcome", predicate + " " + outcome["text"],
-                     HTTP_OPEN + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
+                     boundary + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
             if not target["responses"] and not target["exits"]:
                 emit(owner, "http-peer-outcome-boundary", f"An observable handler return or exception for {name} remains open.",
-                     HTTP_OPEN, call, cited[0], status="UNKNOWN")
+                     boundary, call, cited[0], status="UNKNOWN")
             for outcome in [row for row in local["paths"] if continuation(row, call)][:MAX_MATCHES]:
                 emit(owner, "http-caller-continuation", outcome["text"],
-                     HTTP_OPEN + " Persistence and rollback of any earlier effects remain unknown. "
+                     boundary + " Persistence and rollback of any earlier effects remain unknown. "
                      + outcome.get("uncertainty", ""), call, cited[0], outcome)
 
         for publication in local["publishes"]:
             name = publication["topic"]
             matching = subscriptions.get(name, ())
+            boundary = " ".join(filter(None, (MESSAGE_OPEN, publication.get("uncertainty"))))
             label = f"topic `{name}`" if name else "a topic that remains open"
             if not matching or len(matching) > MAX_MATCHES:
                 text = (f"The publication on {label} has multiple retained subscriber candidates." if matching else
                         f"The publication names {label}. A source-qualified subscriber is unavailable.")
-                emit(owner, "message-peer-boundary", text, MESSAGE_OPEN, publication,
+                emit(owner, "message-peer-boundary", text, boundary, publication,
                      status="AMBIGUOUS" if matching else "UNKNOWN")
                 continue
             eligible = [entry for entry in matching if entry["id"] != owner and entry["id"] in records
-                        and records[entry["id"]]["registration"]]
+                        and records[entry["id"]]["registration"] and records[entry["id"]]["topicProven"]]
             if not eligible:
                 emit(owner, "message-peer-boundary", f"The publication names {label}. A source-qualified subscriber is unavailable.",
-                     MESSAGE_OPEN, publication, status="UNKNOWN")
+                     boundary, publication, status="UNKNOWN")
                 continue
             for entry in eligible:
                 peer = entry["id"]
@@ -309,32 +344,33 @@ def project(requirements, records):
                         + (" The retained declaration disables automatic startup." if disabled else
                            " The retained callback is eligible if the subscription runs and delivery reaches it."
                            if target["body"] else " An exact callback body is unavailable."))
-                emit(owner, "message-peer", text, MESSAGE_OPEN,
+                emit(owner, "message-peer", text, boundary,
                      publication, registration(target), callback(target), status=result_status)
-                emit(peer, "message-peer", f"`{service}` has a retained publication on {label}.", MESSAGE_OPEN,
+                emit(peer, "message-peer", f"`{service}` has a retained publication on {label}.", boundary,
                      publication, registration(target), callback(target), status=result_status)
                 if disabled or not target["body"]:
                     continue
                 for outcome in [row for row in local["paths"] if continuation(row, publication)][:2]:
                     emit(owner, "message-publication-continuation", outcome["text"],
-                         MESSAGE_OPEN + " Persistence and rollback of earlier effects remain unknown. "
+                         boundary + " Persistence and rollback of earlier effects remain unknown. "
                          + outcome.get("uncertainty", ""), publication, registration(target), outcome)
                 for effect in target["writes"][:2]:
                     emit(owner, "message-peer-effect", f"If the subscribed callback in {title} reaches this write, "
-                         + effect["text"], MESSAGE_OPEN + " " + STORAGE_OPEN,
+                         + effect["text"], boundary + " " + STORAGE_OPEN,
                          publication, registration(target), callback(target), effect)
-                    for reader, read in readers[effect["table"]][:MAX_MATCHES]:
-                        if reader == peer:
-                            continue
-                        observed = records[reader]
-                        reader_name = observed["requirement"]["page"]
-                        emit(owner, "message-storage-reader", f"The callback write and `{reader_name}` name "
-                             f"`{effect['table']}`. A later source read is eligible if it uses the same database and row.",
-                             MESSAGE_OPEN + " " + STORAGE_OPEN, publication, registration(target), effect,
-                             registration(observed), read)
+                    readbacks(owner, peer, effect, publication, registration(target), callback(target),
+                              prefix="After the subscribed callback reaches the write, ",
+                              uncertainty=boundary + " " + STORAGE_OPEN)
 
         for write in local["writes"]:
-            for reader, read in readers[write["table"]][:MAX_MATCHES]:
+            table = write["table"]
+            other_services = list(islice((read for owner_service, read in reader_services[table].items()
+                                         if owner_service != service), MAX_MATCHES))
+            if other_services:
+                emit(owner, "storage-peer-boundary", f"Other services also name `{table}` in a read. "
+                     "A shared database or schema binding needs independent evidence.",
+                     STORAGE_OPEN, write, *other_services, status="UNKNOWN")
+            for reader, read in readers[service, table][:MAX_MATCHES]:
                 if reader == owner:
                     continue
                 target = records[reader]
@@ -342,19 +378,33 @@ def project(requirements, records):
                 emit(owner, "storage-reader", f"The `{write['verb']}` and the retained query in `{name}` "
                      f"name `{write['table']}`. The reader is eligible if both operations use the same database and row.",
                      STORAGE_OPEN, write, registration(target), read)
+                if target["requirement"].get("entryKind") not in {"HOSTED_BACKGROUND_WORKER", "SCHEDULED_JOB"}:
+                    continue
+                if not target["publishes"]:
+                    emit(owner, "storage-message-boundary", f"The registered reader in `{name}` has no qualified "
+                         "publication for this retained storage path.", MESSAGE_OPEN + " " + STORAGE_OPEN,
+                         write, registration(target), read, status="UNKNOWN")
                 for publication in target["publishes"][:2]:
                     subscribers = subscriptions.get(publication["topic"], ())
                     if len(subscribers) > MAX_MATCHES:
+                        emit(owner, "storage-message-boundary", f"Multiple retained subscriptions follow the "
+                             f"publication candidate in `{name}`.", MESSAGE_OPEN, write, registration(target), read,
+                             publication, status="AMBIGUOUS")
                         continue
                     matches = [r for r in subscribers if r["id"] != reader and r["id"] in records
-                               and records[r["id"]]["registration"] and records[r["id"]]["body"]
+                               and records[r["id"]]["registration"] and records[r["id"]]["topicProven"]
+                               and records[r["id"]]["body"]
                                and ((r.get("trigger") or {}).get("configuration") or {}).get("autoStartup")
                                not in (False, "false")]
+                    if not matches:
+                        emit(owner, "storage-message-boundary", f"A source-qualified subscriber callback is "
+                             f"unavailable for the publication candidate in `{name}`.", MESSAGE_OPEN + " " + STORAGE_OPEN,
+                             write, registration(target), read, publication, status="UNKNOWN")
                     for subscriber in matches:
                         consumer = records[subscriber["id"]]
                         prefix = f"If the registered reader in `{name}` selects this row and reaches publication, "
-                        boundary = (STORAGE_OPEN + " " + MESSAGE_OPEN
-                                    + " Row-to-payload lineage remains unknown.")
+                        boundary = " ".join(filter(None, (STORAGE_OPEN, MESSAGE_OPEN, publication.get("uncertainty"),
+                                                           "Row-to-payload lineage remains unknown.")))
                         evidence = (write, registration(target), read, publication,
                                     registration(consumer), callback(consumer))
                         emit(owner, "storage-message-continuation", prefix
@@ -364,4 +414,23 @@ def project(requirements, records):
                             emit(owner, "storage-message-effect", prefix
                                  + f"delivery to `{subscriber['page']}` can reach the cited write path. " + effect["text"],
                                  boundary, *evidence, effect)
+                            readbacks(owner, subscriber["id"], effect, *evidence,
+                                      prefix=prefix + f"and delivery reaches `{subscriber['page']}`, ",
+                                      uncertainty=boundary)
+
+    # Attach a bounded prefix of the selected handler's storage continuation to
+    # the caller's view. The source-qualified route remains a prerequisite.
+    followups = ("message-storage-reader", "storage-message-effect", "storage-message-continuation",
+                 "storage-message-boundary", "storage-reader", "storage-peer-boundary")
+    priority = {kind: index for index, kind in enumerate(followups)}
+    for handler, requesters in requester_links.items():
+        rows = sorted((row for row in result[handler] if row["kind"] in priority),
+                      key=lambda row: priority[row["kind"]])[:3]
+        name = records[handler]["requirement"]["page"]
+        for requester, call, registration_proof, boundary in requesters:
+            for row in rows:
+                kind = "http-" + row["kind"]
+                emit(requester, kind, f"If the request reaches `{name}`, the handler has this retained continuation. "
+                     + row["text"], boundary + " " + row["uncertainty"], call, registration_proof, row,
+                     status=row["status"])
     return result

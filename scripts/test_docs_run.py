@@ -2039,11 +2039,12 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         cls.prepared = runpy.run_path(str(scripts / "docs_run_prepared.py"), init_globals={
             name: D[name] for name in ("digest", "encode", "sha", "save")})
 
-    def retained(self, service, *, verb="GET", path="/units", entry_kind="HTTP_ENDPOINT", trigger=None, proof=True,
+    def retained(self, service, *, name=None, verb="GET", path="/units", entry_kind="HTTP_ENDPOINT", trigger=None, proof=True,
                  events=(), facts=()):
-        identity = service + ":entry"
-        registration = service + "-registration"
-        body = service + "-body"
+        identity = service + ":" + (name or "entry")
+        name = name or service
+        registration = name + "-registration"
+        body = name + "-body"
         exact = {}
 
         def source(handle, text, start):
@@ -2056,7 +2057,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             source(registration, "@Mapping", 1)
         requirement = {"id": identity, "kind": "ENTRY", "service": service, "entrypoint": "entry", "entryKind": entry_kind,
                        "rootDeclarations": ["root"], "method": verb if entry_kind == "HTTP_ENDPOINT" else None,
-                       "path": path, "page": service + ".md", "trigger": trigger,
+                       "path": path, "page": name + ".md", "trigger": trigger,
                        "sourceReferences": [registration, body], "registrationSourceIds": [registration]}
 
         def obligation(kind, cite, event=None):
@@ -2066,8 +2067,8 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             return {"obligationKind": kind, "record": record, "id": kind + ":" + cite, "sourceReferences": [cite]}
 
         rows = [obligation("BODY", body)]
-        for number, (name, text, event) in enumerate(events, 3):
-            cite = service + "-" + name
+        for number, (label, text, event) in enumerate(events, 3):
+            cite = name + "-" + label
             source(cite, text, number)
             rows.append(obligation("EVENT", cite, event))
         process, context = self.prepared["operation"](requirement, rows, exact, {})
@@ -2132,6 +2133,26 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             self.assertEqual((row["kind"], row["status"], row["sources"]),
                              ("http-peer-boundary", "UNKNOWN", ["front-call"]))
 
+    def test_templates_leave_literal_overlaps_and_traversal_open(self):
+        def call(uri, encoded=True):
+            return {"kind": "http_request", "authority": "RETAINED_PATH", "sources": ["front-body"],
+                    "text": "The request uses an encoded identifier.",
+                    "uncertainty": "The identifier must encode as one non-dot segment.",
+                    "_edge": {"kind": "HTTP", "site": "front-body", "method": "POST", "uri": uri,
+                              "encodedSegment": encoded}}
+
+        peer = self.retained("peer", verb="POST", path="/units/{id}/action")
+        special = self.retained("special", verb="POST", path="/units/current/action")
+        front = self.retained("front", path="/start", facts=[call("/units/{segment}/action")])
+        self.assertEqual(self.project(front, peer)[front[0]["id"]][0]["kind"], "http-peer")
+        ambiguous, = self.project(front, peer, special)[front[0]["id"]]
+        self.assertEqual(ambiguous["status"], "AMBIGUOUS")
+        for uri, encoded in (("/units/{segment}/action", False), ("/units/../{segment}/action", True),
+                             ("/units/%2e/{segment}/action", True)):
+            front = self.retained("front", path="/start", facts=[call(uri, encoded)])
+            boundary, = self.project(front, peer)[front[0]["id"]]
+            self.assertEqual(boundary["status"], "UNKNOWN")
+
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):
             site = service + "-body"
@@ -2139,22 +2160,34 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     "text": "The retained source reaches the cited request.",
                     "_edge": {"kind": operation, "site": site, **identity}}
 
-        writer = self.retained("writer", facts=[effect("writer", "INSERT", table="pending_jobs")])
-        relay = self.retained("relay", entry_kind="SCHEDULED_JOB", facts=[
+        writer = self.retained("catalog", name="writer", facts=[effect("writer", "INSERT", table="pending_jobs")])
+        relay = self.retained("catalog", name="relay", entry_kind="SCHEDULED_JOB", facts=[
             effect("relay", "SELECT", table="pending_jobs"), effect("relay", "PUBLISH", topic="jobs.ready")])
         trigger = {"configuration": {"topics": ["jobs.ready"]}}
-        listener = self.retained("listener", entry_kind="KAFKA_LISTENER", trigger=trigger,
+        listener = self.retained("index", name="listener", entry_kind="KAFKA_LISTENER", trigger=trigger,
                                  facts=[effect("listener", "INSERT", table="inbox")])
-        reader = self.retained("reader", facts=[effect("reader", "SELECT", table="inbox")])
+        reader = self.retained("index", name="reader", path="/indexed", facts=[effect("reader", "SELECT", table="inbox")])
+        collision = self.retained("another-store", path="/other", facts=[effect("another-store", "SELECT", table="pending_jobs")])
+        call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units"}}
+        front = self.retained("front", path="/start", events=[("call", "client.get()", call)])
         wrong = self.retained("wrong", entry_kind="KAFKA_LISTENER", trigger={"configuration": {"topics": ["jobs.other"]}})
         disabled = self.retained("disabled", entry_kind="KAFKA_LISTENER",
                                  trigger={"configuration": {"topics": ["jobs.ready"], "autoStartup": False}})
-        result = self.project(writer, relay, listener, reader, wrong, disabled)
+        result = self.project(front, writer, relay, listener, reader, collision, wrong, disabled)
         thread, = (fact for fact in result[writer[0]["id"]] if fact["kind"] == "storage-message-continuation")
         self.assertEqual(thread["sources"], ["writer-body", "relay-registration", "relay-body",
                                              "listener-registration", "listener-body"])
         self.assertIn("Row-to-payload lineage", thread["uncertainty"])
         self.assertTrue(any(row["kind"] == "storage-message-effect" for row in result[writer[0]["id"]]))
+        stop, = (row for row in result[writer[0]["id"]] if row["kind"] == "storage-peer-boundary")
+        self.assertEqual(stop["status"], "UNKNOWN")
+        self.assertIn("another-store-body", stop["sources"])
+        complete, = (row for row in result[front[0]["id"]] if row["kind"] == "http-message-storage-reader")
+        self.assertEqual(complete["sources"], ["front-call", "writer-registration", "writer-body",
+                                             "relay-registration", "relay-body", "listener-registration",
+                                             "listener-body", "reader-registration", "reader-body"])
+        self.assertIn("Row-to-payload lineage", complete["uncertainty"])
         self.assertTrue(any(row["kind"] == "message-storage-reader" for row in result[relay[0]["id"]]))
         self.assertNotIn(wrong[0]["id"], result)
         self.assertEqual(result[disabled[0]["id"]][0]["status"], "DISABLED_IN_SOURCE")

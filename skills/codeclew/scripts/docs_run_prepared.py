@@ -640,14 +640,19 @@ def background_operation(service, found, files, exact):
     trigger = {'name': name, 'kind': found['kind'], 'authority': authority, 'registration': registration,
                'callback': callback}
     subscriptions = [bind(row) for row in found.get('subscriptions', ())]
-    if found.get('topics') and subscriptions and all(subscriptions):
+    topic_sources = [bind(row) for row in found.get('topicSources', ())]
+    proven_topics = found.get('topics') and subscriptions and all([*subscriptions, *topic_sources])
+    if proven_topics:
         trigger['configuration'] = {'topics': found['topics']}
         trigger['subscriptions'] = subscriptions
+        trigger['subscriptionSources'] = list(dict.fromkeys(topic_sources))
+    if found.get('topicCoverageOpen') or found.get('topics') and not proven_topics:
+        trigger['topicCoverageOpen'] = True
     if found.get('sdkImports'):
         trigger['assumesSdkImports'] = True
     refs = [registration, callback]
-    if subscriptions and all(subscriptions):
-        refs.extend(subscriptions)
+    if proven_topics:
+        refs.extend(dict.fromkeys([*subscriptions, *topic_sources]))
     origins = list(dict.fromkeys(handles[ref] for ref in refs))
     page = service + '-background-' + identity + '.md'
     requirement = {'id': service + ':background:' + identity, 'kind': 'ENTRY', 'service': service,
@@ -680,6 +685,9 @@ def background_operation(service, found, files, exact):
                   text=background_registration(found, trigger),
                   uncertainty='Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
                               + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))]
+    if trigger.get('topicCoverageOpen'):
+        facts.append(dict(kind='background-topic-boundary', authority=authority, sources=[registration],
+                          text='Additional subscription topics and activation remain open.'))
     if found.get('manualOffsets'):
         facts.append(dict(kind='background-offset-policy', authority=authority, sources=[registration],
                           text='The KafkaJS run options declare `autoCommit: false`.',
@@ -694,7 +702,7 @@ def background_registration(found, trigger):
     if found['kind'] == 'INTERVAL':
         return f'`setInterval` selects the cited callback and supplies `{found["interval"]}` milliseconds as its repeat interval.'
     topics = trigger.get('configuration', {}).get('topics', ())
-    suffix = ' The same consumer has declared topic subscriptions ' + ', '.join(repr(topic) for topic in topics) + '.' if topics else ''
+    suffix = ' The same consumer has a preceding awaited subscription to ' + ', '.join(repr(topic) for topic in topics) + '.' if topics else ''
     return f'KafkaJS `consumer.run` selects `{name}` as `eachMessage`.' + suffix
 
 

@@ -9,7 +9,9 @@ TRANSACTIONS = {"org.springframework.transaction.support.TransactionTemplate",
                 "org.springframework.transaction.support.TransactionOperations"}
 FUTURES = {"java.util.concurrent.Future", "java.util.concurrent.CompletableFuture"}
 ACK = "org.springframework.kafka.support.Acknowledgment"
-TYPES = TRANSACTIONS | FUTURES | {ACK}
+KAFKA = {"org.springframework.kafka.core.KafkaTemplate", "org.springframework.kafka.core.KafkaOperations"}
+TYPES = TRANSACTIONS | FUTURES | KAFKA | {ACK}
+TOPIC_OPERAND = re.compile(r'"([A-Za-z0-9._-]{1,249})"')
 SHORT_TYPES = {type_.rsplit(".", 1)[-1]: type_ for type_ in TYPES}
 EXTRACT_ITEM = r"(?:\.\s*first\s*\(\s*\)|\[\s*[0-9]+\s*\])"
 TIME_UNIT = re.compile(r"(?:java\.util\.concurrent\.)?TimeUnit\.(?:NANOSECONDS|MICROSECONDS|MILLISECONDS|SECONDS|MINUTES|HOURS|DAYS)\Z")
@@ -41,6 +43,8 @@ def contract(owner, member, descriptor, arity):
         return "timed_wait"
     if owner == ACK and member == "acknowledge":
         return "acknowledgment"
+    if owner in KAFKA and member == "send" and (descriptor.startswith("(Ljava/lang/String;") or not descriptor and arity >= 2):
+        return "publication"
     return None
 
 
@@ -774,6 +778,37 @@ class Projection:
             owner = self.frame(retained[0])
             site = owner.callback if owner else None
 
+    def publication(self, binding):
+        part = binding.invocation
+        if not self.frame(part):
+            return
+        unit = self.body.unit
+        first = unit.token_indices[part.selector.start]
+        stop = unit.token_ends[part.selector.end] + 1
+        opening = next((index for index in range(first + 1, stop) if unit.words[index] == "("), None)
+        if opening is None:
+            return
+        closing = unit.pairs[opening]
+        operands = unit.tokens[opening + 1:closing]
+        # A direct String overload starts with one literal followed by a comma.
+        if (len(operands) < 2 or operands[1].text != "," or not (match := TOPIC_OPERAND.fullmatch(operands[0].text))
+                or match[1] in {".", ".."}):
+            return
+        argument = operands[0]
+        literal = self.body.text_note(type(part.selector)(argument.start, argument.end, part.selector.file),
+                                      "topic operand")
+        prefix = self.assumptions(binding)
+        self.body.projector.add(
+            "BROKER_PUBLICATION", (prefix + "the source" if prefix else "The source")
+            + f" submits a Kafka publication request for topic `{match[1]}` if {self.note(part).text} is reached.",
+            [binding.evidence, literal], authority=binding.authority,
+            **({"condition": binding.condition} if binding.condition else {}),
+            uncertainty=("The retained declared receiver is assumed to select the Kafka producer API. "
+                         if binding.authority != "COMPILER_SELECTED" else "")
+            + "Broker mapping, acknowledgement and delivery remain open.",
+            _edge={"kind": "PUBLISH", "topic": match[1], "site": binding.evidence.citations[0],
+                   "occurrence": f"{part.selector.file}:{part.selector.start}:{part.selector.end}"})
+
     def derive(self):
         self.selected()
         for part in self.body.invocations.values():
@@ -787,6 +822,8 @@ class Projection:
             self.scan(suite, callback=site)
         self.collect_queries()
         self.selected_iteration_callbacks()
+        for publication in (entry for entry in self.bindings if entry.kind == "publication"):
+            self.publication(publication)
         for protected, local, handler, suite in self.catches:
             self.catch_region(protected, local, handler, suite)
         transactions = [entry for entry in self.bindings if entry.kind == "transaction"]

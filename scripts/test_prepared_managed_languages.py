@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Portable citation and fallback tests for managed documentation projectors."""
 from hashlib import sha256
+import json
 from pathlib import Path
 import runpy
 import shutil
+import time
 import subprocess
 import tempfile
 import unittest
@@ -146,6 +148,105 @@ class PreparedManagedLanguages(unittest.TestCase):
         process, context = selected("Jobs.ts", text.replace("score()", "score(fetch: LocalLookup)"))
         rows, _ = self.project(process, context)
         self.assertFalse(any("_edge" in row for row in rows))
+
+
+    def test_typescript_admits_an_encoded_path_shape_with_known_or_configured_origin(self):
+        self.require_typescript()
+        edges = runpy.run_path(str(MANAGED / "clew_service_edges.py"))
+        for origin, expected in (('configuration.origin', True), ('"https://example.test"', False)):
+            text = f"""async function score(configuration: Config, id: string) {{
+    const origin = {origin};
+    const method = "post";
+    const endpoint = `${{origin}}/v1/units/${{encodeURIComponent(id)}}/action`;
+    return await fetch(endpoint, {{method}});
+}}
+"""
+            with self.subTest(origin=origin):
+                process, context = selected("Units.ts", text)
+                rows, _ = self.project(process, context)
+                request, = (row for row in rows if row["kind"] == "http_request")
+                edge = request["_edge"]
+                self.assertEqual(edge["configuredOrigin"], expected)
+                self.assertEqual(edges["uri_path"](edge["uri"]), "/v1/units/{segment}/action")
+                self.assertEqual(edges["request_key"](edge["method"], edges["uri_path"](edge["uri"])),
+                                 ("POST", ("v1", "units", None, "action")))
+                self.assertIn("nonempty, non-dot", request["uncertainty"])
+
+        for call in (
+            'fetch(new Request("/units"))',
+            'fetch(`/units/${id}`)',
+            'fetch(`/units/${encodeURIComponent("..")}`)',
+            'fetch("/units", { ...options })',
+            'fetch("/units", { method: options.method })',
+            'fetch("/units", { method: "TRACE" })',
+            'fetch("/units", { method: "GET", body: id })',
+        ):
+            with self.subTest(call=call):
+                process, context = selected("Units.ts", f"async function score(id: string, options: Options) {{ {call}; }}")
+                rows, _ = self.project(process, context)
+                self.assertFalse(any(row["kind"] == "http_request" for row in rows))
+
+    def test_kafkajs_topics_require_an_awaited_subscription_on_the_same_consumer_setup(self):
+        self.require_typescript()
+        text = """import { Kafka } from "kafkajs";
+const kafka = new Kafka({ brokers: [] });
+const consumer = kafka.consumer({ groupId: "a" });
+const runner = consumer;
+const other = kafka.consumer({ groupId: "b" });
+const known = "unit.available";
+async function receive() {}
+async function main(dynamic: string, enabled: boolean) {
+    if (enabled) await consumer.subscribe({ topics: ["branch.only"] });
+    await other.subscribe({ topic: "other.only" });
+    await consumer.subscribe({ topic: dynamic });
+    consumer.subscribe({ topic: "unawaited.only" });
+    await consumer.subscribe({ topics: [known, "unit.completed"] });
+    await runner.run({ eachMessage: receive });
+    await consumer.subscribe({ topic: "later.only" });
+}
+"""
+        candidate, = self.adapter["discover_background"]({"Worker.ts": {"text": text}}, node=self.node,
+                                                         deadline=time.monotonic() + 10, family="typescript")
+        self.assertEqual(candidate["topics"], ["unit.available", "unit.completed"])
+        self.assertTrue(candidate["topicCoverageOpen"])
+        subscription, = candidate["subscriptions"]
+        self.assertIn("subscribe({ topics: [known", text[subscription["start"]:subscription["end"]])
+        origin, = candidate["topicSources"]
+        self.assertEqual(text[origin["start"]:origin["end"]], 'known = "unit.available"')
+
+        scripts = MANAGED.parent
+        helper = runpy.run_path(str(scripts / "docs_run_prepared.py"), init_globals={
+            "sha": lambda data: "sha256:" + sha256(data).hexdigest(),
+            "encode": lambda value: json.dumps(value, sort_keys=True).encode()})
+        _, context = selected("Worker.ts", text)
+        record, = context["sourceRanges"]
+        occurrence = {"snapshot": "worker-snapshot", "blob": "worker-blob"}
+        origin = {**record, "occurrence": occurrence}
+        requirement, _, _, _, facts = helper["background_operation"](
+            "listener", candidate, {"Worker.ts": origin}, {HANDLE: origin})
+        self.assertEqual(requirement["trigger"]["configuration"]["topics"], ["unit.available", "unit.completed"])
+        self.assertEqual(len(requirement["trigger"]["subscriptionSources"]), 1)
+        self.assertTrue(any(fact["kind"] == "background-topic-boundary" for fact in facts))
+
+    def test_kotlin_publication_uses_qualified_receiver_and_literal_topic(self):
+        body = """fun score(publisher: org.springframework.kafka.core.KafkaTemplate<String, String>, value: String) {
+    publisher.send("parcel.available", value)
+}
+"""
+        for label, text in (("typed", body), ("foreign", body.replace("org.springframework.kafka.core", "internal.broker")),
+                            ("dynamic", body.replace('"parcel.available"', 'value')),
+                            ("overload", body.replace('"parcel.available", value', 'value'))):
+            with self.subTest(form=label):
+                process, context = selected("Worker.kt", text)
+                rows, _ = self.project(process, context)
+                publications = [row for row in rows if row.get("_edge", {}).get("kind") == "PUBLISH"]
+                if label != "typed":
+                    self.assertEqual(publications, [])
+                    continue
+                row, = publications
+                self.assertEqual(row["_edge"]["site"], HANDLE)
+                self.assertEqual(row["_edge"]["topic"], "parcel.available")
+                self.assertIn("assumed", row["uncertainty"])
 
     def require_roslyn(self):
         dotnet = shutil.which("dotnet")

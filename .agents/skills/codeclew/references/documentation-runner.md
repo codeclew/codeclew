@@ -89,11 +89,14 @@ A discovered background entry has its own starter page, sequence template,
 registration and callback source view, and review requirement.
 
 The same views can cite across selected services when retained calls and
-registrations share an HTTP route or message topic. Storage links use matching
-retained table operands and can include a registered reader, publication and
-subscription. Conditions and explicit unknowns accompany these source links.
-A matching route carries no deployment guarantee, and matching topics or SQL
-tables leave delivery, database identity, row lineage and durability open.
+registrations share an HTTP route or message topic. Supported URL templates
+retain their literal path segments while qualifying encoded parameters and
+configured origins. KafkaJS topic evidence comes from an awaited subscription
+on the same consumer before its callback registration. Storage links use
+matching retained table operands within a service and can continue through a
+registered poller, publication and subscriber. A matching table name across
+services leaves the database binding open. Conditions and explicit unknowns
+accompany every hop, including deployment, delivery, row lineage and durability.
 Cross-service source anchors identify the owning service and revision. Their
 citation manifests are relative to the service index of the annotated view.
 

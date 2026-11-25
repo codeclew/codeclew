@@ -60,10 +60,11 @@ module.exports = function discover(ts, files) {
             ts.isPropertyAccessExpression(node.expression) && !node.expression.questionDotToken &&
             node.expression.name.text === name && node.expression.expression;
     }
-    function consumer(node) {
-        if (!node) return undefined;
+    function consumer(node, depth = 0) {
+        if (!node || depth >= 4) return undefined;
         const item = binding(node, true);
         const create = constant(item);
+        if (create && ts.isIdentifier(create)) return consumer(create, depth + 1);
         const receiver = create && member(create, "consumer");
         const kafka = receiver && constant(binding(receiver, true));
         if (kafka && ts.isNewExpression(kafka) && imported(kafka.expression, "Kafka", ["kafkajs"])) return item;
@@ -113,7 +114,7 @@ module.exports = function discover(ts, files) {
                     }
                 }
                 const use = member(node, "commitOffsets");
-                if (use && receiver && binding(use, true) === receiver && offsets.length < 8) {
+                if (use && receiver && consumer(use) === receiver && offsets.length < 8) {
                     offsets.push({use: range(use), call: range(node), declaration: range(receiver),
                         consumer: range(receiver.initializer)});
                 }
@@ -147,20 +148,69 @@ module.exports = function discover(ts, files) {
         ts.forEachChild(node, visit);
     }
     for (const source of usable.values()) visit(source);
-    return registrations.map(({node, handler, runner, options, kind}) => {
+    function setupStatement(call, requireAwait) {
+        let expression = call;
+        if (ts.isAwaitExpression(expression.parent)) expression = expression.parent;
+        else if (requireAwait) return;
+        const statement = expression.parent;
+        if (ts.isExpressionStatement(statement) &&
+            (ts.isBlock(statement.parent) || ts.isSourceFile(statement.parent))) return statement;
+    }
+    function topicScalar(node, evidence, depth = 0) {
+        if (!node || depth >= 4) return;
+        if (ts.isStringLiteralLike(node)) {
+            if (/^[A-Za-z0-9._-]{1,249}$/.test(node.text) && node.text !== "." && node.text !== "..") return node.text;
+            return;
+        }
+        if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+            return topicScalar(node.expression, evidence, depth);
+        }
+        const item = binding(node, true);
+        if (!item || item.getSourceFile() === node.getSourceFile() && item.end > node.getStart()) return;
+        const result = topicScalar(constant(item), evidence, depth + 1);
+        if (result) evidence.push(range(item));
+        return result;
+    }
+    function topicNames(call) {
+        if (call.arguments.length !== 1) return;
+        const options = properties(call.arguments[0]);
+        const single = options?.get("topic"), multiple = options?.get("topics");
+        if (Boolean(single) === Boolean(multiple)) return;
+        const item = single || multiple;
+        if (!ts.isPropertyAssignment(item)) return;
+        const initializer = item.initializer;
+        if (multiple && !ts.isArrayLiteralExpression(initializer)) return;
+        const entries = single ? [initializer] : initializer.elements;
+        if (!entries.length || entries.length > 8) return;
+        const evidence = [];
+        const topics = entries.map(entry => topicScalar(entry, evidence));
+        if (topics.every(Boolean)) return {topics, evidence};
+    }
+    function subscriptionSetup(run, runner) {
         const calls = subscriptions.get(runner) || [];
-        const topics = calls.map(call => {
-            const item = properties(call.arguments[0])?.get("topic");
-            return item && ts.isPropertyAssignment(item) && ts.isStringLiteralLike(item.initializer) &&
-                item.initializer.text.length <= 200 && item.initializer.text;
-        });
+        const registration = setupStatement(run, false);
+        const topics = new Set(), proof = [], topicSources = [];
+        let open = calls.length > 8;
+        for (const call of calls.slice(0, 8)) {
+            const preceding = setupStatement(call, true);
+            const names = registration && preceding?.parent === registration.parent &&
+                preceding.end <= registration.getStart() && topicNames(call);
+            if (!names || topics.size + names.topics.length > 8) {
+                open = true;
+                continue;
+            }
+            for (const topic of names.topics) topics.add(topic);
+            proof.push(range(call));
+            topicSources.push(...names.evidence);
+        }
+        return {topics: [...topics], subscriptions: proof, topicSources, topicCoverageOpen: open || !topics.size};
+    }
+    return registrations.map(({node, handler, runner, options, kind}) => {
         const autoCommit = options?.get("autoCommit");
         return {kind, name: caption(handler) || (kind === "INTERVAL" ? "Interval callback" : "KafkaJS eachMessage"),
             registration: range(node), callback: range(handler),
             ...(kind === "INTERVAL" ? {interval: node.arguments[1].text} :
-                {topics: topics.length <= 8 && topics.every(Boolean) ? [...new Set(topics)] : [],
-                 subscriptions: calls.length <= 8 ? calls.map(range) : [],
-                 manualOffsets: Boolean(autoCommit && ts.isPropertyAssignment(autoCommit)
+                {...subscriptionSetup(node, runner), manualOffsets: Boolean(autoCommit && ts.isPropertyAssignment(autoCommit)
                     && autoCommit.initializer.kind === ts.SyntaxKind.FalseKeyword)}),
             ...context(handler, runner)};
     });

@@ -328,8 +328,7 @@ function scan(scope, inherited) {
         for (const binding of initial.messageValues.keys()) if (captured.has(binding)) initial.messageValues.delete(binding);
     }
     const immutable = binding => binding.declarations?.[0]?.parent.flags & ts.NodeFlags.Const;
-    function localBinding(node) {
-        const value = symbol(node);
+    function localBinding(node, value = symbol(node)) {
         const declaration = value?.declarations?.length === 1 && value.declarations[0];
         if (!declaration || !ts.isVariableDeclaration(declaration) || captured.has(value) && !immutable(value)) {
             return undefined;
@@ -487,28 +486,101 @@ function scan(scope, inherited) {
         }
         return node;
     }
+    function transportConstant(expression, depth = 0, shorthand) {
+        const node = unwrap(expression);
+        if (!node || !ts.isIdentifier(node) || depth >= 4) return node;
+        const binding = localBinding(node, shorthand);
+        const declaration = binding && immutable(binding) && binding.declarations[0];
+        return declaration?.initializer && declaration.end <= node.getStart(scope.file)
+            ? transportConstant(declaration.initializer, depth + 1) : node;
+    }
+    function requestAddress(expression) {
+        const node = transportConstant(expression);
+        if (!node) return;
+        if (ts.isStringLiteralLike(node)) return {uri: node.text};
+        if (!ts.isTemplateExpression(node) || node.templateSpans.length > 8) return;
+        let rendered = node.head.text;
+        let configuredOrigin = false, encodedSegment = false;
+        const reference = item => ts.isIdentifier(item) || ts.isPropertyAccessExpression(item) &&
+            !item.questionDotToken && reference(item.expression);
+        for (const [index, span] of node.templateSpans.entries()) {
+            const value = transportConstant(span.expression), tail = span.literal.text;
+            if (rendered.includes("?")) break;
+            if (!index && !rendered && tail.startsWith("/") && !tail.startsWith("//")) {
+                if (ts.isStringLiteralLike(value)) {
+                    if (!/^https?:\/\/[^/?#\s]+\/?$/i.test(value.text) || value.text.endsWith("/")) return;
+                    rendered = value.text + tail;
+                    continue;
+                }
+                if (!reference(unwrap(span.expression))) return;
+                configuredOrigin = true;
+                rendered = tail;
+                continue;
+            }
+            if (!rendered.endsWith("/") || tail && !tail.startsWith("/") && !tail.startsWith("?")) return;
+            if (ts.isStringLiteralLike(value)) {
+                if (!/^[A-Za-z0-9_-][A-Za-z0-9._~-]*$/.test(value.text)) return;
+                rendered += value.text + tail;
+                continue;
+            }
+            if (!ts.isCallExpression(value) || ts.isOptionalChain(value) || !ts.isIdentifier(value.expression) ||
+                value.expression.text !== "encodeURIComponent" || symbol(value.expression) ||
+                value.arguments.length !== 1 || ts.isSpreadElement(value.arguments[0])) return;
+            const operand = transportConstant(value.arguments[0]);
+            if (ts.isStringLiteralLike(operand)) {
+                if (!/^[A-Za-z0-9_-][A-Za-z0-9._~-]*$/.test(operand.text)) return;
+                rendered += operand.text + tail;
+                continue;
+            }
+            encodedSegment = true;
+            rendered += "{segment}" + tail;
+        }
+        if (rendered.length > 512 || !rendered.startsWith("/") && !/^https?:\/\//i.test(rendered)) return;
+        return {uri: rendered, configuredOrigin, encodedSegment};
+    }
     function transport(call, state, awaited) {
         if (ts.isOptionalChain(call)) return;
         const site = source(scope, call);
         const occurrence = scope.id + ":" + call.getStart();
         const target = unwrap(call.expression);
-        const args = call.arguments.map(unwrap);
+        const args = call.arguments.map(argument => transportConstant(argument));
         const members = object => {
-            if (!object || !ts.isObjectLiteralExpression(object) ||
-                object.properties.some(item => !ts.isPropertyAssignment(item) || ts.isComputedPropertyName(item.name))) return;
-            const pairs = object.properties.map(item => [item.name.text, unwrap(item.initializer)]);
-            if (new Set(pairs.map(pair => pair[0])).size === pairs.length) return new Map(pairs);
+            if (!object || !ts.isObjectLiteralExpression(object)) return;
+            const fields = new Map();
+            for (const item of object.properties) {
+                if (!item.name || !(ts.isIdentifier(item.name) || ts.isStringLiteral(item.name)) ||
+                    fields.has(item.name.text)) return;
+                if (ts.isPropertyAssignment(item)) {
+                    fields.set(item.name.text, transportConstant(item.initializer));
+                } else if (ts.isShorthandPropertyAssignment(item) && !item.objectAssignmentInitializer) {
+                    const binding = scope.checker.getShorthandAssignmentValueSymbol(item);
+                    fields.set(item.name.text, transportConstant(item.name, 0, binding));
+                } else {
+                    return;
+                }
+            }
+            return fields;
         };
         if (ts.isIdentifier(target) && target.text === "fetch" && !symbol(target) &&
-            args.length <= 2 && args[0] && ts.isStringLiteralLike(args[0])) {
+            args.length >= 1 && args.length <= 2 && !call.arguments.some(ts.isSpreadElement)) {
+            // Request objects and spread/computed options can supply their own methods.
             const options = members(args[1]);
             if (args.length === 2 && !options) return;
-            const method = options?.get("method");
-            if (method && !ts.isStringLiteralLike(method)) return;
-            const uri = args[0].text;
+            const methodValue = options?.get("method");
+            if (methodValue && !ts.isStringLiteralLike(methodValue)) return;
+            const spelling = methodValue?.text || "GET";
+            const upper = spelling.toUpperCase();
+            const method = /^(?:DELETE|GET|HEAD|OPTIONS|POST|PUT)$/.test(upper) ? upper : spelling;
+            if (!/^(?:DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT)$/.test(method)) return;
+            const body = options?.get("body");
+            if (body && (method === "GET" || method === "HEAD") && body.kind !== ts.SyntaxKind.NullKeyword) return;
+            const address = requestAddress(call.arguments[0]);
+            if (!address) return;
+            const uncertainty = "The fetch implementation and runtime destination remain open." +
+                (address.configuredOrigin ? " The route shape assumes the configured prefix is an HTTP origin." : "") +
+                (address.encodedSegment ? " Each encoded value must supply one nonempty, non-dot path segment." : "");
             emit("http_request", "The source " + (awaited ? "awaits" : "calls") + " the retained fetch expression.",
-                [site], state, "The fetch implementation and runtime destination remain open.",
-                {_edge: {kind: "HTTP", site, uri, occurrence, method: method?.text || "GET"}});
+                [site], state, uncertainty, {_edge: {kind: "HTTP", site, ...address, occurrence, method}});
             return occurrence;
         } else if (ts.isPropertyAccessExpression(target) && target.name.text === "send" && args.length === 1) {
             const options = members(args[0]);
