@@ -616,6 +616,11 @@ function scan(scope, inherited) {
     function sqlFact(sql, call, site, state, awaited) {
         const name = callName(call);
         const sites = [site, source(scope, sql.literal)];
+        const write = sql.table && sql.write ? {
+            _edge: {kind: sql.kind, site, table: sql.table, occurrence: scope.id + ":" + call.getStart()},
+            _writeRange: {host: scope.excerpt.id, start: call.getStart(scope.file) + scope.offset,
+                end: call.getEnd() + scope.offset, units: "UTF16"},
+        } : {};
         const execution = "Execution, database identity and outcome depend on the runtime query binding.";
         if (sql.select) {
             const {table, tableAlias, selected, distinct, where, orderBy, limit, offset} = sql.select;
@@ -629,13 +634,13 @@ function scan(scope, inherited) {
                 (clauses.length ? " with " + clauses.join(", ") : "") + ".", sites, state, execution, {select: sql.select, _edge: {kind: "SELECT", site, table}});
         } else if (sql.kind !== "INSERT") {
             emit("transaction_step", (awaited ? "Awaits " : "Calls ") + name + " with the SQL command " + sql.label + ".",
-                sites, state, execution, sql.table ? {_edge: {kind: sql.kind, site, table: sql.table}} : {});
+                sites, state, execution, write);
             return;
         } else {
             const suffix = [sql.conflict, sql.predicate && "(" + sql.predicate + ")", sql.returning && "RETURNING " + sql.returning]
                 .filter(Boolean).join(" ");
             emit("sql_request", (awaited ? "Awaits " : "Calls ") + name + " with " + sql.label + (suffix ? " and " + suffix : "") + ".",
-                sites, state, execution, {_edge: {kind: "INSERT", site, table: sql.table}});
+                sites, state, execution, write);
             if (sql.columns?.length || sql.conflictColumns?.length || sql.assignments?.length) {
                 const insert = sql.columns?.length ? "The insert names columns " + sql.columns.join(", ") + "." : undefined;
                 const target = sql.conflictColumns?.length ? " The conflict target names " + sql.conflictColumns.join(", ") + "." : "";
@@ -838,7 +843,7 @@ function scan(scope, inherited) {
         const validated = compatibility && !awaited && target && compatibility.validate(target, args);
         const effect = relevant(call, depth ? call : statement);
         const sites = [site, ...effect.sites];
-        const sql = sqlRequest(ts, call, resolveConstant, Boolean(focus)) ||
+        const sql = sqlRequest(ts, call, resolveConstant, Boolean(focus), !focus) ||
             query && effect.kind !== "http_forward" && sqlRequest.select(ts, call, resolveSelectConstant);
         if (focus) state = focus.call(scope, call, depth ? undefined : statement, sql, state, awaited, localBinding);
         const place = sql ? callName(call) + " with " + sql.label : effect.description || effect.name;
@@ -1234,7 +1239,7 @@ function scan(scope, inherited) {
             if (inventory && state.cleanup) inventory.gap(statement);
             const kind = ts.isBreakStatement(statement) ? "break" : "continue";
             const text = kind === "break" ? "Leaves the loop" : "Starts the next iteration";
-            return {normal: [], exits: [{kind, text, state, site: source(scope, statement), resume: state}]};
+            return {normal: [], exits: [{kind, text, state, statement, site: source(scope, statement), resume: state}]};
         }
         if (ts.isIfStatement(statement)) {
             const predicate = unwrap(statement.expression);

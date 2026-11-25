@@ -789,8 +789,13 @@ class Facts:
                     text += " with " + transaction + " as its transaction argument"
             else:
                 continue
+            anchor = step["site"]
+            write_range = {"host": step["sources"][0], "start": anchor["startByte"], "end": anchor["endByte"],
+                           "units": "ABSOLUTE_BYTES", "textDigest": anchor["textDigest"]}
             self.add_path(kind, text + ".", path, events, proof, sources=refs,
-                          _edge={"kind": sql["verb"], "table": sql["table"], "site": step["sources"][0]})
+                          _edge={"kind": sql["verb"], "table": sql["table"], "site": step["sources"][0],
+                                 "occurrence": key},
+                          **({"_writeRange": write_range} if kind == "sql-write" and focus is None else {}))
             if command:
                 for check in command.get("rowChecks", ()):
                     if reader := self.name(check["readerCall"]):

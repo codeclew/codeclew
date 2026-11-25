@@ -248,7 +248,7 @@ def kotlin_callback_state(process, context):
     return facts, {ref: value for ref, value in witnesses.items() if ref in used}
 
 
-def typescript(process, context, node):
+def typescript(process, context, node, focus_witnesses=None):
     projector = module("prepared_typescript")
     if not process.get("root"):
         site = complete_site(context)
@@ -279,6 +279,13 @@ def typescript(process, context, node):
             row["kind"] in {"CALL_BOUNDARY", "CANDIDATE"} or row.get("event") in {"CALL", "CONSTRUCT"}
             for row in process.get("facts", ()))):
         limitation(context, "TYPESCRIPT_CALL_TARGETS_OPEN")
+    if focus_witnesses is not None:
+        focus, found = module("prepared_write_focus")["project"](
+            process, context, facts, lambda operation, frame, site, limit: projector["derive_write"](
+                operation, frame, None, site, context.get("_typescriptModule"), node=node, timeout=limit),
+            specialize_topics=True)
+        focus_witnesses.update(found)
+        facts = [*facts, *focus]
     return facts
 
 
@@ -339,7 +346,7 @@ def captured_csharp_unit(context, source):
     return raw, occurrence["snapshot"]
 
 
-def managed(process, context):
+def managed(process, context, focus_witnesses=None):
     evidence = process["sources"]
     roots = root_sources(process) & evidence.keys()
     if not roots:
@@ -407,7 +414,14 @@ def managed(process, context):
                               module("effect_commands"), supporting=supporting)
     if graph and graph.get("status") == "OPEN":
         limitation(context, "CSHARP_CONTROL_FLOW_PROJECTION_OPEN")
-    return module("prepared_managed")["derive"]({**process, "routes": []}, context, graph)
+    adapter = module("prepared_managed")
+    rows = adapter["derive"]({**process, "routes": []}, context, graph)
+    if focus_witnesses is None:
+        return rows
+    focus, found = module("prepared_write_focus")["project"](
+        process, context, rows, lambda operation, frame, site, _: adapter["derive_write"](operation, frame, graph, site))
+    focus_witnesses.update(found)
+    return [*rows, *focus]
 
 def roslyn_command(context):
     dotnet = shutil.which("dotnet")
@@ -470,16 +484,22 @@ def project(process, context, *, node):
     if family is KOTLIN:
         if process.get("root"):
             process, context, witnesses = kotlin_receivers(process, context)
-            rows = module("prepared_kotlin")["derive"](process, context)
+            adapter = module("prepared_kotlin")
+            rows = adapter["derive"](process, context)
             state_rows, state_witnesses = kotlin_callback_state(process, context)
+            focus, found = module("prepared_write_focus")["project"](
+                process, context, rows, lambda operation, frame, site, _: adapter["derive_write"](operation, frame, None, site),
+                reserved=state_witnesses)
+            rows.extend(focus)
+            witnesses.update(found)
             rows = [*state_rows, *rows]
             witnesses.update(state_witnesses)
         else:
             rows, witnesses = kotlin_discovery(process, context)
     elif family is TYPESCRIPT:
-        rows = typescript(process, context, node)
+        rows = typescript(process, context, node, witnesses)
     else:
-        rows = managed(process, context)
+        rows = managed(process, context, witnesses)
     allowed = set(aliases) | witnesses.keys()
     facts = []
     for row in rows:
@@ -489,7 +509,7 @@ def project(process, context, *, node):
         values = {key: row[key] for key in ("kind", "text", "condition", "uncertainty", "status") if key in row}
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
-        for private in ("_edgeCause", "_edgePhase"):
+        for private in ("_edgeCause", "_edgePhase", "_writeFocus"):
             if private in row:
                 values[private] = row[private]
         declared = row.get("authority")

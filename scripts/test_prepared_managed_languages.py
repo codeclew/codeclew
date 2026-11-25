@@ -655,6 +655,146 @@ class Codec {
                 facts, _ = self.scheduled_facts(source)
                 self.assertNotIn(reaction, {row["kind"] for row in facts}, facts)
 
+    def test_write_focus_memoizes_exact_utf16_site_and_binds_original_occurrence(self):
+        projector = self.adapter["project"].__globals__["module"]("prepared_write_focus")["project"]
+        text = 'const label = "🗂"; await client.query("INSERT INTO parcel VALUES (1)");'
+        call = 'client.query("INSERT INTO parcel VALUES (1)")'
+        process, context = selected("Intake.ts", text)
+        original = process["sources"]["s1"]
+        original["occurrence"] = {"snapshot": "captured-snapshot", "blob": "captured-file", "startByte": 0,
+                                  "endByte": len(text.encode())}
+        host = context["sourceRanges"][0]
+        host["id"] = "S001"
+        process["trigger"] = {"configuration": {"topics": ["parcel.received", "parcel.retried"]}}
+        start = text.index(call)
+        utf16 = lambda char: len(text[:char].encode("utf-16-le")) // 2
+        address = {"host": "S001", "start": utf16(start), "end": utf16(start + len(call)), "units": "UTF16"}
+        rows = [{"_edge": {"kind": "INSERT", "site": "S001", "occurrence": occurrence},
+                 "_writeRange": address, "sources": ["S001"]} for occurrence in ("local-a", "local-b")]
+        replayed = []
+
+        def invoke(_process, _context, site, _timeout):
+            replayed.append((site["text"], site.get("incomingTopic")))
+            return [{"kind": "write_request", "text": "The path reaches this insert.", "authority": "TEST_SOURCE",
+                     "sources": [site["id"]]}]
+
+        facts, witnesses = projector(process, context, rows, invoke, specialize_topics=True)
+        self.assertEqual(replayed, [(call, "parcel.received"), (call, "parcel.retried")])
+        self.assertEqual(len(facts), 4)
+        self.assertEqual(len(witnesses), 1)
+        witness, = witnesses.values()
+        self.assertEqual(witness["startByte"], len(text[:start].encode()))
+        self.assertEqual(witness["occurrence"]["blob"], "captured-file")
+        helper = runpy.run_path(str(MANAGED.parent / "docs_run_prepared.py"), init_globals={
+            "sha": lambda data: "sha256:" + sha256(data).hexdigest(),
+            "digest": lambda value: digest(json.dumps(value, sort_keys=True))})
+        self.assertEqual(helper["extra_binding"](witness, {HANDLE: original}), HANDLE)
+        wrong = {**original, "occurrence": {**original["occurrence"], "blob": "another-file"}}
+        self.assertIsNone(helper["extra_binding"](witness, {HANDLE: wrong}))
+
+    def test_installed_kotlin_focus_cites_decoded_values_at_two_reached_writes(self):
+        source = """import java.io.ByteArrayInputStream
+import java.util.zip.GZIPInputStream
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.kafka.annotation.KafkaListener
+import org.springframework.transaction.support.TransactionTemplate
+
+class Intake(private val transaction: TransactionTemplate, private val db: JdbcTemplate, private val parser: Parser) {
+    @KafkaListener(topics = ["parcel.received"])
+    fun receive(batch: List<ByteArray>) {
+        transaction.executeWithoutResult {
+            for (packet in batch) {
+                val decoded = GZIPInputStream(ByteArrayInputStream(packet)).reader().readText()
+                val message = parser.parse(decoded)
+                if (message.kind != "parcel") continue
+                val first = message.items.first()
+                val identifier = first.external
+                db.update("INSERT INTO parcel (id) VALUES (?)", identifier)
+                db.update("INSERT INTO delivery_queue (id) VALUES (?)", identifier)
+                if (message.audit) db.update("INSERT INTO audit_log (tag) VALUES (?)", "received")
+            }
+        }
+    }
+}
+"""
+        root = source[source.index("@KafkaListener"):source.rindex("\n}")]
+        rows, witnesses = self.kotlin_callback_facts(source, root, "KAFKA_LISTENER", "receive")
+        writes = {row["_edge"]["table"]: row["_edge"].get("occurrence") for row in rows if row.get("_edge", {}).get("kind") == "INSERT"}
+        self.assertEqual(set(writes), {"parcel", "delivery_queue", "audit_log"}, rows)
+        for table in ("parcel", "delivery_queue"):
+            selected = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes[table]]
+            lineage = [row for row in selected if row["kind"] == "write_lineage"]
+            self.assertTrue(any("parser.parse" in row["text"] and "GZIPInputStream" in row["text"] and
+                                "first" in row["text"] and "message.kind" in row.get("condition", "") for row in lineage), selected)
+            self.assertTrue(any("INSERT INTO " + table in witnesses[handle]["text"] for row in lineage
+                                for handle in row["sources"] if handle in witnesses), lineage)
+        audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes["audit_log"]]
+        self.assertFalse(any("parser.parse" in row["text"] for row in audit if row["kind"] == "write_lineage"), audit)
+
+    def test_installed_typescript_focus_checks_prefix_and_transaction_at_each_occurrence(self):
+        self.require_typescript()
+        root = """async function receive({topic, message}: Envelope) {
+    if (topic !== "parcel.received") return;
+    const payload = JSON.parse(unzip(message.value).toString("utf8"));
+    if (payload.kind !== "parcel") return;
+    for (const item of payload.items) {
+        if (!item.external) continue;
+        const client = await pool.connect();
+        await client.query("BEGIN");
+        await client.query("INSERT INTO parcel (id) VALUES ($1)", [item.external]);
+        await client.query("INSERT INTO delivery_queue (id) VALUES ($1)", [item.external]);
+        await client.query("COMMIT");
+    }
+    if (topic === "other.received") {
+        await pool.query("INSERT INTO audit_log (tag) VALUES ($1)", ["other"]);
+    }
+}"""
+        process, context = selected("Intake.ts", root)
+        process.update(entryKind="KAFKA_LISTENER", entrySymbol="receive",
+                       trigger={"kind": "EACH_MESSAGE", "authority": "KAFKAJS_RETAINED_SOURCE", "callback": "s1",
+                                "configuration": {"topics": ["parcel.received"]}})
+        rows, witnesses = self.project(process, context)
+        writes = {row["_edge"]["table"]: row["_edge"].get("occurrence") for row in rows if row.get("_edge", {}).get("kind") == "INSERT"}
+        for table in ("parcel", "delivery_queue"):
+            focused = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes.get(table)]
+            self.assertTrue(any(row["kind"] == "write_guard" and "payload.kind" in row["text"] and
+                                "item.external" in row["text"] for row in focused), focused)
+            self.assertTrue(any(row["kind"] == "write_sql" and "item.external" in row["text"] for row in focused), focused)
+            self.assertTrue(any(row["kind"] == "write_commit" for row in focused), focused)
+            self.assertTrue(any("INSERT INTO " + table in witnesses[ref]["text"] for row in focused
+                                for ref in row["sources"] if ref in witnesses), focused)
+        audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes.get("audit_log")]
+        self.assertFalse(any(row["kind"] in {"write_request", "write_commit"} for row in audit), audit)
+
+    def test_installed_roslyn_reuses_projected_graph_for_a_reached_write(self):
+        self.require_roslyn()
+        header = """using System.Data.Common;
+using System.Threading.Tasks;
+class Intake
+{
+"""
+        root = """    public async Task Store(DbConnection database, bool enabled)
+    {
+        if (!enabled) return;
+        var tx = await database.BeginTransactionAsync();
+        var command = database.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "INSERT INTO parcel (id) VALUES (5)";
+        await command.ExecuteNonQueryAsync();
+        await tx.CommitAsync();
+    }"""
+        text = header + root + "\n}\n"
+        process, context = selected("Intake.cs", text, standalone=root, start=header.count("\n") + 1)
+        context["_nativeFiles"]["Intake.cs"] = captured_csharp(text, "Intake.cs")
+        process["entryKind"] = "HOSTED_BACKGROUND_WORKER"
+        rows, witnesses = self.project(process, context)
+        write = next(row["_edge"]["occurrence"] for row in rows if row.get("_edge", {}).get("kind") == "INSERT")
+        focused = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == write]
+        self.assertTrue(any(row["kind"] == "transactional-write-completion" for row in focused), focused)
+        self.assertTrue(any(row["kind"] == "conditional-no-write" and "enabled" in row["text"] for row in focused), focused)
+        self.assertTrue(any("command.ExecuteNonQueryAsync()" == witnesses[ref]["text"] for row in focused
+                            for ref in row["sources"] if ref in witnesses), focused)
+
     def test_conflicting_source_digest_cannot_reuse_a_work_handle(self):
         process, context = selected("score.kt", KOTLIN)
         other = context["sourceRanges"][0]["text"].replace("400", "401")
@@ -843,14 +983,19 @@ public static class ScoreApi
         text = header + declaration + "\n}\n"
         process, context = selected("ScoreApi.cs", text, standalone=declaration, start=6)
         context["_nativeFiles"]["ScoreApi.cs"] = captured_csharp(text)
-        facts, _ = self.project(process, context)
+        facts, witnesses = self.project(process, context)
         found = [row for row in facts if row["kind"] == "http-commit-before-response"
                  and "is not null` is false" in row.get("condition", "")]
         self.assertTrue(found, facts)
         for row in found:
             self.assertIn("command execution", row["text"])
             self.assertIn("leave the existing row unchanged", row["text"])
-            self.assertEqual(row["sources"], [HANDLE])
+            if "_writeFocus" in row:
+                self.assertEqual(set(row["sources"]) - witnesses.keys(), {HANDLE})
+                self.assertTrue(any(witnesses[ref]["text"] == "command.ExecuteScalarAsync()"
+                                    for ref in row["sources"] if ref in witnesses), row)
+            else:
+                self.assertEqual(row["sources"], [HANDLE])
 
     def test_roslyn_stored_row_delivery_uses_matching_key_receiver_and_order(self):
         self.require_roslyn()

@@ -57,7 +57,7 @@ function parameterPositions(tokens) {
     return [...new Set(tokens.filter(item => /^\$[1-9]\d*$/.test(item.value)).map(item => +item.value.slice(1)))];
 }
 
-function describe(text, additionalCommands) {
+function describe(text, additionalCommands, retainedWrites) {
     const tokens = tokenize(text);
     if (!tokens?.length) return undefined;
     const key = index => tokens[index]?.key;
@@ -67,9 +67,10 @@ function describe(text, additionalCommands) {
     }
     const operation = key(0);
     if (additionalCommands && operation === "SELECT") return {kind: "SELECT", label: "SELECT", parameters: []};
+    const moreWrites = additionalCommands || retainedWrites;
     const tableIndex = operation === "INSERT" && key(1) === "INTO" ? 2 :
-        additionalCommands && operation === "UPDATE" ? 1 :
-        additionalCommands && operation === "DELETE" && key(1) === "FROM" ? 2 : undefined;
+        moreWrites && operation === "UPDATE" ? 1 :
+        moreWrites && operation === "DELETE" && key(1) === "FROM" ? 2 : undefined;
     if (tableIndex === undefined || !identifier(tokens[tableIndex])) return undefined;
     let head = tableIndex + 1, table = tokens[tableIndex].value;
     while (key(head) === "." && identifier(tokens[head + 1]) && head < 7) {
@@ -266,9 +267,9 @@ function requestParts(ts, call, resolve) {
         values.elements.every(item => !ts.isOmittedExpression(item) && !ts.isSpreadElement(item)) ? values.elements : []};
 }
 
-module.exports = function sqlRequest(ts, call, resolve, additionalCommands) {
+module.exports = function sqlRequest(ts, call, resolve, additionalCommands, retainedWrites) {
     const parts = requestParts(ts, call, resolve);
-    const sql = parts && describe(parts.literal.text, additionalCommands);
+    const sql = parts && describe(parts.literal.text, additionalCommands, retainedWrites);
     return sql && {...sql, ...parts};
 };
 

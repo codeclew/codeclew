@@ -251,7 +251,7 @@ def selected_spans(process, context, excerpts, references, site):
     return selected
 
 
-def derive_write(process, context, graph, site, typescript_module=None):
+def derive_write(process, context, graph, site, typescript_module=None, *, node="node", timeout=12):
     """Project paths to this verified write under the retained callback binding."""
     identifier = site.get("id", "")
     if not SOURCE_ID.fullmatch(identifier) or not TYPESCRIPT_FILE.search(site.get("file", "")):
@@ -261,7 +261,9 @@ def derive_write(process, context, graph, site, typescript_module=None):
         return []
     excerpts, references = retained_ranges(process, context)
     spans = selected_spans(process, context, excerpts, references, site)
-    request = request_for(process, excerpts, references, context.get("_sourceOccurrences"))
+    request = request_for(process, excerpts, references, context.get("_sourceOccurrences"), allow_retained_body=True)
+    if request and (background := process.get("_background")):
+        background_anchors(request, references, process["sources"], background)
     callback = (process.get("trigger") or {}).get("callback")
     if request and callback in references:
         request["roots"] = [references[callback]]
@@ -270,7 +272,7 @@ def derive_write(process, context, graph, site, typescript_module=None):
                  "sources": [identifier]}]
     request["focus"] = {"site": identifier, "spans": spans,
                         **({"topic": site["incomingTopic"]} if isinstance(site.get("incomingTopic"), str) else {})}
-    return [fact for fact in project(request, typescript_module)
+    return [fact for fact in project(request, typescript_module, node=node, timeout=timeout)
             if fact["sources"] and set(fact["sources"]) <= allowed]
 
 

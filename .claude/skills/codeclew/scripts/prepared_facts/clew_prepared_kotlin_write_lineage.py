@@ -37,9 +37,9 @@ class Local:
         return replace(self, fields=tuple(fields.items()))
 
 
-def project(body, prefix, action, controls_type, failure):
+def project(body, prefix, action, controls_type, failure, *, include_derived=False):
     """Return independent source paths for each value that directly feeds the action."""
-    return Projection(body, controls_type, failure).derive(prefix, action)
+    return Projection(body, controls_type, failure).derive(prefix, action, include_derived)
 
 
 class Projection:
@@ -257,7 +257,7 @@ class Projection:
                     self.update(statement, invocation, values, conditions)
         return values, conditions
 
-    def derive(self, prefix, action):
+    def derive(self, prefix, action, include_derived):
         first, last = self.unit.token_indices.get(action.start), self.unit.token_ends.get(action.end)
         if first is None or last is None or not (invocation := self.invocation(self.unit.tokens[first:last + 1])):
             return ()
@@ -270,6 +270,6 @@ class Projection:
             if not (note := self.note(tokens)):
                 continue
             for origin in self.consume(tokens, values):
-                if origin.alternative:
+                if origin.alternative or (include_derived and len(origin.steps) > 1):
                     result.append(origin.under(conditions).with_step(f"the write receives {note.text}", note))
         return tuple(dict.fromkeys(result))[:MAX_ALTERNATIVES]

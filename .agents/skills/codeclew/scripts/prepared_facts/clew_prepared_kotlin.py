@@ -434,8 +434,15 @@ class Body:
             if owner:
                 shape = self.sql_shapes.get(key)
                 bound = shape is not None
-                edge = ({"_edge": {"kind": shape[0], "table": shape[1], "site": owner.citations[0]}}
-                        if bound and "__clew_kotlin_value_" not in shape[1] else {})
+                edge = {}
+                if bound and "__clew_kotlin_value_" not in shape[1]:
+                    anchor = self.ranges.by_ref[self.ref]
+                    occurrence = f"{anchor}:{owner.site.start}:{owner.site.end}"
+                    edge["_edge"] = {"kind": shape[0], "table": shape[1], "site": owner.citations[0],
+                                     "occurrence": occurrence}
+                    if shape[0] != "SELECT":
+                        edge["_writeRange"] = {"host": anchor, "start": owner.site.start,
+                                               "end": owner.site.end, "units": "CHARACTERS"}
                 self.projector.add("SQL_LITERAL", f"In {region(call)}, {owner.text} carries a literal {query.text}. "
                                    + ("Provider execution and storage outcome remain open." if bound else
                                       "SQL binding, provider execution and storage outcome remain open."),
@@ -1334,7 +1341,7 @@ class FocusedWrite(Projector):
 
     def value_lineage(self, body, prefix, action, note, trail, guards, transaction, normal_prefix=None):
         selected = {guard: Body.guard_text(guard, holds) for guard, holds in guards}
-        for value in WRITE_LINEAGE(body, prefix, action, Controls, FAILURE):
+        for value in WRITE_LINEAGE(body, prefix, action, Controls, FAILURE, include_derived=self.site is not None):
             if any(guard in selected and selected[guard] != text for text, guard in value.conditions):
                 continue
             statements = ". ".join(text[0].upper() + text[1:] for text, _ in value.steps)
