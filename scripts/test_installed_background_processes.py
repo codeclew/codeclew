@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FACT_CONTEXT = runpy.run_path(str(ROOT / "skills/codeclew/scripts/docs_run_fact_context.py"))
 
 
 def run(argv, cwd, env, allowed=(0,)):
@@ -78,7 +80,7 @@ def verify(options, base, service):
         plan = json.loads((output / "inputs/author-plan.json").read_text())
         slot, = (slot for slot in plan["slots"] if slot["kind"] == "OPERATION")
         prompt = (output / "inputs" / slot["prompt"]).read_text()
-        packet = json.loads(prompt.split("\n\n")[-1])
+        packet = FACT_CONTEXT["expand_fact_context"](json.loads(prompt.split("\n\n")[-1]))
         assert packet["requirement"]["entryKind"] == "SCHEDULED_JOB", packet["requirement"]
         group = packet["facts"][slot["requirement"]]
         kinds = {row["kind"] for key in ("facts", "boundaries") for row in group.get(key, [])}

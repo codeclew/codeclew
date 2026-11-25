@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections import defaultdict
 import hashlib
 from itertools import chain, zip_longest
-import json
 from pathlib import Path
 import re
 import runpy
@@ -14,6 +13,8 @@ MAX_PACKET_BYTES = 192 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
 MAX_OVERVIEW_FACTS = 64
 REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
+FACT_CONTEXT = runpy.run_path(str(Path(__file__).with_name('docs_run_fact_context.py')))
+expand_fact_context = FACT_CONTEXT['expand_fact_context']
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
            'type': 'Type',
@@ -334,7 +335,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
             if required:
                 packet['requirement'] = {key: required[key] for key in (
                     'id', 'kind', 'file', 'entryKind', 'entrySymbol', 'method', 'path', 'authority', 'boundaries') if key in required}
-            prompt = instructions + '\n\n' + json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n'
+            prompt = FACT_CONTEXT['author_prompt'](instructions, packet)
             return prompt, aliases
 
         if kind == 'OPERATION':

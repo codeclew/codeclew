@@ -148,8 +148,8 @@ class WeatherQualificationTests(unittest.TestCase):
         slot = {'key': 'op', 'kind': 'OPERATION', 'page': 'actual-page.md',
                 'requirement': requirement['id'], 'prompt': 'op.txt', 'citations': {'S1': 'm123:c'}}
         packet = {'slot': 'op', 'type': 'OPERATION', 'page': slot['page'], 'requirement': requirement,
-                  'facts': {requirement['id']: {'facts': [{'text': 'Local condition',
-                                                          'sources': ['S1'], 'lines': {'S1': ['2']}}]}},
+                  'facts': {requirement['id']: {'facts': [{'text': 'Local condition', 'authority': 'RETAINED_PATH',
+                      'condition': 'when `loaded` and `valid`', 'sources': ['S1'], 'lines': {'S1': ['2']}}]}},
                   'citations': {'S1': {'region': 'V1', 'authority': 'EXACT_SNAPSHOT_TEXT'}},
                   'sourceRanges': {'V1': {'service': 'dashboard', 'file': 'source.ts',
                                            'startLine': 1, 'endLine': 2, 'text': 'retained body'}}}
@@ -165,6 +165,12 @@ class WeatherQualificationTests(unittest.TestCase):
             self.assertEqual(['m123:c (lines 2)'], fact['anchors'])
             self.assertIn('operationPacket', fact)
             self.assertEqual(Q['sha'](b'retained body'), fact['locations']['m123:c']['bodySha256'])
+            packet['factContext'] = {'P1': {'condition': 'when `loaded`'}, 'S1': {'sources': ['S1']},
+                                     'L1': {'lines': {'S1': ['2']}}, 'A1': {'authority': 'RETAINED_PATH'}}
+            packet['facts'][requirement['id']]['facts'][0] = {
+                'text': 'Local condition', 'contextRefs': ['P1', 'S1', 'L1', 'A1'], 'conditionTail': ' and `valid`'}
+            path.write_text('Prepare one page.\n\n' + json.dumps(packet))
+            self.assertEqual(Q['collect'](run, inventory, plan)[1], result)
             packet['page'] = 'foreign-page.md'
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
             with self.assertRaisesRegex(ValueError, 'differs from its frozen slot'):

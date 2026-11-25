@@ -177,6 +177,12 @@ def structured_records(result, path, targets, alias_map, citations, refs, files,
                        operation_packet)
 
 
+@cache
+def fact_context_decoder():
+    script = HERE.parent.parent / 'skills/codeclew/scripts/docs_run_fact_context.py'
+    return runpy.run_path(str(script))['expand_fact_context']
+
+
 def collect(run, inventory, plan):
     statement_rows = {}
     scopes = select_scopes(inventory)
@@ -198,6 +204,8 @@ def collect(run, inventory, plan):
                     (slot['key'], slot['page'], slot['kind'], slot['requirement']),
                     'Isolated author packet identity differs from its frozen slot')
             operation_packet = refs.get(slot['requirement']) if slot['kind'] == 'OPERATION' else None
+            if 'factContext' in packet:
+                packet = fact_context_decoder()(packet)
             structured_records(statement_rows, path.relative_to(run), packet['facts'], slot['citations'],
                                packet['citations'], refs, files, packet['sourceRanges'], operation_packet)
     elif plan['mode'] == 'WORKSPACE':

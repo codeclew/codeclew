@@ -97,6 +97,11 @@ aliases. Both modes show narrower witness line ranges when available. The
 `prepared-facts.json` reviewer sidecar retains full witness coordinates, digests
 and preparation coverage.
 
+Isolated page packets can share repeated fact fields through `factContext`.
+For each fact, read the fields named by `contextRefs`. If it has a
+`conditionTail`, append that text to the referenced condition. The resulting
+source aliases and line anchors still identify the evidence for that fact.
+
 Preparation also looks for background entries in supported retained source.
 C# discovery binds the framework `AddHostedService<T>()` call to a retained
 `BackgroundService.ExecuteAsync` override. TypeScript and JavaScript discovery

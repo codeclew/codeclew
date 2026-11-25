@@ -716,7 +716,7 @@ else:
             plan = pages['page_jobs'](self.job, scope, {'services': {service: {}}},
                                       self.root / 'page-prompts', D['M']['MAX_PAGES'], 'Owned instructions.')
         slot = next(row for row in plan['slots'] if row['kind'] == 'OPERATION')
-        packet = json.loads((self.root / slot['prompt']).read_text().split('\n\n')[-1])
+        packet = pages['expand_fact_context'](json.loads((self.root / slot['prompt']).read_text().split('\n\n')[-1]))
         self.assertEqual(list(packet['facts']), [operation['id']])
         self.assertEqual(packet['omittedPreparedFacts'], 0)
         self.assertEqual(packet['preparationOmissions'][operation['id']]['facts'], 2)
@@ -2312,7 +2312,7 @@ class Unrelated {
                 self.assertEqual(len(found), 1, list(by_entry))
                 return found[0]
 
-            received = packet_for('receive')
+            received = D['P']['expand_fact_context'](packet_for('receive'))
             output = json.dumps(received)
             self.assertIn('selected kind required', output)
             self.assertIn('suffix selects Kotlin', output)
@@ -2439,6 +2439,15 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             '    } catch (error: IOException) {', '        throw error', '    }', '}',
         )
         helper_body = '\n'.join(helper_lines)
+        premise = (
+            'When the pending query has returned a row and its key selects a still-current parcel '
+            'and validation reaches the callback after checking the cached expiry and the transaction '
+            'is active and the external response has returned to this callback'
+        )
+        uncertainty = (
+            'The source establishes this argument on the indicated normal continuation. The later '
+            'committed store contents and delivery to another process depend on runtime outcomes.'
+        )
         essentials = {
             'ENTRY': 'The retained schedule uses fixedDelay = 1000.',
             'SQL_LITERAL': 'The callback selects pending parcels before starting the loop.',
@@ -2513,8 +2522,10 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                                  ('heap', 'send'), ('pointer', 'heap', 'catch'), ('catch',), ('guard', 'send')]
             reached = [fact(kind, text, sources=cites, **({'condition': 'otherwise'} if kind == 'guarded-outcome' else {}))
                        for (kind, text), cites in zip(essentials.items(), essential_sources)]
-            bulk = [fact('write_lineage', f'Projection {i}. ' + 'A retained value witness. ' * 10,
-                         sources=['pointer', 'guard', 'tx', 'send', 'write'], condition='selected parcel',
+            bulk = [fact('write_lineage', f'Projection {i}. ' + 'A retained value witness. ' * 17,
+                         sources=['pointer', 'guard', 'tx', 'send', 'write'],
+                         condition=f'{premise} and value position `{i}` is available', uncertainty=uncertainty,
+                         status='SOURCE_QUALIFIED_CANDIDATE',
                          _writeFocus={'occurrence': 'single-store-update'}) for i in range(235)]
             inventory = fact('composed-effect-inventory', 'Composes the reachable call steps. ' + 'A retained call. ' * 1200,
                              sources=['tx', 'send', 'write', 'catch'])
@@ -2595,12 +2606,17 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             self.assertEqual(len({json.dumps(proof, sort_keys=True) for proof in catalog}), 7)
             self.assertTrue(any(fact.get("condition") == "otherwise" for fact in operation["propositions"]))
             pages = D["P"]
-            for name, size in (("normal", 192 * 1024), ("limited", 18 * 1024)):
-                with patch.dict(pages["page_jobs"].__globals__, {"citation_load": citation_load, "MAX_PACKET_BYTES": size}):
+            context_codec = pages['FACT_CONTEXT']
+            plain = lambda instructions, packet: instructions + '\n\n' + context_codec['compact_json'](packet) + '\n'
+            for name, size in (('plain', 192 * 1024), ('normal', 192 * 1024), ('limited', 18 * 1024)):
+                settings = {'citation_load': citation_load, 'MAX_PACKET_BYTES': size,
+                            'FACT_CONTEXT': {**context_codec, 'author_prompt': plain} if name == 'plain' else context_codec}
+                with patch.dict(pages['page_jobs'].__globals__, settings):
                     plan = pages["page_jobs"](job, inventory, prepared, home / name, D["M"]["MAX_PAGES"], "Owned instructions.")
                 slot = next(item for item in plan["slots"] if item["requirement"] == front[0]["id"])
                 path = home / slot["prompt"]
-                packet = json.loads(path.read_text().split("\n\n")[-1])
+                encoded = json.loads(path.read_text().split('\n\n')[-1])
+                packet = pages['expand_fact_context'](encoded)
                 facts = packet["facts"][front[0]["id"]]["facts"]
                 self.assertTrue(any(item["kind"] == "http-peer-outcome" and "return selectedUnit" in item["text"]
                                     for item in facts), facts)
@@ -2616,13 +2632,30 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                                                                  for row in packet['sourceRanges'].values()}))
                 self.assertNotIn('_sourceWitnessIds', json.dumps(packet))
                 self.assertLessEqual(path.stat().st_size, size)
-                if name == "limited":
+                if name != 'normal':
                     self.assertGreater(packet['omittedPreparedFacts'], 0)
-                    self.assertNotIn('composed-effect-inventory', delivered)
+                    if name == 'limited':
+                        self.assertNotIn('composed-effect-inventory', delivered)
                 else:
                     self.assertEqual(packet['omittedPreparedFacts'], 0)
                     self.assertIn('composed-effect-inventory', delivered)
-                    self.assertEqual(sum(item['kind'] == 'write_lineage' for item in facts), 235)
+                    chosen = [item for item in facts if item['kind'] == 'write_lineage']
+                    self.assertEqual(len(chosen), 235)
+                    self.assertIn('factContext', encoded)
+                    self.assertIn('conditionTail', json.dumps(encoded))
+                    self.assertLess(path.stat().st_size, len(plain('Owned instructions.', packet).encode()))
+                    for item in chosen:
+                        number = int(item['text'].split('.')[0].split()[-1])
+                        self.assertEqual(item['condition'], f'{premise} and value position `{number}` is available')
+                        self.assertEqual(item['uncertainty'], uncertainty)
+                        self.assertEqual(item['authority'], 'RETAINED_SOURCE')
+                        self.assertEqual(item['status'], 'SOURCE_QUALIFIED_CANDIDATE')
+                        handles = [slot['citations'][alias] for alias in item['sources']]
+                        self.assertEqual(handles, ['receive-helper'])
+                        witnesses = packet['citations'][item['sources'][0]]['regions']
+                        literal = '\n'.join(packet['sourceRanges'][region]['text'] for region in witnesses)
+                        self.assertIn('transaction.executeWithoutResult', literal)
+                        self.assertIn('store.update(key)', literal)
 
     def test_response_decoding_failure_does_not_establish_upstream_rollback(self):
         site = "front-body"
@@ -2781,7 +2814,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             with patch.dict(pages["page_jobs"].__globals__, {"citation_load": citation_load}):
                 plan = pages["page_jobs"](job, inventory, prepared, root / "page-prompts", 20, "Fixture instructions.")
                 slot = next(row for row in plan["slots"] if row["requirement"] == "gateway:entry")
-                issue = json.loads((root / slot["prompt"]).read_text().split("\n\n")[-1])
+                issue = pages["expand_fact_context"](json.loads((root / slot["prompt"]).read_text().split("\n\n")[-1]))
                 self.assertEqual(set(issue["facts"]), {"gateway:entry"})
                 facts = issue["facts"]["gateway:entry"]["facts"]
                 declared, = (row for row in facts if row["kind"] == "http-peer-declared-response")
