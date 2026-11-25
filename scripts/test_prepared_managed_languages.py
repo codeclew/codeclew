@@ -40,6 +40,15 @@ def digest(text):
     return "sha256:" + sha256(text.encode()).hexdigest()
 
 
+def captured_csharp(text, file="ScoreApi.cs"):
+    raw = text.encode()
+    blob = sha256(b"codeclew-cas/v2\0codeclew-repository-input-blob/2.0\0" + raw).hexdigest()
+    return {"file": file, "revision": REVISION, "text": text, "textDigest": digest(text),
+            "authority": "RETAINED_CSHARP_COMPILATION_UNIT",
+            "occurrence": {"snapshot": "sha256:" + "b" * 64, "blob": "sha256:" + blob,
+                           "startByte": 0, "endByte": len(raw)}}
+
+
 def selected(file, text, *, standalone=None, start=1):
     standalone = text if standalone is None else standalone
     first = len(text[:text.index(standalone)].encode())
@@ -153,6 +162,30 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
 
+    def test_typescript_keeps_native_navigation_candidate_open(self):
+        self.require_typescript()
+        caller = "function score(amount: number) { return check(amount); }"
+        helper = "function check(amount: number) { return { status: 418 }; }"
+        text = caller + "\n" + helper
+        process, context = selected("score.ts", text, standalone=caller)
+        offset = len(caller.encode()) + 1
+        source = {**process["sources"]["s1"], "text": helper, "textDigest": digest(helper), "startLine": 2,
+                  "endLine": 2, "startByte": offset, "endByte": offset + len(helper.encode())}
+        helper_cite = "m123456789abc:e2"
+        process["sources"]["s2"] = source
+        process["facts"].extend([
+            {"kind": "CANDIDATE", "declaration": "decl", "sources": ["s2"], "event": "CALL",
+             "targetMethodId": "helper", "relationshipAuthority": "NAVIGATION_ONLY"},
+            {"kind": "BODY", "declaration": "helper", "sources": ["s2"]},
+        ])
+        context["sourceRanges"].append({**source, "id": helper_cite, "references": ["s2"]})
+        context["_projectionUnavailable"] = []
+        facts, extra = self.project(process, context)
+        self.assertTrue(facts)
+        self.assertTrue(all("418" not in row["text"] and row["sources"] == [HANDLE] for row in facts))
+        self.assertEqual(extra, {})
+        self.assertEqual(context["_projectionUnavailable"], ["TYPESCRIPT_CALL_TARGETS_OPEN"])
+
     def test_typescript_discovery_uses_only_actual_file_citation(self):
         self.require_typescript()
         process, context = selected("score.ts", "// café\n" + TYPESCRIPT)
@@ -172,24 +205,35 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertEqual(self.project(process, context), ([], {}))
         self.assertEqual(context["_projectionUnavailable"], ["TYPESCRIPT_COMPILER_UNAVAILABLE_OR_MISMATCHED"])
 
-    def test_roslyn_uses_exact_retained_declaration_and_full_unit(self):
+    def test_roslyn_uses_exact_retained_declaration_and_captured_unit(self):
         self.require_roslyn()
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
         process, context = selected("ScoreApi.cs", CSHARP, standalone=declaration, start=5)
-        context["_nativeFiles"] = {}
-        context["_loadPinnedFile"] = lambda file, revision: CSHARP if (file, revision) == (
-            "ScoreApi.cs", REVISION) else None
+        context["_nativeFiles"]["ScoreApi.cs"] = captured_csharp(CSHARP)
         facts, extra = self.project(process, context)
         self.assertTrue(any("400" in row["text"] and "amount < 0" in row["text"] for row in facts), facts)
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
 
-    def test_roslyn_refuses_edited_or_missing_pinned_unit(self):
-        process, context = selected("ScoreApi.cs", CSHARP, standalone="        return Results.Ok(amount);", start=8)
+    def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
+        declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
+        captured = CSHARP.replace("using Microsoft.AspNetCore.Http;", "using Results = Other.Results;")
+        process, context = selected("ScoreApi.cs", captured, standalone=declaration, start=5)
+        self.assertIn(declaration, CSHARP)
+        self.assertIn(declaration, captured)
         context["_nativeFiles"] = {}
+        context["_loadPinnedFile"] = lambda _file, _revision: CSHARP
+        context["_projectionUnavailable"] = []
         self.assertEqual(self.project(process, context), ([], {}))
-        context["_loadPinnedFile"] = lambda _file, _revision: CSHARP.replace("Ok(amount)", "Ok(3)")
+        self.assertEqual(context["_projectionUnavailable"], ["CSHARP_CAPTURED_COMPILATION_UNIT_UNAVAILABLE"])
+
+    def test_roslyn_refuses_body_that_differs_from_captured_unit(self):
+        declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
+        process, context = selected("ScoreApi.cs", CSHARP, standalone=declaration, start=5)
+        context["_nativeFiles"]["ScoreApi.cs"] = captured_csharp(CSHARP.replace("Ok(amount)", "Ok(3)"))
+        context["_projectionUnavailable"] = []
         self.assertEqual(self.project(process, context), ([], {}))
+        self.assertEqual(context["_projectionUnavailable"], ["CSHARP_CAPTURED_BODY_MISMATCH"])
 
 
 if __name__ == "__main__":

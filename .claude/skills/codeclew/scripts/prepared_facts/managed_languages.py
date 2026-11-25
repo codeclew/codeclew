@@ -45,9 +45,13 @@ def remaining(context, limit):
     return min(limit, deadline - time.monotonic()) if deadline is not None else limit
 
 
-def unavailable(context, reason):
+def limitation(context, reason):
     if "_projectionUnavailable" in context:
         context["_projectionUnavailable"].append(reason)
+
+
+def unavailable(context, reason):
+    limitation(context, reason)
     return []
 
 
@@ -210,6 +214,10 @@ def typescript(process, context, node):
     if any(row["kind"] == "analysis_boundary" and row["text"] == "TypeScript source facts are unavailable."
            for row in facts):
         return unavailable(context, "TYPESCRIPT_COMPILER_UNAVAILABLE_OR_MISMATCHED")
+    if facts and not request["calls"] and (request.get("fileRoot") or any(
+            row["kind"] in {"CALL_BOUNDARY", "CANDIDATE"} or row.get("event") in {"CALL", "CONSTRUCT"}
+            for row in process.get("facts", ()))):
+        limitation(context, "TYPESCRIPT_CALL_TARGETS_OPEN")
     return facts
 
 
@@ -242,30 +250,77 @@ def pinned_text(context, source):
     return None
 
 
+def captured_csharp_unit(context, source):
+    """Require the original Work unit before replaying any Roslyn decision."""
+    file, revision = source["file"], source["revision"]
+    whole = context.get("_nativeFiles", {}).get(file)
+    if not whole or (whole.get("file"), whole.get("revision")) != (file, revision):
+        return None
+    proof = whole.get("authority")
+    occurrence = whole.get("occurrence") or {}
+    source_occurrence = source.get("occurrence") or {}
+    if proof not in {"RETAINED_CSHARP_COMPILATION_UNIT", "RECONSTRUCTED_GIT_BLOB"}:
+        return None
+    if proof == "RECONSTRUCTED_GIT_BLOB" and not source_occurrence:
+        return None
+    if (source_occurrence and (source_occurrence.get("generatedOrigin")
+            or (source_occurrence.get("snapshot"), source_occurrence.get("blob"))
+            != (occurrence.get("snapshot"), occurrence.get("blob")))):
+        return None
+    text = whole.get("text")
+    if not isinstance(text, str) or not text or fingerprint(text) != whole.get("textDigest"):
+        return None
+    raw = text.encode()
+    if (len(raw) > MAX_FILE_BYTES or occurrence.get("generatedOrigin")
+            or not occurrence.get("snapshot") or not occurrence.get("blob")
+            or occurrence.get("startByte") != 0 or occurrence.get("endByte") != len(raw)):
+        return None
+    return raw, occurrence["snapshot"]
+
+
 def managed(process, context):
-    # A compiler decision is meaningful only within the original source unit.
     evidence = process["sources"]
-    if not (root_sources(process) & evidence.keys()):
+    roots = root_sources(process) & evidence.keys()
+    if not roots:
         return []
     effects = module("effect_continuations")
-    verified, covered = {}, set()
+    verified, covered, failed_roots = {}, set(), set()
+    source_snapshot = None
     selections = effects["eligible"](process, evidence)
     for ref in sorted(selections, key=lambda ref: (not selections[ref][1], ref)):
+        if len(verified) >= effects["MAX_FILES"] or remaining(context, 10) <= 0:
+            break
         source = evidence[ref]
         key = source["file"], source["revision"]
-        if key not in verified:
-            if len(verified) >= effects["MAX_FILES"] or remaining(context, 10) <= 0:
-                continue
-            text = pinned_text(context, source)
-            raw = text.encode() if text is not None else b""
-            verified[key] = raw if 0 < len(raw) <= effects["MAX_FILE_BYTES"] else b""
-        if effects["locate"](verified[key], source) is not None:
-            covered.add(ref)
+        unit = captured_csharp_unit(context, source)
+        if unit is None:
+            if ref in roots:
+                failed_roots.add("CSHARP_CAPTURED_COMPILATION_UNIT_UNAVAILABLE")
+            continue
+        raw, snapshot = unit
+        if source_snapshot is None and ref in roots:
+            source_snapshot = snapshot
+        if source_snapshot != snapshot:
+            if ref in roots:
+                failed_roots.add("CSHARP_CAPTURED_COMPILATION_UNIT_AMBIGUOUS")
+            continue
+        interval = effects["locate"](raw, source)
+        occurrence = source.get("occurrence") or {}
+        if interval is None or (occurrence and interval != (occurrence.get("startByte"), occurrence.get("endByte"))):
+            if ref in roots:
+                failed_roots.add("CSHARP_CAPTURED_BODY_MISMATCH")
+            continue
+        verified[key] = raw
+        covered.add(ref)
     grouped = {row["id"]: {**row, "references": [ref for ref in row["references"] if ref in covered]}
                for row in context["sourceRanges"]}
     managed_evidence = {ref: evidence[ref] for ref in covered}
-    if not (root_sources(process) & covered):
-        return unavailable(context, "CSHARP_PINNED_BODY_UNAVAILABLE")
+    if failed_roots or not roots <= covered:
+        for reason in sorted(failed_roots or {"CSHARP_CAPTURED_COMPILATION_UNIT_UNAVAILABLE"}):
+            limitation(context, reason)
+        return []
+    if selections.keys() - covered:
+        limitation(context, "CSHARP_HELPER_COMPILATION_UNITS_INCOMPLETE")
     dotnet = shutil.which("dotnet")
     timeout = remaining(context, 35)
     if timeout <= 0:
@@ -296,6 +351,8 @@ def managed(process, context):
                               project_cfg, lambda blobs, source: blobs[source["file"], source["revision"]].decode(),
                               module("effect_storage"), module("source_candidates")["sql_tables"],
                               module("effect_commands"))
+    if graph and graph.get("status") == "OPEN":
+        limitation(context, "CSHARP_CONTROL_FLOW_PROJECTION_OPEN")
     return module("prepared_managed")["derive"]({**process, "routes": []}, context, graph)
 
 
