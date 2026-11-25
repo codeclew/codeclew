@@ -68,10 +68,13 @@ blocks discovery; never pad gaps, read source privately or recapture as a shortc
 
 Set `"evidenceMode": "PREPARED_FACTS"` to use the packaged deterministic
 source projectors before authoring. The default is `RETAINED_SOURCE`.
-Prepare records per-entry and per-file coverage in `prepared-facts.json`.
-The runner supplies usable propositions with their conditions, authority,
-uncertainty and the ordinary citation handles. The author compares them to the
-retained source and fills gaps using the same Work. An unavailable adapter,
+The prepared source index points to compact views for individual entries and files.
+Each view records its coverage and supplies propositions with their conditions,
+authority, uncertainty and ordinary citation handles. Inline authoring uses the
+same fields with short cite aliases. The separate `prepared-facts.json` reviewer
+sidecar retains the original narrow witness coordinates and digests. The author
+compares propositions to retained source and fills gaps using the same Work.
+An unavailable adapter,
 unsupported source shape, missing operations or unbound propositions leave the
 ordinary retained source available. Prepared facts do not establish runtime
 execution, deployment, registration, or completeness.
@@ -95,8 +98,11 @@ NODE_PATH="$CODECLEW_FACT_DEPS/node_modules" python3 -I -S "$CODECLEW_SKILL_DIR/
 The projectors first use exact retained bytes. When a parser needs a full file
 and Work only has fragments, preparation can use the immutable Git commit in
 the locally bound checkout verified by `clew docs service show --local-binding`.
-This read uses the captured revision, with no checkout or network access. Exact
-Work citations still gate every proposition. A narrower witness has to match
+This read uses the captured revision, with no checkout or network access. A
+working-tree capture uses its retained originals. C# Roslyn projection
+requires the original Work compilation unit, checked against its captured
+object and raw content digest. TypeScript cross-method relationships remain
+open. Exact Work citations still gate every proposition. A narrower witness has to match
 the bytes and coordinates of an admitted Work citation. The ordinary runner
 checks and renderer still apply to every final claim.
 

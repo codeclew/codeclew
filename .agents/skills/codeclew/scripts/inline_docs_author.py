@@ -102,21 +102,19 @@ def plan(job, inventory, prepared, instructions):
                     for ref, row in return_refs.items()},
     }
     if prepared_facts:
-        facts = load(prepared_facts['path'])['entries']
         entry_aliases = {row['id']: ref for ref, row in entry_refs.items()}
         file_aliases = {row['id']: ref for ref, row in files.items()}
-        packet['preparedFacts'] = {
-            alias: [
-                {**fact, 'sources': [handle_to_alias[handle] for handle in fact['sources']],
-                 **({'witnesses': [{**row, 'cite': handle_to_alias[row['cite']]} for row in fact['witnesses']]}
-                    if 'witnesses' in fact else {})}
-                for fact in facts[identity].get('propositions', ())
-            ] for identity, alias in {**entry_aliases, **file_aliases}.items()
-            if facts[identity].get('propositions')
-        }
+        packet['preparedFacts'] = {}
+        for identity, alias in {**entry_aliases, **file_aliases}.items():
+            view = load(prepared_facts['views'][identity])
+            row = {key: value for key, value in view.items()
+                   if key not in ('schema', 'requirement', 'page', 'file', 'kind', 'propositions')}
+            row['propositions'] = [{**fact, 'sources': [handle_to_alias[handle] for handle in fact['sources']]}
+                                   for fact in view['propositions']]
+            packet['preparedFacts'][alias] = row
         instructions += ('\n\nUse relevant preparedFacts for the named entry or file. Preserve their conditions, '
                          'authority and uncertainty, and use the supplied citation aliases. '
-                         'Consult the retained source to complete the explanation and check each fact.')
+                         'Consult the retained source to cover gaps and check each fact.')
     prompt = instructions + '\n\n' + json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n'
     prompt_bytes = len(prompt.encode())
     if prompt_bytes > MAX_PROMPT_BYTES:

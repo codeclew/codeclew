@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -22,7 +23,9 @@ MAX_REFS = 384
 MAX_FACTS = 128
 MAX_PACKET_BYTES = 256 * 1024
 MAX_FILE_BYTES = 128 * 1024
+CSHARP_FILE_LIMIT = 12
 FACT_SCHEMA = 'codeclew-docs-run-prepared-facts/1.0'
+VIEW_SCHEMA = 'codeclew-docs-run-fact-view/1.0'
 
 
 def exact_sources(entries, packet):
@@ -77,7 +80,8 @@ def full_files(exact):
                 if file in files:
                     ambiguous.add(file)
                 files[file] = {'file': file, 'revision': revision, 'text': raw.decode(), 'textDigest': sha(raw),
-                               'occurrence': {'snapshot': snapshot, 'blob': blob, 'startByte': 0, 'endByte': len(raw)}}
+                               'occurrence': {'snapshot': snapshot, 'blob': blob, 'startByte': 0, 'endByte': len(raw)},
+                               'authority': 'RECONSTRUCTED_GIT_BLOB'}
     return {file: source for file, source in files.items() if file not in ambiguous}
 
 
@@ -214,6 +218,69 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
     return accepted, rejected
 
 
+def work_rows(job, scope, output, query, deadline):
+    report = collect(job['clew'], job['root'], scope['work'], output, max_pages=8,
+                     timeout=15, deadline=deadline, kind='work-selection', selection={'query': query})
+    identity_scope = report.get('identity') or {}
+    if (report['status'] == 'COMPLETE' and identity_scope.get('snapshot') == job['snapshot']
+            and identity_scope.get('contextDigest') == scope['contextDigest']
+            and identity_scope.get('inputDigest') == scope['inputDigest']):
+        return load(output / 'items.json')
+    return None
+
+
+def csharp_units(job, scope, home, exact, deadline):
+    units = []
+    paths = sorted({source['file'] for source in exact.values() if source['file'].lower().endswith('.cs')})
+    for number, file in enumerate(paths[:CSHARP_FILE_LIMIT], 1):
+        if deadline - time.monotonic() <= 1:
+            break
+        rows = work_rows(job, scope, home / ('csharp-unit-' + str(number)),
+                         {'kind': 'SOURCE_FILE', 'symbolContains': file}, deadline)
+        for row in rows or ():
+            record = row['record']
+            fact = record.get('normalized', {})
+            if (record.get('service') == scope['coverage']['id']
+                    and record.get('symbol') == fact.get('file') == file
+                    and fact.get('schema') == 'codeclew-csharp-compiler-fact/1.0'
+                    and fact.get('kind') == 'SOURCE_FILE' and fact.get('resolution') == 'SOURCE_MEMBERSHIP_EXACT'
+                    and fact.get('sourceStatus') == 'SOURCE_RETAINED' and len(row_bindings(row)) == 1):
+                units.append(row)
+    return units
+
+
+def csharp_files(units, exact):
+    """Admit original compiler inputs with independent typed CAS and raw byte checks."""
+    sources = {ref: source for source in exact.values() for ref in source['references']}
+    files, ambiguous = {}, set()
+    for unit in units:
+        fact = unit['record']['normalized']
+        ref, = row_bindings(unit).values()
+        source = sources.get(ref)
+        if source is None:
+            continue
+        file, raw = fact['file'], source['text'].encode()
+        occurrence = source.get('occurrence') or {}
+        pin = fact.get('snapshotSource') or {}
+        blob = pin.get('blob') or {}
+        domain = b'codeclew-cas/v2\0codeclew-repository-input-blob/2.0\0'
+        if not (0 < len(raw) <= MAX_FILE_BYTES and source['file'] == file and source['startLine'] == 1
+                and fact.get('sourceContentDigest') == source['textDigest'] == sha(raw)
+                and fact.get('sourceRange') == {'byteStart': 0, 'byteEnd': len(raw)}
+                and blob.get('schema') == 'codeclew-cas-object/2.0'
+                and blob.get('objectSchema') == 'codeclew-repository-input-blob/2.0'
+                and blob.get('size') == len(raw) and blob.get('digest') == sha(domain + raw)
+                and occurrence.get('blob') == blob['digest'] and occurrence.get('snapshot') == pin.get('snapshot')
+                and occurrence.get('startByte') == 0 and occurrence.get('endByte') == len(raw)
+                and not occurrence.get('generatedOrigin')):
+            continue
+        if file in files and files[file]['textDigest'] != source['textDigest']:
+            ambiguous.add(file)
+        files[file] = {key: source[key] for key in ('file', 'revision', 'text', 'textDigest', 'occurrence')}
+        files[file]['authority'] = 'RETAINED_CSHARP_COMPILATION_UNIT'
+    return {file: source for file, source in files.items() if file not in ambiguous}
+
+
 def collect_contexts(job, scope, home, requirements, deadline):
     contexts, states = {}, {}
     for requirement in requirements:
@@ -230,50 +297,66 @@ def collect_contexts(job, scope, home, requirements, deadline):
                 states[identity] = 'PREPARATION_LIMIT'
                 continue
             output = home / ('thread-' + str(len(contexts) + 1).zfill(2))
-            report = collect(job['clew'], job['root'], scope['work'], output, max_pages=8,
-                             timeout=min(15, deadline - time.monotonic()), kind='work-selection',
-                             selection={'query': {'kind': 'THREAD_CONTEXT', 'symbolContains': root}})
-            identity_scope = report.get('identity') or {}
-            contexts[root] = (load(output / 'items.json') if report['status'] == 'COMPLETE'
-                              and identity_scope.get('snapshot') == job['snapshot']
-                              and identity_scope.get('contextDigest') == scope['contextDigest']
-                              and identity_scope.get('inputDigest') == scope['inputDigest'] else None)
+            contexts[root] = work_rows(job, scope, output,
+                                       {'kind': 'THREAD_CONTEXT', 'symbolContains': root}, deadline)
         if contexts[root] is None:
             states[identity] = 'RETAINED_THREAD_INCOMPLETE'
     return contexts, states
 
 
-def acquire_sources(job, service, scope, home, contexts, exact, deadline):
+def acquire_sources(job, service, scope, home, selections, exact, deadline):
     bound = {ref for row in exact.values() for ref in row['references']}
     wanted = {}
-    for rows in contexts.values():
+    for rows in selections:
         for row in rows or ():
             for identity, reference in row_bindings(row).items():
-                if reference not in bound and len(wanted) < MAX_REFS:
+                if reference not in bound:
                     wanted.setdefault(identity, reference)
-    if not wanted or deadline - time.monotonic() <= 1:
+
+    def read_selected(selected, label):
+        selection = home / (label + '-selection.json')
+        save(selection, selected)
+        directory = home / label
+        manifest = directory / 'citations.json'
+        argv = [sys.executable, '-I', '-S', str(DIRECTORY / 'evidence_packet.py'), 'read-sources',
+                '--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot'],
+                '--work', scope['work'], '--selection', str(selection), '--output-dir', str(directory),
+                '--output-format', 'metadata']
+        try:
+            command(argv, home, label, timeout=min(45, deadline - time.monotonic()))
+            _, packet, _, entries = citation_load(manifest)
+            need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work']
+                 and all(row['source']['service'] == service and row['source']['revision'] == scope['revision']
+                         for row in entries.values()), 'PREPARED_FACT_SOURCE_SCOPE_CHANGED')
+        except (Stop, CitationStop, OSError, ValueError):
+            if manifest.is_file():
+                manifest.rename(directory / 'unadmitted-citations.json')
+            return {}, directory / 'packet.json'
+        return exact_sources(entries, packet), None
+
+    selected = [{'sourceId': key, 'sourceReference': value} for key, value in list(wanted.items())[:MAX_REFS]]
+    if not selected or deadline - time.monotonic() <= 1:
         return {}
-    # A refused source may leave a partial packet. Keep its receipts, but do not
-    # admit that incomplete manifest into authoring or the page verification gate.
-    selection = home / 'source-selection.json'
-    save(selection, [{'sourceId': key, 'sourceReference': value} for key, value in sorted(wanted.items())])
-    directory = home / 'read'
-    argv = [sys.executable, '-I', '-S', str(DIRECTORY / 'evidence_packet.py'), 'read-sources',
-            '--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot'],
-            '--work', scope['work'], '--selection', str(selection), '--output-dir', str(directory),
-            '--output-format', 'metadata']
-    manifest = directory / 'citations.json'
+    acquired, incomplete = read_selected(selected, 'read-sources')
+    if incomplete is None or not incomplete.is_file() or deadline - time.monotonic() <= 1:
+        return acquired
     try:
-        command(argv, home, 'read-sources', timeout=min(45, deadline - time.monotonic()))
-        _, packet, _, entries = citation_load(manifest)
-        need(packet['scope']['snapshot'] == job['snapshot'] and packet['work'] == scope['work']
-             and all(row['source']['service'] == service and row['source']['revision'] == scope['revision']
-                     for row in entries.values()), 'PREPARED_FACT_SOURCE_SCOPE_CHANGED')
-    except (Stop, CitationStop):
-        if manifest.is_file():
-            manifest.rename(directory / 'unadmitted-citations.json')
-        return {}
-    return exact_sources(entries, packet)
+        diagnostic = load(incomplete)
+    except (OSError, Stop, ValueError):
+        return acquired
+    # Re-admit successful references through the native proof path. A partial
+    # packet remains unadmitted and supplies only a bounded recovery selection.
+    supplied = {item['sourceReference']: item for item in selected}
+    proven = {}
+    for row in diagnostic.get('outcomes', ()):
+        selection = row.get('selection', {})
+        reference = selection.get('sourceReference')
+        if row.get('status') == 'RETAINED_SOURCE_RETURNED' and supplied.get(reference) == selection:
+            proven[reference] = selection
+    if not proven or len(proven) == len(selected):
+        return acquired
+    recovered, _ = read_selected(list(proven.values()), 'read-sources-recovered')
+    return recovered
 
 
 def local_repository(job, service, scope, home, deadline):
@@ -292,7 +375,7 @@ def local_repository(job, service, scope, home, deadline):
     return locator if isinstance(locator, str) and Path(locator).is_absolute() and Path(locator).is_dir() else None
 
 
-def pinned_file(repository, revision, file):
+def pinned_file(repository, revision, file, deadline):
     if not repository or re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', revision) is None:
         return None
     if not isinstance(file, str) or len(file) > 512 or any(ord(c) < 32 or c in ':\\' for c in file):
@@ -306,8 +389,11 @@ def pinned_file(repository, revision, file):
     base = ['git', '--no-replace-objects', '-C', repository, 'cat-file']
     try:
         def git(*args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(base, 0)
             return subprocess.run(base + list(args), check=True, capture_output=True,
-                                  stdin=subprocess.DEVNULL, timeout=3, env=env).stdout
+                                  stdin=subprocess.DEVNULL, timeout=min(3, remaining), env=env).stdout
         if git('-t', revision) != b'commit\n':
             return None
         address = revision + ':' + file
@@ -322,6 +408,34 @@ def pinned_file(repository, revision, file):
     return None
 
 
+def is_boundary(fact):
+    kind = fact['kind'].lower().replace('_', '-')
+    return 'boundary' in kind or kind.endswith(('scope-limit', 'coverage-limit'))
+
+
+def author_views(home, entries):
+    """Write per-requirement answers and explicit gaps without repeated witness metadata."""
+    if not entries:
+        return {}, 0
+    directory = home / 'fact-views'
+    directory.mkdir(mode=0o700)
+    views, byte_count = {}, 0
+    for identity, row in entries.items():
+        name = sha(identity.encode()).split(':', 1)[1][:20] + '.json'
+        path = directory / name
+        packet = {'schema': VIEW_SCHEMA, 'requirement': identity, **row}
+        packet['propositions'] = [{key: value for key, value in fact.items() if key != 'witnesses'}
+                                  for fact in row.get('propositions', ())]
+        raw = (json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+        with path.open('xb') as output:
+            output.write(raw)
+        byte_count += len(raw)
+        relative = str(path.relative_to(home))
+        row['authorView'] = relative
+        views[identity] = {'label': row.get('file', row['page']), 'path': relative, 'status': row['status']}
+    return views, byte_count
+
+
 def prepare(job, service, scope, requirements, entries, packet, home, deadline):
     """Produce a bounded author packet and explicit per-entry coverage."""
     # Preparation is a treatment. A refusal still leaves the original read kit.
@@ -334,16 +448,20 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
                      Path(entry['source']['file']).suffix.lower() in extensions for entry in entries.values()
                      if entry['source']['id'] in row['sourceIds'])]
     contexts, states = collect_contexts(job, scope, service_root, supported, deadline)
-    exact.update(acquire_sources(job, service, scope, service_root, contexts, exact, deadline))
-    files = full_files(exact)
+    units = csharp_units(job, scope, service_root, exact, deadline)
+    exact.update(acquire_sources(job, service, scope, service_root, [units, *contexts.values()], exact, deadline))
+    admitted_references = {ref for row in exact.values() for ref in row['references']}
+    files = {**full_files(exact), **csharp_files(units, exact)}
+    boundaries = scope['coverage'].get('boundaries')
+    allow_legacy_pinned = isinstance(boundaries, list) and 'WORKING_TREE_SOURCE' not in boundaries
     repository = local_repository(job, service, scope, service_root, deadline) if supported else None
     pinned_cache = {}
 
     def read_pinned(file, revision):
-        if revision != scope['revision'] or not repository:
+        if revision != scope['revision'] or not repository or not allow_legacy_pinned:
             return None
         if file not in pinned_cache and len(pinned_cache) < 24 and deadline - time.monotonic() >= 3:
-            pinned_cache[file] = pinned_file(repository, revision, file)
+            pinned_cache[file] = pinned_file(repository, revision, file, deadline)
         return pinned_cache.get(file)
 
     projectors = {}
@@ -364,10 +482,15 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
             row['status'] = 'PREPARATION_LIMIT'
             continue
         roots = requirement.get('rootDeclarations', [])
-        process, context = operation(requirement, contexts[roots[0]] if roots else (), exact, files)
+        thread = contexts[roots[0]] if roots else ()
+        missing = {ref for item in thread for ref in row_bindings(item).values()} - admitted_references
+        if missing:
+            row['missingSourceReferences'] = len(missing)
+        process, context = operation(requirement, thread, exact, files)
         projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
                        _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
+                       _allowLegacyPinned=allow_legacy_pinned,
                        _bindWitness=lambda witness: extra_binding(witness, exact, read_pinned))
         if file := context['file']:
             languages = {Path(file).suffix.lower()} if context['sourceRanges'] else set()
@@ -378,6 +501,8 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if not languages:
             row['status'] = 'NO_RETAINED_ROOT_BODY'
             continue
+        if languages & {'.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}:
+            row['scopeLimits'] = ['TYPESCRIPT_CROSS_METHOD_RELATIONSHIPS_OPEN']
         propositions, unbound, unavailable, failed = [], 0, [], {}
         local = {site['id'] for site in context['sourceRanges']}
         for filename, allowed in ADAPTERS.items():
@@ -415,7 +540,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         elif unavailable or limits:
             status = 'PROJECTOR_UNAVAILABLE'
         if visible:
-            status = 'PREPARED' if any('boundary' not in fact['kind'] for fact in visible) else 'BOUNDARIES_ONLY'
+            status = 'PREPARED' if not all(map(is_boundary, visible)) else 'BOUNDARIES_ONLY'
         row.update(status=status, propositions=visible, unboundPropositions=unbound, omittedForLimit=limited)
         if failed:
             row['failedProjectors'] = failed
@@ -424,8 +549,10 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if limits:
             row['projectionLimits'] = limits
     summary = dict(Counter(row['status'] for row in result.values()))
+    views, author_bytes = author_views(home, result)
     save(home / 'prepared-facts.json', {'schema': FACT_SCHEMA, 'snapshot': job['snapshot'], 'service': service,
                                        'entries': result, 'summary': summary})
     propositions = [fact for row in result.values() for fact in row.get('propositions', ())]
-    return {'statusCounts': summary, 'facts': sum('boundary' not in fact['kind'] for fact in propositions),
-            'boundaries': sum('boundary' in fact['kind'] for fact in propositions), 'citations': cite_index}
+    return {'statusCounts': summary, 'facts': sum(not is_boundary(fact) for fact in propositions),
+            'boundaries': sum(map(is_boundary, propositions)),
+            'authorViewBytes': author_bytes, 'authorViews': views, 'citations': cite_index}

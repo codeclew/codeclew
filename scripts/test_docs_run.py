@@ -446,10 +446,17 @@ else:
         self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'PREPARED': 1, 'NO_CITABLE_FACTS': 1})
         prompt = (run / 'prompt.txt').read_text()
         packet = json.loads(prompt.split('\n\n')[-1])
-        fact, = packet['preparedFacts']['E1']
+        coverage = packet['preparedFacts']['E1']
+        self.assertEqual(coverage['unboundPropositions'], 1)
+        fact, = coverage['propositions']
         self.assertEqual(fact['sources'], ['S1'])
-        self.assertEqual(fact['witnesses'][0]['cite'], 'S1')
+        self.assertNotIn('witnesses', fact)
         self.assertEqual(fact['condition'], 'The count is negative.')
+        home = run / 'inputs/author-source' / self.service
+        reviewer = D['load'](home / 'prepared-facts.json')['entries'][self.entry['id']]
+        witness, = reviewer['propositions'][0]['witnesses']
+        self.assertEqual(witness['textDigest'], D['sha'](b'return 0'))
+        self.assertEqual(witness['cite'], reviewer['propositions'][0]['sources'][0])
         self.assertNotIn('Foreign body.', prompt)
         response = self.inline_response()
         D['save'](self.seed / 'inline-response.json', response)
@@ -458,13 +465,99 @@ else:
         html = Path(result['ready']) / 'html/reservations-post-reservations.html'
         self.assertIn('Return the updated list size', html.read_text())
 
+    def test_prepared_facts_workspace_points_to_compact_boundary_and_empty_views(self):
+        def project(process, context, *, node):
+            if not process['root']:
+                return [], {}
+            proof, = context['sourceRanges']
+            return [{'kind': 'CALL_BOUNDARY', 'authority': 'SOURCE_EVIDENCE',
+                     'text': 'The dynamic call target remains open.', 'sources': [proof['id']]}], {}
+
+        run, prepared, _, _ = self.prepare_inline_fixture(project=project, extra_resource=True)
+        self.assertEqual(prepared['authorMode'], 'WORKSPACE')
+        summary = prepared['preparedFacts'][self.service]
+        self.assertEqual((summary['facts'], summary['boundaries']), (0, 1))
+        home = run / 'inputs/author-source' / self.service
+        sidecar = home / 'prepared-facts.json'
+        reviewer = D['load'](sidecar)['entries']
+        view = home / reviewer[self.entry['id']]['authorView']
+        packet = D['load'](view)
+        index = (home / 'index.md').read_text()
+        self.assertIn(self.entry['page'] + ': ' + reviewer[self.entry['id']]['authorView'], index)
+        self.assertIn('(NO_CITABLE_FACTS)', index)
+        self.assertEqual(packet['status'], 'BOUNDARIES_ONLY')
+        self.assertEqual(packet['propositions'], reviewer[self.entry['id']]['propositions'])
+        self.assertEqual(summary['authorViewBytes'], sum(p.stat().st_size for p in (home / 'fact-views').glob('*.json')))
+        self.assertLess(view.stat().st_size, sidecar.stat().st_size)
+
+    def test_prepared_csharp_context_requires_the_whole_typed_cas_original(self):
+        helper = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run_prepared.py'), init_globals={'sha': D['sha']})
+        raw = b'class Ledger { int Post() => 1; }\n'
+        digest = D['sha'](raw)
+        blob = D['sha'](b'codeclew-cas/v2\0codeclew-repository-input-blob/2.0\0' + raw)
+        occurrence = {'snapshot': 'owned-snapshot', 'blob': blob, 'startByte': 0, 'endByte': len(raw)}
+        source = {'file': 'Ledger.cs', 'revision': 'a' * 40, 'startLine': 1, 'text': raw.decode(),
+                  'textDigest': digest, 'occurrence': occurrence, 'references': ['s2']}
+        pin = {'snapshot': 'owned-snapshot', 'blob': {'schema': 'codeclew-cas-object/2.0',
+               'objectSchema': 'codeclew-repository-input-blob/2.0', 'digest': blob, 'size': len(raw)}}
+        fact = {'file': 'Ledger.cs', 'sourceContentDigest': digest,
+                'sourceRange': {'byteStart': 0, 'byteEnd': len(raw)}, 'snapshotSource': pin}
+        unit = {'record': {'normalized': fact, 'sourceIds': ['source']}, 'sourceReferences': ['s2']}
+        admitted = helper['csharp_files']([unit], {'cite': source})
+        self.assertEqual(admitted['Ledger.cs']['text'], raw.decode())
+        self.assertEqual(admitted['Ledger.cs']['authority'], 'RETAINED_CSHARP_COMPILATION_UNIT')
+        fact['snapshotSource']['blob']['digest'] = digest
+        self.assertEqual(helper['csharp_files']([unit], {'cite': source}), {})
+
+    def test_prepared_acquisition_readmits_successful_references_after_a_partial_batch(self):
+        selected = [{'sourceId': 'read', 'sourceReference': 's1'}, {'sourceId': 'missing', 'sourceReference': 's2'}]
+        calls = []
+        result_dir = self.root / 'optional-sources'
+        result_dir.mkdir()
+
+        def command(argv, home, label, **kwargs):
+            choices = D['load'](Path(argv[argv.index('--selection') + 1]))
+            calls.append(choices)
+            folder = home / label
+            folder.mkdir()
+            (folder / 'citations.json').write_text('{}')
+            if len(choices) == 2:
+                D['save'](folder / 'packet.json', {'outcomes': [
+                    {'selection': choices[0], 'status': 'RETAINED_SOURCE_RETURNED'},
+                    {'selection': choices[1], 'status': 'OWNED_SOURCE_NOT_AVAILABLE'}]})
+                raise D['Stop']('SELECTED_SOURCES_INCOMPLETE')
+
+        source = {**self.source, 'authority': 'EXACT_SNAPSHOT_TEXT'}
+        text = source.pop('text')
+        source['textDigest'] = D['sha'](text.encode())
+
+        def citation_load(path):
+            self.assertEqual(path.parent.name, 'read-sources-recovered')
+            packet = {'scope': {'snapshot': F['SNAPSHOT']}, 'work': 'owned-work', 'texts': {'digest': text},
+                      'outcomes': [{'source': source, 'textKey': 'digest', 'sourceBinding': {'reference': 's1'}}]}
+            return {}, packet, {}, {'cite': {'source': source}}
+
+        helper = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run_prepared.py'), init_globals={
+            'sha': D['sha'], 'save': D['save'], 'load': D['load'], 'command': command,
+            'Stop': D['Stop'], 'CitationStop': D['M']['C']['Stop'], 'need': D['need'], 'citation_load': citation_load,
+        })
+        rows = [[{'record': {'sourceIds': ['read', 'missing']}, 'sourceReferences': ['s1', 's2']}]]
+        acquired = helper['acquire_sources'](self.job, self.service, {'work': 'owned-work', 'revision': source['revision']},
+                                             result_dir, rows, {}, time.monotonic() + 30)
+        self.assertEqual(calls, [selected, selected[:1]])
+        self.assertEqual(acquired['cite']['references'], ['s1'])
+        self.assertTrue((result_dir / 'read-sources/unadmitted-citations.json').is_file())
+        self.assertFalse((result_dir / 'read-sources/citations.json').exists())
+
     def test_prepared_facts_no_adapter_output_retains_inline_source_authoring(self):
         run, prepared, _, source = self.prepare_inline_fixture(project=lambda *args, **kwargs: ([], {}))
         self.assertEqual(prepared['authorMode'], 'INLINE')
         self.assertEqual(prepared['preparedFacts'][self.service]['facts'], 0)
         self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'NO_CITABLE_FACTS': 2})
         prompt = (run / 'prompt.txt').read_text()
-        self.assertNotIn('preparedFacts', prompt)
+        packet = json.loads(prompt.split('\n\n')[-1])
+        self.assertEqual(packet['preparedFacts']['E1']['status'], 'NO_CITABLE_FACTS')
+        self.assertEqual(packet['preparedFacts']['E1']['propositions'], [])
         self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
 
     def test_prepared_facts_projector_failure_preserves_retained_source_and_reason(self):

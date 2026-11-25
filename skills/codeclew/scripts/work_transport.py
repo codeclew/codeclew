@@ -68,7 +68,7 @@ def page_identity(page, work, kind="work-initial"):
 
 def collect(launcher, root, work, output, *, max_pages=1000,
             timeout=120, max_page_bytes=256 * 1024, kind="work-initial", references=None, selection=None,
-            prepared_command=None):
+            prepared_command=None, deadline=None):
     if kind not in ("work-initial", "work-evidence", "work-selection"):
         raise Incomplete("UNSUPPORTED_COLLECTION_KIND")
     if kind == "work-evidence" and (not isinstance(references, list) or not 1 <= len(references) <= 8
@@ -101,6 +101,10 @@ def collect(launcher, root, work, output, *, max_pages=1000,
                 pages.append(record)
                 save(output / (stem + ".command.json"), record)
             else:
+                start = time.monotonic()
+                remaining = timeout if deadline is None else min(timeout, deadline - start)
+                if remaining <= 0:
+                    raise Incomplete("HELPER_WALL_LIMIT_BEFORE_TERMINAL")
                 selection_path = output / (stem + ".selection.json")
                 selected = dict(selected_base) if kind == "work-selection" else ({"references": references} if kind == "work-evidence" else {})
                 if cursor is not None:
@@ -112,11 +116,10 @@ def collect(launcher, root, work, output, *, max_pages=1000,
                           "stdout": stem + ".stdout", "stderr": stem + ".stderr"}
                 save(output / (stem + ".command.json"), record)
                 pages.append(record)
-                start = time.monotonic()
                 with (output / record["stdout"]).open("xb") as stdout, (output / record["stderr"]).open("xb") as stderr:
                     try:
                         process = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=stdout,
-                                                 stderr=stderr, timeout=timeout, check=False)
+                                                 stderr=stderr, timeout=remaining, check=False)
                         record["exitCode"] = process.returncode
                     except subprocess.TimeoutExpired:
                         record["failure"] = "PROCESS_TIMEOUT_NO_AUTOMATIC_RETRY"

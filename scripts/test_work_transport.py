@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / "skills/codeclew/scripts/work_transport.py"
@@ -92,6 +94,16 @@ class CollectorTest(unittest.TestCase):
         result = self.collect({"FIRST": {"page": page([], "next", 1)}, "next": {"page": page([row()], total=1)}})
         self.assertEqual(result["status"], "COMPLETE")
         self.assertEqual(result["pages"], 2)
+
+    def test_shared_deadline_stops_before_launching_the_next_page(self):
+        responses = {"FIRST": {"page": page([row()], "next", 2)},
+                     "next": {"page": page([row(identifier="claim-2")], total=2)}}
+        ticks = iter([0, 1, 12])
+        with patch.object(helper, 'time', SimpleNamespace(monotonic=lambda: next(ticks))):
+            result = self.collect(responses, timeout=20, deadline=10)
+        self.assertEqual(result["reason"], "HELPER_WALL_LIMIT_BEFORE_TERMINAL")
+        self.assertEqual(result["rows"], 1)
+        self.assertFalse((self.output / "page-0002.stdout").exists())
 
     def test_empty_terminal_is_valid_only_with_zero_total(self):
         result = self.collect({"FIRST": {"page": page()}})

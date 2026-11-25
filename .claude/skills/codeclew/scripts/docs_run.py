@@ -674,17 +674,21 @@ def prepare_facts(job, inventory, prepared):
                     if row['service'] == service and row['kind'] in ('ENTRY', 'DISCOVERY')]
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline)
-        citations = selected.pop('citations')
+        citations, views = selected.pop('citations'), selected.pop('authorViews')
         summaries[service] = selected
-        if not selected['facts']:
+        if not views:
             continue
-        scope['preparedFacts'] = {'path': str(home / 'prepared-facts.json'), 'citations': citations}
+        scope['preparedFacts'] = {'views': {identity: str(home / view['path']) for identity, view in views.items()},
+                                  'citations': citations}
         with (home / 'index.md').open('a', encoding='utf-8') as index:
             index.write('\n## Prepared evidence propositions\n\n'
-                        'Open prepared-facts.json for cited propositions relevant to the request. '
+                        'Open the individual views for the entries and files relevant to the request. '
                         'Preserve each condition, authority and uncertainty when using a proposition. '
                         'Use its listed source handles and check it against retained evidence. '
-                        'A missing proposition leaves the ordinary retained source workflow in place.\n')
+                        'Use the ordinary retained source workflow for gaps identified in a view. '
+                        'The separate prepared-facts.json sidecar records full witness coordinates and coverage.\n\n')
+            for view in views.values():
+                index.write(f"- {view['label']}: {view['path']} ({view['status']})\n")
     tree(Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1])
     return summaries
 
