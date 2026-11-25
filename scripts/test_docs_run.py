@@ -2536,14 +2536,18 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                      "text": "The publisher submits the retained typed event.", "sources": ["origin-body"],
                      "_edge": {"kind": "JAVA_TYPED_PUBLISH", "site": "origin-body", **config}}
 
-        def listener(name, configuration, *, registered=True, declaration=True, callback=True):
+        assembly = ["assembly", *(f"alias-{index}" for index in range(10))]
+
+        def listener(name, configuration, *, registered=True, declaration=True, callback=True, complete=True):
+            references = [f"{name}-{piece}" for piece in assembly]
             return self.retained(name, entry_kind="JAVA_TYPED_DISPATCH", proof=registered,
                                  trigger={"kind": "JAVA_TYPED_DISPATCH",
                                           "authority": "RETAINED_JAVA_DISPATCHER_WIRING" if declaration else "INFERRED",
                                           "configuration": configuration, "registration": name + "-registration",
                                           "callback": name + ("-body" if callback else "-absent"),
-                                          "assemblySources": [name + "-assembly"]},
-                                 events=[("assembly", 'builder.onEvent(Placed.class, this::record)', {"kind": "CALL"})])
+                                          "assemblySources": references if complete else [*references, name + "-missing"]},
+                                 events=[(piece, f'final var {piece.replace("-", "_")} = builder;', {"kind": "CALL"})
+                                         for piece in assembly])
 
         owner = self.retained("orders", name="origin", facts=[qualified])
         eligible = listener("ledger", config)
@@ -2553,13 +2557,14 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                  listener("wrong-adapter", {**config, "adapter": "KAFKA"}),
                  listener("unregistered", config, registered=False),
                  listener("missing-callback-source", config, callback=False),
+                 listener("missing-assembly-source", config, complete=False),
                  listener("compatible-function", config, declaration=False)]
         result = self.project(owner, eligible, *peers)
         row, = result[owner[0]["id"]]
         self.assertEqual(row["kind"], "typed-message-peer")
         self.assertIn("compiler selected", row["text"])
         self.assertIn("adapter event mapping", row["uncertainty"])
-        self.assertEqual(row["sources"], ["origin-body", "ledger-registration", "ledger-assembly", "ledger-body"])
+        self.assertEqual(row["sources"], ["origin-body", "ledger-registration", *(f"ledger-{piece}" for piece in assembly), "ledger-body"])
         self.assertTrue(all(peer[0]["id"] not in result for peer in peers))
         nominal = self.retained("orders", name="origin",
                                 facts=[{**qualified, "authority": "RETAINED_JAVA_PUBLICATION_CANDIDATE"}])

@@ -9,6 +9,7 @@ import re
 ENTRIES = object()
 MAX_MATCHES = 4
 MAX_SITES = 8
+MAX_TYPED_REGISTRATION_SITES = 24
 MAX_LINKS = 16
 MAX_WRITE_SITES = 16
 MAX_HTTP_WRITES = 2
@@ -219,7 +220,8 @@ def record(requirement, process, context, facts, exact):
     if not registration:
         registration = cite_refs(sources, process["entrySources"],
                                  source_ids=set(requirement.get("registrationSourceIds", ())) or None)
-    registered = registration[:MAX_SITES]
+    registration_limit = MAX_TYPED_REGISTRATION_SITES if trigger.get("kind") == "JAVA_TYPED_DISPATCH" else MAX_SITES
+    registered = registration[:registration_limit]
     topic_proven = trigger.get("authority") != "KAFKAJS_RETAINED_SOURCE" or (
         bool(trigger.get("subscriptions")) and len(registration) <= MAX_SITES
         and all(ref in sources for ref in subscription_refs))
@@ -231,7 +233,7 @@ def record(requirement, process, context, facts, exact):
     if (requirement.get("entryKind") == trigger.get("kind") == "JAVA_TYPED_DISPATCH"
             and trigger.get("authority") == JAVA_DISPATCH_AUTHORITY
             and trigger.get("registration") in sources and callbacks
-            and all(ref in sources for ref in assembly) and len(registration) <= MAX_SITES):
+            and all(ref in sources for ref in assembly) and len(registration) <= registration_limit):
         typed_registration = typed_route(trigger.get("configuration") or {})
     calls, publishes, typed_publishes, reads, writes = {}, {}, {}, {}, {}
 
