@@ -886,6 +886,71 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes["audit_log"]]
         self.assertFalse(any("parser.parse" in row["text"] for row in audit if row["kind"] == "write_lineage"), audit)
 
+    def test_kotlin_projects_bounded_result_repetition_with_exact_retained_steps(self):
+        template = """import org.springframework.scheduling.annotation.Scheduled
+
+class ArchiveJob(private val pages: PageSource, private val archive: Archive) {
+    @Scheduled(fixedDelay = 100)
+    fun update() { collect("recordings", 12) }
+
+    private fun collect(directory: String, size: Int) {
+        kotlin.require(directory.isNotEmpty())
+        if (size < 1) throw IllegalArgumentException("size")
+        LOOP
+        archive.finish(directory)
+    }
+}
+"""
+        loops = {
+            'top test': ('while (pages.next(directory, size) == PageResult.More) {\n'
+                         '    archive.pack()\n    archive.record()\n}',
+                         ('pages.next(directory, size) == PageResult.More', 'before the body', 'archive.pack()'), None),
+            'changed condition': ('while (pages.next(directory, size) != PageResult.More) { archive.pack() }',
+                                  ('pages.next(directory, size) != PageResult.More', 'before the body'), None),
+            'break guard': ('while (true) {\n    val result = pages.next(directory, size)\n'
+                            '    if (result != PageResult.More) break\n    archive.pack()\n    archive.record()\n}',
+                            ('result != PageResult.More', '`break` exits', 'If false'), None),
+            'tail test': ('do {\n    val result = pages.next(directory, size).await()\n    archive.pack()\n'
+                          '} while (result == PageResult.More)',
+                          ('pages.next(directory, size).await()', 'result == PageResult.More', 'after the body'), None),
+            'tail result assignment': ('var result: PageResult\ndo {\n    archive.open()\n'
+                                       '    result = pages.next(directory, size)\n    archive.pack()\n'
+                                       '} while (result.status == PageResult.More)',
+                                       ('archive.open()', 'result.status == PageResult.More', 'after the body'), None),
+            'catch continue': ('while (true) {\n'
+                               '    val result = try { pages.next(directory, size) } catch (retry: Retry) { continue }\n'
+                               '    if (result != PageResult.More) break\n'
+                               '    try { archive.pack() } catch (ignored: Ignored) {}\n    archive.record()\n}',
+                               ('result != PageResult.More', 'skips the remaining body', 'resumes at the next action'),
+                               'catch (retry: Retry)'),
+            'opaque callback': ('archive.defer {\n'
+                                '    while (pages.next(directory, size) == PageResult.More) { archive.pack() }\n}', (), None),
+            'other branch predicate': ('while (true) {\n    val result = pages.next(directory, size)\n'
+                                       '    if (settings.current != PageResult.More) break\n    archive.pack()\n}', (), None),
+        }
+        for name, (loop, needles, handler) in loops.items():
+            with self.subTest(name=name):
+                source = template.replace('LOOP', loop.replace('\n', '\n        '))
+                root = '@Scheduled(fixedDelay = 100)\n    fun update() { collect("recordings", 12) }'
+                rows, witnesses = self.kotlin_callback_facts(source, root, 'SCHEDULED_JOB', 'update')
+                projected = [row for row in rows if row['kind'] == 'RESULT_CONTROLLED_LOOP']
+                if not needles:
+                    self.assertFalse(projected, rows)
+                    continue
+                relation, = projected
+                self.assertIn('collect("recordings", 12)', relation['text'])
+                self.assertIn('`directory.isNotEmpty()` is true', relation['condition'])
+                self.assertIn('`size < 1` is false', relation['condition'])
+                for needle in (*needles, 'before the loop starts', 'archive.finish(directory)', 'failure escaping the supplier'):
+                    self.assertIn(needle, relation['text'])
+                anchors = [witnesses[ref] for ref in relation['sources'] if ref in witnesses]
+                self.assertGreaterEqual(len(anchors), 5)
+                self.assertTrue(any(row['text'] == 'size < 1' for row in anchors))
+                self.assertTrue(any(row['text'] == 'archive.finish(directory)' for row in anchors))
+                self.assertEqual(any('catch (' in row['text'] for row in anchors), handler is not None)
+                if name == 'top test':
+                    self.assertLess(relation['text'].index('archive.pack()'), relation['text'].index('archive.record()'))
+
     def test_kotlin_validation_skip_applies_only_to_the_selected_later_write(self):
         template = """import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.transaction.support.TransactionTemplate

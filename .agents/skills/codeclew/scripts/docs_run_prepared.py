@@ -218,19 +218,33 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
             continue
         values['sources'] = list(dict.fromkeys(bindings.get(ref, ref) for ref in refs))
         witnesses = []
+        repetition_sites = row.get('_repetitionSites', ())
+        loop_identity = {}
         for ref in dict.fromkeys(refs):
             if ref not in bindings:
                 continue
             handle = bindings[ref]
             source, site = exact[handle], lifted[ref]
             proof = REACHED['witness'](source, {**site, 'service': source['service']}, handle)
-            if ref == row.get('_writeSite') and proof and all(type(proof.get(key)) is int for key in ('startByte', 'endByte')):
-                values['_writeSite'] = proof
+            if proof and all(type(proof.get(key)) is int for key in ('startByte', 'endByte')):
+                if ref == row.get('_writeSite'):
+                    values['_writeSite'] = proof
+                if ref in repetition_sites:
+                    origin = source.get('occurrence') or {}
+                    loop_identity[ref] = (source['service'], source['file'], source['revision'],
+                                          proof['startByte'], proof['endByte'], proof['textDigest'],
+                                          origin.get('snapshot'), origin.get('blob'))
             witnesses.append(proof or dict(cite=handle, **{key: site[key] for key in (
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in site}))
+        if repetition_sites:
+            if not all(ref in loop_identity for ref in repetition_sites):
+                rejected += 1
+                continue
+            values['_repetitionKey'] = tuple(loop_identity[ref] for ref in repetition_sites)
         if witnesses:
             values['witnesses'] = witnesses
-        for private in ('_edgeCause', '_edgePhase', '_writeFocus', '_pollPublication', '_httpStatus', '_writeBinding', '_httpCompletion'):
+        for private in ('_edgeCause', '_edgePhase', '_writeFocus', '_pollPublication', '_httpStatus', '_writeBinding',
+                        '_httpCompletion'):
             if private in row:
                 values[private] = row[private]
         if edge := row.get('_edge'):
@@ -966,8 +980,10 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             additional, limited_reach = REACHED['select'](process, indexed, exact, context['_bindWitness'],
                                                          context['_sourceCallSelections'])
             direct = {(fact['kind'], fact['text'], fact.get('condition')) for fact in propositions}
-            propositions.extend(fact for fact in additional if (fact.get('_writeSite') and fact.get('_edge'))
-                                or (fact['kind'], fact['text'], fact.get('condition')) not in direct)
+            direct_loops = {fact['_repetitionKey'] for fact in propositions if '_repetitionKey' in fact}
+            propositions.extend(fact for fact in additional if fact.get('_repetitionKey') not in direct_loops
+                                and ((fact.get('_writeSite') and fact.get('_edge'))
+                                     or (fact['kind'], fact['text'], fact.get('condition')) not in direct))
             try:
                 focused, rejected = replay_reached_writes(context, propositions, exact, read_pinned)
             except (AttributeError, IndexError, KeyError, RecursionError, TypeError, ValueError) as error:

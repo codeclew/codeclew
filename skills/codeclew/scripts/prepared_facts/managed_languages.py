@@ -87,6 +87,34 @@ def complete_site(context):
                  and row["startLine"] == 1), None)
 
 
+def bind_repetitions(rows, context, witnesses, reserved=()):
+    """Require exact retained excerpts for every part of a projected loop relation."""
+    focus = module("prepared_write_focus")
+    sources = {site["id"]: site for site in context["sourceRanges"]}
+    occupied = set(sources) | witnesses.keys() | set(reserved)
+    accepted = []
+    bind = context.get("_bindWitness")
+    for row in rows:
+        if not (addresses := row.get("_repetitionRanges")):
+            accepted.append(row)
+            continue
+        anchors = {}
+        for address in addresses:
+            parent = focus["admitted_parent"](sources[address["host"]], context)
+            index = len(occupied) + len(anchors) + 1
+            while (identifier := f"S{index:03d}") in occupied or identifier in anchors:
+                index += 1
+            if not parent or not (site := focus["selected_site"](parent, address, identifier)) or bind and not bind(site):
+                break
+            anchors[identifier] = site
+        else:
+            witnesses.update(anchors)
+            occupied.update(anchors)
+            accepted.append({**row, "_repetitionSites": tuple(anchors),
+                             "sources": list(dict.fromkeys([*row["sources"], *anchors]))})
+    return accepted
+
+
 def kotlin_discovery(process, context):
     site = complete_site(context)
     if site is None:
@@ -115,7 +143,9 @@ def kotlin_discovery(process, context):
         text = unit.excerpt(span)
         first = 1 + unit.text.count("\n", 0, span.start)
         start = len(unit.text[:span.start].encode())
-        alias = f"S{len(context['sourceRanges']) + len(witnesses) + 1:03d}"
+        index_ = len(context["sourceRanges"]) + len(witnesses) + 1
+        while (alias := f"S{index_:03d}") in witnesses:
+            index_ += 1
         narrowed = {**site, "id": alias, "text": text, "textDigest": fingerprint(text), "references": [alias],
                     "startLine": first, "endLine": first + text.count("\n"),
                     "startByte": start, "endByte": start + len(text.encode())}
@@ -123,6 +153,8 @@ def kotlin_discovery(process, context):
                   "sources": {alias: narrowed}, "facts": [{"kind": "BODY", "declaration": alias, "sources": [alias]}]}
         frame = {**context, "sourceRanges": [narrowed], "_sourceOccurrences": {alias: narrowed}}
         rows = projector["derive"](branch, frame)
+        reserved = {item["id"] for item in context["sourceRanges"]}
+        rows = bind_repetitions(rows, frame, witnesses, reserved)
         facts.extend(rows)
         if rows:
             witnesses[alias] = narrowed
@@ -535,11 +567,12 @@ def project(process, context, *, node):
             process, context = kotlin_selected_calls(process, context, selected, state_witnesses,
                                                      adapter["SYNTAX"], adapter["FAILURE"]["UNIQUE_SYNTAX"])
             rows = adapter["derive"](process, context)
+            rows = bind_repetitions(rows, context, witnesses, state_witnesses)
             focus = module("prepared_write_focus")
             invoke = lambda operation, frame, site, _: adapter["derive_write"](operation, frame, None, site)
             limit = adapter["MAX_FACTS"]["SQL_LITERAL"]
             if replay_target is not None:
-                anchors = focus["add_sites"](context, rows, state_witnesses)
+                anchors = focus["add_sites"](context, rows, set(witnesses) | state_witnesses.keys())
                 witnesses.update(anchors)
                 fixed_sources = {**witnesses, **state_witnesses}
 
@@ -550,7 +583,7 @@ def project(process, context, *, node):
 
                 replay_target.append(replay)
             else:
-                details, found = focus["project"](process, context, rows, invoke, reserved=state_witnesses, limit=limit,
+                details, found = focus["project"](process, context, rows, invoke, reserved=set(witnesses) | state_witnesses.keys(), limit=limit,
                                                     retain_alternatives=True)
                 rows.extend(details)
                 witnesses.update(found)
@@ -576,7 +609,7 @@ def public_rows(rows, aliases, witnesses, authority):
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
         for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication", "_httpStatus", "_writeBinding",
-                        "_httpCompletion", "_writeSite"):
+                        "_httpCompletion", "_writeSite", "_repetitionSites"):
             if private in row:
                 values[private] = row[private]
         declared = row.get("authority")

@@ -16,6 +16,7 @@ KAFKA_SEND = (
     "method:class:org.springframework.kafka.core.KafkaTemplate#send(",
 )
 FLOW = runpy.run_path(str(HERE / "clew_prepared_kotlin_flow.py"))
+REPETITION = runpy.run_path(str(HERE / "clew_prepared_kotlin_repetition.py"))["project"]
 Controls, Action = FLOW["Controls"], FLOW["Action"]
 OPERANDS = runpy.run_path(str(HERE / "clew_prepared_kotlin_operands.py"))
 PROTOCOLS = runpy.run_path(str(HERE / "clew_prepared_kotlin_protocols.py"))["Projection"]
@@ -51,6 +52,7 @@ MAX_FACTS = {
     "TRANSACTION_BOUNDARY": 14,
     "POSSIBLE_REPEAT_AFTER_MARK_FAILURE": 8,
     "POSSIBLE_LATER_SELECTION": 8,
+    "RESULT_CONTROLLED_LOOP": 4,
     "SCOPE_LIMIT": 1,
 }
 ASSIGNMENTS = {"=", "+=", "-=", "*=", "/=", "%="}
@@ -1134,6 +1136,19 @@ class Projector:
                      for ref in sorted(declared[compiler_root])}
         return rows, retained, roots, declared
 
+    def result_repetition(self, body, scope, proof):
+        if len(body.function.params) < 2 or not {"while", "do"}.intersection(body.unit.words):
+            return
+        # The transfer projection uses the existing parser but leaves legacy call and operand facts intact.
+        lexical = Body(self, body.ref, body.label, ())
+        lexical.compiler_targets.update(body.compiler_targets)
+        if relation := REPETITION(lexical, FAILURE):
+            text, condition, sites = relation
+            host = self.ranges.by_ref[body.ref]
+            addresses = [{"host": host, "start": site.start, "end": site.end, "units": "CHARACTERS"} for site in sites]
+            self.add("RESULT_CONTROLLED_LOOP", f"In {scope}, {text[0].lower() + text[1:]}",
+                     extra=proof, condition=condition, _repetitionRanges=addresses)
+
     def derive(self):
         rows, retained, roots, declared = self.declarations()
         compiler_root = self.process.get("root")
@@ -1149,13 +1164,10 @@ class Projector:
             visited.add(ref)
             try:
                 body = Body(self, ref, label, rows)
-                suite = body.suite()
             except Unsupported:
                 continue
             scope = quote(body.function.name) if ref == root else f"the retained body selected if {call.text} dispatches to {quote(label)}"
             proof = (self.ranges.by_ref[ref], *(call.citations if call else ()))
-            if ref == root:
-                self.entry(body)
             if declaration:
                 for event in self.process.get("facts", ()):
                     if event.get("declaration") == declaration and event.get("kind") == "EVENT":
@@ -1163,6 +1175,13 @@ class Projector:
                         if (event.get("event") == "CALL" and event.get("resolution") == "COMPILER_EXACT"
                                 and (target := event.get("target"))):
                             body.compiler_targets.update((site, target) for site in sites)
+            self.result_repetition(body, scope, proof)
+            try:
+                suite = body.suite()
+            except Unsupported:
+                continue
+            if ref == root:
+                self.entry(body)
             body.control(suite, scope, proof)
             self.paths(body, body.continuation(suite, PathState(), scope), scope, proof)
             body.deferred(declaration)

@@ -2222,6 +2222,23 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
         }
     }
 
+    @Scheduled(fixedDelay = 800)
+    fun checkpoint() {
+        gather("daily", 20)
+    }
+
+    private fun gather(prefix: String, size: Int) {
+        kotlin.require(prefix.isNotEmpty())
+        kotlin.check(size > 0)
+        while (true) {
+            val outcome = try { parser.next(prefix, size) } catch (busy: Retry) { continue }
+            if (outcome != ScanResult.Again) break
+            parser.collect()
+            parser.remember()
+        }
+        parser.finish(prefix)
+    }
+
     private fun validate(value: Message) {
         require(value.kind == "selected") { "selected kind required" }
     }
@@ -2376,6 +2393,31 @@ class Unrelated {
             self.assertIn('item.cached', json.dumps(poll))
             self.assertIn('INSERT INTO parcel', json.dumps(poll))
             self.assertEqual(received['omittedPreparedFacts'], 0)
+            checkpoint = D['P']['expand_fact_context'](packet_for('checkpoint'))
+            relation, = (fact for scope in checkpoint['facts'].values() for fact in scope.get('facts', ())
+                         if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
+            self.assertIn('`prefix.isNotEmpty()` is true', relation['condition'])
+            self.assertIn('`size > 0` is true', relation['condition'])
+            self.assertIn('If `outcome != ScanResult.Again` is true, `break` exits', relation['text'])
+            self.assertIn('failure escaping the supplier', relation['text'])
+            self.assertIn('`continue` skips the remaining body', relation['text'])
+            self.assertIn('After the normal exit, source reaches `parser.finish(prefix)`', relation['text'])
+            scoped_regions = [checkpoint['sourceRanges'][region]['text'] for alias in relation['sources']
+                              for region in checkpoint['citations'][alias].get('regions', [checkpoint['citations'][alias]['region']])]
+            for source in ('kotlin.require(prefix.isNotEmpty())', 'kotlin.check(size > 0)', 'parser.next(prefix, size)',
+                           'outcome != ScanResult.Again', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)'):
+                self.assertTrue(any(source in text for text in scoped_regions), scoped_regions)
+            sidecar = D['load'](run / 'inputs/author-source/intake/prepared-facts.json')
+            checked, = (fact for fact in sidecar['entries'][checkpoint['requirement']['id']]['propositions']
+                        if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
+            anchors = {(proof['startByte'], proof['endByte'], proof['textDigest']) for proof in checked['witnesses']}
+            raw = contents.encode()
+            for literal in ('prefix.isNotEmpty()', 'size > 0', 'outcome != ScanResult.Again', 'continue',
+                            'parser.next(prefix, size)', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)'):
+                encoded = literal.encode()
+                self.assertTrue(any(stop - start == len(encoded) and raw[start:stop] == encoded
+                                    and digest == D['sha'](encoded) for start, stop, digest in anchors), literal)
+            self.assertEqual(checkpoint['omittedPreparedFacts'], 0)
 
 
 class PreparedServiceEdgeTests(unittest.TestCase):
