@@ -190,6 +190,62 @@ def kotlin_receivers(process, context):
              "_sourceOccurrences": {**context["_sourceOccurrences"], **witnesses}}, witnesses)
 
 
+
+def kotlin_scheduled_state(process, context):
+    """Bind loop, helper and state witnesses to the same retained Kotlin source."""
+    roots = root_sources(process) & process["sources"].keys()
+    bind_witness = context.get("_bindWitness")
+    if process.get("entryKind") != "SCHEDULED_JOB" or len(roots) != 1 or not bind_witness:
+        return [], {}
+    root, = roots
+    source = process["sources"][root]
+    text = pinned_text(context, source)
+    if not text or len(text.encode()) > MAX_FILE_BYTES or remaining(context, 8) <= 0:
+        return [], {}
+    syntax = module("kotlin_syntax")
+    try:
+        unit = syntax["Kotlin"](text, source["file"])
+        method = unit.select(source)
+    except syntax["Unsupported"]:
+        return [], {}
+    if method is None:
+        return [], {}
+
+    witnesses, by_site, native_calls = {}, {}, []
+
+    def bind(site):
+        if site in by_site:
+            return by_site[site]
+        raw = unit.excerpt(site)
+        first = 1 + text.count("\n", 0, site.start)
+        start = len(text[:site.start].encode())
+        alias = f"S{len(context['sourceRanges']) + len(witnesses) + 1:03d}"
+        item = {**source, "id": alias, "references": [alias], "text": raw, "textDigest": fingerprint(raw),
+                "startLine": first, "endLine": first + raw.removesuffix("\n").count("\n"),
+                "startByte": start, "endByte": start + len(raw.encode())}
+        if bind_witness(item):
+            witnesses[alias] = item
+            by_site[site] = alias
+            return alias
+        by_site[site] = None
+        return None
+
+    for event in process.get("facts", ()):
+        if event.get("kind") != "EVENT" or event.get("event") != "CALL" or event.get("resolution") != "COMPILER_EXACT":
+            continue
+        for ref in event.get("sources", ()):
+            retained = process["sources"].get(ref, {})
+            if (retained.get("file"), retained.get("revision")) == (source["file"], source["revision"]):
+                if site := unit.locate(retained):
+                    native_calls.append((site, event.get("target") or "",
+                                         "HTTP" if event.get("http") else "KAFKA" if event.get("kafka") else "CALL"))
+
+    facts = module("prepared_kotlin_scheduled_state")["project"](
+        unit, method, syntax, module("prepared_kotlin_protocols"), bind, native_calls)
+    used = {ref for row in facts for ref in row["sources"]}
+    return facts, {ref: value for ref, value in witnesses.items() if ref in used}
+
+
 def typescript(process, context, node):
     projector = module("prepared_typescript")
     if not process.get("root"):
@@ -397,6 +453,9 @@ def project(process, context, *, node):
         if process.get("root"):
             process, context, witnesses = kotlin_receivers(process, context)
             rows = module("prepared_kotlin")["derive"](process, context)
+            state_rows, state_witnesses = kotlin_scheduled_state(process, context)
+            rows = [*state_rows, *rows]
+            witnesses.update(state_witnesses)
         else:
             rows, witnesses = kotlin_discovery(process, context)
     elif family is TYPESCRIPT:

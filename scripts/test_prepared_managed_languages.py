@@ -63,6 +63,45 @@ def selected(file, text, *, standalone=None, start=1):
                "_nativeFiles": {file: {"file": file, "revision": REVISION, "text": text, "textDigest": digest(text)}}}
     return process, context
 
+SCHEDULED_ROOT = """@Scheduled(fixedDelay = 250)
+    fun dispatch() {
+        for (parcel in parcels) {
+            transactions.executeWithoutResult {
+                transmit(parcel.key)
+            }
+        }
+    }"""
+SCHEDULED = f"""package example
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.transaction.support.TransactionTemplate
+
+class ParcelDispatcher(
+    private val parcels: List<Parcel>,
+    private val transactions: TransactionTemplate,
+    private val relay: HttpClient,
+    private val request: HttpRequest
+) {{
+    private val attempts = mutableMapOf<String, Long>()
+    private val otherAttempts = mutableMapOf<String, Long>()
+
+    {SCHEDULED_ROOT}
+
+    private fun transmit(key: String) {{
+        val prior = attempts[key]
+        attempts[key] = 4L
+        relay.send(request, HttpResponse.BodyHandlers.discarding())
+        remember(key, prior)
+    }}
+
+    private fun remember(key: String, previous: Long?) {{ }}
+}}
+
+data class Parcel(val key: String, val token: String)
+"""
+
 
 class PreparedManagedLanguages(unittest.TestCase):
     @classmethod
@@ -143,6 +182,57 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertIn("If execution reaches this decision", writes[0]["text"])
         self.assertEqual(writes[0]["condition"], "`quick` is false and `allowed`")
         self.assertEqual(writes[0]["sources"], [HANDLE])
+
+    def scheduled_facts(self, text):
+        root = SCHEDULED_ROOT
+        if root not in text:
+            root = text[text.index("@Scheduled"):text.index("\n\n    private fun transmit")]
+        first = text[:text.index(root)].count("\n") + 1
+        process, context = selected("ParcelDispatcher.kt", text, standalone=root, start=first)
+        process.update(entryKind="SCHEDULED_JOB", entrySymbol="dispatch")
+        raw = text.encode()
+
+        def bind(witness):
+            start, end = witness["startByte"], witness["endByte"]
+            if raw[start:end] == witness["text"].encode() and witness["textDigest"] == digest(witness["text"]):
+                return HANDLE
+
+        context["_bindWitness"] = bind
+        return self.project(process, context)
+
+    def test_kotlin_scheduled_key_and_heap_write_reach_a_transaction_helper(self):
+        facts, witnesses = self.scheduled_facts(SCHEDULED)
+        indexed = {row["kind"]: row for row in facts}
+        expected = {"SCHEDULED_ARGUMENT", "HEAP_WRITE_BEFORE_CALL", "HEAP_FAILURE_BYPASS", "SAME_KEY_HEAP_RETRY"}
+        self.assertLessEqual(expected, indexed.keys(), facts)
+        handoffs = [row["text"] for row in facts if row["kind"] == "SCHEDULED_ARGUMENT"]
+        self.assertTrue(any("parcel.key" in text and "transmit" in text for text in handoffs), handoffs)
+        self.assertIn("remember", indexed["HEAP_FAILURE_BYPASS"]["text"])
+        self.assertIn("rollback", indexed["SAME_KEY_HEAP_RETRY"]["text"])
+        self.assertIn("same receiver", indexed["SAME_KEY_HEAP_RETRY"]["uncertainty"])
+        proof = [witnesses[ref]["text"] for ref in indexed["SAME_KEY_HEAP_RETRY"]["sources"] if ref in witnesses]
+        self.assertTrue(any("attempts[key] = 4L" in text for text in proof), proof)
+        self.assertTrue(any("val attempts" in text for text in proof), proof)
+        self.assertTrue(any("transmit(parcel.key)" in text for text in proof), proof)
+
+    def test_kotlin_scheduled_state_excludes_unbound_receiver_key_and_order(self):
+        cases = [
+            (SCHEDULED.replace("        attempts[key] = 4L", "        attempts[key] = 4L\n        attempts.clear()"),
+             "SAME_KEY_HEAP_RETRY"),
+            (SCHEDULED.replace("transmit(parcel.key)", "transmit(parcel.key, parcel.token)").replace(
+                "transmit(key: String)", "transmit(key: String, otherKey: String)").replace(
+                "val prior = attempts[key]", "val prior = attempts[otherKey]"), "SAME_KEY_HEAP_RETRY"),
+            (SCHEDULED.replace("val prior = attempts[key]", "val prior = otherAttempts[key]"), "SAME_KEY_HEAP_RETRY"),
+            (SCHEDULED.replace("attempts[key] = 4L", "val alias = attempts\n        alias[key] = 4L"), "HEAP_WRITE_BEFORE_CALL"),
+            (SCHEDULED.replace("        attempts[key] = 4L\n", "").replace(
+                "        remember(key, prior)", "        attempts[key] = 4L\n        remember(key, prior)"), "HEAP_WRITE_BEFORE_CALL"),
+            (SCHEDULED.replace("transmit(parcel.key)", "try { transmit(parcel.key) } finally { attempts.clear() }"),
+             "SAME_KEY_HEAP_RETRY"),
+        ]
+        for source, reaction in cases:
+            with self.subTest(reaction=reaction):
+                facts, _ = self.scheduled_facts(source)
+                self.assertNotIn(reaction, {row["kind"] for row in facts}, facts)
 
     def test_conflicting_source_digest_cannot_reuse_a_work_handle(self):
         process, context = selected("score.kt", KOTLIN)
