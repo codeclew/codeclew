@@ -28,6 +28,7 @@ module.exports = function discover(ts, files) {
     const checker = ts.createProgram([...usable.keys()], options, host).getTypeChecker();
     const registrations = [];
     const subscriptions = new Map();
+    const assigned = new Set(), propertyWrites = [], replaced = new Map();
 
     function declaration(symbol, follow = false) {
         if (!symbol) return undefined;
@@ -39,19 +40,79 @@ module.exports = function discover(ts, files) {
         return declaration(checker.getAliasedSymbol(symbol));
     }
     const binding = (node, follow) => ts.isIdentifier(node) && declaration(checker.getSymbolAtLocation(node), follow);
-    const constant = item => item && ts.isVariableDeclaration(item) && item.parent.flags & ts.NodeFlags.Const
-        ? item.initializer : undefined;
+    const constant = item => item && !assigned.has(item) && ts.isVariableDeclaration(item) &&
+        item.parent.flags & ts.NodeFlags.Const ? item.initializer : undefined;
     const hasBody = node => node && ts.isFunctionLike(node) && node.body && !node.asteriskToken;
-    function callable(node) {
-        if (!node) return undefined;
-        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return hasBody(node) && node;
+
+    function recordTarget(node) {
+        if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) {
+            recordTarget(node.expression);
+        } else if (ts.isIdentifier(node)) {
+            const item = binding(node, true);
+            if (item) assigned.add(item);
+        } else if (ts.isPropertyAccessExpression(node)) {
+            propertyWrites.push([node.expression, node.name.text]);
+        } else if (ts.isElementAccessExpression(node)) {
+            const key = node.argumentExpression;
+            propertyWrites.push([node.expression, key && ts.isStringLiteralLike(key) ? key.text : "*"]);
+        } else if (ts.isArrayLiteralExpression(node)) {
+            for (const item of node.elements) recordTarget(ts.isSpreadElement(item) ? item.expression : item);
+        } else if (ts.isObjectLiteralExpression(node)) {
+            for (const item of node.properties) {
+                if (ts.isShorthandPropertyAssignment(item)) recordTarget(item.name);
+                else if (ts.isPropertyAssignment(item)) recordTarget(item.initializer);
+                else if (ts.isSpreadAssignment(item)) recordTarget(item.expression);
+            }
+        } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            recordTarget(node.left);
+        }
+    }
+    function collectWrites(node) {
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+            recordTarget(node.left);
+        } else if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+                [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) {
+            recordTarget(node.operand);
+        } else if (ts.isDeleteExpression(node)) {
+            recordTarget(node.expression);
+        } else if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && !ts.isVariableDeclarationList(node.initializer)) {
+            recordTarget(node.initializer);
+        }
+        ts.forEachChild(node, collectWrites);
+    }
+    for (const source of usable.values()) collectWrites(source);
+
+    function objectOrigin(node, depth = 0) {
+        if (!node || depth >= 4) return undefined;
         const item = binding(node, true);
-        const target = constant(item) || item;
+        const value = constant(item);
+        if (value) return ts.isIdentifier(value) ? objectOrigin(value, depth + 1) : item;
+    }
+    for (const [receiver, name] of propertyWrites) {
+        const owner = objectOrigin(receiver);
+        if (!owner) continue;
+        const names = replaced.get(owner) || new Set();
+        names.add(name);
+        replaced.set(owner, names);
+    }
+    const isReplaced = (owner, name) => replaced.get(owner)?.has(name) || replaced.get(owner)?.has("*");
+
+    function selectedCallable(item, depth) {
+        if (!item || assigned.has(item)) return undefined;
+        const initializer = constant(item);
+        if (initializer && ts.isIdentifier(initializer)) return callable(initializer, depth + 1);
+        const target = initializer || item;
         return hasBody(target) ? target : undefined;
+    }
+    function callable(node, depth = 0) {
+        if (!node || depth >= 4) return undefined;
+        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return hasBody(node) && node;
+        return selectedCallable(binding(node, true), depth);
     }
     function imported(node, name, modules) {
         const item = binding(node);
-        return item && ts.isImportSpecifier(item) && !item.isTypeOnly && !item.parent.parent.isTypeOnly &&
+        return item && !assigned.has(item) && ts.isImportSpecifier(item) && !item.isTypeOnly && !item.parent.parent.isTypeOnly &&
             (item.propertyName || item.name).text === name &&
             modules.includes(item.parent.parent.parent.moduleSpecifier.text);
     }
@@ -60,13 +121,12 @@ module.exports = function discover(ts, files) {
             ts.isPropertyAccessExpression(node.expression) && !node.expression.questionDotToken &&
             node.expression.name.text === name && node.expression.expression;
     }
-    function consumer(node, depth = 0) {
-        if (!node || depth >= 4) return undefined;
-        const item = binding(node, true);
-        const create = constant(item);
-        if (create && ts.isIdentifier(create)) return consumer(create, depth + 1);
-        const receiver = create && member(create, "consumer");
-        const kafka = receiver && constant(binding(receiver, true));
+    function consumer(node, method) {
+        const item = objectOrigin(node);
+        if (!item || isReplaced(item, method)) return undefined;
+        const receiver = member(item.initializer, "consumer");
+        const kafkaOwner = receiver && objectOrigin(receiver);
+        const kafka = kafkaOwner && !isReplaced(kafkaOwner, "consumer") && kafkaOwner.initializer;
         if (kafka && ts.isNewExpression(kafka) && imported(kafka.expression, "Kafka", ["kafkajs"])) return item;
     }
     function properties(node) {
@@ -94,9 +154,7 @@ module.exports = function discover(ts, files) {
         if (ts.isMethodDeclaration(property) && hasBody(property)) return property;
         if (ts.isPropertyAssignment(property)) return callable(property.initializer);
         if (ts.isShorthandPropertyAssignment(property)) {
-            const item = declaration(checker.getShorthandAssignmentValueSymbol(property), true);
-            const target = constant(item) || item;
-            if (hasBody(target)) return target;
+            return selectedCallable(declaration(checker.getShorthandAssignmentValueSymbol(property), true), 0);
         }
     }
     function context(root, receiver) {
@@ -114,7 +172,7 @@ module.exports = function discover(ts, files) {
                     }
                 }
                 const use = member(node, "commitOffsets");
-                if (use && receiver && consumer(use) === receiver && offsets.length < 8) {
+                if (use && receiver && consumer(use, "commitOffsets") === receiver && offsets.length < 8) {
                     offsets.push({use: range(use), call: range(node), declaration: range(receiver),
                         consumer: range(receiver.initializer)});
                 }
@@ -125,13 +183,13 @@ module.exports = function discover(ts, files) {
         return {helpers, calls, offsets};
     }
     function visit(node) {
-        const subscription = consumer(member(node, "subscribe"));
+        const subscription = consumer(member(node, "subscribe"), "subscribe");
         if (subscription) {
             const subscribed = subscriptions.get(subscription) || [];
             if (subscribed.length < 9) subscribed.push(node);
             subscriptions.set(subscription, subscribed);
         }
-        const runner = consumer(member(node, "run"));
+        const runner = consumer(member(node, "run"), "run");
         if (runner && node.arguments.length === 1 && registrations.length < 16) {
             const options = properties(node.arguments[0]);
             const handler = callbackOf(options?.get("eachMessage"));

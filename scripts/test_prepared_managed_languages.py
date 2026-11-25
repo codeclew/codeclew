@@ -8,6 +8,7 @@ import shutil
 import time
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -451,6 +452,36 @@ data class Label(val value: String) {
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
 
+
+    def test_typescript_discovery_checks_callback_and_consumer_method_rebinding(self):
+        self.require_typescript()
+        text = """import { Kafka } from "kafkajs";
+const kafka = new Kafka({ brokers: ["broker:9092"] });
+const feed = kafka.consumer({ groupId: "parcel-feed" });
+const alias = feed;
+async function handle() { return "initial"; }
+async function replacement() { return "replacement"; }
+async function boot() {
+    REBIND
+    await feed.subscribe({ topic: "lot.arrived" });
+    await alias.run({ eachMessage: handle });
+}
+"""
+        def discover(change):
+            files = {"boot.ts": {"text": text.replace("REBIND", change)}}
+            return self.adapter["discover_background"](files, node=self.node, deadline=time.monotonic() + 8,
+                                                       family="typescript")
+
+        original, = discover("")
+        self.assertEqual(original["topics"], ["lot.arrived"])
+        self.assertEqual(discover("handle = replacement;"), [])
+        self.assertEqual(discover("alias.run = replacement;"), [])
+        for method_write in ('alias.subscribe = replacement;', 'feed["subscribe"] = replacement;'):
+            replaced, = discover(method_write)
+            self.assertEqual(replaced["topics"], [])
+            self.assertTrue(replaced["topicCoverageOpen"])
+        other, = discover("const other = kafka.consumer({ groupId: 'other' }); other.subscribe = replacement;")
+        self.assertEqual(other["topics"], ["lot.arrived"])
 
     def test_typescript_early_exit_distinguishes_repeated_call_occurrences(self):
         self.require_typescript()
