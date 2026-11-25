@@ -517,6 +517,121 @@ else:
         self.assertNotIn('"expected"', repair)
         self.assertEqual(json.loads(repair.split('\n\n')[-1]), packets['OPERATION'])
 
+    def test_isolated_response_schema_and_normalization_keep_owned_reader_content(self):
+        run, plan, _, _ = self.isolated_fixture()
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        source = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](source)
+        alias = next(iter(operation['citations']))
+        region, first, last = operation['citationSpans'][alias][0]
+        self.assertEqual(operation['sourceRegions'][region], [first, last])
+        response['title'] = 'Reader title supplied on a fixed-title operation'
+        response['participants'] = [{'id': 'caller', 'title': 'Starter caller metadata'},
+                                    {'id': 'RowReader', 'title': 'Row reader'}]
+        response['steps'] = [
+            {'from': 'handler', 'to': 'RowReader', 'kind': 'await', 'label': 'Read rows', 'condition': ''},
+            {'from': 'RowReader', 'to': 'handler', 'kind': 'return', 'label': 'Return selected rows', 'condition': 'Read succeeds'},
+        ]
+        response['claims'][0]['cites'] = [
+            f'{alias}:{first}-{last}', f'{alias}#L{first}-L{last}', operation['citations'][alias], alias, region,
+        ]
+        original = D['digest'](response)
+        canonical = D['P']['validate_response'](operation, response)
+        self.assertEqual(D['digest'](response), original)
+        self.assertEqual(canonical['claims'][0]['cites'], [alias])
+        self.assertEqual(canonical['claims'][0]['text'], response['claims'][0]['text'])
+        self.assertEqual(canonical['participants'], [{'id': 'rowreader', 'title': 'Row reader'}])
+        self.assertEqual([step['kind'] for step in canonical['steps']], ['await', 'return'])
+        self.assertEqual(canonical['steps'][0]['to'], canonical['steps'][1]['from'])
+        self.assertIsNone(canonical['steps'][0]['condition'])
+        self.assertIsNone(canonical['title'])
+
+        schema = D['load'](run / 'inputs' / operation['schema'])
+        self.assertNotIn('title', schema['properties'])
+        self.assertNotIn('routes', schema['properties'])
+        self.assertEqual(schema['properties']['slot']['enum'], [operation['key']])
+        self.assertEqual(set(schema['$defs']['citation']['enum']), set(operation['citations']))
+        self.assertEqual(set(schema['$defs']['claim']['properties']['returns']['items']['enum']), set(operation['returns']))
+        prompt = (run / 'inputs' / operation['prompt']).read_text()
+        self.assertIn('add the return edge from', prompt)
+        self.assertNotIn('CONTRACTS |', prompt)
+        guide = next(slot for slot in plan['slots'] if slot['kind'] == 'GUIDE')
+        guide_schema = D['load'](run / 'inputs' / guide['schema'])
+        self.assertNotIn('returns', guide_schema['$defs']['claim']['properties'])
+        self.assertIn('title', guide_schema['required'])
+
+        # Exercise schema-minimal shape through the assembled native reader.
+        for field in ('discovery', 'starts', 'contracts', 'routes', 'title'):
+            canonical.pop(field)
+        D['save'](source, canonical)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        html = (Path(result['ready']) / 'html' / self.entry['page'].replace('.md', '.html')).read_text()
+        self.assertIn('Return selected rows', html)
+        self.assertIn('sequence-message return', html)
+
+    def test_isolated_diagnostics_reject_outside_or_ambiguous_evidence_in_one_pass(self):
+        run, plan, _, _ = self.isolated_fixture()
+        slot = next(row for row in plan['slots'] if row['kind'] == 'OPERATION')
+        answer = D['load'](self.seed / (slot['key'] + '-response.json'))
+        alias = next(iter(slot['citations']))
+        region, first, last = slot['citationSpans'][alias][0]
+        slot['citations']['Sother'] = 'different-admitted-handle'
+        slot['citationSpans']['Sother'] = [[region, first, last]]
+        answer['claims'][0]['cites'] = [f'{alias}:{last + 1}', region, 'Sunknown']
+        answer['claims'][1]['cites'] = []
+        answer['claims'][1]['returns'] = ['Rother']
+        answer['steps'][0]['to'] = 'undeclared'
+        answer['steps'][0]['condition'] = 'two\nlines'
+        with self.assertRaises(D['Stop']) as raised:
+            D['P']['validate_response'](slot, answer)
+        issues = {row['path']: row for row in raised.exception.details['issues']}
+        self.assertEqual(raised.exception.code, 'PAGE_RESPONSE_INVALID')
+        self.assertEqual(issues['/claims/0/cites/0']['received'], f'{alias}:{last + 1}')
+        self.assertCountEqual(issues['/claims/0/cites/1']['matchingAliases'], [alias, 'Sother'])
+        self.assertEqual(issues['/claims/1/cites']['code'], 'PAGE_CITATION_REQUIRED')
+        self.assertEqual(issues['/claims/1/returns/0']['allowed'], list(slot['returns']))
+        self.assertEqual(issues['/claims']['missing'], list(slot['returns']))
+        self.assertIn('caller', issues['/steps/0/to']['allowed'])
+        self.assertIn('/steps/0/condition', issues)
+
+    def test_isolated_format_repair_reuses_verified_packet_without_resending_source(self):
+        run, plan, _, _ = self.isolated_fixture(repairs=1)
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        path = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](path)
+        D['save'](self.seed / (operation['key'] + '-repair.json'), response)
+        response['claims'][0]['cites'] = ['Unbound']
+        D['save'](path, response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(len(state['attempts']), len(plan['slots']) + 1)
+        retry, = [attempt for attempt in state['attempts'] if attempt['number'] == 1]
+        self.assertEqual(retry['slot'], operation['key'])
+        self.assertEqual(retry['threadId'], retry['resumeThread'])
+        prompt = D['load'](D['PX']['attempt_dir'](run, retry) / 'prompt.txt')
+        self.assertNotIn('sourceRanges', prompt)
+        self.assertEqual(prompt['formatRepair']['issues'][0]['path'], '/claims/0/cites/0')
+        self.assertEqual(prompt['formatRepair']['issues'][0]['received'], 'Unbound')
+
+    def test_isolated_repair_exhaustion_is_terminal_and_spends_no_more_attempts(self):
+        run, plan, _, _ = self.isolated_fixture()
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        path = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](path)
+        response['claims'][0]['cites'] = []
+        D['save'](path, response)
+        with self.assertRaises(D['Stop']) as error:
+            D['execute'](run)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(state['status'], 'AUTHOR_REPAIRS_EXHAUSTED')
+        self.assertEqual(state['terminalFailure'], error.exception.details)
+        with self.assertRaises(D['Stop']) as again:
+            D['execute'](run)
+        self.assertEqual(again.exception.code, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED')
+        self.assertEqual(D['load'](run / 'state.json'), state)
+
     def test_isolated_reused_thread_cannot_qualify(self):
         run, _, _, _ = self.isolated_fixture()
         self.mode.write_text('duplicate-page-thread')

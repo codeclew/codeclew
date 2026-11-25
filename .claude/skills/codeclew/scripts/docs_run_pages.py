@@ -14,6 +14,7 @@ MAX_RESPONSE_BYTES = 128 * 1024
 MAX_OVERVIEW_FACTS = 64
 REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
 FACT_CONTEXT = runpy.run_path(str(Path(__file__).with_name('docs_run_fact_context.py')))
+RESPONSE = runpy.run_path(str(Path(__file__).with_name('docs_run_page_response.py')))
 expand_fact_context = FACT_CONTEXT['expand_fact_context']
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
@@ -118,7 +119,7 @@ def source_views(scoped, sources, ordinary, catalogs=None, cache=None):
     return selected
 
 
-def source_payload(handles, sources, views=None):
+def source_payload(handles, sources, views=None, *, spans=None):
     """Share exact excerpts once while keeping the original citation bindings."""
     aliases, citations, regions, by_scope, by_range = {}, {}, {}, defaultdict(list), {}
     views = views or {}
@@ -140,6 +141,10 @@ def source_payload(handles, sources, views=None):
         alias = 'S' + stable_id(handle)
         aliases[alias] = handle
         locations = list(dict.fromkeys(by_range[range_key(row)] for row in rows))
+        if spans is not None:
+            spans[alias] = list(dict.fromkeys((by_range[range_key(row)],
+                                              max(row['startLine'], sources[handle]['startLine']),
+                                              min(row['endLine'], sources[handle]['endLine'])) for row in rows))
         citations[alias] = {'region': locations[0], 'authority': sources[handle].get('authority'),
                             **({'regions': locations} if len(locations) > 1 else {})}
     return aliases, citations, regions
@@ -270,8 +275,10 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
     process_page = fixed_name('process-map')
     need(len(taken) <= maximum_pages, 'REQUIRED_PAGE_LIMIT', requiredPages=len(taken), limit=maximum_pages)
     slots = []
+    base_schema = load(Path(__file__).resolve().parent.parent / 'schemas/docs-run-page-author.schema.json')
 
     def add(kind, page, service, required, available, context):
+        slot_instructions = RESPONSE['instructions_for_slot'](instructions, kind)
         key = kind.lower() + '-' + stable_id(page + ':' + (required['id'] if required else ''))
         mandatory, supplemental, scoped_facts, returns, witness_catalogs = [], [], {}, {}, {}
         selected_peers = {}
@@ -312,7 +319,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
         supplemental = list(dict.fromkeys(supplemental))
 
         def serialize(selected, views, active, omitted_facts):
-            aliases, citations, sources = source_payload(selected, all_sources, views)
+            spans = {}
+            aliases, citations, sources = source_payload(selected, all_sources, views, spans=spans)
             reverse = {handle: alias for alias, handle in aliases.items()}
             facts = {identity: {} for identity in active}
             prepared_omissions = {identity: row['_preparationOmissions'] for identity, row in scoped_facts.items()
@@ -335,8 +343,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
             if required:
                 packet['requirement'] = {key: required[key] for key in (
                     'id', 'kind', 'file', 'entryKind', 'entrySymbol', 'method', 'path', 'authority', 'boundaries') if key in required}
-            prompt = FACT_CONTEXT['author_prompt'](instructions, packet)
-            return prompt, aliases
+            prompt = FACT_CONTEXT['author_prompt'](slot_instructions, packet)
+            return prompt, aliases, spans, {ref: (row['startLine'], row['endLine']) for ref, row in sources.items()}
 
         if kind == 'OPERATION':
             candidates = scoped_records(scoped_facts)
@@ -350,16 +358,16 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 return serialize(handles, views, active, len(candidates) - len(records))
 
             # Measure exactly what the author gets. The normal case uses one serialization.
-            prompt, aliases = render(candidates, supplemental)
+            prompt, aliases, spans, regions = render(candidates, supplemental)
             if len(prompt.encode()) > MAX_PACKET_BYTES:
-                prompt, aliases = render([], [])
+                prompt, aliases, spans, regions = render([], [])
 
                 def fits(records, additional):
-                    nonlocal prompt, aliases
-                    trial, trial_aliases = render(records, additional)
+                    nonlocal prompt, aliases, spans, regions
+                    trial, trial_aliases, trial_spans, trial_regions = render(records, additional)
                     if len(trial.encode()) > MAX_PACKET_BYTES:
                         return False
-                    prompt, aliases = trial, trial_aliases
+                    prompt, aliases, spans, regions = trial, trial_aliases, trial_spans, trial_regions
                     return True
 
                 accepted = admit_in_order(candidates, lambda records: fits(records, []))
@@ -368,7 +376,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
         else:
             views = source_views(scoped_facts, all_sources, set(mandatory) | set(supplemental), witness_catalogs)
             handles = mandatory.copy()
-            remaining = MAX_PACKET_BYTES - len(instructions.encode()) - 16 * 1024
+            remaining = MAX_PACKET_BYTES - len(slot_instructions.encode()) - 16 * 1024
             included = {range_key(all_sources[handle]) for handle in handles}
             bytes_used = sum(len(all_sources[handle]['text'].encode()) for handle in handles)
             selected_handles = set(handles)
@@ -391,29 +399,36 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 admitted = [row for row in records if visible.issuperset(row[2]['sources'])]
                 active = selected_records(scoped_facts, admitted)
                 active, omitted_bytes = limit_facts(active, maximum_facts)
-                prompt, aliases = serialize(selected, views, active, omitted_overview + len(records) - len(admitted) + omitted_bytes)
-                return prompt, aliases, len(admitted) - omitted_bytes
+                frozen = serialize(selected, views, active, omitted_overview + len(records) - len(admitted) + omitted_bytes)
+                return *frozen, len(admitted) - omitted_bytes
 
             required_count = max(1, len(mandatory))
-            prompt, aliases, visible_count = render(handles)
+            prompt, aliases, spans, regions, visible_count = render(handles)
             maximum_facts = None
             while len(prompt.encode()) > MAX_PACKET_BYTES and visible_count > 16:
                 maximum_facts = max(16, visible_count - max(1, visible_count // 8))
-                prompt, aliases, visible_count = render(handles, maximum_facts)
+                prompt, aliases, spans, regions, visible_count = render(handles, maximum_facts)
             while len(prompt.encode()) > MAX_PACKET_BYTES and len(handles) > required_count:
                 handles = handles[:max(required_count, len(handles) - max(1, len(handles) // 8))]
-                prompt, aliases, visible_count = render(handles, maximum_facts)
+                prompt, aliases, spans, regions, visible_count = render(handles, maximum_facts)
             while len(prompt.encode()) > MAX_PACKET_BYTES and visible_count:
                 maximum_facts = visible_count - max(1, visible_count // 8)
-                prompt, aliases, visible_count = render(handles, maximum_facts)
+                prompt, aliases, spans, regions, visible_count = render(handles, maximum_facts)
         need(len(prompt.encode()) <= MAX_PACKET_BYTES, 'PAGE_SLOT_PACKET_LIMIT', page=page, kind=kind,
              bytes=len(prompt.encode()), limit=MAX_PACKET_BYTES, blocked=True,
              nextAction='Use a smaller retained subject or document this source boundary explicitly in the workspace workflow.')
         path = directory / (key + '.txt')
         path.write_text(prompt, encoding='utf-8')
-        slots.append({'key': key, 'kind': kind, 'page': page, 'service': service,
-                      'prompt': str(path.relative_to(directory.parent)), 'requirement': required['id'] if required else None,
-                      'citations': aliases, 'returns': {ref: {'id': row['id'], 'page': row['page']} for ref, row in returns.items()}})
+        schema = directory / key / 'docs-run-page-author.schema.json'
+        slot = {'key': key, 'kind': kind, 'page': page, 'service': service,
+                'prompt': str(path.relative_to(directory.parent)), 'schema': str(schema.relative_to(directory.parent)),
+                'requirement': required['id'] if required else None, 'citations': aliases, 'citationSpans': spans,
+                'sourceRegions': regions, 'returns': {ref: {'id': row['id'], 'page': row['page']} for ref, row in returns.items()}}
+        if kind == 'PROCESS_MAP':
+            slot['operationIds'] = [entry['id'] for entry in context['operations']]
+        schema.parent.mkdir(mode=0o700, parents=True)
+        schema.write_bytes(encode(RESPONSE['schema_for_slot'](base_schema, slot)))
+        slots.append(slot)
 
     for service in job['services']:
         overview = service + '.md'
@@ -463,86 +478,9 @@ def citation_handles(aliases, slot):
     return [slot['citations'][alias] for alias in aliases]
 
 
-def check_trace(row, actors=None):
-    actors = {'caller', 'handler'} if actors is None else set(actors)
-    need(isinstance(row['participants'], list) and len(row['participants']) <= 18, 'PAGE_TRACE_PARTICIPANTS_REQUIRED')
-    for actor in row['participants']:
-        closed(actor, ('id', 'title'))
-        identity = actor['id']
-        need(isinstance(identity, str) and re.fullmatch('[a-z][a-z0-9-]{0,31}', identity)
-             and identity not in actors and bounded_line(actor['title'], 120), 'PAGE_TRACE_PARTICIPANT_INVALID')
-        actors.add(identity)
-    need(isinstance(row['steps'], list) and 0 < len(row['steps']) <= 48, 'PAGE_TRACE_STEPS_REQUIRED')
-    for step in row['steps']:
-        closed(step, ('from', 'to', 'kind', 'label', 'condition'))
-        need(step['from'] in actors and step['to'] in actors and bounded_line(step['label'], 240)
-             and (step['condition'] is None or bounded_line(step['condition'], 240)), 'PAGE_TRACE_STEP_INVALID')
-        need(step['kind'] in ('call', 'return', 'async', 'await', 'note'), 'PAGE_TRACE_STEP_KIND_INVALID')
-        need(step['kind'] == 'note' or step['from'] != step['to'], 'PAGE_TRACE_STEP_DIRECTION_INVALID')
-
-
 def validate_response(slot, value):
-    """Check a single author's output before it can affect any other slot."""
-    closed(value, ('slot', 'reviewed', 'disposition', 'title', 'claims', 'participants', 'steps', 'discovery',
-                   'starts', 'contracts', 'routes', 'limitations'))
-    need(value['slot'] == slot['key'] and value['reviewed'] is True, 'PAGE_WRONG_SLOT_OR_REVIEW_MISSING')
-    kind = slot['kind']
-    need(value['disposition'] in ('EXPLAINED', 'EXPLICIT_UNKNOWN'), 'PAGE_DISPOSITION_REQUIRED')
-    need(bounded_line(value['title']) if kind == 'GUIDE' else value['title'] is None, 'PAGE_TITLE_INVALID')
-    for key in ('claims', 'participants', 'steps', 'starts', 'contracts', 'routes', 'limitations'):
-        need(isinstance(value[key], list), 'PAGE_LIST_REQUIRED', field=key)
-    for key, owner in {'participants': 'OPERATION', 'steps': 'OPERATION', 'starts': 'DISCOVERY',
-                       'contracts': 'CONTRACTS', 'routes': 'PROCESS_MAP'}.items():
-        need(kind == owner or not value[key], 'PAGE_FIELD_OUTSIDE_SLOT', field=key)
-    need(all(bounded_line(row, 512) for row in value['limitations']), 'PAGE_LIMIT_INVALID')
-    if kind == 'DISCOVERY':
-        need(not value['claims'] and value['discovery'] in ('NO_ADDITIONAL_STARTS', 'ADDITIONAL_STARTS')
-             and bool(value['starts']) == (value['discovery'] == 'ADDITIONAL_STARTS'), 'PAGE_DISCOVERY_RESULT_REQUIRED')
-        for row in value['starts']:
-            closed(row, ('kind', 'title', 'initiator', 'method', 'path', 'startLabel', 'startKind', 'disposition',
-                         'claims', 'participants', 'steps'))
-            need(row['kind'] in ('HTTP', 'KAFKA', 'SCHEDULED', 'OTHER')
-                 and all(bounded_line(row[field], 240) for field in ('title', 'initiator', 'startLabel'))
-                 and row['startKind'] in ('call', 'async') and row['disposition'] in ('EXPLAINED', 'EXPLICIT_UNKNOWN'),
-                 'PAGE_DISCOVERED_START_INVALID')
-            need((bounded_line(row['method'], 16) and bounded_line(row['path'], 240)) if row['kind'] == 'HTTP'
-                 else row['method'] is None and row['path'] is None, 'PAGE_DISCOVERED_START_INVALID')
-            need(isinstance(row['claims'], list) and row['claims'], 'PAGE_CLAIMS_REQUIRED')
-            for claim in row['claims']:
-                claim_handles(claim, slot)
-            check_trace(row)
-    else:
-        need(value['claims'] and value['discovery'] is None, 'PAGE_CLAIMS_REQUIRED')
-    for claim in value['claims']:
-        claim_handles(claim, slot)
-    return_refs = [ref for claim in value['claims'] for ref in claim['returns']]
-    need(len(return_refs) == len(slot['returns']) and set(return_refs) == set(slot['returns']),
-         'PAGE_LITERAL_RETURN_REVIEW_REQUIRED', refs=list(slot['returns']))
-    if kind == 'OPERATION':
-        check_trace(value)
-    for row in value['contracts']:
-        closed(row, ('scope', 'name', 'fields', 'cites'))
-        need(row['scope'] in ('LOCAL', 'EXTERNAL') and bounded_line(row['name'])
-             and isinstance(row['fields'], list) and 0 < len(row['fields']) <= 80, 'PAGE_CONTRACT_INVALID')
-        citation_handles(row['cites'], slot)
-        for field in row['fields']:
-            closed(field, ('name', 'type', 'meaning'))
-            need(all(bounded_line(field[key], 512) for key in field), 'PAGE_CONTRACT_FIELD_INVALID')
-    for row in value['routes']:
-        closed(row, ('title', 'summary', 'origin', 'participants', 'condition', 'outcome', 'result',
-                     'terminal', 'boundary', 'recipient', 'steps', 'cites'))
-        need(bounded_line(row['title']) and all(bounded_line(row[field], 512) for field in (
-            'summary', 'condition', 'outcome', 'recipient')), 'PAGE_ROUTE_TEXT_INVALID')
-        need(row['result'] in ('normal', 'error', 'handoff', 'unknown')
-             and row['boundary'] in ('return', 'publish', 'handoff', 'stop', 'other', None), 'PAGE_ROUTE_OUTCOME_INVALID')
-        need(isinstance(row['participants'], list), 'PAGE_ROUTE_PARTICIPANTS_REQUIRED')
-        for participant in row['participants']:
-            closed(participant, ('entry', 'role'))
-            need(bounded_line(participant['role'], 160), 'PAGE_ROUTE_ROLE_INVALID')
-        check_trace({'participants': [], 'steps': row['steps']},
-                    ['caller', row['origin'], *(peer['entry'] for peer in row['participants'])])
-        citation_handles(row['cites'], slot)
-    return value
+    return RESPONSE['review_response'](slot, value, need)
+
 
 
 def heading(name, text, anchor=None):

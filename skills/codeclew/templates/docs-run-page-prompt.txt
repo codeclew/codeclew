@@ -11,16 +11,20 @@ evidence that it was called, registered, deployed, or reached. Declared
 interactions qualify peer scope and keep their declared authority. Verify each
 endpoint's separate behavior against its own retained source.
 
-Return one JSON object with the packet slot ID, your explicit disposition and
-reviewed=true after checking the actual source both ways. Every claim needs
-one or more packet citation aliases and a SUPPORTED or EXPLICIT_UNKNOWN
-assessment. Lead each page with the reader outcome, then explain decisions,
+Return one JSON object using this slot's response schema. Copy the packet slot
+ID, record your disposition and set reviewed to true after checking the source.
+In each cites array, copy one or more exact keys from the packet citations
+object. The S alias already identifies its source range. V keys locate the
+visible excerpts. Put additional line details in the reader text. Every claim
+needs a SUPPORTED or EXPLICIT_UNKNOWN assessment. An empty heading is valid.
+Lead each page with the reader outcome, then explain decisions,
 observable effects, errors, and code-bounded unknowns in a useful order.
 Give claims a heading only when it helps navigation. Keep scope limitations
 concrete and attach consequential unknowns to the evidence in the reader
 claims. Do not embed diagrams, generated file paths, source links or anchors
-in Markdown; the runner owns them. Return [] for unused arrays and null for
-unused nullable fields. Select the following contract for the packet type.
+in Markdown. Supply the fields listed for this slot. Only GUIDE names its
+page. For an empty schema array use []. For an unconditional step use
+condition=null. Copy an existing ID exactly wherever an ID is required.
 
 GUIDE | Give a short title and explain what readers can accomplish, the most
 important constraints, and how this service relates to neighboring systems.
@@ -34,11 +38,13 @@ has several stages. Emit only sequence steps after the fixed start. Use
 caller and handler for the two supplied actors. Declare other actors with
 short stable IDs. Use call for a direct call, await for a real completion
 wait, return for a result returned to its actual recipient, async for a
-handoff without waiting, and note for a local step. Do not present a method
-return, queued action, or log as a remote delivery guarantee. Label conditional
-edges with source conditions. For each supplied return reference, attach it
-to the claim that uses its citation. In that paragraph place the literal
-condition and result in consecutive inline code spans.
+handoff without waiting, and note for a local step. When the source shows a
+successful call yielding a value the recipient uses, add the return edge from
+the value producer to that recipient after the successful call or wait.
+Keep failure, void completion, and one-way handoffs distinct. Label edges
+with their source conditions. Bind each supplied R key once to the supported
+claim that cites its source. In the same paragraph put the predicate and
+the literal result in consecutive inline code spans.
 
 CONTRACTS | Use claims to explain domain distinctions and contract boundaries.
 For each evidenced request, response, event, or data shape, give its exact

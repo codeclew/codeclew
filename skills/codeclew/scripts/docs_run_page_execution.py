@@ -128,12 +128,22 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags):
     original_prompt = (run / 'inputs' / slot['prompt']).read_bytes()
     prompt = original_prompt
     if failure:
-        # Keep the original packet before the focused correction and never pass
-        # the whole draft or another page's author output to this session.
-        details = encode({'instruction': 'Repair only this slot using its retained code. Check the stated issue and preserve supported behavior.',
-                          'failure': failure})
-        prompt = b'Repair for the packet below:\n' + details + b'\n' + original_prompt
+        details = failure.get('details', {})
+        original_attempt = attempt_dir(run, previous[0]) / 'prompt.txt' if previous else None
+        if (resume is not None and failure['code'] == 'PAGE_RESPONSE_INVALID' and details.get('formatOnly') is True
+                and original_attempt.is_file() and original_attempt.read_bytes() == original_prompt):
+            correction = {'slot': slot['key'], 'type': slot['kind'], 'formatRepair': details,
+                          'instruction': 'Use the retained packet already in this session. Correct the named JSON fields and '
+                                         'return the complete slot response in the supplied schema. Keep the claims, '
+                                         'ordering and conditions. Cite only aliases that actually support the corresponding text.'}
+            prompt = (json.dumps(correction, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+        else:
+            details = encode({'instruction': 'Repair only this slot using its retained code. Check the stated issue and preserve supported behavior.',
+                              'failure': failure})
+            prompt = b'Repair for the packet below:\n' + details + b'\n' + original_prompt
     (folder / 'prompt.txt').write_bytes(prompt)
+    if 'schema' in slot:
+        schema = run / 'inputs' / slot['schema']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
             '-c', 'approval_policy="never"', '-C', str(folder / 'context'), '--disable', 'multi_agent',
@@ -170,6 +180,8 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
     state = load(run / 'state.json')
     reconcile(run, state)
     check_author_state(state)
+    if state.get('status') == 'AUTHOR_REPAIRS_EXHAUSTED':
+        raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **state['terminalFailure'])
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     if repairs:
@@ -200,8 +212,10 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
             elif previous and not failure:
                 failure = previous.get('failure')
             if len(history) > max_repairs:
+                terminal = {'slot': key, 'page': slot['page'], 'failure': failure}
+                state.update(status='AUTHOR_REPAIRS_EXHAUSTED', terminalFailure=terminal)
                 save(run / 'state.json', state)
-                raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', slot=key, page=slot['page'], failure=failure)
+                raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **terminal)
             needed.append((slot, history, failure))
         if not needed:
             return state, responses

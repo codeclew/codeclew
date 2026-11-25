@@ -1686,7 +1686,12 @@ def isolated_repairs(plan, code, details):
                   or (not requirement and page and slot['page'] == page and slot['kind'] != 'DISCOVERY')]
     if len(candidates) != 1:
         return {}
-    return {candidates[0]['key']: {'code': code, 'details': local}}
+    slot = candidates[0]
+    if claim := re.fullmatch(r'claim-([1-9][0-9]*)', local.get('claim', '')):
+        local['responsePath'] = f"/claims/{int(claim[1]) - 1}"
+    if reference := next((ref for ref, row in slot['returns'].items() if row['id'] == local.get('check')), None):
+        local['returnRef'] = reference
+    return {slot['key']: {'code': code, 'details': local}}
 
 
 def execute_isolated(run, *, debug):

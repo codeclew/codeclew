@@ -217,7 +217,11 @@ its 192 KiB packet budget.
 
 Run starts an independent tool-free Codex session for each slot, with up to
 three sessions active. The [page response contract](../schemas/docs-run-page-author.schema.json)
-binds replies to the slot and its citation aliases. The runner assembles
+binds replies to the slot and its citation aliases. The schema pinned beside
+each packet includes only that slot's author fields. Copy the exact citation
+keys. An existing alias with a line qualifier can be resolved mechanically
+when its retained visible range covers the qualifier. Ambiguous, unsupported,
+and empty citation selections require a correction. The runner assembles
 reader pages deterministically, keeps the fixed start edges, and renders the
 authored typed trace, field/type/meaning tables, and source-supported routes
 with ordinary Codeclew navigation and styling. Dedicated narrative pages
@@ -225,9 +229,12 @@ belong to the process catalog. When no complete route is supported, the map
 preserves the documented starts and the evidence boundary. A source-supported
 partial route may explicitly leave its terminal outcome or recipient open.
 
-A repair resumes only the identified slot, with the immutable packet and its
-local failure. The job's repair allowance applies to each slot and all slots
-share the wall budget. Per-slot attempts, raw terminal counters, and responses
+A repair resumes only the identified slot. Response format diagnostics give
+JSON paths and cite, return or actor choices for the errors. A format repair
+reuses the packet already verified in that thread. Source and export repairs
+receive the immutable packet again. The job's repair allowance applies to each
+slot and all slots share the wall budget. Repair exhaustion records a terminal
+failure for the owning slot. Per-slot attempts, raw terminal counters, and responses
 are retained under `page-attempts/`. The normal report aggregates each
 unique thread's cumulative usage once. Verify and promote repeat the ordinary
 provenance, entry identity, route ownership, and rendered export gates.
