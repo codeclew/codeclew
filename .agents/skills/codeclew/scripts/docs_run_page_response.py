@@ -271,7 +271,9 @@ class Review:
                      'Choose the scope of the contract.')
         self.cites(row, path)
         if not isinstance(row['fields'], list) or not 0 < len(row['fields']) <= 80:
-            self.issue('PAGE_CONTRACT_FIELDS_REQUIRED', path + '/fields', 'Supply 1 to 80 evidenced field rows.')
+            self.issue('PAGE_CONTRACT_FIELDS_REQUIRED', path + '/fields',
+                       'Supply 1 to 80 evidenced named fields. For a shape with no named fields, move its name and '
+                       'known shape to a cited claim and omit this table.')
             return
         for index, field in enumerate(row['fields']):
             place = f'{path}/fields/{index}'

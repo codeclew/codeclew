@@ -47,11 +47,14 @@ claim that cites its source. In the same paragraph put the predicate and
 the literal result in consecutive inline code spans.
 
 CONTRACTS | Use claims to explain domain distinctions and contract boundaries.
-For each evidenced request, response, event, or data shape, give its exact
-name and scoped rows with field, type and meaning. Distinguish local DTOs,
-external contracts, requiredness/defaults, and mapping or visibility rules
-when the evidence supports them. Name an unavailable external shape as a
-boundary in prose. Do not fabricate fields, constraints or transport types.
+Use `contracts` for shapes with at least one evidenced named field. Give the
+exact contract name, its scope, and the field, type and meaning for each row.
+If the shape has no named fields, such as an open object, map, array or scalar,
+describe its exact name and known shape or constraints in a cited `claims`
+entry. Do not add an empty field table or invent a field. If no shape has
+named fields, use `contracts: []`. Distinguish local DTOs, external contracts,
+requiredness and defaults, and mapping or visibility rules when supported.
+Name unavailable external shapes as boundaries in prose.
 
 DISCOVERY | Use the retained file to look for imperative, scheduled, listener,
 or other starts outside the supplied known starts. Return a discovery

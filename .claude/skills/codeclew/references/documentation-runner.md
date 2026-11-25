@@ -227,7 +227,9 @@ when its retained visible range covers the qualifier. Ambiguous, unsupported,
 and empty citation selections require a correction. The runner assembles
 reader pages deterministically, keeps the fixed start edges, and renders the
 authored typed trace, field/type/meaning tables, and source-supported routes
-with ordinary Codeclew navigation and styling. Dedicated narrative pages
+with ordinary Codeclew navigation and styling. Shapes with named fields use
+tables. Cited prose describes shapes without named fields and states their
+known constraints. Dedicated narrative pages
 belong to the process catalog. When no complete route is supported, the map
 preserves the documented starts and the evidence boundary. A source-supported
 partial route may explicitly leave its terminal outcome or recipient open.

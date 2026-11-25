@@ -446,10 +446,10 @@ else:
                 'unresolved': ['Wire response and registration remain unknown.'],
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
 
-    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30):
+    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30, body=None):
         self.job.update(authorMode='ISOLATED_PAGES', language=language)
         self.job['budget']['wallSeconds'] = wall_seconds
-        run, receipt, _, source = self.prepare_inline_fixture(repairs=repairs, project=project)
+        run, receipt, _, source = self.prepare_inline_fixture(body=body, repairs=repairs, project=project)
         self.assertEqual(receipt['authorMode'], 'ISOLATED_PAGES')
         plan = D['load'](run / 'inputs/author-plan.json')
         packets = {row['kind']: json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
@@ -473,17 +473,18 @@ else:
             if kind == 'DISCOVERY':
                 answer.update(claims=[], discovery='NO_ADDITIONAL_STARTS')
             if kind == 'OPERATION':
-                ref, = packet['returns']
-                cited = packet['returns'][ref]['cite']
-                literal_text = '\u0415\u0441\u043b\u0438 `count < 0`, \u043c\u0435\u0442\u043e\u0434 \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 `0`.' if localized else 'When `count < 0`, the method returns `0`.'
-                answer['claims'].append({**claim, 'text': literal_text, 'cites': [cited], 'returns': [ref]})
                 answer['steps'] = [
                     {'from': 'handler', 'to': 'caller', 'kind': 'return', 'label': '0', 'condition': 'count < 0'},
                     {'from': 'handler', 'to': 'handler', 'kind': 'note', 'label': 'accepted.add(count)', 'condition': None},
                 ]
-                if wrong_literal:
-                    D['save'](self.seed / (slot['key'] + '-repair.json'), answer)
-                    answer['claims'][-1]['text'] = literal_text.replace('`0`', '`9`')
+                if packet['returns'] or wrong_literal:
+                    ref, = packet['returns']
+                    cited = packet['returns'][ref]['cite']
+                    literal_text = '\u0415\u0441\u043b\u0438 `count < 0`, \u043c\u0435\u0442\u043e\u0434 \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 `0`.' if localized else 'When `count < 0`, the method returns `0`.'
+                    answer['claims'].append({**claim, 'text': literal_text, 'cites': [cited], 'returns': [ref]})
+                    if wrong_literal:
+                        D['save'](self.seed / (slot['key'] + '-repair.json'), answer)
+                        answer['claims'][-1]['text'] = literal_text.replace('`0`', '`9`')
             if kind == 'PROCESS_MAP':
                 operation, = packet['context']['operations']
                 answer['routes'] = [{'origin': operation['id'], 'participants': [], 'result': 'normal',
@@ -517,6 +518,41 @@ else:
         route, = html.glob('route-*.html')
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
+
+    def test_isolated_contracts_render_cited_fieldless_shape_as_prose(self):
+        body = ('fun reserve(count: Int): Int {\n'
+                '    if (count < 0) return 0\n'
+                '    accepted.add(count)\n'
+                '    return accepted.size\n}\n'
+                'data class Reservation(val count: Int)\n'
+                'typealias TagValues = Map<String, String>\n')
+        run, plan, packets, _ = self.isolated_fixture(body=body)
+        slot = next(row for row in plan['slots'] if row['kind'] == 'CONTRACTS')
+        packet = packets['CONTRACTS']
+        self.assertTrue(any('typealias TagValues = Map<String, String>' in source['text']
+                            for source in packet['sourceRanges'].values()))
+        path = self.seed / (slot['key'] + '-response.json')
+        response = D['load'](path)
+        alias = response['contracts'][0]['cites'][0]
+        shape = {'scope': 'LOCAL', 'name': 'TagValues', 'fields': [], 'cites': [alias]}
+        response['contracts'].append(shape)
+        with self.assertRaises(D['Stop']) as raised:
+            D['P']['validate_response'](slot, response)
+        issue, = raised.exception.details['issues']
+        self.assertEqual(issue['path'], '/contracts/1/fields')
+        self.assertEqual(issue['code'], 'PAGE_CONTRACT_FIELDS_REQUIRED')
+        response['contracts'].remove(shape)
+        response['claims'].append({**response['claims'][0], 'cites': [alias],
+                                   'text': '`TagValues` maps string keys to string values.'})
+        D['save'](path, response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        html = (Path(result['ready']) / 'html/reservations-contracts.html').read_text()
+        self.assertIn('<code>TagValues</code> maps string keys to string values.', html)
+        self.assertEqual(html.count('<table>'), 1)
+        self.assertIn('<td>count</td>', html)
+        attempts = D['load'](run / 'state.json')['attempts']
+        self.assertEqual([row['number'] for row in attempts if row['slot'] == slot['key']], [0])
 
     def control_isolated_slots(self, rules):
         self.mode.write_text('controlled-page')

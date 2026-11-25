@@ -10,7 +10,11 @@
     "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}},
     "discovery": {"anyOf": [{"type": "string", "enum": ["NO_ADDITIONAL_STARTS", "ADDITIONAL_STARTS"]}, {"type": "null"}]},
     "starts": {"type": "array", "items": {"$ref": "#/$defs/start"}},
-    "contracts": {"type": "array", "items": {"$ref": "#/$defs/contract"}},
+    "contracts": {
+      "type": "array",
+      "description": "Tables for contracts with named fields. Explain an evidenced shape with no named fields in claims.",
+      "items": {"$ref": "#/$defs/contract"}
+    },
     "routes": {"type": "array", "items": {"$ref": "#/$defs/route"}},
     "limitations": {"type": "array", "items": {"type": "string"}}
   },
@@ -72,6 +76,7 @@
         "name": {"type": "string"},
         "fields": {
           "type": "array",
+          "description": "One to 80 evidenced named fields. A contract with no named fields belongs in a cited claim.",
           "items": {
             "type": "object",
             "properties": {"name": {"type": "string"}, "type": {"type": "string"}, "meaning": {"type": "string"}},
