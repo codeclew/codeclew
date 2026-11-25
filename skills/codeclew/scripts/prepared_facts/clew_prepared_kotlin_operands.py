@@ -59,6 +59,20 @@ def collapse_sql(sql):
     return SQL_STRING.sub(lambda match: " " if match[0].isspace() else match[0], sql).strip()
 
 
+def sql_terms(text, delimiter, *, blocked=None):
+    terms, start = [], 0
+    try:
+        for word, first, end in SQL["top_level"](text):
+            if word == blocked:
+                return ()
+            if word == delimiter:
+                terms.append(text[start:first].strip())
+                start = end
+    except ValueError:
+        return ()
+    return (*terms, text[start:].strip())
+
+
 def sql_shape(raw):
     """Read single-statement SQL operands. Keep Kotlin interpolation symbolic."""
     if len(raw) > 4096:

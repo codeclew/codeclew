@@ -50,7 +50,8 @@ def verify(options, base, service):
         spec.update(language="csharp", profile="csharp-dotnet-msbuild-read-only",
                     compilations=["csproj:Host.csproj@net10.0"])
     else:
-        spec.update(language="typescript", profile="source-syntax", source={"roots": ["."], "dialect": "declared"})
+        language = "kotlin" if service == "producer" else "typescript"
+        spec.update(language=language, profile="source-syntax", source={"roots": ["."], "dialect": "declared"})
     docs_cli("init")
     docs_cli("service", "add", "--input", save("service.json", spec),
              "--expected-input-digest", docs_cli("service", "list")["inputDigest"])
@@ -70,6 +71,24 @@ def verify(options, base, service):
         run([sys.executable, "-I", "-S", str(options.skill / "scripts/docs_run.py"), "prepare",
              "--job", save("job.json", job), "--run-dir", str(destination)], base, env)
         return json.loads((destination / "inputs/inventory.json").read_text())
+
+    if service == "producer":
+        job["authorMode"] = "ISOLATED_PAGES"
+        prepare(output, "PREPARED_FACTS")
+        plan = json.loads((output / "inputs/author-plan.json").read_text())
+        slot, = (slot for slot in plan["slots"] if slot["kind"] == "OPERATION")
+        prompt = (output / "inputs" / slot["prompt"]).read_text()
+        packet = json.loads(prompt.split("\n\n")[-1])
+        assert packet["requirement"]["entryKind"] == "SCHEDULED_JOB", packet["requirement"]
+        group = packet["facts"][slot["requirement"]]
+        kinds = {row["kind"] for key in ("facts", "boundaries") for row in group.get(key, [])}
+        assert {"POSSIBLE_REPEAT_AFTER_MARK_FAILURE", "WAIT_TRANSACTION_BOUNDARY"} <= kinds, kinds
+        repeat, = (row for row in group["facts"] if row["kind"] == "POSSIBLE_REPEAT_AFTER_MARK_FAILURE")
+        assert "sent_at IS NULL" in repeat["text"] and "fails to commit" in repeat["text"], repeat
+        assert len(repeat["sources"]) >= 2 and set(repeat["sources"]) <= packet["citations"].keys(), repeat
+        assert "Broker acceptance and consumer completion remain open" in repeat["text"], repeat
+        print(f"{service}: {len(prompt.encode())} isolated packet bytes for wait and conditional re-publication")
+        return
 
     retained = prepare(base / "source-only", "RETAINED_SOURCE")
     normal = prepare(output, "PREPARED_FACTS")
@@ -114,10 +133,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clew", default=shutil.which("clew"))
     parser.add_argument("--skill", type=Path, default=ROOT / "skills/codeclew")
-    parser.add_argument("--service", choices=("host", "subscriber"), action="append")
+    parser.add_argument("--service", choices=("host", "subscriber", "producer"), action="append")
     options = parser.parse_args()
     options.skill = options.skill.resolve()
-    for service in options.service or ("host", "subscriber"):
+    for service in options.service or ("host", "subscriber", "producer"):
         with TemporaryDirectory(prefix="clew-background-process-") as directory:
             verify(options, Path(directory).resolve(), service)
 

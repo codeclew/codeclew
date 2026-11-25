@@ -1,10 +1,12 @@
 """Join Kotlin waits and transaction callbacks to local failure continuations."""
 
 from dataclasses import dataclass, replace
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
+import runpy
 
 
+SQL_TERMS = runpy.run_path(str(Path(__file__).with_name("clew_prepared_kotlin_operands.py")))["sql_terms"]
 TRANSACTIONS = {"org.springframework.transaction.support.TransactionTemplate",
                 "org.springframework.transaction.support.TransactionOperations"}
 FUTURES = {"java.util.concurrent.Future", "java.util.concurrent.CompletableFuture"}
@@ -19,6 +21,9 @@ TIMED = "(JLjava/util/concurrent/TimeUnit;)"
 TYPE_NAME = re.compile(r"(?:this\.)?([A-Za-z_]\w*)\Z")
 FOREACH = re.compile(r"(?:callable:kotlin/collections/(?:CollectionsKt(?:__\w+Kt)?\.)?forEach#jvm:|"
                      r"method:class:java\.lang\.Iterable#forEach\()")
+SQL_MARKER = r"(?:NULL|TRUE|FALSE|-?\d+|'(?:''|[^'])*')"
+SQL_MARK_TIMESTAMP = re.compile(r"(?:CURRENT_TIMESTAMP(?:\(\d*\))?|NOW\(\))\Z", re.I)
+TRANSFERS = {"return", "throw", "break", "continue"}
 
 
 def inside(inner, outer):
@@ -41,6 +46,10 @@ def contract(owner, member, descriptor, arity):
         return "transaction"
     if owner in FUTURES and member == "get" and (descriptor.startswith(TIMED) or not descriptor and arity == 2):
         return "timed_wait"
+    if owner in FUTURES and member == "get" and descriptor.startswith("()"):
+        return "wait"
+    if owner == "java.util.concurrent.CompletableFuture" and member == "join" and descriptor.startswith("()"):
+        return "wait"
     if owner == ACK and member == "acknowledge":
         return "acknowledgment"
     if owner in KAFKA and member == "send" and (descriptor.startswith("(Ljava/lang/String;") or not descriptor and arity >= 2):
@@ -438,9 +447,12 @@ class Projection:
 
     def later(self, first, binding):
         return [entry for entry in self.bindings if entry.kind == binding
-                and (frame := self.frame(entry.invocation)) and frame.suite == first.suite and frame.index > first.index
-                and not any(item.kind in {"return", "throw", "break", "continue"}
-                            for item in frame.suite[first.index + 1:frame.index])]
+                and (frame := self.frame(entry.invocation)) and self.later_in_suite(first, frame)]
+
+    @staticmethod
+    def later_in_suite(first, last):
+        return (last.suite == first.suite and last.index > first.index and first.statement.kind not in TRANSFERS
+                and not any(item.kind in TRANSFERS for item in last.suite[first.index + 1:last.index]))
 
     def following(self, frame, limit=4):
         following = []
@@ -695,7 +707,28 @@ class Projection:
                     statement = loop.statement
                     first, last = statement.expression[0], statement.expression[-1]
                     header = type(statement.site)(first.start, last.end, statement.site.file)
-                    yield query, item, self.body.text_note(header, "loop item binding")
+                    yield query, item, self.body.text_note(header, "loop item binding"), ""
+        for site in self.callback_ancestry(tx.callback):
+            if (observed := self.selection_iterations.get(site)):
+                owner, selection = observed
+                condition = "this `forEach` passes the selected records to its callback"
+            elif (owner := self.callback_iterations.get(site)):
+                selection, condition = None, ""
+            else:
+                continue
+            callback = self.body.callback_scopes[site][1]
+            if len(callback.params) != 1 or not owner.receiver or not (frame := self.frame(owner)):
+                continue
+            receiver = self.body.unit.excerpt(owner.receiver).strip()
+            for query in self.queries:
+                if query.verb != "SELECT" or selection and query.note != selection:
+                    continue
+                direct = query.part.site == owner.receiver
+                bound = (self.later_in_suite(query.frame, frame) and query.part.site.end == query.frame.statement.site.end
+                         and self.body.words(query.frame.statement)[:3] == ("val", receiver, "="))
+                if direct or bound:
+                    header = type(site)(site.start, self.body.unit.tokens[callback.start - 1].end, site.file)
+                    yield query, callback.params[0][0], self.body.text_note(header, "element callback binding"), condition
         for anchor in dict.fromkeys((wait, tx)):
             for index, statement in enumerate(anchor.suite[:anchor.index]):
                 words = self.body.words(statement)
@@ -708,52 +741,144 @@ class Projection:
                     if query.frame.index == index:
                         suffix = self.body.unit.text[query.part.site.end:statement.site.end]
                         if re.fullmatch(EXTRACT_ITEM, suffix.strip()):
-                            yield query, item, self.body.text_note(statement.site, "selected item binding")
+                            yield query, item, self.body.text_note(statement.site, "selected item binding"), ""
                     elif query.frame.index < index and query.part.site.end == query.frame.statement.site.end:
                         source = self.body.words(query.frame.statement)
                         if len(source) < 4 or source[0] != "val" or source[2] != "=":
                             continue
                         initializer = self.body.unit.text[statement.expression[3].start:statement.site.end]
                         if re.fullmatch(re.escape(source[1]) + r"\s*" + EXTRACT_ITEM, initializer.strip()):
-                            yield query, item, self.body.text_note(statement.site, "selected item binding")
+                            yield query, item, self.body.text_note(statement.site, "selected item binding"), ""
 
     def unshadowed_item(self, item, proof, write):
         for index, token in enumerate(self.body.unit.tokens):
             if (proof.site.end <= token.start < write.part.selector.start and token.text in {"val", "var"}
                     and self.body.unit.words[index + 1] == item):
                 return False
-        return all(not inside(write.part.selector, site) or all(name != item for name, _ in callback.params)
+        return all(site.start == proof.site.start or not inside(write.part.selector, site)
+                   or all(name != item for name, _ in callback.params)
                    for site, (_, callback, _) in self.body.callback_scopes.items())
 
     def matching_key(self, read, write, item):
         selected = next((value for label, value in read.details if label == "selects"), "")
         predicate = next((value for label, value in write.details if label == "filters by"), "")
-        if not selected or not predicate or re.search(r"\bOR\b", predicate, re.I):
+        if not selected or not predicate:
             return None
         columns = {field.strip() for field in selected.split(",")}
         candidates = set()
-        for term in re.split(r"\s+AND\s+", predicate, flags=re.I):
+        for term in SQL_TERMS(predicate, "AND", blocked="OR"):
             key = re.fullmatch(r"(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*=\s*(?::([A-Za-z_]\w*)|(\?))", term.strip())
             if not key or key[1] not in columns and "*" not in columns:
                 continue
             access = rf'{re.escape(item)}(?:\.{re.escape(key[1])}|\s*\[\s*"{re.escape(key[1])}"\s*\])'
             if key[2]:
-                bound = rf'"{re.escape(key[2])}"\s+to\s+({access})(?=\s*[,)]|$)'
+                named = rf'"{re.escape(key[2])}"\s+to\b'
+                if sum(len(re.findall(named, actual)) for actual in write.part.actuals) != 1:
+                    continue
+                bound = rf'{named}\s+({access})(?=\s*[,)]|$)'
                 candidates.update((key[1], match[1]) for actual in write.part.actuals if (match := re.search(bound, actual)))
             elif sum(value.count("?") for _, value in write.details) == 1:
                 candidates.update((key[1], actual.strip("`")) for actual in write.part.actuals
                                   if re.fullmatch(access, actual.strip("`")))
         return next(iter(candidates)) if len(candidates) == 1 else None
 
-    def reentry(self, wait, wait_frame, transaction, tx_frame):
+    @staticmethod
+    def eligibility_mark(filters, write):
+        assignments = {}
+        for setting in SQL_TERMS(dict(write.details).get("sets", ""), ","):
+            if parts := re.fullmatch(r"([A-Za-z_]\w*)\s*=\s*(.+)", setting):
+                column = parts[1].lower()
+                if column in assignments:
+                    return None
+                assignments[column] = parts[2]
+        for term in SQL_TERMS(filters, "AND", blocked="OR"):
+            predicate = re.fullmatch(rf"(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)\s*(IS\s+NULL|=\s*{SQL_MARKER})", term, re.I)
+            if not predicate or not (value := assignments.get(predicate[1].lower())):
+                continue
+            if predicate[2].upper().startswith("IS"):
+                if ((re.fullmatch(SQL_MARKER, value, re.I) and value.upper() != "NULL")
+                        or SQL_MARK_TIMESTAMP.fullmatch(value)):
+                    return term
+            else:
+                previous = predicate[2][1:].strip()
+                # Same-kind literals prevent implying changes under implicit SQL casts.
+                if (previous.upper(), value.upper()) in {("TRUE", "FALSE"), ("FALSE", "TRUE")}:
+                    return term
+                integer = r"-?\d{1,18}"
+                if re.fullmatch(integer, previous) and re.fullmatch(integer, value) and int(previous) != int(value):
+                    return term
+                label = r"'[A-Za-z_][A-Za-z_0-9]*'"
+                if re.fullmatch(label, previous) and re.fullmatch(label, value) and previous.lower() != value.lower():
+                    return term
+        return None
+
+    def publication_result(self, part, frame, wait, publications):
+        if not part.receiver:
+            return None
+        timed = part.arity == 2 and any(TIME_UNIT.fullmatch(value.strip("`")) for value in part.actuals)
+        if not wait and (part.member != "get" or not (part.arity == 0 or timed)):
+            return None
+        if not wait and any(self.occurrence(part, site) for site, _ in self.native):
+            return None
+        receiver = self.body.unit.excerpt(part.receiver)
+        local = re.fullmatch(r"[A-Za-z_]\w*", receiver)
+        matches = []
+        for publication in publications:
+            origin = publication.invocation
+            if not (source := self.frame(origin)):
+                continue
+            if source == frame and origin.site == part.receiver:
+                matches.append((publication, None))
+            elif local and self.later_in_suite(source, frame) and origin.site.end == source.statement.site.end:
+                words = self.body.words(source.statement)
+                if (words[:3] == ("val", receiver, "=") and source.statement.expression[3].start == origin.site.start
+                        and not any(self.body.words(statement)[:2] in {("val", receiver), ("var", receiver)}
+                                    for statement in source.suite[source.index + 1:frame.index])):
+                    matches.append((publication, self.body.text_note(source.statement.site, "immutable send result")))
+        if len(matches) != 1:
+            return None
+        publication, alias = matches[0]
+        if wait is None or wait.authority == "CHAIN_RECEIVER_TYPE_OPEN":
+            wait = Binding(part, "timed_wait" if timed else "wait", self.body.text_note(part.selector, "publication future wait"),
+                           publication.authority, "the send result selects a Java Future `get` overload")
+        return wait, publication, alias
+
+    def repeat_after_mark(self, read, write, item_note, key, guard, result, transaction, iteration):
+        wait, publication, alias = result
+        source, waited = self.note(publication.invocation), self.note(wait.invocation)
+        tx = self.note(transaction.invocation)
+        column, actual = key
+        if iteration:
+            wait = replace(wait, condition=" and ".join(filter(None, (wait.condition, iteration))))
+        heading = self.assumptions(transaction, publication, wait)
+        first = "the" if heading else "The"
+        text = (f"{heading}{first} callback of {tx.text} can reach {source.text} and wait for that send result at {waited.text}. "
+                f"If the wait returns normally, it can reach the separate mark {write.note.text}, using `{actual}` for the key. "
+                f"If the mark fails, or the participating transaction fails to commit the mark after the callback completes, "
+                f"a later poll can reach another publication request for the same `{column}` if the same row remains unmarked, "
+                f"still satisfies `{guard}` and the other selection conditions, and is selected again. "
+                "The provider must bind the key and apply the mark as written. Broker acceptance and consumer completion remain open.")
+        callback = next(site for site in transaction.invocation.callbacks if inside(wait.invocation.selector, site))
+        self.body.projector.add("POSSIBLE_REPEAT_AFTER_MARK_FAILURE", text,
+                                [self.note(read.part), read.note, item_note, source, publication.evidence,
+                                 *([alias] if alias else ()), waited, wait.evidence, self.note(write.part), write.note,
+                                 tx, transaction.evidence, self.body.text_note(callback, "transaction callback")],
+                                scope="POLL_REPEAT_IF_MARK_NOT_PERSISTED")
+
+    def reentry(self, wait, wait_frame, transaction, tx_frame, publication):
         writes = [query for query in self.queries if query.verb in {"UPDATE", "DELETE"}
-                  and query.frame.suite == wait_frame.suite and query.frame.index > wait_frame.index]
-        for read, item, alias in self.item_reads(wait_frame, tx_frame):
+                  and self.later_in_suite(wait_frame, query.frame)]
+        for read, item, alias, iteration in self.item_reads(wait_frame, tx_frame):
             filters = next((value for label, value in read.details if label == "filters by"), "")
             filter_text = f"the same predicate `{filters}`" if filters and "`" not in filters else "the same selection predicates"
             for write in writes:
                 if (read.table != write.table or not self.unshadowed_item(item, alias, write)
                         or not (key := self.matching_key(read, write, item))):
+                    continue
+                if publication and (guard := self.eligibility_mark(filters, write)):
+                    self.repeat_after_mark(read, write, alias, key, guard, publication, transaction, iteration)
+                    continue
+                if wait is None or iteration:
                     continue
                 column, actual = key
                 wait_note, tx_note = self.note(wait.invocation), self.note(transaction.invocation)
@@ -822,7 +947,8 @@ class Projection:
             self.scan(suite, callback=site)
         self.collect_queries()
         self.selected_iteration_callbacks()
-        for publication in (entry for entry in self.bindings if entry.kind == "publication"):
+        publications = [entry for entry in self.bindings if entry.kind == "publication"]
+        for publication in publications:
             self.publication(publication)
         for protected, local, handler, suite in self.catches:
             self.catch_region(protected, local, handler, suite)
@@ -830,12 +956,22 @@ class Projection:
         for transaction in transactions:
             self.transaction(transaction)
         if transactions:
-            for wait in (entry for entry in self.bindings if entry.kind == "timed_wait"):
-                frame = self.frame(wait.invocation)
+            waits = {entry.invocation: entry for entry in self.bindings if entry.kind in {"wait", "timed_wait"}}
+            for part in self.body.invocations.values():
+                if part.member not in {"get", "join"}:
+                    continue
+                frame = self.frame(part)
                 if frame is None or frame.callback is None:
+                    continue
+                wait = waits.get(part)
+                publication = self.publication_result(part, frame, wait, publications)
+                selected_wait = publication[0] if publication else wait
+                timed = selected_wait if selected_wait and selected_wait.kind == "timed_wait" else None
+                if not timed and not publication:
                     continue
                 ancestors = set(self.callback_ancestry(frame.callback))
                 for transaction in transactions:
                     if ancestors.intersection(transaction.invocation.callbacks) and (tx_frame := self.frame(transaction.invocation)):
-                        self.failure(wait, frame, transaction, tx_frame)
-                        self.reentry(wait, frame, transaction, tx_frame)
+                        if timed:
+                            self.failure(timed, frame, transaction, tx_frame)
+                        self.reentry(timed, frame, transaction, tx_frame, publication)

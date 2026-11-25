@@ -323,6 +323,59 @@ async function main(dynamic: string, enabled: boolean) {
                 self.assertEqual(row["_edge"]["topic"], "parcel.available")
                 self.assertIn("assumed", row["uncertainty"])
 
+    def test_kotlin_completed_send_can_repeat_when_separate_mark_does_not_persist(self):
+        source = '''fun poll(
+    tx: org.springframework.transaction.support.TransactionTemplate,
+    broker: org.springframework.kafka.core.KafkaTemplate<String, String>,
+    db: QueryClient
+) {
+    val rows = db.query("SELECT id, payload FROM deliveries WHERE sent_at IS NULL")
+    for (row in rows) {
+        tx.executeWithoutResult {
+            broker.send("delivery.pending", row.payload).get(5, java.util.concurrent.TimeUnit.SECONDS)
+            db.execute("UPDATE deliveries SET sent_at = CURRENT_TIMESTAMP WHERE id = :id", mapOf("id" to row.id))
+        }
+    }
+}
+'''
+        local = source.replace('broker.send("delivery.pending", row.payload).get(',
+                               'val submitted = broker.send("delivery.pending", row.payload)\n            submitted.get(')
+        sent = next(line for line in source.splitlines() if 'broker.send(' in line)
+        mark = next(line for line in source.splitlines() if 'db.execute(' in line)
+        positives = {
+            "chained": source,
+            "local get": local,
+            "untimed get": source.replace('5, java.util.concurrent.TimeUnit.SECONDS', ''),
+            "selected element callback": source.replace('for (row in rows) {', 'rows.forEach { row ->'),
+        }
+        negatives = {
+            "unrelated future": source.replace('.get(5,', '\n            other.get(5,'),
+            "wrong key": source.replace('to row.id', 'to alternate.id'),
+            "duplicate key binding": source.replace('to row.id)', 'to row.id, "id" to alternate.id)'),
+            "other table": source.replace('UPDATE deliveries', 'UPDATE audit_log'),
+            "no eligibility change": source.replace('SET sent_at = CURRENT_TIMESTAMP', 'SET attempts = 4'),
+            "sets a guard to the same value": source.replace('SET sent_at = CURRENT_TIMESTAMP', 'SET sent_at = NULL'),
+            "disjunctive guard": source.replace('sent_at IS NULL', 'sent_at IS NULL OR forced = TRUE'),
+            "mark before wait": source.replace(f'{sent}\n{mark}', f'{mark}\n{sent}'),
+            "unreachable mark": source.replace(mark, f'            return@executeWithoutResult\n{mark}'),
+            "mutable future": local.replace('val submitted', 'var submitted'),
+            "unbound send type": source.replace('org.springframework.kafka.core.KafkaTemplate', 'local.FakeBroker'),
+        }
+        for label, text in (positives | negatives).items():
+            with self.subTest(form=label):
+                process, context = selected("DeliveryPoll.kt", text)
+                facts, _ = self.project(process, context)
+                repeats = [fact for fact in facts if fact["kind"] == "POSSIBLE_REPEAT_AFTER_MARK_FAILURE"]
+                if label in negatives:
+                    self.assertEqual(repeats, [])
+                    continue
+                self.assertEqual(len(repeats), 1, facts)
+                repeat, = repeats
+                for term in ("returns normally", "mark fails", "commit", "sent_at IS NULL", "row.id",
+                             "another publication request", "Broker acceptance and consumer completion remain open"):
+                    self.assertIn(term, repeat["text"])
+                self.assertEqual(repeat["sources"], [HANDLE])
+
     def require_roslyn(self):
         dotnet = shutil.which("dotnet")
         if not dotnet:
