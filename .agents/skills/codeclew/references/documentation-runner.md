@@ -236,9 +236,14 @@ A repair resumes only the identified slot. Response format diagnostics give
 JSON paths and cite, return or actor choices for the errors. A format repair
 reuses the packet already verified in that thread. Source and export repairs
 receive the immutable packet again. The job's repair allowance applies to each
-slot and all slots share the wall budget. Repair exhaustion records a terminal
-failure for the owning slot. Per-slot attempts, raw terminal counters, and responses
-are retained under `page-attempts/`. The normal report aggregates each
+slot and all slots share the wall budget. As a slot settles, the runner starts
+the next queued slot while other sessions continue. A terminal failure closes
+the queue and stops any sessions still running. A sibling may have already
+done work before the failure becomes known. The runner retains its reported
+counters and marks missing counters unavailable. Per-slot attempts, raw terminal
+counters, and responses are retained under `page-attempts/`. On resume, a durable
+attempt receipt restores its result and an indeterminate attempt blocks replay.
+The normal report aggregates each
 unique thread's cumulative usage once. Verify and promote repeat the ordinary
 provenance, entry identity, route ownership, and rendered export gates.
 Independent semantic and visual qualification remains separate from these

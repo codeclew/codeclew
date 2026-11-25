@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,9 @@ if mode!='missing-thread':
  print(json.dumps({{'type':'thread.started','thread_id':'other-test-session' if mode=='thread-switch' and 'resume' in sys.argv else thread}}),flush=True)
 if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
+if mode=='controlled-page':
+ control=json.loads((seed/'queue-control.json').read_text()).get(slot,{{}})
+ (seed/(slot+'.started')).write_text(str(time.monotonic()))
 draft=Path.cwd()/'draft'
 if '--output-schema' in sys.argv:
  name=slot if page else 'inline'
@@ -71,7 +75,18 @@ counter=(seed/('usage-'+slot+'.json')) if page else Path.cwd()/'owned-cumulative
 if 'resume' in sys.argv and counter.exists():
  previous=json.loads(counter.read_text());usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
 counter.write_text(json.dumps(usage))
-print(json.dumps({{'type':'turn.completed','usage':usage}}))
+if mode=='controlled-page':
+ if control.get('report', True):
+  print(json.dumps({{'type':'turn.completed','usage':usage}}),flush=True)
+ (seed/(slot+'.waiting')).touch()
+ expires=time.monotonic()+6
+ for target in control.get('until', []):
+  while not (seed/target).exists():
+   if time.monotonic()>=expires:sys.exit(30)
+   time.sleep(0.01)
+ (seed/(slot+'.finished')).write_text(str(time.monotonic()))
+else:
+ print(json.dumps({{'type':'turn.completed','usage':usage}}))
 sys.exit(23 if mode=='exit-failed' else 0)
 ''')
         self.backend.chmod(0o700)
@@ -431,8 +446,9 @@ else:
                 'unresolved': ['Wire response and registration remain unknown.'],
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
 
-    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None):
+    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30):
         self.job.update(authorMode='ISOLATED_PAGES', language=language)
+        self.job['budget']['wallSeconds'] = wall_seconds
         run, receipt, _, source = self.prepare_inline_fixture(repairs=repairs, project=project)
         self.assertEqual(receipt['authorMode'], 'ISOLATED_PAGES')
         plan = D['load'](run / 'inputs/author-plan.json')
@@ -501,6 +517,138 @@ else:
         route, = html.glob('route-*.html')
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
+
+    def control_isolated_slots(self, rules):
+        self.mode.write_text('controlled-page')
+        D['save'](self.seed / 'queue-control.json', rules)
+
+    def test_isolated_queue_refills_while_first_slot_still_waits(self):
+        run, plan, _, _ = self.isolated_fixture()
+        slow, other, fast, fourth, fifth = (row['key'] for row in plan['slots'])
+        initial = [f'{slot}.waiting' for slot in (slow, other, fast)]
+        self.control_isolated_slots({
+            slow: {'until': [f'{fourth}.started']},
+            other: {'until': [f'{slow}.finished']},
+            fast: {'until': initial},
+        })
+        state = D['author'](run)
+        self.assertEqual(state['status'], 'AUTHOR_COMPLETED')
+        started_fourth = float((self.seed / f'{fourth}.started').read_text())
+        self.assertLess(started_fourth, float((self.seed / f'{slow}.finished').read_text()))
+        self.assertGreater(started_fourth, float((self.seed / f'{fast}.finished').read_text()))
+        self.assertCountEqual([row['slot'] for row in state['attempts']], [slow, other, fast, fourth, fifth])
+        self.assertEqual(state['modelTokens'], 100)
+        intervals = sorted((at, delta) for row in state['attempts'] for at, delta in
+                           ((row['launchedAt'], 1), (row['completedAt'], -1)))
+        active = peak = 0
+        for _, delta in intervals:
+            active += delta
+            peak = max(peak, active)
+        self.assertEqual(peak, 3)
+        for slot, attempt in zip(plan['slots'], state['attempts']):
+            self.assertEqual(slot['key'], attempt['slot'])
+            self.assertEqual((D['PX']['attempt_dir'](run, attempt) / 'prompt.txt').read_bytes(),
+                             (run / 'inputs' / slot['prompt']).read_bytes())
+
+    def test_isolated_queue_terminal_cancels_and_accounts_for_already_started_slots(self):
+        run, plan, _, _ = self.isolated_fixture()
+        slow, invalid, fast, fourth, fifth = (row['key'] for row in plan['slots'])
+        path = self.seed / f'{invalid}-response.json'
+        response = D['load'](path)
+        response['claims'][0]['cites'] = ['Unbound']
+        D['save'](path, response)
+        self.control_isolated_slots({
+            slow: {'until': ['never-release']},
+            invalid: {'until': [f'{fourth}.waiting']},
+            fast: {'until': [f'{slow}.waiting', f'{invalid}.waiting']},
+            fourth: {'until': ['never-release'], 'report': False},
+        })
+        with self.assertRaises(D['Stop']) as raised:
+            D['author'](run)
+        self.assertEqual(raised.exception.code, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED')
+        self.assertEqual(raised.exception.details['slot'], invalid)
+        state = D['load'](run / 'state.json')
+        self.assertEqual(state['status'], 'AUTHOR_REPAIRS_EXHAUSTED')
+        self.assertEqual(state['terminalFailure'], raised.exception.details)
+        attempts = {row['slot']: row for row in state['attempts']}
+        self.assertEqual(set(attempts), {slow, invalid, fast, fourth})
+        self.assertFalse((self.seed / f'{fifth}.started').exists())
+        self.assertFalse((run / 'page-attempts' / fifth).exists())
+        for row in (attempts[slow], attempts[fourth]):
+            self.assertIn('launchedAt', row)
+            self.assertEqual(row['failure']['code'], 'PAGE_AUTHOR_INTERRUPTED')
+            self.assertEqual(D['load'](D['PX']['attempt_dir'](run, row) / 'result.json'), row)
+        self.assertEqual(attempts[slow]['usage']['output_tokens'], 10)
+        self.assertIsNone(attempts[fourth]['usage'])
+        self.assertEqual(state['tokenAccounting']['status'], 'UNAVAILABLE')
+        self.assertEqual(state['tokenAccounting']['knownBudgetTokensLowerBound'], 60)
+        with self.assertRaises(D['Stop']) as again:
+            D['author'](run)
+        self.assertEqual(again.exception.code, raised.exception.code)
+        self.assertEqual(D['load'](run / 'state.json'), state)
+
+    def test_isolated_queue_shared_deadline_and_receipt_recovery(self):
+        run, plan, _, _ = self.isolated_fixture(wall_seconds=1)
+        first = [row['key'] for row in plan['slots'][:3]]
+        self.control_isolated_slots({slot: {'until': ['never-release']} for slot in first})
+        with self.assertRaises(D['Stop']) as raised:
+            D['author'](run)
+        self.assertEqual(raised.exception.code, 'AUTHOR_BUDGET_EXHAUSTED')
+        state = D['load'](run / 'state.json')
+        self.assertEqual([row['slot'] for row in state['attempts']], first)
+        self.assertEqual(state['modelTokens'], 60)
+        self.assertTrue(all(row['failure']['code'] == 'PAGE_AUTHOR_INTERRUPTED' for row in state['attempts']))
+        # Simulate a crash between child receipt and the coordinator's journal.
+        last = state['attempts'][-1]
+        reservation = {field: last[field] for field in ('slot', 'number', 'argv', 'resumeThread', 'startedAt')}
+        reservation.update(status='RUNNING', exitCode=None)
+        journal = {**state, 'attempts': state['attempts'][:-1] + [reservation]}
+        D['save'](run / 'state.json', journal)
+        with self.assertRaises(D['Stop']) as again:
+            D['author'](run)
+        self.assertEqual(again.exception.code, raised.exception.code)
+        self.assertEqual(D['load'](run / 'state.json'), state)
+        # A missing receipt cannot authorize replay of a possibly paid attempt.
+        D['save'](run / 'state.json', journal)
+        (D['PX']['attempt_dir'](run, last) / 'result.json').unlink()
+        with self.assertRaises(D['Stop']) as indeterminate:
+            D['author'](run)
+        self.assertEqual(indeterminate.exception.code, 'PAGE_AUTHOR_ATTEMPT_INDETERMINATE')
+        self.assertTrue(indeterminate.exception.blocked)
+        self.assertEqual(D['load'](run / 'state.json'), journal)
+
+    def test_isolated_queue_interruption_resumes_only_the_measured_owning_threads(self):
+        run, plan, _, _ = self.isolated_fixture(repairs=1)
+        first = [row['key'] for row in plan['slots'][:3]]
+        self.control_isolated_slots({slot: {'until': ['never-release']} for slot in first})
+        argv = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'),
+                'run', '--run-dir', str(run)]
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            try:
+                expires = time.monotonic() + 4
+                while not all((self.seed / f'{slot}.waiting').exists() for slot in first):
+                    self.assertLess(time.monotonic(), expires, 'Authors did not start')
+                    time.sleep(.01)
+                process.send_signal(signal.SIGINT)
+                process.communicate(timeout=5)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+        interrupted = D['load'](run / 'state.json')
+        self.assertEqual(interrupted['status'], 'INTERRUPTED')
+        self.assertEqual(interrupted['modelTokens'], 60)
+        self.assertEqual([row['slot'] for row in interrupted['attempts']], first)
+        self.assertTrue(all(row['failure']['code'] == 'PAGE_AUTHOR_INTERRUPTED' for row in interrupted['attempts']))
+        self.mode.write_text('normal')
+        resumed = D['author'](run)
+        self.assertEqual(resumed['status'], 'AUTHOR_COMPLETED')
+        self.assertEqual(resumed['attempts'][:3], interrupted['attempts'])
+        self.assertEqual(resumed['modelTokens'], 160)
+        self.assertCountEqual([row['slot'] for row in resumed['attempts'][3:]], [row['key'] for row in plan['slots']])
+        for before in interrupted['attempts']:
+            repair, = [row for row in resumed['attempts'][3:] if row['slot'] == before['slot']]
+            self.assertEqual((repair['number'], repair['resumeThread'], repair['threadId']),
+                             (1, before['threadId'], before['threadId']))
 
     def test_isolated_literal_repair_reuses_only_operation_thread(self):
         run, plan, packets, _ = self.isolated_fixture(repairs=1, wrong_literal=True)

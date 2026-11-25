@@ -1,7 +1,8 @@
 """Bounded independent Codex sessions for immutable documentation page packets."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import os
 import signal
@@ -51,13 +52,21 @@ def attempt_dir(run, attempt):
 
 
 def launch(run, deadline, cancelled, attempt):
+    attempt = attempt.copy()
     folder = attempt_dir(run, attempt)
     out, err = folder / 'stdout.jsonl', folder / 'stderr.log'
     expected = attempt['resumeThread']
     try:
         with (folder / 'prompt.txt').open('rb') as prompt, out.open('wb') as stdout, err.open('wb') as stderr:
+            if cancelled.is_set() or time.monotonic() >= deadline:
+                attempt.update(status='FAILED', notLaunched=True, cancelledBeforeLaunch=True,
+                               failure={'code': 'PAGE_AUTHOR_INTERRUPTED', 'details': {}},
+                               completedAt=time.time())
+                save(folder / 'result.json', attempt)
+                return attempt
             process = subprocess.Popen(attempt['argv'], cwd=folder / 'context', stdin=prompt,
                                        stdout=stdout, stderr=stderr, start_new_session=True)
+            attempt['launchedAt'] = time.time()
             cause = None
             try:
                 while process.poll() is None:
@@ -102,20 +111,39 @@ def launch(run, deadline, cancelled, attempt):
     return attempt
 
 
-def accounting(state):
-    return token_accounting([row for row in state['attempts'] if not row.get('notLaunched')])
+def record_accounting(run, state):
+    tokens = token_accounting([row for row in state['attempts'] if not row.get('notLaunched')])
+    state.update(tokenAccounting=tokens, modelTokens=tokens['budgetTokens'], usageAvailable=tokens['status'] == 'MEASURED')
+    save(run / 'state.json', state)
+
+
+def record_result(state, index, result):
+    state['attempts'][index] = result
+    if not result.get('cancelledBeforeLaunch'):
+        state.get('pageRepairs', {}).pop(result['slot'], None)
 
 
 def reconcile(run, state):
-    for number, pending in enumerate(state['attempts']):
+    changed, failure = False, None
+    for index, pending in enumerate(state['attempts']):
         if pending['status'] != 'RUNNING':
             continue
         receipt = attempt_dir(run, pending) / 'result.json'
-        need(receipt.is_file(), 'PAGE_AUTHOR_ATTEMPT_INDETERMINATE', slot=pending['slot'], blocked=True)
-        result = load(receipt)
-        need(all(result.get(key) == pending.get(key) for key in ('slot', 'number', 'argv', 'resumeThread')),
-             'PAGE_AUTHOR_ATTEMPT_CHANGED', slot=pending['slot'], blocked=True)
-        state['attempts'][number] = result
+        try:
+            need(receipt.is_file(), 'PAGE_AUTHOR_ATTEMPT_INDETERMINATE', slot=pending['slot'], blocked=True)
+            result = load(receipt)
+            need(all(result.get(key) == pending.get(key) for key in ('slot', 'number', 'argv', 'resumeThread'))
+                 and result.get('status') in ('COMPLETED', 'FAILED'),
+                 'PAGE_AUTHOR_ATTEMPT_CHANGED', slot=pending['slot'], blocked=True)
+        except Stop as error:
+            failure = failure or error
+            continue
+        record_result(state, index, result)
+        changed = True
+    if changed:
+        record_accounting(run, state)
+    if failure:
+        raise failure
 
 
 def launch_attempt(run, schema, backend, slot, previous, failure, flags):
@@ -158,14 +186,14 @@ def response_path(run, attempt):
     return attempt_dir(run, attempt) / 'last-message.txt'
 
 
-def check_author_state(state):
-    tokens = accounting(state)
+def check_author_state(state, *, settled_only=False):
+    attributable = [row for row in state['attempts'] if not row.get('notLaunched')
+                    and (not settled_only or row['status'] != 'RUNNING')]
+    tokens = token_accounting(attributable)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
     need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', accounting=tokens, blocked=True)
     owners = {}
-    for attempt in state['attempts']:
-        if attempt.get('notLaunched'):
-            continue
+    for attempt in attributable:
         thread = attempt.get('threadId')
         failure = attempt.get('failure') or {}
         need(failure.get('code') != 'PAGE_AUTHOR_THREAD_CHANGED', 'PAGE_AUTHOR_THREAD_CHANGED', slot=attempt['slot'])
@@ -175,76 +203,114 @@ def check_author_state(state):
     return tokens
 
 
+def next_action(run, slot, history, scheduled, max_repairs, responses, validate, read_response):
+    launched = [row for row in history if not row.get('cancelledBeforeLaunch')]
+    previous = launched[-1] if launched else None
+    key = slot['key']
+    failure = scheduled.get(key)
+    if previous and previous['status'] == 'COMPLETED' and not failure:
+        path = response_path(run, previous)
+        try:
+            need(previous.get('responseDigest'), 'PAGE_AUTHOR_RESPONSE_MISSING_OR_OVERSIZE')
+            value = read_response(path)
+            need(sha(path.read_bytes()) == previous['responseDigest'], 'PAGE_AUTHOR_RESPONSE_CHANGED')
+            responses[key] = validate(slot, value)
+            return None
+        except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
+            failure = {'code': getattr(error, 'code', 'INVALID_PAGE_AUTHOR_RESPONSE'),
+                       'details': getattr(error, 'details', {'failure': type(error).__name__})}
+            previous['responseFailure'] = failure
+            save(attempt_dir(run, previous) / 'result.json', previous)
+    elif previous and not failure:
+        failure = previous.get('failure')
+    need(len(launched) <= max_repairs, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED', slot=key, page=slot['page'], failure=failure)
+    return slot, failure
+
+
 def execute_authors(run, job, plan, schema, flags, validate, read_response, repairs=None):
-    """Retain successful slots and retry only the owning failed slot."""
+    """Validate each settled slot and refill up to three independent author sessions."""
     state = load(run / 'state.json')
     reconcile(run, state)
-    check_author_state(state)
+    if failure := state.get('authorTerminal'):
+        raise Stop(failure['code'], blocked=failure['blocked'], **failure['details'])
     if state.get('status') == 'AUTHOR_REPAIRS_EXHAUSTED':
         raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **state['terminalFailure'])
+    check_author_state(state)
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
-    if repairs:
-        state.setdefault('pageRepairs', {}).update(repairs)
-    max_repairs = job['budget']['maxRepairs']
+    remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
+    deadline = time.monotonic() + remaining
+    scheduled = state.setdefault('pageRepairs', {})
+    scheduled.update(repairs or {})
+    histories = {slot['key']: [] for slot in plan['slots']}
+    for attempt in state['attempts']:
+        histories[attempt['slot']].append(attempt)
+    responses, pending, active = {}, deque(), {}
     cancelled = threading.Event()
-    while True:
-        responses, needed = {}, []
-        scheduled = state.get('pageRepairs', {})
-        for slot in plan['slots']:
-            key = slot['key']
-            history = [row for row in state['attempts'] if row['slot'] == key]
-            previous = history[-1] if history else None
-            failure = scheduled.get(key)
-            if previous and previous['status'] == 'COMPLETED' and not failure:
-                path = response_path(run, previous)
-                try:
-                    need(previous.get('responseDigest'), 'PAGE_AUTHOR_RESPONSE_MISSING_OR_OVERSIZE')
-                    value = read_response(path)
-                    need(sha(path.read_bytes()) == previous['responseDigest'], 'PAGE_AUTHOR_RESPONSE_CHANGED')
-                    responses[key] = validate(slot, value)
-                    continue
-                except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, RecursionError) as error:
-                    failure = {'code': getattr(error, 'code', 'INVALID_PAGE_AUTHOR_RESPONSE'),
-                               'details': getattr(error, 'details', {'failure': type(error).__name__})}
-                    previous['responseFailure'] = failure
-                    save(attempt_dir(run, previous) / 'result.json', previous)
-            elif previous and not failure:
-                failure = previous.get('failure')
-            if len(history) > max_repairs:
-                terminal = {'slot': key, 'page': slot['page'], 'failure': failure}
-                state.update(status='AUTHOR_REPAIRS_EXHAUSTED', terminalFailure=terminal)
-                save(run / 'state.json', state)
-                raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **terminal)
-            needed.append((slot, history, failure))
-        if not needed:
-            return state, responses
 
-        remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
-        need(remaining > 0, 'AUTHOR_BUDGET_EXHAUSTED')
-        deadline = time.monotonic() + remaining
-        batch = []
-        # Reserve only the active batch, so an interrupted run never counts work
-        # that was still queued behind workers and never submitted to Codex.
-        for slot, history, failure in needed[:POOL_SIZE]:
-            attempt = launch_attempt(run, schema, job['author'], slot, history, failure, flags)
-            scheduled.pop(slot['key'], None)
-            state['attempts'].append(attempt)
-            batch.append((len(state['attempts']) - 1, attempt))
-        state['status'] = 'AUTHOR_RUNNING'
-        save(run / 'state.json', state)
-        with ThreadPoolExecutor(max_workers=POOL_SIZE) as executor:
-            futures = {executor.submit(launch, run, deadline, cancelled, row): i for i, row in batch}
-            try:
-                for future in as_completed(futures):
-                    index = futures[future]
-                    attempt = future.result()
-                    state['attempts'][index] = attempt
-                    save(run / 'state.json', state)
-            except BaseException:
+    def assess(slot):
+        action = next_action(run, slot, histories[slot['key']], scheduled, job['budget']['maxRepairs'],
+                             responses, validate, read_response)
+        if action:
+            pending.append(action)
+
+    def settle(future):
+        index, slot = active[future]
+        result = future.result()
+        record_result(state, index, result)
+        histories[slot['key']][-1] = result
+        del active[future]
+        return slot
+
+    with ThreadPoolExecutor(max_workers=POOL_SIZE) as executor:
+        try:
+            for slot in plan['slots']:
+                assess(slot)
+            while pending or active:
+                while pending and len(active) < POOL_SIZE and not any(future.done() for future in active):
+                    need(time.monotonic() < deadline, 'AUTHOR_BUDGET_EXHAUSTED')
+                    slot, failure = pending.popleft()
+                    history = histories[slot['key']]
+                    attempt = launch_attempt(run, schema, job['author'], slot, history, failure, flags)
+                    history.append(attempt)
+                    index = len(state['attempts'])
+                    state['attempts'].append(attempt)
+                    state['status'] = 'AUTHOR_RUNNING'
+                    record_accounting(run, state)
+                    active[executor.submit(launch, run, deadline, cancelled, attempt)] = index, slot
+                done, _ = wait(active, timeout=max(0, deadline - time.monotonic()), return_when=FIRST_COMPLETED)
+                need(done, 'AUTHOR_BUDGET_EXHAUSTED')
+                settled = [settle(future) for future in sorted(done, key=lambda future: active[future][0])]
+                record_accounting(run, state)
+                if time.monotonic() >= deadline:
+                    need(not active and not pending and all(
+                        histories[slot['key']][-1].get('failure', {}).get('code') != 'PAGE_AUTHOR_INTERRUPTED'
+                        for slot in settled), 'AUTHOR_BUDGET_EXHAUSTED')
+                # Check the settled subset before sending any more work. Active
+                # siblings have not reported their final counters yet.
+                check_author_state(state, settled_only=True)
+                for slot in settled:
+                    assess(slot)
+        except Stop as error:
+            cancelled.set()
+            state['authorTerminal'] = {'code': error.code, 'blocked': error.blocked, 'details': error.details}
+            state['status'] = error.code if error.code.startswith('AUTHOR_') else 'AUTHOR_FAILED'
+            if error.code == 'PAGE_AUTHOR_REPAIRS_EXHAUSTED':
+                state.update(status='AUTHOR_REPAIRS_EXHAUSTED', terminalFailure=error.details)
+            save(run / 'state.json', state)
+            raise
+        except KeyboardInterrupt:
+            state['status'] = 'INTERRUPTED'
+            save(run / 'state.json', state)
+            raise
+        finally:
+            if active:
                 cancelled.set()
-                raise
-        tokens = accounting(state)
-        state.update(tokenAccounting=tokens, modelTokens=tokens['budgetTokens'], usageAvailable=tokens['status'] == 'MEASURED')
-        save(run / 'state.json', state)
-        check_author_state(state)
+                wait(active)
+                for future in list(active):
+                    if future.exception() is None:
+                        settle(future)
+                # Preserve completed counters even if an unrelated child was interrupted
+                # or a worker failed before it could persist its own result.
+                record_accounting(run, state)
+    return state, responses
