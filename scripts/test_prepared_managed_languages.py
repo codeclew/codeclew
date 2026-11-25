@@ -247,6 +247,38 @@ class PreparedManagedLanguages(unittest.TestCase):
             self.assertNotIn("SIDE_EFFECT", outcome["text"])
             self.assertEqual(outcome["_edgeCause"], request["_edge"]["occurrence"])
 
+    def test_typescript_decode_catch_retains_void_status_effect_and_its_own_exit(self):
+        self.require_typescript()
+        template = """async function fetchBook(sink: Sink) {
+    const result = await fetch("/books");
+    try { sink.status(result.status).write(await result.json()); }
+    catch { ACTION; }
+    AFTER
+}
+"""
+        call = 'sink.status(502).write({problem: "remote"})'
+        for name, action, after, ending in (
+            ("return", "return " + call, "", "returns the cited call's value"),
+            ("bare", call, "", "the function can reach its end"),
+            ("more catch", call + "; report()", "", "the function can reach its end"),
+            ("after catch", call, "recordMetrics();", "control can continue after it"),
+            ("unknown sink", 'sink.write({problem: "remote"})', "", "the function can reach its end"),
+        ):
+            with self.subTest(name=name):
+                source = template.replace("ACTION", action).replace("AFTER", after)
+                process, context = selected("Books.ts", source)
+                facts, _ = self.project(process, context)
+                request, = (row for row in facts if row["kind"] == "http_request")
+                outcome, = (row for row in facts if row["kind"] == "response_decode_failure_outcome")
+                self.assertEqual(outcome["_edgeCause"], request["_edge"]["occurrence"])
+                self.assertIn("result.json", outcome["condition"])
+                self.assertIn(ending, outcome["text"])
+                if name == "unknown sink":
+                    self.assertNotIn("status", outcome["text"])
+                else:
+                    self.assertIn("sink.status receives 502", outcome["text"])
+                    self.assertIn("framework binding", outcome["uncertainty"])
+
     def test_qualified_origin_concatenation_survives_nested_await_and_reply_code(self):
         self.require_typescript()
         text = """async function score(reply: Reply, base: string, id: string) {

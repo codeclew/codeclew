@@ -676,10 +676,12 @@ function scan(scope, inherited) {
                 state, "The mapping applies under PostgreSQL-style positional binding.");
         }
     }
-    function statusResponse(call) {
-        if (!call || !ts.isCallExpression(call)) return;
+    function statusResponse(call, allowWrite = false) {
+        if (!call || !ts.isCallExpression(call) || ts.isOptionalChain(call)) return;
         const callee = unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee) || !["json", "send"].includes(callee.name.text)) return;
+        if (!ts.isPropertyAccessExpression(callee)) return;
+        const bodyMethod = callee.name.text;
+        if (!["json", "send"].includes(bodyMethod) && !(allowWrite && bodyMethod === "write")) return;
         const receiver = unwrap(callee.expression);
         if (!receiver || !ts.isCallExpression(receiver) || ts.isOptionalChain(receiver) || receiver.arguments.length !== 1) return;
         const method = unwrap(receiver.expression);
@@ -900,6 +902,13 @@ function scan(scope, inherited) {
                 {...arrivalEvidence(state), _httpStatus: response.status});
         }
         const status = response?.status;
+        const arrival = state.errorArrival;
+        if (arrival?.decodingProof) {
+            const effect = response || statusResponse(call, true);
+            if (effect) {
+                state = {...state, errorArrival: {...arrival, responseEffects: [...(arrival.responseEffects || []), effect].slice(-4)}};
+            }
+        }
         if (query && ts.isPropertyAccessExpression(method) && ["json", "send"].includes(method.name.text) &&
                 call.arguments.length && !call.arguments.some(ts.isSpreadElement)) {
             const reads = query.outputs(call.arguments[0], state, evaluated);
@@ -1170,6 +1179,13 @@ function scan(scope, inherited) {
         }
         return {normal, exits, errors};
     }
+    function decodeCatchOutcome(state, text, sites) {
+        const arrival = state.errorArrival;
+        emit("response_decode_failure_outcome", text, [arrival.site, arrival.catcher, ...arrival.decodingProof, ...sites],
+            state, "The catch outcome depends on completing the cited operands and any framework binding.",
+            arrivalEvidence(state));
+    }
+
     function protectedBlock(statement, state, enclosing) {
         const final = statement.finallyBlock;
         const handler = statement.catchClause;
@@ -1191,15 +1207,29 @@ function scan(scope, inherited) {
                 const arrival = exit.resume.errorArrival;
                 if (!arrival || !(exit.kind === "return" || exit.kind === "throw" && !enclosing)) return [];
                 if (!state.cleanup && arrival.decodingProof && arrival.catcher === handlerRoute.site) {
-                    const response = exit.kind === "return" ? statusResponse(unwrap(exit.statement.expression)) : undefined;
-                    emit("response_decode_failure_outcome",
-                        response?.text || exit.text + ".", [arrival.site, handlerRoute.site, exit.site,
-                            ...arrival.decodingProof, ...(response?.sites || [])], exit.resume,
-                        "The catch outcome depends on completing the cited operands and any framework binding.",
-                        arrivalEvidence(exit.resume));
+                    const response = exit.kind === "return" ? statusResponse(unwrap(exit.statement.expression), true) : undefined;
+                    const text = response ? response.text + " The catch returns the cited call's value." : exit.text + ".";
+                    decodeCatchOutcome(exit.resume, text, [exit.site, ...(response?.sites || [])]);
                 }
                 return [{...arrival, mode: exit.kind, sites: [handlerRoute.site, exit.site], guards: exit.resume.guards}];
             }) : [];
+            if (!final && !state.cleanup) {
+                const block = statement.parent;
+                const implicitEnd = ts.isBlock(block) && ts.isFunctionLike(block.parent) && block.statements.at(-1) === statement;
+                const completion = implicitEnd ? "The catch can complete normally and the function can reach its end."
+                    : "The catch can complete normally and control can continue after it.";
+                for (const path of caught.normal) {
+                    const arrival = path.errorArrival;
+                    if (!arrival?.decodingProof || arrival.catcher !== handlerRoute.site) continue;
+                    const effects = arrival.responseEffects || [];
+                    if (!effects.length) {
+                        decodeCatchOutcome(path, completion, []);
+                    }
+                    for (const effect of effects) {
+                        decodeCatchOutcome(path, effect.text + " " + completion, effect.sites);
+                    }
+                }
+            }
             const continued = tried.normal.map(path => ({...path,
                 awaitExits: [...(path.awaitExits || []), ...terminated].slice(-6)}));
             const recovered = caught.normal.map(path => ({...path, errorArrival: state.errorArrival}));

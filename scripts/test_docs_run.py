@@ -2697,9 +2697,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
     await fetch("/archives/four", {method: "POST"});
     try {
         const res = await fetch(`${host}/books/${encodeURIComponent(id)}/claim`, {method: "POST"});
-        return reply.code(res.status).send(await res.json());
+        reply.code(res.status).write(await res.json());
     } catch {
-        return reply.code(502).send({error: "REMOTE_UNAVAILABLE"});
+        reply.code(502).write({error: "REMOTE_UNAVAILABLE"});
     }
 }
 """
