@@ -2,8 +2,11 @@ Author only the slot named in the JSON packet. Use its language for reader
 text and preserve source identifiers and literals. The request sets the reader
 goal; the slot and its context set the boundary. Use only the verbatim retained
 ranges, attributed facts, and scope limits in this packet. A fact may narrow
-the witness to specific lines. Verify conditions and effects against those
-lines. A destination in the operation index is a navigation target, not
+the witness to specific lines or several excerpts of the same cited source.
+Verify conditions and effects against those ranges. A reached helper fact
+keeps its call or callback premise. Check its local guard and whether the
+caller handles the resulting value, failure, or return. Treat reported
+packet or preparation omissions as evidence limits. A destination in the operation index is a navigation target, not
 evidence that it was called, registered, deployed, or reached. Declared
 interactions qualify peer scope and keep their declared authority. Verify each
 endpoint's separate behavior against its own retained source.

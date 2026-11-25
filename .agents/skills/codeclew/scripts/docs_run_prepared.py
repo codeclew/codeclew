@@ -26,6 +26,7 @@ MAX_SOURCE_VIEW_PREFIX_BYTES = 6 * 1024
 MAX_FILE_BYTES = 128 * 1024
 CSHARP_FILE_LIMIT = 12
 FACT_SCHEMA = 'codeclew-docs-run-prepared-facts/1.0'
+REACHED = runpy.run_path(str(DIRECTORY / 'docs_run_reached.py'))
 
 
 def exact_sources(entries, packet, *, authorities=("EXACT_SNAPSHOT_TEXT",)):
@@ -214,9 +215,16 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
             rejected += 1
             continue
         values['sources'] = list(dict.fromkeys(bindings.get(ref, ref) for ref in refs))
-        if witnesses := [dict(cite=bindings[ref], **{key: lifted[ref][key] for key in (
-                'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in lifted[ref]})
-                for ref in dict.fromkeys(refs) if ref in bindings]:
+        witnesses = []
+        for ref in dict.fromkeys(refs):
+            if ref not in bindings:
+                continue
+            handle = bindings[ref]
+            source, site = exact[handle], lifted[ref]
+            proof = REACHED['witness'](source, {**site, 'service': source['service']}, handle)
+            witnesses.append(proof or dict(cite=handle, **{key: site[key] for key in (
+                'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in site}))
+        if witnesses:
             values['witnesses'] = witnesses
         for private in ('_edgeCause', '_edgePhase'):
             if private in row:
@@ -444,10 +452,15 @@ def author_entries(entries, citations):
                     lines[handle].append(site)
             if lines:
                 value['lines'] = dict(lines)
+            if witnesses := fact.get('witnesses'):
+                value['_sourceWitnesses'] = witnesses
             facts['boundaries' if is_boundary(fact) else 'facts'].append(value)
         limits = row.get('scopeLimits', []) + row.get('projectionLimits', [])
         if limits:
             facts['factLimits'] = limits
+        if row.get('omittedForLimit') or row.get('omittedReachedDeclarations'):
+            facts['_preparationOmissions'] = {'facts': row.get('omittedForLimit', 0),
+                                             'declarations': row.get('omittedReachedDeclarations', 0)}
         if facts:
             result[identity] = dict(facts)
     return result
@@ -619,7 +632,7 @@ def background_operation(service, found, files, exact):
             except UnicodeError:
                 return None
             line = raw.count(b'\n', 0, first) + 1
-            row = {**unit, 'id': ref, 'text': text, 'textDigest': sha(part),
+            row = {**unit, 'id': ref, 'service': service, 'text': text, 'textDigest': sha(part),
                    'startByte': first, 'endByte': end, 'startLine': line,
                    'endLine': line + part.removesuffix(b'\n').count(b'\n'), 'references': [ref],
                    'authority': 'EXACT_SNAPSHOT_TEXT',
@@ -797,7 +810,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             background = background_entries(service, requirements, all_units, exact, files, managed, job, deadline,
                                             page_slots, view_budget)
     discovered = {}
-    result, cite_index, total_bytes = {}, {}, 0
+    result, cite_index, total_bytes, projections = {}, {}, 0, {}
     ordered = sorted(requirements, key=lambda row: row['kind'] != 'ENTRY') if background else requirements
     for requirement in ordered:
         entry_id = requirement['id']
@@ -868,8 +881,20 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
                 continue
             propositions.extend(accepted)
             unbound += rejected
-        if edge_module and requirement['kind'] == 'ENTRY':
-            edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
+        projections[entry_id] = requirement, process, context, propositions, unbound, projection_limits, failed, unavailable
+    indexed = REACHED['index_discovery']((item[3] for item in projections.values() if item[0]['kind'] == 'DISCOVERY'), exact)
+    for entry_id, (requirement, process, context, propositions, unbound, projection_limits, failed, unavailable) in projections.items():
+        row = result[entry_id]
+        if requirement['kind'] == 'ENTRY':
+            additional, limited_reach = REACHED['select'](process, indexed, exact, context['_bindWitness'])
+            direct = {(fact['kind'], fact['text'], fact.get('condition')) for fact in propositions}
+            propositions.extend(fact for fact in additional
+                                if (fact['kind'], fact['text'], fact.get('condition')) not in direct)
+            if limited_reach:
+                row['omittedReachedDeclarations'] = limited_reach
+                projection_limits.append('REACHED_DECLARATION_LIMIT')
+            if edge_module:
+                edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
         visible, limited = [], 0
         for internal in propositions:
             # The continuation index still owns the private causal metadata.

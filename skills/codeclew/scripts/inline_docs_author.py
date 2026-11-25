@@ -131,13 +131,14 @@ def add_prepared_facts(targets, prepared, aliases):
             target['factLimits'] = limits
         for category in ('facts', 'boundaries'):
             for fact in row.get(category, ()):
-                key = (category, json.dumps(fact, ensure_ascii=False, sort_keys=True))
+                value = {key: item for key, item in fact.items() if key != '_sourceWitnesses'}
+                key = (category, json.dumps(value, ensure_ascii=False, sort_keys=True))
                 if key in seen:
                     original_ref, value = seen[key]
                     if ref != original_ref and ref not in value.get('alsoFor', ()):
                         value.setdefault('alsoFor', []).append(ref)
                     continue
-                value = {**fact, 'sources': [aliases[handle] for handle in fact['sources']]}
+                value['sources'] = [aliases[handle] for handle in fact['sources']]
                 if lines := fact.get('lines'):
                     value['lines'] = {aliases[handle]: ranges for handle, ranges in lines.items()}
                 target.setdefault(category, []).append(value)

@@ -575,7 +575,7 @@ else:
             sources = by_service.setdefault(row['service'], {}).setdefault('sources', {})
             cite = 'cite:' + row['handlerId']
             sources[cite] = {'file': 'src/' + row['handlerId'] + '.kt', 'service': row['service'], 'startLine': 1,
-                             'endLine': 1, 'textDigest': D['sha'](code.encode()), 'text': code}
+                             'endLine': 1, 'revision': 'owned', 'textDigest': D['sha'](code.encode()), 'text': code}
             by_service[row['service']].setdefault('ready', {})[row['id']] = {'evidenceCandidates': [cite]}
             by_service[row['service']].setdefault('facts', {})[row['id']] = {
                 'facts': [{'text': code + ' fact', 'kind': 'BODY', 'authority': 'SOURCE', 'sources': [cite]}]}
@@ -623,6 +623,119 @@ else:
             pages['add_processes']({'pages': []}, {'claims': {}}, navigation, plan, process, response,
                                     job, pages['LABELS']['en'], plan['citationOwners'])
         self.assertEqual(error.exception.code, 'PAGE_ROUTE_PARTICIPANT_EVIDENCE_REQUIRED')
+
+    def test_isolated_operation_receives_only_reached_discovery_facts_with_narrow_source(self):
+        pages = D['P']
+        reach = pages['REACHED']
+        helper = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/docs_run_prepared.py'),
+                                init_globals={'digest': D['digest'], 'sha': D['sha']})
+        root_text = 'fun handle() {\n    primary.probe()\n}\n'
+        target_text = 'class Primary {\n    fun probe() {\n        require(valid)\n        repository.recheck()\n    }\n}\n'
+        neighbor_text = 'class Archive { fun probe() { throw IllegalStateException() } }\n'
+        deeper_text = 'class Repository {\n    fun recheck() {\n        if (cached) return\n    }\n}\n'
+        service = self.service
+
+        def source(file, text, full=None, offset=0):
+            before = (full or text)[:offset]
+            return {'service': service, 'revision': 'owned', 'file': file, 'text': text,
+                    'startByte': len(before.encode()), 'endByte': len((before + text).encode()),
+                    'startLine': 1 + before.count('\n'), 'endLine': 1 + (before + text.rstrip('\n')).count('\n'),
+                    'textDigest': D['sha'](text.encode()), 'authority': 'EXACT_SNAPSHOT_TEXT'}
+
+        def sub(file, text, token):
+            return source(file, token, text, text.index(token))
+
+        combined = target_text + neighbor_text
+        all_sources = {
+            'root': source('Handler.kt', root_text),
+            'unit': source('Probes.kt', combined),
+            'duplicate-unit': source('Probes.kt', combined),
+            'repository-unit': source('Repository.kt', deeper_text),
+        }
+        root = all_sources['root']
+        site = sub('Handler.kt', root_text, 'primary.probe()')
+        target = sub('Probes.kt', combined, 'fun probe() {\n        require(valid)\n        repository.recheck()\n    }')
+        other = sub('Probes.kt', combined, 'fun probe() { throw IllegalStateException() }')
+        deeper = sub('Repository.kt', deeper_text, 'fun recheck() {\n        if (cached) return\n    }')
+        deeper_site = sub('Probes.kt', combined, 'repository.recheck()')
+        source_map = {'root': root, 'site': site, 'a': target, 'b': other, 'deeper': deeper, 'deeper-site': deeper_site}
+        bodies = [{'kind': 'BODY', 'declaration': ref, 'sources': [ref]} for ref in ('root', 'a', 'b', 'deeper')]
+        exact_edges = [
+            {'kind': 'CALL', 'declaration': 'root', 'targetMethodId': 'a', 'sources': ['site'],
+             'resolution': 'SAME_SCOPE_UNIQUE', 'relationshipAuthority': 'RETAINED_K2_COMPILER_SELECTED_SYMBOL_NOT_RUNTIME_DISPATCH'},
+            {'kind': 'CALL', 'declaration': 'a', 'targetMethodId': 'deeper', 'sources': ['deeper-site'],
+             'resolution': 'SAME_SCOPE_SELECTED_DECLARATION', 'relationshipAuthority': 'JAVAC_SELECTED_DECLARATION_NOT_CONTROL_FLOW'},
+        ]
+        unqualified = {'kind': 'CALL', 'declaration': 'root', 'targetMethodId': 'b', 'sources': ['site'],
+                       'resolution': 'SOURCE_NAME_CANDIDATE', 'relationshipAuthority': 'NAVIGATION_ONLY'}
+        process = {'root': 'root', 'facts': [*bodies, *exact_edges, unqualified], 'sources': source_map}
+        bound_targets = {'Handler.kt': 'root', 'Probes.kt': 'unit', 'Repository.kt': 'repository-unit'}
+
+        def bind(row):
+            handle = bound_targets[row['file']]
+            return handle if reach['relative_slice'](all_sources[handle], row) is not None else None
+
+        def proposition(kind, text, site, handle):
+            return {'kind': kind, 'authority': 'RETAINED_SOURCE', 'text': text, 'sources': [handle],
+                    'witnesses': [reach['witness'](all_sources[handle], site, handle)]}
+
+        pulled = [
+            proposition('guard-return', 'Validation can fail before lookup.', sub('Probes.kt', combined, 'require(valid)'), 'unit'),
+            proposition('return', 'Cached result bypasses the next effect.', sub('Repository.kt', deeper_text, 'if (cached) return'), 'repository-unit'),
+            proposition('throw', 'Archive probe throws.', sub('Probes.kt', combined, 'throw IllegalStateException()'), 'duplicate-unit'),
+        ]
+        discovery = reach['index_discovery']([pulled], all_sources)
+        selected, limited = reach['select'](process, discovery, all_sources, bind)
+        self.assertEqual(limited, 0)
+        self.assertEqual([row['kind'] for row in selected], ['guard-return', 'return'])
+        self.assertTrue(all('If control reaches' in row['condition'] for row in selected))
+        self.assertEqual(selected[1]['sources'], ['root', 'unit', 'repository-unit'])
+        callback = {**process, 'facts': bodies,
+                    '_background': {'calls': [('site', 'a'), ('deeper-site', 'deeper'), ('site', 'missing')]}}
+        callback_rows, _ = reach['select'](callback, discovery, all_sources, bind)
+        self.assertEqual(callback_rows, selected)
+        aliases, _, regions = pages['source_payload'](['unit', 'duplicate-unit'], all_sources)
+        self.assertEqual(len(aliases), 2)
+        self.assertEqual(len(regions), 1)
+
+        operation = self.entry
+        discovery_id = service + ':discover:Probes.kt'
+        scope = {'snapshot': F['SNAPSHOT'], 'requirements': [operation,
+                 {'id': service + ':service-scope', 'service': service, 'kind': 'SERVICE', 'page': service + '.md'},
+                 {'id': discovery_id, 'service': service, 'kind': 'DISCOVERY', 'page': service + '.md', 'file': 'Probes.kt'}],
+                 'services': {service: {}}}
+        for row in selected:
+            row.pop('_reachedDeclaration')
+        prepared = {operation['id']: {'propositions': selected, 'omittedForLimit': 2},
+                    discovery_id: {'propositions': pulled}}
+        exposed = helper['author_entries'](prepared, all_sources)
+        index = {'sources': all_sources, 'facts': exposed, 'coverage': {'coverage': 'SYNTAX'}, 'returns': [], 'deferred': [],
+                 'ready': {operation['id']: {'evidenceCandidates': ['root']},
+                           discovery_id: {'evidenceCandidates': ['unit']}}}
+        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda *_: index}):
+            plan = pages['page_jobs'](self.job, scope, {'services': {service: {}}},
+                                      self.root / 'page-prompts', D['M']['MAX_PAGES'], 'Owned instructions.')
+        slot = next(row for row in plan['slots'] if row['kind'] == 'OPERATION')
+        packet = json.loads((self.root / slot['prompt']).read_text().split('\n\n')[-1])
+        self.assertEqual(list(packet['facts']), [operation['id']])
+        self.assertEqual(packet['omittedPreparedFacts'], 0)
+        self.assertEqual(packet['preparationOmissions'][operation['id']]['facts'], 2)
+        self.assertEqual({row['text'] for row in packet['sourceRanges'].values()}, {root_text, target['text'], deeper['text']})
+        self.assertNotIn('Archive', json.dumps(packet))
+        self.assertNotIn('_sourceWitnesses', json.dumps(packet))
+        citations = slot['citations']
+        self.assertEqual({citations[alias] for alias in packet['facts'][operation['id']]['facts'][1]['sources']},
+                         {'root', 'unit', 'repository-unit'})
+
+        with patch.dict(pages['page_jobs'].__globals__, {
+            'service_evidence': lambda *_: index, 'MAX_PACKET_BYTES': 16975,
+        }):
+            reduced = pages['page_jobs'](self.job, scope, {'services': {service: {}}},
+                                         self.root / 'reduced-prompts', D['M']['MAX_PAGES'], 'Owned instructions.')
+        slot = next(row for row in reduced['slots'] if row['kind'] == 'OPERATION')
+        bounded = json.loads((self.root / slot['prompt']).read_text().split('\n\n')[-1])
+        self.assertGreater(bounded['omittedPreparedFacts'], 0)
+        self.assertGreater(bounded['omittedOptionalRanges'], 0)
 
     def test_prepared_facts_deliver_only_bound_witnesses_and_use_the_normal_renderer(self):
         def project(process, context, *, node):

@@ -1,14 +1,17 @@
 """Plan isolated documentation authors and assemble their owned reader pages."""
 from __future__ import annotations
 
+from collections import defaultdict
 import hashlib
 import json
 from pathlib import Path
 import re
+import runpy
 
 MODE = 'ISOLATED_PAGES'
 MAX_PACKET_BYTES = 192 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
+REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
            'type': 'Type',
@@ -64,22 +67,54 @@ def service_evidence(scope, owner, services, snapshot):
             'deferred': scope['deferredResourceFiles']}
 
 
-def source_payload(handles, sources):
-    """Share exact texts once and let each citation retain its original identity."""
-    aliases, citations, regions, by_range = {}, {}, {}, {}
-    for handle in dict.fromkeys(handles):
+def range_key(source):
+    return REACHED['location'](source)
+
+
+def source_views(scoped, sources, ordinary):
+    selected = defaultdict(dict)
+    for face in scoped.values():
+        for group in ('facts', 'boundaries'):
+            for fact in face.get(group, ()):
+                witnesses = defaultdict(list)
+                for proof in fact.get('_sourceWitnesses', ()):
+                    witnesses[proof['cite']].append(proof)
+                for handle in fact['sources']:
+                    source = sources[handle]
+                    slices = [REACHED['excerpt'](source, proof) for proof in witnesses[handle]]
+                    if handle in ordinary or not slices or not all(slices):
+                        slices = [source]
+                    for row in slices:
+                        selected[handle][range_key(row)] = row
+    return selected
+
+
+def source_payload(handles, sources, views=None):
+    """Share exact excerpts once while keeping the original citation bindings."""
+    aliases, citations, regions, by_scope, by_range = {}, {}, {}, defaultdict(list), {}
+    views = views or {}
+    selected = {}
+    for handle in handles:
         need(handle in sources, 'PAGE_CITATION_SOURCE_UNAVAILABLE', cite=handle)
-        source = sources[handle]
+        selected[handle] = list(views[handle].values()) if handle in views else [sources[handle]]
+    unique = {range_key(source): source for rows in selected.values() for source in rows}
+    for identity, source in sorted(unique.items(), key=lambda row: -len(row[1]['text'].encode())):
+        display = {**source, 'startByte': source.get('startByte', (source.get('occurrence') or {}).get('startByte'))}
+        scope = REACHED['key'](source)
+        covered = next((ref for ref, row in by_scope[scope] if REACHED['relative_slice'](row, display) is not None), None)
+        if covered is None:
+            covered = 'V' + str(len(regions) + 1)
+            regions[covered] = {field: source[field] for field in ('service', 'file', 'startLine', 'endLine', 'text')}
+            by_scope[scope].append((covered, display))
+        by_range[identity] = covered
+    for handle, rows in selected.items():
         alias = 'S' + stable_id(handle)
         aliases[alias] = handle
-        key = (source['service'], source['file'], source['startLine'], source['endLine'], source['textDigest'])
-        if key not in by_range:
-            region = 'V' + str(len(by_range) + 1)
-            by_range[key] = region
-            regions[region] = {'service': source['service'], 'file': source['file'],
-                               'startLine': source['startLine'], 'endLine': source['endLine'], 'text': source['text']}
-        citations[alias] = {'region': by_range[key], 'authority': source.get('authority')}
+        locations = list(dict.fromkeys(by_range[range_key(row)] for row in rows))
+        citations[alias] = {'region': locations[0], 'authority': sources[handle].get('authority'),
+                            **({'regions': locations} if len(locations) > 1 else {})}
     return aliases, citations, regions
+
 
 
 def entry_index(inventory):
@@ -189,25 +224,31 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
         fact_handles = [handle for scoped in scoped_facts.values() for category in ('facts', 'boundaries')
                         for fact in scoped.get(category, ()) for handle in fact['sources']]
         optional = list(dict.fromkeys([*fact_handles, *supplemental]))
+        views = source_views(scoped_facts, all_sources, set(mandatory) | set(supplemental))
         # Discovery requires proven complete file evidence. Operations keep every
         # required entry range and its literal witnesses. Fixed pages sample a
         # bounded overview of the retained source, with exact omission counts.
         handles = list(dict.fromkeys(mandatory))
         remaining = MAX_PACKET_BYTES - len(instructions.encode()) - 16 * 1024
+        included = {range_key(all_sources[handle]) for handle in handles}
         bytes_used = sum(len(all_sources[handle]['text'].encode()) for handle in handles)
         for handle in optional:
             if handle in handles:
                 continue
-            size = len(all_sources[handle]['text'].encode()) + 512
+            excerpts = views.get(handle, {range_key(all_sources[handle]): all_sources[handle]})
+            size = sum(len(row['text'].encode()) + 256 for key, row in excerpts.items() if key not in included) + 128
             if bytes_used + size <= remaining:
                 handles.append(handle)
+                included.update(excerpts)
                 bytes_used += size
         need(handles, 'PAGE_SLOT_SOURCE_UNAVAILABLE', page=page, kind=kind, blocked=True)
+
         def serialize(selected):
-            aliases, citations, sources = source_payload(selected, all_sources)
+            aliases, citations, sources = source_payload(selected, all_sources, views)
             reverse = {handle: alias for alias, handle in aliases.items()}
             facts, filtered = {}, {}
             omitted_facts = 0
+            prepared_omissions = {}
             for identity, scoped in scoped_facts.items():
                 row = {category: [fact for fact in scoped.get(category, ())
                                    if all(handle in reverse for handle in fact['sources'])]
@@ -216,6 +257,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 if 'factLimits' in scoped:
                     row['factLimits'] = scoped['factLimits']
                 filtered[identity] = row
+                if omitted := scoped.get('_preparationOmissions'):
+                    prepared_omissions[identity] = omitted
                 facts[identity] = {}
             add_prepared_facts({identity: (identity, target) for identity, target in facts.items()}, filtered, reverse)
             cited_services = dict.fromkeys([*available, *(all_sources[handle]['service'] for handle in selected)])
@@ -230,7 +273,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                                            'peerDeclarations': inventory['services'][owner].get('peerDeclarationCoverage', 'UNAVAILABLE')}
                                    for owner in cited_services},
                       'omittedOptionalRanges': len(set(optional) - set(selected)),
-                      'omittedPreparedFacts': omitted_facts}
+                      'omittedPreparedFacts': omitted_facts,
+                      'preparationOmissions': prepared_omissions}
             if required:
                 packet['requirement'] = {key: required[key] for key in (
                     'id', 'kind', 'file', 'entryKind', 'entrySymbol', 'method', 'path', 'authority', 'boundaries') if key in required}
