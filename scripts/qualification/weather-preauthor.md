@@ -32,8 +32,10 @@ python3 -I -S scripts/qualification/weather-preauthor.py \
 
 Keep the rubric, component list, witness catalog and critic output outside the
 installed skill and the author's workspace. The witness catalog includes only
-cited statements in the required author-facing workspace views or the inline
-prompt. Sidecars and raw code help verify sources and yield no semantic credit.
+cited statements in the required author-facing workspace views, inline prompt,
+or actual frozen isolated page prompts. An isolated page witness retains its
+prompt location, source alias, coordinates and exact visible source digest.
+Sidecars and raw code help verify sources and yield no semantic credit.
 
 Give an independent reviewer the frozen witness catalog and exact pinned sources.
 For every rubric ID, the reviewer grades every substantive component and names
@@ -69,6 +71,12 @@ The example shows one of the 45 required rows. Use `PARTIAL`, `ABSENT` or
 `CONTRADICTED` and include a `reason` when full meaning is unavailable. A
 review can cite multiple supporting statements per component. Record material
 false claims with their locations and the source that contradicts them.
+When a file-scoped witness supplies one of those statements, include a separate
+eligible entry witness that explicitly links its target to the file fact in the
+same component. Record the connection in that atom's `scopeLinks` map keyed by
+the file witness ID, with `via` set to the supporting entry witness ID and
+`symbol` set to the exact shared source symbol. The named symbol and source
+must refer to the same target. Sharing a code file alone is insufficient.
 
 ```sh
 python3 -I -S scripts/qualification/weather-preauthor.py \

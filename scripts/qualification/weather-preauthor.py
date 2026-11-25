@@ -138,34 +138,63 @@ def visible_view(path):
         yield number, labels, assertion, [match[0] for match in ANCHOR.finditer(anchors)]
 
 
-def record(result, scopes, location, text, anchors):
-    if scopes and anchors:
-        row = {'scopes': sorted(scopes), 'location': location, 'text': text, 'anchors': anchors}
+def record(result, scopes, location, text, anchors, files=(), locations=None):
+    if (scopes or files) and anchors:
+        row = {'scopes': sorted(scopes), 'files': sorted(files), 'location': location,
+               'text': text, 'anchors': anchors, 'locations': locations or {}}
         key = sha(json.dumps(row, sort_keys=True, ensure_ascii=False).encode())
         result[key] = row
+
+
+def prompt_packet(path):
+    return json.loads(path.read_text().strip().rsplit('\n\n', 1)[1])
+
+
+def structured_records(result, path, targets, alias_map, citations, refs, files, source_ranges=None):
+    for identity, target in targets.items():
+        for category in ('facts', 'boundaries'):
+            for i, fact in enumerate(target.get(category, [])):
+                owners = {identity, *fact.get('alsoFor', ())}
+                relevant = {refs[owner] for owner in owners if owner in refs}
+                local_files = {files[owner] for owner in owners if owner in files}
+                anchors, locations = [], {}
+                for alias in fact['sources']:
+                    cite = citations[alias]
+                    detail = fact.get('lines', {}).get(alias)
+                    handle = alias_map[alias]
+                    anchors.append(handle + (f' (lines {", ".join(detail)})' if detail else ''))
+                    if source_ranges is not None:
+                        location = source_ranges[cite['region']]
+                        locations[handle] = {key: location[key] for key in ('service', 'file', 'startLine', 'endLine')}
+                        locations[handle]['bodySha256'] = sha(location['text'].encode())
+                        locations[handle]['authority'] = cite['authority']
+                visible = {key: value for key, value in fact.items() if key not in {'sources', 'lines', 'alsoFor'}}
+                record(result, relevant, f'{path}#{identity}/{category}/{i}',
+                       json.dumps(visible, ensure_ascii=False, sort_keys=True), anchors, local_files, locations)
 
 
 def collect(run, inventory, plan):
     statement_rows = {}
     scopes = select_scopes(inventory)
+    refs = {row['id']: op for op, row in scopes.items()}
+    files = {row['id']: row['service'] + ':' + row['file'] for row in inventory['requirements']
+             if row['kind'] == 'DISCOVERY'}
     if plan['mode'] == 'INLINE':
-        packet = json.loads((run / 'prompt.txt').read_text().strip().rsplit('\n\n', 1)[1])
-        refs = {row['id']: op for op, row in scopes.items()}
-        for group in ('entries', 'files'):
-            for ref, target in packet[group].items():
-                for category in ('facts', 'boundaries'):
-                    for i, fact in enumerate(target.get(category, [])):
-                        relevant = {refs[value] for alias in (ref, *fact.get('alsoFor', ()))
-                                    if (value := plan['entries'].get(alias)) in refs}
-                        anchors = []
-                        for alias in fact['sources']:
-                            require(alias in packet['citations'], 'Inline cite alias absent from author prompt')
-                            detail = fact.get('lines', {}).get(alias)
-                            handle = plan['citations'][alias]
-                            anchors.append(handle + (f' (lines {", ".join(detail)})' if detail else ''))
-                        visible = {key: value for key, value in fact.items() if key not in {'sources', 'lines', 'alsoFor'}}
-                        record(statement_rows, relevant, f'prompt.txt#{group}/{ref}/{category}/{i}',
-                               json.dumps(visible, ensure_ascii=False, sort_keys=True), anchors)
+        packet = prompt_packet(run / 'prompt.txt')
+        targets = {**packet['entries'], **packet['files']}
+        inline_refs = {alias: refs[identity] for alias, identity in plan['entries'].items() if identity in refs}
+        inline_files = {alias: files[identity] for alias, identity in plan.get('files', {}).items() if identity in files}
+        structured_records(statement_rows, 'prompt.txt', targets, plan['citations'],
+                           packet['citations'], inline_refs, inline_files)
+    elif plan['mode'] == 'ISOLATED_PAGES':
+        for slot in plan['slots']:
+            path = run / 'inputs' / slot['prompt']
+            packet = prompt_packet(path)
+            require((packet['slot'], packet['page'], packet['type'], packet.get('requirement', {}).get('id')) ==
+                    (slot['key'], slot['page'], slot['kind'], slot['requirement']),
+                    'Isolated author packet identity differs from its frozen slot')
+            structured_records(statement_rows, path.relative_to(run), packet['facts'], slot['citations'],
+                               packet['citations'], refs, files, packet['sourceRanges'])
     elif plan['mode'] == 'WORKSPACE':
         source = run / 'inputs/author-source'
         for service in inventory['services']:
@@ -174,14 +203,32 @@ def collect(run, inventory, plan):
             required = load(home / 'requirements.json')
             labelled = {('Page ' + row['page']): op for op, row in scopes.items() if row['service'] == service}
             allowed = {op: set(required[row['id']]['views']) for op, row in scopes.items() if row['service'] == service}
+            file_views = {('Discovery file ' + row['file']): (files[row['id']], set(required[row['id']]['views']))
+                          for row in inventory['requirements'] if row['kind'] == 'DISCOVERY' and row['service'] == service}
             for view in available.values():
                 path = home / view['view']
                 for line, labels, text, anchors in visible_view(path):
                     relevant = {op for label in labels if (op := labelled.get(label)) and view['view'] in allowed[op]}
-                    record(statement_rows, relevant, f'{path.relative_to(run)}:{line}', text, anchors)
+                    matching_files = {file for label in labels if label in file_views
+                                      for file, views in [file_views[label]] if view['view'] in views}
+                    record(statement_rows, relevant, f'{path.relative_to(run)}:{line}', text, anchors, matching_files)
     else:
         raise ValueError('Unknown installed author delivery mode')
     return scopes, statement_rows
+
+
+def linked_scope(key, answer, evidence, facts, eligible):
+    """A file-level fact needs an explicit visible link from an eligible entry claim."""
+    link = answer.get('scopeLinks', {}).get(key, {})
+    via = link.get('via')
+    symbol = link.get('symbol')
+    if not facts[key].get('files') or via not in evidence or via not in facts or not isinstance(symbol, str):
+        return False
+    if not re.fullmatch(r'[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*', symbol):
+        return False
+    token = r'(?<![\w$])' + re.escape(symbol) + r'(?![\w$])'
+    return (bool(eligible.intersection(facts[via]['scopes']))
+            and bool(re.search(token, facts[via]['text']) and re.search(token, facts[key]['text'])))
 
 
 def coverage(report, review):
@@ -208,7 +255,8 @@ def coverage(report, review):
             for key in evidence:
                 require(key in facts, f'Stale or unavailable prepared statement for {atom} component {part}')
                 fact = facts[key]
-                require(bool(eligible.intersection(fact['scopes'])), f'Wrong operation scope for {atom} component {part}')
+                require(bool(eligible.intersection(fact['scopes'])) or linked_scope(key, answer, evidence, facts, eligible),
+                        f'Wrong operation scope for {atom} component {part}')
                 anchors.update(fact['anchors'])
         if status == 'FULL':
             require(row['route'] in report['scopes'], f'Missing installed entry scope for {atom}')
@@ -216,7 +264,7 @@ def coverage(report, review):
     return full, anchors
 
 
-def check_sources(run, skill, repository, snapshot, anchors):
+def check_sources(run, skill, repository, snapshot, anchors, locations=()):
     loader = cache(runpy.run_path(str(skill / 'scripts/author_citations.py'))['load'])
     manifests = {}
     for path in sorted((run / 'inputs/author-source').rglob('citations.json')):
@@ -253,6 +301,11 @@ def check_sources(run, skill, repository, snapshot, anchors):
         for location in ranges.removesuffix(')').split(', ') if ranges else ():
             a, _, b = location.partition('-')
             require(first <= int(a) <= int(b or a) <= last, f'Witness outside source location for {handle}')
+    for location in locations:
+        for handle, visible in location.items():
+            row, raw = source(handle)
+            retained = {key: row[key] for key in ('service', 'file', 'startLine', 'endLine', 'authority')}
+            require(visible == {**retained, 'bodySha256': sha(raw)}, f'Isolated packet citation differs for {handle}')
     return len(anchors)
 
 
@@ -298,7 +351,8 @@ def main():
         return 0
     review = load(args.review)
     full, anchors = coverage(report, review)
-    count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors)
+    locations = [statement['locations'] for statement in statements.values()]
+    count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors, locations)
     false_count = len(review['materialFalseClaims'])
     passed = full == len(report['criteria']) and not false_count
     print(json.dumps({'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': len(report['criteria']),

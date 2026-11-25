@@ -42,6 +42,22 @@ class WeatherQualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Wrong operation scope'):
             Q['coverage'](self.report, self.review)
 
+    def test_file_fact_requires_visible_connection_from_eligible_entry(self):
+        atom = 'route-add-place.html/core/1'
+        direct = atom + '/1'
+        answer = self.review['criteria'][atom]
+        self.statements[direct]['text'] = 'The route calls Places.Save.'
+        self.statements['file-fact'] = {'scopes': [], 'files': ['places:Repository.cs'],
+                                        'text': 'Places.Save validates this branch.', 'anchors': ['m123:b']}
+        answer['witnesses']['1'].append('file-fact')
+        with self.assertRaisesRegex(ValueError, 'Wrong operation scope'):
+            Q['coverage'](self.report, self.review)
+        answer['scopeLinks'] = {'file-fact': {'via': direct, 'symbol': 'Places.Save'}}
+        self.assertEqual((45, {'m123:a', 'm123:b'}), Q['coverage'](self.report, self.review))
+        self.statements['file-fact']['text'] = 'OtherPlaces.Save validates a different branch.'
+        with self.assertRaisesRegex(ValueError, 'Wrong operation scope'):
+            Q['coverage'](self.report, self.review)
+
     def test_old_grade_or_changed_guard_cannot_be_reused(self):
         key = 'route-scheduled-refresh.html/core/2/1'
         original = self.statements.pop(key)
@@ -103,6 +119,33 @@ class WeatherQualificationTests(unittest.TestCase):
             statement = next(iter(result.values()))
             self.assertEqual(['operation-a7d8675103bc'], statement['scopes'])
             self.assertIn('Activation conditional.', statement['text'])
+
+    def test_isolated_page_reads_actual_body_and_cite_location(self):
+        requirement = {'id': 'actual-entry', 'kind': 'ENTRY', 'service': 'dashboard',
+                       'method': 'POST', 'path': '/api/places', 'page': 'actual-page.md'}
+        slot = {'key': 'op', 'kind': 'OPERATION', 'page': 'actual-page.md',
+                'requirement': requirement['id'], 'prompt': 'op.txt', 'citations': {'S1': 'm123:c'}}
+        packet = {'slot': 'op', 'type': 'OPERATION', 'page': slot['page'], 'requirement': requirement,
+                  'facts': {requirement['id']: {'facts': [{'text': 'Local condition',
+                                                          'sources': ['S1'], 'lines': {'S1': ['2']}}]}},
+                  'citations': {'S1': {'region': 'V1', 'authority': 'EXACT_SNAPSHOT_TEXT'}},
+                  'sourceRanges': {'V1': {'service': 'dashboard', 'file': 'source.ts',
+                                           'startLine': 1, 'endLine': 2, 'text': 'retained body'}}}
+        with TemporaryDirectory() as directory:
+            run = Path(directory)
+            (run / 'inputs').mkdir()
+            path = run / 'inputs/op.txt'
+            path.write_text('Prepare one page.\n\n' + json.dumps(packet))
+            inventory = {'requirements': [requirement]}
+            plan = {'mode': 'ISOLATED_PAGES', 'slots': [slot]}
+            _, result = Q['collect'](run, inventory, plan)
+            fact = next(iter(result.values()))
+            self.assertEqual(['m123:c (lines 2)'], fact['anchors'])
+            self.assertEqual(Q['sha'](b'retained body'), fact['locations']['m123:c']['bodySha256'])
+            packet['page'] = 'foreign-page.md'
+            path.write_text('Prepare one page.\n\n' + json.dumps(packet))
+            with self.assertRaisesRegex(ValueError, 'differs from its frozen slot'):
+                Q['collect'](run, inventory, plan)
 
 
 if __name__ == '__main__':
