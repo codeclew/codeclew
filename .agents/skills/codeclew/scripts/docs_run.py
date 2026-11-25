@@ -712,7 +712,7 @@ def prepare_facts(job, inventory, prepared):
         'citation_load': M['C']['load'], 'CitationStop': M['C']['Stop'],
     })
     deadline = time.monotonic() + 180
-    summaries, pending, records, sources = {}, {}, {}, {}
+    summaries, pending, records, sources, contracts = {}, {}, {}, {}, {}
     remaining = prepared['bounds']['visibleBytes'] - prepared['visibleBytes']
     for service, scope in prepared['services'].items():
         home = Path(scope['sourceIndex']).parent
@@ -729,6 +729,7 @@ def prepare_facts(job, inventory, prepared):
                                      view_budget=min(256 * 1024, remaining // 2), edge_records=records,
                                      base_manifest=scope['manifest'], contract_resources=scope.get('contractResources', ()))
         sources.update(selected.pop('edgeCitations'))
+        contracts.update(selected.pop('contractFacts'))
         discovered = selected.pop('discovered')
         if discovered:
             remaining -= background_source_views(home, scope, required, discovered)
@@ -736,11 +737,10 @@ def prepare_facts(job, inventory, prepared):
         pending[service] = home, required, selected
 
     project_edges = runpy.run_path(str(HERE / 'prepared_facts/clew_service_edges.py'))['project']
-    edges = project_edges(inventory['requirements'], records)
+    edges = project_edges(inventory['requirements'], records, contracts=contracts)
     for service, (home, required, selection) in pending.items():
         scope = prepared['services'][service]
-        contract_facts = selection.pop('contractFacts')
-        combined = {identity: [*contract_facts.get(identity, ()), *edges.get(identity, ())]
+        combined = {identity: [*contracts.get(identity, ()), *edges.get(identity, ())]
                     for identity in selection['entries']}
         helper['merge_edges'](selection, combined, sources, home)
         selected = helper['finish'](job, service, home, selection['entries'], selection['citations'])

@@ -928,7 +928,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             row['projectionLimits'] = limits
     if edge_module:
         edge_citations = {handle: {key: source[key] for key in ('file', 'service', 'revision', 'startLine', 'endLine')}
-                          | {'manifest': source.get('manifest', base_manifest)}
+                          | {'manifest': source.get('manifest', base_manifest), 'textDigest': source.get('textDigest')}
                           for handle, source in (exact | contract_sources).items()}
         return {'entries': result, 'citations': cite_index, 'edgeCitations': edge_citations, 'contractFacts': contract_facts,
                 'bytes': total_bytes, 'discovered': discovered}

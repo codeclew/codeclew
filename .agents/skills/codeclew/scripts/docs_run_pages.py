@@ -49,6 +49,7 @@ def service_evidence(scope, owner, services, snapshot):
         for handle, value in entries.items():
             source = value['source']
             service = source['service']
+            text = by_id[source['id']]
             if service != owner:
                 proof = qualified.get(handle, {})
                 # Another service's manifest can carry additional ranges beyond
@@ -57,14 +58,30 @@ def service_evidence(scope, owner, services, snapshot):
                     continue
                 need(service in services and all(proof.get(key) == source.get(key) for key in (
                     'service', 'revision', 'file', 'startLine', 'endLine'))
-                    and packet['scope']['snapshot'] == snapshot and packet['work'] == services[service]['work'],
+                    and packet['scope']['snapshot'] == snapshot
+                    and peer_membership(packet, value, proof, text, services[service]),
                     'PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED', file=source['file'])
             need(source['revision'] == services[service]['revision'], 'PAGE_SOURCE_REVISION_CHANGED', file=source['file'])
-            sources[handle] = {**source, 'text': by_id[source['id']]}
+            sources[handle] = {**source, 'text': text}
     return_path = home / 'literal-returns.json'
     return {'ready': ready, 'sources': sources, 'facts': facts.get('entries', {}),
             'returns': load(return_path) if return_path.exists() else [], 'coverage': scope['coverage'],
             'deferred': scope['deferredResourceFiles']}
+
+
+def peer_membership(packet, entry, proof, text, scope):
+    if packet.get('kind') != 'NATIVE':
+        return packet['work'] == scope['work']
+    # citation_load re-admits the engine evidence set. Match the reloaded
+    # binding and the exact bytes against the handle composed for this page.
+    source = entry['source']
+    native = entry.get('nativeBinding', {})
+    ticket = native.get('evidenceSet', {})
+    return (native.get('kind') == 'SOURCE_NATIVE'
+            and ticket.get('service') == packet['scope'].get('service') == source['service'] == source.get('bindingService')
+            and ticket.get('snapshot') == packet['scope']['snapshot']
+            and native.get('binding', {}).get('revision') == source['revision'] == scope['revision']
+            and proof.get('textDigest') == source.get('textDigest') == 'sha256:' + hashlib.sha256(text.encode()).hexdigest())
 
 
 def range_key(source):

@@ -2299,7 +2299,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
 }
 """
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             services, scopes, requirements, work_rows = {}, {}, [], {}
             for name, file, body, route in (
                 ("gateway", "Gateway.ts", front, "/claim"),
@@ -2313,18 +2313,22 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                               endLine=len(body.splitlines()))
                 manifest, _, _ = F["fixture"](home, service=name, work=work, record=source,
                                                authority="EXACT_SNAPSHOT_TEXT")
-                scope = {"work": work, "revision": source["revision"], "coverage": {"boundaries": []},
+                _, _, _, cites = D["M"]["C"]["load"](manifest)
+                scope = {"work": work, "revision": source["revision"], "coverage": {"coverage": "SYNTAX", "boundaries": []},
                          "inputDigest": work + "-input", "contextDigest": work + "-context"}
                 entry = {"id": name + ":entry", "kind": "ENTRY", "entryKind": "HTTP_ENDPOINT",
                          "service": name, "entrypoint": "claim", "method": "POST", "path": route,
-                         "page": name + ".md", "sourceIds": [source["id"]], "sourceReferences": ["s9"],
+                         "handlerId": name + "-claim", "page": name + "-claim.md",
+                         "sourceIds": [source["id"]], "sourceReferences": ["s9"],
                          "registrationSourceIds": [source["id"]], "rootDeclarations": [name + "-root"]}
                 work_rows[work] = {"kind": "THREAD_OBLIGATION", "id": "BODY:" + name, "obligationKind": "BODY",
                                    "record": {"declaration": name + "-root", "sourceIds": [source["id"]]},
                                    "sourceReferences": ["s9"]}
-                D["save"](home / "requirements.json", {entry["id"]: {"views": ["view.md"]}})
+                D["save"](home / "requirements.json", {entry["id"]: {"views": ["view.md"],
+                                                                    "evidenceCandidates": list(cites)}})
                 (home / "view.md").write_text("# " + file + "\n\n```\n" + body + "```\n")
                 services[name] = {"manifest": str(manifest), "sourceIndex": str(home / "index.md"),
+                                  "coverage": scope["coverage"], "deferredResourceFiles": [],
                                   "views": {file: {"file": file, "view": "view.md"}}}
                 scopes[name] = scope
                 requirements.append(entry)
@@ -2336,9 +2340,42 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                 return {"status": "COMPLETE", "identity": {"snapshot": F["SNAPSHOT"],
                         "inputDigest": work + "-input", "contextDigest": work + "-context"}}
 
+            contract_text = json.dumps({
+                "openapi": "3.1.0",
+                "paths": {"/books/{key}/claim": {"post": {"responses": {
+                    "202": {"description": "Pending", "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"ticket": {"type": "string"}}}}}}}}},
+                          "/unrelated": {"post": {"responses": {"418": {"description": "Separate operation"}}}}},
+            }, indent=2)
+            revision = scopes["catalogue"]["revision"]
+            manifest = (root / "catalogue/fact-evidence/contracts-native-citations/citations.json").resolve()
+            spec = {key: value for key, value in F["source"](contract_text).items() if key != "text"}
+            spec.update(id="spec", service="catalogue", bindingService="catalogue", revision=revision,
+                        file="contracts/api.json", startLine=1, endLine=len(contract_text.splitlines()),
+                        authority="REGISTERED_NATIVE_BYTES_ONLY_NO_SEMANTIC_ANALYSIS",
+                        occurrence={"snapshot": revision, "startByte": 0, "endByte": len(contract_text.encode())})
+            native = {"kind": "SOURCE_NATIVE", "binding": {"revision": revision},
+                      "evidenceSet": {"service": "catalogue", "snapshot": F["SNAPSHOT"]}}
+            native_entries = {"catalogue:api": {"source": spec, "nativeBinding": native}}
+            packet = {"kind": "NATIVE", "scope": native["evidenceSet"],
+                      "outcomes": [{"source": spec, "textKey": spec["textDigest"]}],
+                      "texts": {spec["textDigest"]: contract_text}}
+            load_citation = D["M"]["C"]["load"]
+
+            def citation_load(path):
+                if Path(path).resolve() == manifest:
+                    return {}, packet, {}, native_entries
+                return load_citation(path)
+
             native_run_path = runpy.run_path
+
             def run_path(filename, **kwargs):
                 module = native_run_path(filename, **kwargs)
+                if filename.endswith("/docs_run_contract_sources.py"):
+                    def pinned_sources(*args):
+                        return (module["packet_sources"](native_entries, packet, manifest)
+                                if args[1] == "catalogue" else {})
+                    module["prepare"].__globals__["pinned_sources"] = pinned_sources
                 if not filename.endswith("/managed_languages.py"):
                     return module
                 original = module["project"]
@@ -2346,16 +2383,21 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     if process["service"] != "catalogue":
                         return original(process, context, node=node)
                     proof, = context["sourceRanges"]
-                    return [{"kind": "http-commit-before-response", "authority": "RETAINED_PATH",
-                             "text": "The handler commits the transaction before returning HTTP 201.",
-                             "sources": [proof["id"]]}], {}
+                    outcomes = [("http-outcome", f"The handler can return HTTP {status}.")
+                                for status in (400, 404, 409, 500)]
+                    outcomes.extend([
+                        ("http-commit-before-response", "The handler commits the transaction before returning HTTP 201."),
+                        ("conditional-no-write", "If validation rejects the book, this path bypasses the INSERT."),
+                    ])
+                    return [{"kind": kind, "authority": "RETAINED_PATH", "text": text, "sources": [proof["id"]]}
+                            for kind, text in outcomes], {}
                 return {**module, "project": adapt}
 
             job = {"clew": "/fixture/clew", "root": str(root), "snapshot": F["SNAPSHOT"],
-                   "node": node, "services": list(services)}
+                   "node": node, "services": list(services), "request": "Document book claims.", "language": "en"}
             prepared = {"bounds": {"visibleBytes": 100_000}, "visibleBytes": 0,
                         "requirements": requirements.copy(), "services": services}
-            inventory = {"requirements": requirements, "services": scopes}
+            inventory = {"requirements": requirements, "services": scopes, "snapshot": F["SNAPSHOT"]}
             with patch.dict(D["T"], {"collect": collect}), patch.object(runpy, "run_path", run_path):
                 with patch.dict(D["prepare_facts"].__globals__, {"command": lambda *a, **kw: {}}):
                     D["prepare_facts"](job, inventory, prepared)
@@ -2367,15 +2409,57 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             authored = D["load"](root / "gateway/prepared-facts.json")["entries"]["gateway:entry"]["propositions"]
             self.assertTrue(all(not any(key.startswith("_") for key in row) for row in authored))
 
+            pages = D["P"]
+            with patch.dict(pages["page_jobs"].__globals__, {"citation_load": citation_load}):
+                plan = pages["page_jobs"](job, inventory, prepared, root / "page-prompts", 20, "Fixture instructions.")
+                slot = next(row for row in plan["slots"] if row["requirement"] == "gateway:entry")
+                issue = json.loads((root / slot["prompt"]).read_text().split("\n\n")[-1])
+                self.assertEqual(set(issue["facts"]), {"gateway:entry"})
+                facts = issue["facts"]["gateway:entry"]["facts"]
+                declared, = (row for row in facts if row["kind"] == "http-peer-declared-response")
+                self.assertEqual(declared["authority"], "DECLARED_OPENAPI")
+                self.assertIn("`202`", declared["text"])
+                self.assertIn("`ticket`", declared["text"])
+                self.assertNotIn("418", declared["text"])
+                self.assertIn("runtime enforcement", declared["uncertainty"])
+                ranges = [issue["sourceRanges"][issue["citations"][alias]["region"]] for alias in declared["sources"]]
+                selected, = (row for row in ranges if row["file"] == "contracts/api.json")
+                self.assertEqual(selected["service"], "catalogue")
+                self.assertNotIn("/unrelated", selected["text"])
+                self.assertTrue(all(any(str(status) in row["text"] for row in facts if row["kind"] == "http-peer-outcome")
+                                    for status in (400, 404, 409, 500)))
+                for kind, value in (("http-peer-commit-before-response", "HTTP 201"),
+                                    ("http-peer-conditional-no-write", "bypasses the INSERT")):
+                    row, = (row for row in facts if row["kind"] == kind)
+                    self.assertIn(value, row["text"])
+                for bad_binding, bad_text in (({"revision": "stale"}, contract_text), (native["binding"], "different bytes")):
+                    with patch.dict(native, {"binding": bad_binding}), patch.dict(packet["texts"], {spec["textDigest"]: bad_text}):
+                        with self.assertRaisesRegex(D["Stop"], "PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED"):
+                            pages["service_evidence"](services["gateway"], "gateway", scopes, F["SNAPSHOT"])
+
     def test_http_peer_ambiguity_does_not_select_an_outcome_and_missing_proof_stays_open(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
             "adapter": "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "method": "GET", "path": "/units"}}
         front = self.retained("front", path="/start", events=[("call", "client.get()", call)])
         first = self.retained("first")
         unproven = self.retained("unproven", proof=False)
-        row, = self.project(front, first, unproven)[front[0]["id"]]
+        candidates = (front, first, unproven)
+        declaration = {"kind": "openapi-declared-response", "authority": "DECLARED_OPENAPI",
+                       "status": "SOURCE_ROUTE_MATCH_ONLY", "text": "Declares HTTP 202.",
+                       "uncertainty": "Runtime enforcement remains unknown.", "sources": ["spec"]}
+        row, = self.edges["project"]([row[0] for row in candidates], {row[0]["id"]: row[1] for row in candidates},
+                                     contracts={first[0]["id"]: [declaration]})[front[0]["id"]]
         self.assertEqual((row["kind"], row["status"]), ("http-peer-boundary", "AMBIGUOUS"))
         self.assertIn("first-registration", row["sources"])
+        candidates = (front, first)
+        conflict = {**declaration, "kind": "openapi-overlay-boundary", "status": "AMBIGUOUS",
+                    "text": "Multiple declarations remain possible.", "sources": ["spec-one", "spec-two"]}
+        qualified = self.edges["project"]([row[0] for row in candidates], {row[0]["id"]: row[1] for row in candidates},
+                                          contracts={first[0]["id"]: [conflict]})[front[0]["id"]]
+        boundary, = (row for row in qualified if row["kind"] == "http-peer-declaration-boundary")
+        self.assertEqual(boundary["status"], "AMBIGUOUS")
+        self.assertEqual(boundary["sources"], ["front-call", "first-registration", "spec-one", "spec-two"])
+        self.assertFalse(any(row["kind"] == "http-peer-declared-response" for row in qualified))
         for others in ((), (unproven,), (self.retained("wrong-method", verb="POST"),)):
             row, = self.project(front, *others)[front[0]["id"]]
             self.assertEqual((row["kind"], row["status"], row["sources"]),

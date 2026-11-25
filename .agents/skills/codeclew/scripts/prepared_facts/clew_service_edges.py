@@ -21,7 +21,10 @@ TABLE = re.compile(r'[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*){0,2}', re.ASCII)
 PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
 HTTP_ADAPTERS = {"SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "SPRING_REST_CLIENT_URI/2.0"}
-PEER_RESPONSES = {"http-outcome", "http-commit-before-response", "status_body"}
+PEER_RESPONSES = {"http-outcome", "status_body"}
+PEER_CONTRACTS = {"openapi-declared-response": "http-peer-declared-response",
+                  "openapi-overlay-boundary": "http-peer-declaration-boundary",
+                  "openapi-response-boundary": "http-peer-declaration-boundary"}
 CALLER_PATHS = {"java-guarded-outcome", "java-ordered-effects", "http-outcome", "error-path",
                 "effect-order", "handled-exception-continuation", "return_rejection", "await_bypass",
                 "exception_route", "request_after_commit_failure", "response_body_read", "status_body",
@@ -228,13 +231,15 @@ def record(requirement, process, context, facts, exact):
                                                      for write in writes.values()],
             "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
             "commits": [fact for fact in facts if fact["kind"] == "http-commit-before-response"][:2],
+            "bypasses": [fact for fact in facts if fact["kind"] == "conditional-no-write"][:2],
             "exits": list(source_exits(process, sources))[:MAX_MATCHES],
             "paths": [fact for fact in facts if fact["kind"] in CALLER_PATHS]}
 
 
-def project(requirements, records):
+def project(requirements, records, *, contracts=None):
     """Index each protocol once and bound per-page evidence fan-out."""
     routes = Routes(requirements)
+    contracts = contracts or {}
     subscriptions, readers, reader_services = defaultdict(list), defaultdict(dict), defaultdict(dict)
     for row in requirements:
         for name in topics(row):
@@ -252,7 +257,8 @@ def project(requirements, records):
     result, seen, requester_links = defaultdict(list), defaultdict(set), defaultdict(list)
     nested_visits = defaultdict(int)
 
-    def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE"):
+    def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE",
+             authority="RETAINED_SOURCE_EDGE"):
         if len(result[owner]) >= MAX_COLLECTED_LINKS:
             return
         if not (sources := list(dict.fromkeys(ref for face in faces for ref in face["sources"]))):
@@ -263,7 +269,7 @@ def project(requirements, records):
             return
         seen[owner].add(key)
         witnesses = [w for face in faces for w in face.get("witnesses", ())]
-        result[owner].append({"kind": kind, "authority": "RETAINED_SOURCE_EDGE", "status": status,
+        result[owner].append({"kind": kind, "authority": authority, "status": status,
                               "text": text, "uncertainty": uncertainty, "sources": sources,
                               **({"condition": " ".join(conditions)} if conditions else {}),
                               **({"witnesses": witnesses} if witnesses else {})})
@@ -454,10 +460,21 @@ def project(requirements, records):
             emit(owner, "http-peer", f"The request at {label} has a route candidate in {name}.", boundary, call, cited[0])
             emit(peer["id"], "http-peer", f"`{service}` has a retained request matching this source route at {label}.",
                  boundary, call, cited[0])
+            for commit in target["commits"]:
+                emit(owner, "http-peer-commit-before-response", predicate + " " + commit["text"],
+                     boundary + " " + commit.get("uncertainty", ""), call, cited[0], commit)
+            for bypass in target["bypasses"]:
+                emit(owner, "http-peer-conditional-no-write", predicate + " " + bypass["text"],
+                     boundary + " " + bypass.get("uncertainty", ""), call, cited[0], bypass)
+            for declaration in contracts.get(peer["id"], ()):
+                kind = PEER_CONTRACTS[declaration["kind"]]
+                emit(owner, kind, f"The matching source route in {name} has this declaration evidence. "
+                     + declaration["text"], boundary + " " + declaration["uncertainty"],
+                     call, cited[0], declaration, status=declaration["status"], authority=declaration["authority"])
             for outcome in target["responses"] or target["exits"]:
                 emit(owner, "http-peer-outcome", predicate + " " + outcome["text"],
                      boundary + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
-            if not target["responses"] and not target["exits"]:
+            if not (target["responses"] or target["commits"] or target["exits"]):
                 emit(owner, "http-peer-outcome-boundary", f"An observable handler return or exception for {name} remains open.",
                      boundary, call, cited[0], status="UNKNOWN")
             local_paths = [row for row in local["paths"] if continuation(row, call)]
@@ -609,7 +626,10 @@ def project(requirements, records):
                 emit(requester, kind, f"If the request reaches `{name}`, the handler has this retained continuation. "
                      + row["text"], boundary + " " + row["uncertainty"], call, registration_proof, row,
                      status=row["status"])
-    preferred = ("http-failure-after-peer-commit", "http-further-subscriber-readback", "further-subscriber-readback",
+    preferred = ("http-failure-after-peer-commit", "http-peer-commit-before-response", "http-peer-conditional-no-write",
+                 "http-peer-declared-response", "http-peer-declaration-boundary", "http-peer-outcome",
+                 "http-further-subscriber-readback",
+                 "further-subscriber-readback",
                  "message-storage-reader", "http-message-storage-reader", "further-subscriber-outbox",
                  "message-peer-write-detail", "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
                  "further-outbox-limit-boundary", "further-outbox-boundary")
@@ -621,7 +641,7 @@ def project(requirements, records):
             groups[row["kind"]].append(row)
         deepest = {"further-subscriber-readback", "http-further-subscriber-readback"}
         sampled = [max(groups[kind], key=lambda row: len(row["sources"])) if kind in deepest else groups[kind][0]
-                   for kind in preferred if groups[kind]]
+                   for kind in preferred if groups[kind]][:MAX_LINKS - 1]
         for row in rows:
             if len(sampled) >= MAX_LINKS - 1:
                 break
