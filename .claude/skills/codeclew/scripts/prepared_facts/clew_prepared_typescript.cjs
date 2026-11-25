@@ -23,7 +23,7 @@ const limit = 58;
 const BODY_READS = new Set(["json", "text", "arrayBuffer", "blob", "formData", "bytes"]);
 const priority = [
     "registered_callback", "registration_step", "transaction_step", "sql_request", "sql_columns", "sql_parameters", "sql_result_check", "sql_result_flow",
-    "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write", "response_decode_failure_outcome",
+    "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write", "response_decode_failure_outcome", "poll_row_publication",
     "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
     "http_request", "message_request", "request_after_commit_failure",
     "return_rejection", "await_bypass", "result_continuation", "iteration_helper_binding", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
@@ -558,7 +558,7 @@ function scan(scope, inherited) {
         if (rendered.length > 512 || !rendered.startsWith("/") && !/^https?:\/\//i.test(rendered)) return;
         return {uri: rendered, configuredOrigin, encodedSegment};
     }
-    function transport(call, state, awaited) {
+    function transport(call, state, awaited, evaluated) {
         if (ts.isOptionalChain(call)) return;
         const site = source(scope, call);
         const occurrence = scope.id + ":" + call.getStart();
@@ -610,6 +610,17 @@ function scan(scope, inherited) {
             emit("message_request", "The source " + (awaited ? "awaits" : "calls") + " the retained KafkaJS producer send.",
                 [qualified, ...request.publications[qualified]], state, "Runtime broker binding and delivery remain open.",
                 {_edge: {kind: "PUBLISH", site: qualified, occurrence, topic: topic.text}});
+            for (const value of query?.outputs(options.get("messages"), state, evaluated).slice(0, 6) || []) {
+                const origin = value.origin;
+                if (!origin.query || !origin.occurrence) continue;
+                const field = queryResults.pathText(value.path);
+                const argument = field ? "the " + field + " member of the selected result" : "the selected result";
+                emit("poll_row_publication", "The producer options receive " + argument + " from " +
+                    origin.call + " with the static SELECT from " + origin.query.table + ".",
+                    [...origin.sites, ...value.sites, qualified, ...request.publications[qualified]], state,
+                    "Provider selection, broker delivery and other payload fields remain conditional.",
+                    {_pollPublication: {readOccurrence: origin.occurrence, publicationOccurrence: occurrence}});
+            }
             return {occurrence, site: qualified, kind: "PUBLISH"};
         }
     }
@@ -631,7 +642,8 @@ function scan(scope, inherited) {
                 limit && "LIMIT " + limit, offset && "OFFSET " + offset].filter(Boolean);
             const projection = (distinct ? "DISTINCT " : "") + columns + " FROM " + table + (tableAlias ? " AS " + tableAlias : "");
             emit("sql_request", (awaited ? "Awaits " : "Calls ") + name + " with a static SELECT of " + projection +
-                (clauses.length ? " with " + clauses.join(", ") : "") + ".", sites, state, execution, {select: sql.select, _edge: {kind: "SELECT", site, table}});
+                (clauses.length ? " with " + clauses.join(", ") : "") + ".", sites, state, execution, {select: sql.select, _edge: {kind: "SELECT", site, table,
+                    occurrence: scope.id + ":" + call.getStart()}});
         } else if (sql.kind !== "INSERT") {
             emit("transaction_step", (awaited ? "Awaits " : "Calls ") + name + " with the SQL command " + sql.label + ".",
                 sites, state, execution, write);
@@ -852,7 +864,7 @@ function scan(scope, inherited) {
         const place = sql ? callName(call) + " with " + sql.label : effect.description || effect.name;
         inventory && inventory.record(call, {label: caption(call) || place, effect, target, sql});
         const argumentText = short(call.arguments.map(argument => caption(argument) || "an evaluated expression").join(", "), 208);
-        const dispatch = !focus && transport(call, state, awaited);
+        const dispatch = !focus && transport(call, state, awaited, evaluated);
         const occurrence = dispatch?.occurrence;
         if (sql) sqlFact(sql, call, site, state, awaited);
         else if (awaited || effect.kind === "http_forward" || effect.kind === "retained_effect") {
@@ -976,7 +988,8 @@ function scan(scope, inherited) {
         if (query) {
             state = query.escape(state, [call.expression, ...call.arguments], evaluated);
             const origin = awaited && sql?.select ?
-                {query: sql.select, call: callName(call), sites: [site, source(scope, sql.literal)]} :
+                {query: sql.select, call: callName(call), sites: [site, source(scope, sql.literal)],
+                    occurrence: scope.id + ":" + call.getStart()} :
                 helper && (awaited || !helper.async) ? {helper, sites: [site, helper.target]} : undefined;
             const value = origin && {origin, path: [], sites: []};
             if (value) evaluated.set(node, value);

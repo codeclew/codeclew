@@ -82,6 +82,7 @@ class Frame:
     loops: tuple
     protected: tuple
     callback: object
+    guards: tuple
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class Query:
     verb: str
     table: str
     details: tuple
+    occurrence: str
 
 
 class Projection:
@@ -255,25 +257,30 @@ class Projection:
             return Binding(part, kind, replace(evidence, citations=sources), typed[0].authority, typed[0].condition)
         return self.open_chained_wait(part)
 
-    def scan(self, suite, loops=(), protected=(), callback=None, depth=0):
+    def scan(self, suite, loops=(), protected=(), callback=None, depth=0, guards=()):
         if depth > 16:
             return
         for index, statement in enumerate(suite):
-            frame = Frame(statement, suite, index, loops, protected, callback)
+            frame = Frame(statement, suite, index, loops, protected, callback, guards)
             self.frames.append(frame)
             local = self.body.expression_control(statement) or statement
             if local.kind == "try":
-                self.scan(local.body, loops, (*protected, (frame, "TRY")), callback, depth + 1)
+                self.scan(local.body, loops, (*protected, (frame, "TRY")), callback, depth + 1, guards)
                 for _, handler, child in local.handlers:
                     self.catches.append((frame, local, handler, child))
-                    self.scan(child, loops, (*protected, (frame, "CATCH")), callback, depth + 1)
-                self.scan(local.cleanup, loops, (*protected, (frame, "FINALLY")), callback, depth + 1)
+                    self.scan(child, loops, (*protected, (frame, "CATCH")), callback, depth + 1, guards)
+                self.scan(local.cleanup, loops, (*protected, (frame, "FINALLY")), callback, depth + 1, guards)
             else:
-                if local.kind in {"for", "while"}:
-                    loops = (*frame.loops, local)
-                self.scan(local.body, loops, protected, callback, depth + 1)
-                self.scan(local.alternative, loops, protected, callback, depth + 1)
-                loops = frame.loops
+                inner = (*loops, local) if local.kind in {"for", "while"} else loops
+                guard = None
+                if local.kind == "if" and local.expression:
+                    first, last = local.expression[0], local.expression[-1]
+                    site = type(local.site)(first.start, last.end, local.site.file)
+                    guard = self.body.note(site)
+                yes = (*guards, (guard, True)) if guard else guards
+                no = (*guards, (guard, False)) if guard else guards
+                self.scan(local.body, inner, protected, callback, depth + 1, yes)
+                self.scan(local.alternative, inner, protected, callback, depth + 1, no)
 
     def straight_path(self, suite):
         """Keep source text for the straight-line steps and first transfer."""
@@ -679,8 +686,9 @@ class Projection:
                           and part.selector.start < call.end]
             if candidates:
                 part = min(candidates, key=lambda item: item.site.end)
-                if frame := self.frame(part):
-                    self.queries.append(Query(part, frame, self.body.sql_operands[key], verb, table, details))
+                if (frame := self.frame(part)) and (owner := self.body.sql_owner(call)):
+                    self.queries.append(Query(part, frame, self.body.sql_operands[key], verb, table, details,
+                                              self.body.sql_occurrence(owner)))
 
     def selected_loop(self, wait, tx):
         loops = wait.loops or tx.loops
@@ -701,7 +709,7 @@ class Projection:
         if selected:
             loop, item, collection = selected
             for query in self.queries:
-                if (query.verb == "SELECT" and query.frame.suite == loop.suite and query.frame.index < loop.index
+                if (query.verb == "SELECT" and self.later_in_suite(query.frame, loop)
                         and query.part.site.end == query.frame.statement.site.end
                         and self.body.words(query.frame.statement)[:3] == ("val", collection, "=")):
                     statement = loop.statement
@@ -742,7 +750,8 @@ class Projection:
                         suffix = self.body.unit.text[query.part.site.end:statement.site.end]
                         if re.fullmatch(EXTRACT_ITEM, suffix.strip()):
                             yield query, item, self.body.text_note(statement.site, "selected item binding"), ""
-                    elif query.frame.index < index and query.part.site.end == query.frame.statement.site.end:
+                    elif (query.frame.index < index and self.later_in_suite(query.frame, anchor)
+                          and query.part.site.end == query.frame.statement.site.end):
                         source = self.body.words(query.frame.statement)
                         if len(source) < 4 or source[0] != "val" or source[2] != "=":
                             continue
@@ -750,12 +759,12 @@ class Projection:
                         if re.fullmatch(re.escape(source[1]) + r"\s*" + EXTRACT_ITEM, initializer.strip()):
                             yield query, item, self.body.text_note(statement.site, "selected item binding"), ""
 
-    def unshadowed_item(self, item, proof, write):
+    def unshadowed_item(self, item, proof, part):
         for index, token in enumerate(self.body.unit.tokens):
-            if (proof.site.end <= token.start < write.part.selector.start and token.text in {"val", "var"}
+            if (proof.site.end <= token.start < part.selector.start and token.text in {"val", "var"}
                     and self.body.unit.words[index + 1] == item):
                 return False
-        return all(site.start == proof.site.start or not inside(write.part.selector, site)
+        return all(site.start == proof.site.start or not inside(part.selector, site)
                    or all(name != item for name, _ in callback.params)
                    for site, (_, callback, _) in self.body.callback_scopes.items())
 
@@ -872,7 +881,7 @@ class Projection:
             filters = next((value for label, value in read.details if label == "filters by"), "")
             filter_text = f"the same predicate `{filters}`" if filters and "`" not in filters else "the same selection predicates"
             for write in writes:
-                if (read.table != write.table or not self.unshadowed_item(item, alias, write)
+                if (read.table != write.table or not self.unshadowed_item(item, alias, write.part)
                         or not (key := self.matching_key(read, write, item))):
                     continue
                 if publication and (guard := self.eligibility_mark(filters, write)):
@@ -903,9 +912,84 @@ class Projection:
             owner = self.frame(retained[0])
             site = owner.callback if owner else None
 
+    def row_operand(self, tokens, item, selected, publication, frames):
+        if not tokens or not self.unshadowed_item(item, selected, publication):
+            return ()
+        unit = self.body.unit
+        location = type(publication.site)(tokens[0].start, tokens[-1].end, publication.site.file)
+        operands = unit.excerpt(location)
+        cast = r'(?:\s+as\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?'
+        path = r'(?:(?:\s*\.\s*[A-Za-z_]\w*)|(?:\s*\[\s*"[^"\\]+"\s*\]))*'
+        proof = []
+        upper = publication.selector.start
+        for _ in range(4):
+            if re.fullmatch(re.escape(item) + path + cast, operands):
+                return [*proof, value] if (value := self.body.note(location)) else ()
+            if not (name := re.fullmatch(r'([A-Za-z_]\w*)' + cast, operands)):
+                return ()
+            candidates = {}
+            for frame in frames:
+                for statement in frame.suite[:frame.index]:
+                    words = self.body.words(statement)
+                    if (selected.site.start <= statement.site.start < upper and words[:1] in {("val",), ("var",)}
+                            and words[1:2] == (name[1],)):
+                        candidates[statement.site] = statement
+            if len(candidates) != 1:
+                return ()
+            statement, = candidates.values()
+            if self.body.words(statement)[:3] != ("val", name[1], "="):
+                return ()
+            initializer = statement.expression[3:]
+            if (not initializer or not (binding := self.body.note(statement.site))
+                    or not self.unshadowed_item(name[1], binding, publication)
+                    or not (use := self.body.note(location))):
+                return ()
+            proof.extend((use, binding))
+            upper = statement.site.start
+            location = type(location)(initializer[0].start, initializer[-1].end, location.file)
+            operands = unit.excerpt(location)
+        return ()
+
+    def selected_publication(self, binding, frame, arguments, occurrence, literal):
+        part = binding.invocation
+        guards = list(frame.guards)
+        frames = [frame]
+        callback = frame.callback
+        while callback:
+            owner = self.body.callback_scopes[callback][0]
+            outer = self.frame(owner)
+            if not outer or not (callback in self.callback_iterations or callback in self.selection_iterations
+                                 or callback in self.body.callback_inline
+                                 or any(item.kind == "transaction" and item.invocation == owner for item in self.bindings)):
+                return
+            frames.append(outer)
+            guards.extend(outer.guards)
+            callback = outer.callback
+        callbacks = {frame.callback for frame in frames}
+        frames.extend(parent for parent in self.frames if parent.callback in callbacks
+                      and inside(part.selector, parent.statement.site))
+        if any(region != "TRY" for at in frames for _, region in at.protected):
+            return
+        selections = dict.fromkeys(selection for at in frames for selection in self.item_reads(frame, at))
+        for query, item, selected, iteration in selections:
+            operands = [proof for argument in arguments if (proof := self.row_operand(argument, item, selected, part, frames))]
+            if not operands:
+                continue
+            guards = list(dict.fromkeys(guards))
+            conditions = [binding.condition, iteration, *(self.body.guard_text(guard, taken) for guard, taken in guards)]
+            values = " and ".join(dict.fromkeys(proof[0].text for proof in operands))
+            self.body.projector.add(
+                "POLL_ROW_PUBLICATION", f"The selected row from {query.note.text} supplies {values} to "
+                f"{self.note(part).text} on the retained continuation.",
+                [self.note(query.part), query.note, selected, binding.evidence, literal,
+                 *(note for proof in operands for note in proof), *(guard for guard, _ in guards)],
+                authority=binding.authority, condition=" and ".join(filter(None, conditions)),
+                uncertainty="Selection, API binding and broker delivery remain conditional.",
+                _pollPublication={"readOccurrence": query.occurrence, "publicationOccurrence": occurrence})
+
     def publication(self, binding):
         part = binding.invocation
-        if not self.frame(part):
+        if not (frame := self.frame(part)):
             return
         unit = self.body.unit
         first = unit.token_indices[part.selector.start]
@@ -923,6 +1007,7 @@ class Projection:
         literal = self.body.text_note(type(part.selector)(argument.start, argument.end, part.selector.file),
                                       "topic operand")
         prefix = self.assumptions(binding)
+        occurrence = f"{self.body.ranges.by_ref[self.body.ref]}:{part.selector.start}:{part.selector.end}"
         self.body.projector.add(
             "BROKER_PUBLICATION", (prefix + "the source" if prefix else "The source")
             + f" submits a Kafka publication request for topic `{match[1]}` if {self.note(part).text} is reached.",
@@ -932,7 +1017,8 @@ class Projection:
                          if binding.authority != "COMPILER_SELECTED" else "")
             + "Broker mapping, acknowledgement and delivery remain open.",
             _edge={"kind": "PUBLISH", "topic": match[1], "site": binding.evidence.citations[0],
-                   "occurrence": f"{part.selector.file}:{part.selector.start}:{part.selector.end}"})
+                   "occurrence": occurrence})
+        self.selected_publication(binding, frame, tuple(self.body.operand_groups(operands))[1:], occurrence, literal)
 
     def derive(self):
         self.selected()

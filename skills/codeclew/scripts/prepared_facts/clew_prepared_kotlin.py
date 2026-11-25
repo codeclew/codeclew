@@ -45,6 +45,7 @@ MAX_FACTS = {
     "CALL_BOUNDARY": 10,
     "SQL_LITERAL": 14,
     "BROKER_PUBLICATION": 8,
+    "POLL_ROW_PUBLICATION": 8,
     "WAIT_TRANSACTION_BOUNDARY": 12,
     "TRANSACTION_BOUNDARY": 14,
     "POSSIBLE_REPEAT_AFTER_MARK_FAILURE": 8,
@@ -423,6 +424,14 @@ class Body:
         self.call_parts[site] = parts
         return result
 
+    operand_groups = staticmethod(FAILURE["groups"])
+
+    def sql_owner(self, call):
+        return self.note(call) or next((note for site, note in self.calls.items() if encloses(site, call)), None)
+
+    def sql_occurrence(self, owner):
+        return f"{self.ranges.by_ref[self.ref]}:{owner.site.start}:{owner.site.end}"
+
     def operand_facts(self, scope):
         def region(at):
             candidates = [site for site in self.operand_regions if encloses(site, at)]
@@ -430,15 +439,14 @@ class Body:
 
         for key, query in self.sql_operands.items():
             call, _ = key
-            owner = self.note(call) or next((note for site, note in self.calls.items()
-                                             if encloses(site, call)), None)
+            owner = self.sql_owner(call)
             if owner:
                 shape = self.sql_shapes.get(key)
                 bound = shape is not None
                 edge = {}
                 if bound and "__clew_kotlin_value_" not in shape[1]:
                     anchor = self.ranges.by_ref[self.ref]
-                    occurrence = f"{anchor}:{owner.site.start}:{owner.site.end}"
+                    occurrence = self.sql_occurrence(owner)
                     edge["_edge"] = {"kind": shape[0], "table": shape[1], "site": owner.citations[0],
                                      "occurrence": occurrence}
                     if shape[0] != "SELECT":

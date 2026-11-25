@@ -289,7 +289,8 @@ async function receive() {
         return input.topic.length + input.messages.length;
     } };
     display.send({topic: "not.published", messages: ["display text"]});
-    await producer.send({topic: "unit.processed", messages: []});
+    const selected = await db.query("SELECT id FROM ready_units");
+    await producer.send({topic: "unit.processed", messages: [{value: selected.rows[0].id}]});
 }
 async function main(dynamic: string, enabled: boolean) {
     if (enabled) await consumer.subscribe({ topics: ["branch.only"] });
@@ -331,6 +332,62 @@ async function main(dynamic: string, enabled: boolean) {
         bound, = process["_background"]["publications"]
         self.assertTrue(set(bound) <= set(publish["sources"]))
         self.assertIn("KafkaJS producer", publish["text"])
+        query, = (fact for fact in facts if fact.get("_edge", {}).get("kind") == "SELECT")
+        delivery, = (fact for fact in facts if fact["kind"] == "poll_row_publication")
+        self.assertEqual(delivery["_pollPublication"], {"readOccurrence": query["_edge"]["occurrence"],
+                                                       "publicationOccurrence": publish["_edge"]["occurrence"]})
+
+    def test_kotlin_poll_publication_requires_a_selected_row_operand(self):
+        header = """package demo
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.kafka.core.KafkaTemplate
+import org.springframework.scheduling.annotation.Scheduled
+class Relay(private val db: JdbcTemplate, private val broker: KafkaTemplate<String, String>) {
+"""
+        cases = {
+            "selected": """
+        val rows = db.queryForList("SELECT id FROM ready_lots")
+        rows.forEach { row ->
+            val id = row["id"] as String
+            if (id.isNotEmpty()) broker.send("lot.ready", id)
+        }""",
+            "opposite arms": """
+        if (enabled) { db.queryForList("SELECT id FROM ready_lots") }
+        else { broker.send("lot.ready", "notice") }""",
+            "unrelated sequential": """
+        val rows = db.queryForList("SELECT id FROM ready_lots")
+        broker.send("lot.ready", "notice")""",
+            "shadowed operand": """
+        val rows = db.queryForList("SELECT id FROM ready_lots")
+        for (row in rows) {
+            val id = row["id"] as String
+            if (enabled) { val id = "notice"; broker.send("lot.ready", id) }
+        }""",
+        }
+        for name, body in cases.items():
+            with self.subTest(name=name):
+                root = "    @Scheduled(fixedDelay = 100)\n    fun poll(enabled: Boolean) {" + body + "\n    }"
+                text = header + root + "\n}\n"
+                process, context = selected("Relay.kt", text, standalone=root, start=header.count("\n") + 1)
+                process["entryKind"] = "SCHEDULED_JOB"
+                raw = text.encode()
+
+                def bind(site):
+                    fragment = raw[site["startByte"]:site["endByte"]]
+                    return HANDLE if fragment == site["text"].encode() and digest(site["text"]) == site["textDigest"] else None
+
+                context["_bindWitness"] = bind
+                rows, _ = self.project(process, context)
+                read, = (row for row in rows if row.get("_edge", {}).get("kind") == "SELECT")
+                send, = (row for row in rows if row.get("_edge", {}).get("kind") == "PUBLISH")
+                delivery = [row for row in rows if row["kind"] == "POLL_ROW_PUBLICATION"]
+                if name == "selected":
+                    proof, = delivery
+                    self.assertIn("id.isNotEmpty()", proof["condition"])
+                    self.assertEqual(proof["_pollPublication"], {"readOccurrence": read["_edge"]["occurrence"],
+                                                                 "publicationOccurrence": send["_edge"]["occurrence"]})
+                else:
+                    self.assertFalse(delivery, rows)
 
     def test_kotlin_publication_uses_qualified_receiver_and_literal_topic(self):
         body = """fun score(publisher: org.springframework.kafka.core.KafkaTemplate<String, String>, value: String) {
@@ -1157,6 +1214,10 @@ sealed class Relay
                     self.assertTrue(deliveries and retries, facts)
                     self.assertIn("CommitAsync", deliveries[0]["text"])
                     self.assertIn("ProduceAsync", retries[0]["text"])
+                    self.assertIn(deliveries[0]["_pollPublication"]["readOccurrence"],
+                                  {row["_edge"]["occurrence"] for row in facts if row.get("_edge", {}).get("kind") == "SELECT"})
+                    self.assertIn(deliveries[0]["_pollPublication"]["publicationOccurrence"],
+                                  {row["_edge"]["occurrence"] for row in publications})
                 else:
                     self.assertFalse(deliveries or retries, facts)
 

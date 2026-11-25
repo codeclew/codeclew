@@ -192,8 +192,10 @@ def record(requirement, process, context, facts, exact):
             value = topic(kafka.get("topic"))
             keep(publishes, (refs[0], value), {**face, "topic": value, "precise": True})
 
-    write_focus = defaultdict(lambda: defaultdict(list))
+    write_focus, poll_paths = defaultdict(lambda: defaultdict(list)), defaultdict(dict)
     for fact in facts:
+        if (pair := fact.get("_pollPublication")) and pair.get("readOccurrence") and pair.get("publicationOccurrence"):
+            poll_paths[pair["readOccurrence"]].setdefault(pair["publicationOccurrence"], stored_face(fact))
         if (focus := fact.get("_writeFocus")) and focus.get("occurrence"):
             write_focus[focus["occurrence"]][focus.get("topic")].append(fact)
         if not (link := fact.get("_edge")):
@@ -227,7 +229,7 @@ def record(requirement, process, context, facts, exact):
                 "file", "revision", "startLine", "endLine", "startByte", "endByte", "textDigest") if key in source}})
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
-            "calls": list(calls.values()), "publishes": list(publishes.values()),
+            "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
             "reads": list(reads.values()), "writes": [{**write, "focus": write_focus.get(write["occurrence"], {})}
                                                      for write in writes.values()],
             "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
@@ -293,6 +295,11 @@ def project(requirements, records, *, contracts=None):
         indexed = readers[service, table]
         return ((reader, read) for family in families for reader, read in indexed.get(family, ()) if reader != writer)
 
+    def poll_publications(poller, read):
+        paths = poller["pollPaths"].get(read["occurrence"], {})
+        return [(publication, paths[identity]) for publication in poller["publishes"]
+                if (identity := publication["occurrence"]) and identity in paths][:2]
+
     def entry_kind(owner):
         return records[owner]["requirement"].get("entryKind")
 
@@ -355,8 +362,8 @@ def project(requirements, records, *, contracts=None):
                 continue
             table = write["table"]
             rank = (0 if next(local_readers(writer, table, ("http",)), None) else
-                    1 if write["verb"] != "DELETE" and any(records[reader]["publishes"]
-                                                          for reader, _ in local_readers(writer, table, ("poll",))) else 2)
+                    1 if write["verb"] != "DELETE" and any(poll_publications(records[reader], read)
+                                                          for reader, read in local_readers(writer, table, ("poll",))) else 2)
             groups[rank].append(write)
         groups[2].sort(key=lambda effect: not effect.get("condition"))
         selected = [group[0] for _, group in sorted(groups.items()) if group]
@@ -373,12 +380,18 @@ def project(requirements, records, *, contracts=None):
                 continue
             write = exact_write(raw_write, topic)
             table = write["table"]
-            publishers = list(islice((row for row in local_readers(writer, table, ("poll",))
-                                      if records[row[0]]["publishes"]), MAX_MATCHES))
-            for publisher, read in publishers:
+            candidates = [(publisher, read, poll_publications(records[publisher], read))
+                          for publisher, read in local_readers(writer, table, ("poll",))]
+            candidates.sort(key=lambda row: not row[2])
+            for publisher, read, paired in candidates[:MAX_MATCHES]:
                 poller = records[publisher]
                 title = poller["requirement"]["page"]
-                frontier = (write, registration(poller), read)
+                frontier = (write, registration(poller), {**read, "condition": None})
+                if not paired:
+                    emit(owner, "further-outbox-boundary",
+                         f"The cited query in `{title}` has no retained row-to-publication continuation.",
+                         STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
+                    continue
                 proof_sources = {ref for face in (*evidence, *frontier) for ref in face["sources"]}
                 if publisher in visited:
                     emit(owner, "further-outbox-boundary", f"The next poll can revisit the cited root in `{title}`.",
@@ -389,20 +402,22 @@ def project(requirements, records, *, contracts=None):
                          f"More continuation remains beyond the prepared path limit at the cited poll root in `{title}`.",
                          STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="PREPARATION_LIMIT")
                     return
-                for publication in poller["publishes"][:2]:
+                for publication, selection in paired:
+                    publication = {**publication, "condition": None}
                     subscribers = qualified_subscribers(publisher, publication["topic"])
                     if not subscribers:
                         emit(owner, "further-outbox-boundary", "The next publication has no bounded set of proven active callback candidates.",
-                             MESSAGE_OPEN, *evidence, *frontier, publication, status="UNKNOWN")
+                             MESSAGE_OPEN, *evidence, *frontier, publication, selection, status="UNKNOWN")
                     for subscriber in subscribers:
                         target = subscriber["id"]
                         if nested_visits[owner] >= MAX_NESTED_VISITS:
                             emit(owner, "further-outbox-limit-boundary",
                                  f"More continuation remains beyond the prepared visit limit from the cited poll root in `{title}`.",
-                                 MESSAGE_OPEN + " " + STORAGE_OPEN, *frontier, publication, status="PREPARATION_LIMIT")
+                                 MESSAGE_OPEN + " " + STORAGE_OPEN, *frontier, publication, selection,
+                                 status="PREPARATION_LIMIT")
                             return
                         nested_visits[owner] += 1
-                        continuation = (*evidence, *frontier, publication, registration(records[target]))
+                        continuation = (*evidence, *frontier, publication, selection, registration(records[target]))
                         if target in visited or target == writer:
                             emit(owner, "further-outbox-boundary", "The next publication can revisit a previously considered callback.",
                                  MESSAGE_OPEN, *continuation, status="UNKNOWN")
@@ -411,7 +426,8 @@ def project(requirements, records, *, contracts=None):
                         prior_topic = f"After delivery on `{topic}`, " if topic else ""
                         prefix = (prior_topic + f"if the cited callback write becomes visible and the registered poller in `{title}` "
                                   f"selects the same key, it can reach the publication on `{next_topic}`. ")
-                        qualifier = STORAGE_OPEN + " " + MESSAGE_OPEN + " Row-to-payload lineage remains unknown."
+                        qualifier = (STORAGE_OPEN + " " + MESSAGE_OPEN + " Other payload fields and wire mapping remain open. "
+                                     + selection["uncertainty"])
                         proof = (*continuation, callback(records[target]))
                         if len({ref for face in proof for ref in face["sources"]}) > MAX_CHAIN_SOURCES:
                             emit(owner, "further-outbox-limit-boundary",
@@ -419,7 +435,8 @@ def project(requirements, records, *, contracts=None):
                                  qualifier, *frontier, publication, status="PREPARATION_LIMIT")
                             return
                         emit(owner, "further-subscriber-outbox", prefix
-                             + f"`{subscriber['page']}` has the cited registration for that topic.", qualifier, *proof)
+                             + selection["text"] + f" `{subscriber['page']}` has the cited registration for that topic.",
+                             qualifier, *proof)
                         for effect in representative_writes(target, next_topic):
                             if conflict := incompatible_write(effect, next_topic):
                                 emit(owner, "message-peer-write-boundary", prefix + conflict["text"],
@@ -565,31 +582,34 @@ def project(requirements, records, *, contracts=None):
                      STORAGE_OPEN, write, registration(target), read)
                 if write["verb"] == "DELETE" or entry_kind(reader) not in POLLERS:
                     continue
-                if not target["publishes"]:
-                    emit(owner, "storage-message-boundary", f"The registered reader in `{name}` has no qualified "
-                         "publication for this retained storage path.", MESSAGE_OPEN + " " + STORAGE_OPEN,
+                if not (paired := poll_publications(target, read)):
+                    emit(owner, "storage-message-boundary", f"The cited query in `{name}` has no retained "
+                         "row-to-publication continuation.", MESSAGE_OPEN + " " + STORAGE_OPEN,
                          write, registration(target), read, status="UNKNOWN")
-                for publication in target["publishes"][:2]:
+                read = {**read, "condition": None}
+                for publication, selection in paired:
+                    publication = {**publication, "condition": None}
                     subscribers = subscriptions.get(publication["topic"], ())
                     if len(subscribers) > MAX_MATCHES:
                         emit(owner, "storage-message-boundary", f"Multiple retained subscriptions follow the "
                              f"publication candidate in `{name}`.", MESSAGE_OPEN, write, registration(target), read,
-                             publication, status="AMBIGUOUS")
+                             publication, selection, status="AMBIGUOUS")
                         continue
                     matches = qualified_subscribers(reader, publication["topic"])
                     if not matches:
                         emit(owner, "storage-message-boundary", f"A source-qualified subscriber callback is "
                              f"unavailable for the publication candidate in `{name}`.", MESSAGE_OPEN + " " + STORAGE_OPEN,
-                             write, registration(target), read, publication, status="UNKNOWN")
+                             write, registration(target), read, publication, selection, status="UNKNOWN")
                     for subscriber in matches:
                         consumer = records[subscriber["id"]]
                         prefix = f"If the registered reader in `{name}` selects this row and reaches publication, "
                         boundary = " ".join(filter(None, (STORAGE_OPEN, MESSAGE_OPEN, publication.get("uncertainty"),
-                                                           "Row-to-payload lineage remains unknown.")))
-                        evidence = (write, registration(target), read, publication,
+                                                           selection["uncertainty"],
+                                                           "Other payload fields and wire mapping remain open.")))
+                        evidence = (write, registration(target), read, publication, selection,
                                     registration(consumer), callback(consumer))
-                        emit(owner, "storage-message-continuation", prefix
-                             + f"`{subscriber['page']}` declares the same topic `{publication['topic']}`.",
+                        emit(owner, "storage-message-continuation", prefix + selection["text"] +
+                             f" `{subscriber['page']}` declares the same topic `{publication['topic']}`.",
                              boundary, *evidence)
                         for effect in representative_writes(subscriber["id"], publication["topic"]):
                             if conflict := incompatible_write(effect, publication["topic"]):

@@ -2872,6 +2872,11 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertTrue(all("absence" in fact["text"] and "remains deleted" in fact["text"] for fact in readbacks))
         self.assertFalse(any(fact["kind"].startswith("storage-message") for fact in projected[listener[0]["id"]]))
 
+    def poll_proof(self, name, publication="send"):
+        return {"kind": "poll-row-publication", "authority": "RETAINED_PATH", "sources": [name + "-body"],
+                "text": "The selected row supplies the publication argument.",
+                "_pollPublication": {"readOccurrence": "select", "publicationOccurrence": publication}}
+
     def test_chain_prioritizes_a_public_projection_and_keeps_a_guarded_terminal_path(self):
         def operation(site, kind, **identity):
             condition = identity.pop("condition", None)
@@ -2885,17 +2890,19 @@ class PreparedServiceEdgeTests(unittest.TestCase):
 
         origin = self.retained("orders", name="request", facts=[operation("request", "INSERT", table="booking_events")])
         first = self.retained("orders", name="booking-poll", entry_kind="SCHEDULED_JOB", facts=[
-            operation("booking-poll", "SELECT", table="booking_events"),
-            operation("booking-poll", "PUBLISH", topic="booking.requested")])
+            operation("booking-poll", "SELECT", table="booking_events", occurrence="select"),
+            operation("booking-poll", "PUBLISH", topic="booking.requested", occurrence="send"),
+            self.poll_proof("booking-poll")])
         validator = consumer("allocation", "validator", "booking.requested", [
             operation("validator", "INSERT", table="received"),
             operation("validator", "INSERT", table="declined", condition="payload lacks a required member"),
             operation("validator", "INSERT", table="changes", condition="payload passes validation"),
         ])
         second = self.retained("allocation", name="change-poll", entry_kind="HOSTED_BACKGROUND_WORKER", facts=[
-            operation("change-poll", "SELECT", table="changes"),
-            operation("change-poll", "PUBLISH", topic="booking.allocated"),
-            operation("change-poll", "PUBLISH", topic="booking.requested"),
+            operation("change-poll", "SELECT", table="changes", occurrence="select"),
+            operation("change-poll", "PUBLISH", topic="booking.allocated", occurrence="send"),
+            operation("change-poll", "PUBLISH", topic="booking.requested", occurrence="repeat"),
+            self.poll_proof("change-poll"), self.poll_proof("change-poll", "repeat"),
         ])
         index = consumer("reader", "index", "booking.allocated", [
             operation("index", "INSERT", table="incoming"),
@@ -2906,8 +2913,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         query = self.retained("reader", name="availability", path="/availability", facts=[
             operation("availability", "SELECT", table="availability")])
         third = self.retained("reader", name="view-poll", entry_kind="SCHEDULED_JOB", facts=[
-            operation("view-poll", "SELECT", table="retained_views"),
-            operation("view-poll", "PUBLISH", topic="booking.visible"),
+            operation("view-poll", "SELECT", table="retained_views", occurrence="select"),
+            operation("view-poll", "PUBLISH", topic="booking.visible", occurrence="send"),
+            self.poll_proof("view-poll"),
         ])
         viewer = consumer("public", "receive", "booking.visible", [
             operation("receive", "UPDATE", table="visible_records", condition="the projection key is accepted")])
@@ -2950,7 +2958,9 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                               trigger={"configuration": {"topics": [f"step.{index}"]}},
                               facts=[fact(consumer, "INSERT", table=table)]))
             operations.append(self.retained(service, name=poller, entry_kind="SCHEDULED_JOB",
-                              facts=[fact(poller, "SELECT", table=table), fact(poller, "PUBLISH", topic=f"step.{index + 1}")]))
+                              facts=[fact(poller, "SELECT", table=table, occurrence="select"),
+                                     fact(poller, "PUBLISH", topic=f"step.{index + 1}", occurrence="send"),
+                                     self.poll_proof(poller)]))
         projected = self.project(*operations)[first[0]["id"]]
         boundary, = (row for row in projected if row["kind"] == "further-outbox-limit-boundary")
         self.assertEqual(boundary["status"], "PREPARATION_LIMIT")
@@ -3000,8 +3010,10 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     "_edge": {"kind": operation, "site": site, **identity}}
 
         writer = self.retained("catalog", name="writer", facts=[effect("writer", "INSERT", table="pending_jobs")])
-        relay = self.retained("catalog", name="relay", entry_kind="SCHEDULED_JOB", facts=[
-            effect("relay", "SELECT", table="pending_jobs"), effect("relay", "PUBLISH", topic="jobs.ready")])
+        operations = [effect("relay", "SELECT", table="pending_jobs", occurrence="select"),
+                      effect("relay", "PUBLISH", topic="jobs.ready", occurrence="send")]
+        relay = self.retained("catalog", name="relay", entry_kind="SCHEDULED_JOB",
+                              facts=[*operations, self.poll_proof("relay")])
         trigger = {"configuration": {"topics": ["jobs.ready"]}}
         listener = self.retained("index", name="listener", entry_kind="KAFKA_LISTENER", trigger=trigger,
                                  facts=[effect("listener", "INSERT", table="inbox")])
@@ -3017,7 +3029,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         thread, = (fact for fact in result[writer[0]["id"]] if fact["kind"] == "storage-message-continuation")
         self.assertEqual(thread["sources"], ["writer-body", "relay-registration", "relay-body",
                                              "listener-registration", "listener-body"])
-        self.assertIn("Row-to-payload lineage", thread["uncertainty"])
+        self.assertIn("The selected row supplies the publication argument.", thread["text"])
         self.assertTrue(any(row["kind"] == "storage-message-effect" for row in result[writer[0]["id"]]))
         stop, = (row for row in result[writer[0]["id"]] if row["kind"] == "storage-peer-boundary")
         self.assertEqual(stop["status"], "UNKNOWN")
@@ -3026,11 +3038,17 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertEqual(complete["sources"], ["front-call", "writer-registration", "writer-body",
                                              "relay-registration", "relay-body", "listener-registration",
                                              "listener-body", "reader-registration", "reader-body"])
-        self.assertIn("Row-to-payload lineage", complete["uncertainty"])
+        self.assertIn("Other payload fields and wire mapping remain open", complete["uncertainty"])
         self.assertTrue(any(row["kind"] == "message-storage-reader" for row in result[relay[0]["id"]]))
         self.assertNotIn(wrong[0]["id"], result)
         self.assertEqual(result[disabled[0]["id"]][0]["status"], "DISABLED_IN_SOURCE")
         self.assertIn("message-peer-boundary", {row["kind"] for row in self.project(relay, wrong)[relay[0]["id"]]})
+        unlinked = self.retained("catalog", name="relay", entry_kind="SCHEDULED_JOB",
+                                 facts=[*operations, self.poll_proof("relay", "unrelated-send")])
+        unrelated = self.project(writer, unlinked, listener, reader)
+        kinds = {row["kind"] for row in unrelated[writer[0]["id"]]}
+        self.assertEqual(kinds, {"storage-reader", "storage-message-boundary"})
+        self.assertIn("message-peer", {row["kind"] for row in unrelated[unlinked[0]["id"]]})
 
 
 class PreparedContractTests(unittest.TestCase):

@@ -1287,6 +1287,7 @@ class Facts:
                      + handle + data,
                      [*scope_proof, *proof, *lineage_proof], [item["comparisonPath"]], item["sources"],
                      uncertainty="The provider and broker must bind the cited APIs and honor the projected arguments.",
+                     _pollPublication={"readOccurrence": item["select"], "publicationOccurrence": item["externalCall"]},
                      **({"condition": condition} if condition else {}))
         if item.get("publicationAwaitFailed"):
             text = (f"If the await of {reached} faults or is cancelled, the broker may already have accepted the send. "
