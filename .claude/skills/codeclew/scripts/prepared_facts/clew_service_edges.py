@@ -378,9 +378,9 @@ def project(requirements, records):
                          STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
                     continue
                 if nested_visits[owner] >= MAX_NESTED_VISITS or len(proof_sources) >= MAX_CHAIN_SOURCES:
-                    emit(owner, "further-outbox-boundary",
+                    emit(owner, "further-outbox-limit-boundary",
                          f"More continuation remains beyond the prepared path limit at the cited poll root in `{title}`.",
-                         STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
+                         STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="PREPARATION_LIMIT")
                     return
                 for publication in poller["publishes"][:2]:
                     subscribers = qualified_subscribers(publisher, publication["topic"])
@@ -390,9 +390,9 @@ def project(requirements, records):
                     for subscriber in subscribers:
                         target = subscriber["id"]
                         if nested_visits[owner] >= MAX_NESTED_VISITS:
-                            emit(owner, "further-outbox-boundary",
+                            emit(owner, "further-outbox-limit-boundary",
                                  f"More continuation remains beyond the prepared visit limit from the cited poll root in `{title}`.",
-                                 MESSAGE_OPEN + " " + STORAGE_OPEN, *frontier, publication, status="UNKNOWN")
+                                 MESSAGE_OPEN + " " + STORAGE_OPEN, *frontier, publication, status="PREPARATION_LIMIT")
                             return
                         nested_visits[owner] += 1
                         continuation = (*evidence, *frontier, publication, registration(records[target]))
@@ -406,6 +406,11 @@ def project(requirements, records):
                                   f"selects the same key, it can reach the publication on `{next_topic}`. ")
                         qualifier = STORAGE_OPEN + " " + MESSAGE_OPEN + " Row-to-payload lineage remains unknown."
                         proof = (*continuation, callback(records[target]))
+                        if len({ref for face in proof for ref in face["sources"]}) > MAX_CHAIN_SOURCES:
+                            emit(owner, "further-outbox-limit-boundary",
+                                 f"More continuation remains beyond the source limit from the cited poll root in `{title}`.",
+                                 qualifier, *frontier, publication, status="PREPARATION_LIMIT")
+                            return
                         emit(owner, "further-subscriber-outbox", prefix
                              + f"`{subscriber['page']}` has the cited registration for that topic.", qualifier, *proof)
                         for effect in representative_writes(target, next_topic):
@@ -607,7 +612,7 @@ def project(requirements, records):
     preferred = ("http-failure-after-peer-commit", "http-further-subscriber-readback", "further-subscriber-readback",
                  "message-storage-reader", "http-message-storage-reader", "further-subscriber-outbox",
                  "message-peer-write-detail", "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
-                 "further-outbox-boundary")
+                 "further-outbox-limit-boundary", "further-outbox-boundary")
     for owner, rows in result.items():
         if len(rows) <= MAX_LINKS:
             continue

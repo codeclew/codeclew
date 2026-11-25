@@ -2484,6 +2484,29 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                             "previously considered callback" in row["text"] for row in facts))
         self.assertLessEqual(len(facts), self.edges["MAX_LINKS"])
 
+    def test_continuation_budget_retains_a_cited_frontier(self):
+        def fact(site, kind, **identity):
+            return {"kind": "effect", "authority": "RETAINED_PATH", "text": "The source reaches " + site + ".",
+                    "sources": [site + "-body"], "_edge": {"kind": kind, "site": site + "-body", **identity}}
+
+        first = self.retained("coordinator", name="start", facts=[fact("start", "PUBLISH", topic="step.0")])
+        operations = [first]
+        for index in range(12):
+            service, consumer, poller = f"service-{index}", f"write-{index}", f"poll-{index}"
+            table = "outgoing"
+            operations.append(self.retained(service, name=consumer, entry_kind="KAFKA_LISTENER",
+                              trigger={"configuration": {"topics": [f"step.{index}"]}},
+                              facts=[fact(consumer, "INSERT", table=table)]))
+            operations.append(self.retained(service, name=poller, entry_kind="SCHEDULED_JOB",
+                              facts=[fact(poller, "SELECT", table=table), fact(poller, "PUBLISH", topic=f"step.{index + 1}")]))
+        projected = self.project(*operations)[first[0]["id"]]
+        boundary, = (row for row in projected if row["kind"] == "further-outbox-limit-boundary")
+        self.assertEqual(boundary["status"], "PREPARATION_LIMIT")
+        self.assertRegex(boundary["text"], r"cited poll root in `poll-[0-9]+\.md`")
+        self.assertTrue(any(source.startswith("poll-") and source.endswith("-registration")
+                            for source in boundary["sources"]))
+        self.assertLessEqual(len(projected), self.edges["MAX_LINKS"])
+
     def test_focused_write_guards_apply_to_the_matching_topic_only(self):
         def fact(kind, sources, text, **metadata):
             return {"kind": kind, "sources": sources, "text": text, "authority": "RETAINED_PATH", **metadata}
