@@ -748,13 +748,15 @@ def prepare_facts(job, inventory, prepared):
         destinations, view_files = {}, {}
         if rows:
             scope['preparedFacts'] = {'entries': rows, 'citations': citations}
+        workspace_rows = {} if job.get('authorMode') == P['MODE'] else rows
+        if workspace_rows:
             ready = load(home / 'requirements.json')
             for row in required:
                 label = ('Discovery file ' + helper['single_line'](row['file']) if row['kind'] == 'DISCOVERY'
                          else 'Page ' + row['page'])
                 destinations[row['id']] = (ready[row['id']]['views'][0], label)
             view_files = {view['view']: view['file'] for view in scope['views'].values()}
-        delivery = helper['workspace_views'](home, destinations, rows, citations, view_files, remaining)
+        delivery = helper['workspace_views'](home, destinations, workspace_rows, citations, view_files, remaining)
         remaining -= delivery['authorViewBytes']
         summaries[service] = {**selected, **delivery}
     directory = Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1]

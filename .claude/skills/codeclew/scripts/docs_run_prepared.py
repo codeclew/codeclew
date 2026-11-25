@@ -1,8 +1,9 @@
 """Prepare cited propositions from the same immutable Work used for authoring."""
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 import hashlib
+from itertools import repeat
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,8 @@ MAX_ROOTS = 32
 MAX_REFS = 384
 MAX_FACTS = 128
 MAX_PACKET_BYTES = 256 * 1024
+MAX_OPERATION_FACT_BYTES = 64 * 1024
+MAX_DISCOVERY_FACT_BYTES = 40 * 1024
 MAX_SOURCE_VIEW_PREFIX_BYTES = 6 * 1024
 MAX_FILE_BYTES = 128 * 1024
 CSHARP_FILE_LIMIT = 12
@@ -458,9 +461,11 @@ def author_entries(entries, citations):
         limits = row.get('scopeLimits', []) + row.get('projectionLimits', [])
         if limits:
             facts['factLimits'] = limits
-        if row.get('omittedForLimit') or row.get('omittedReachedDeclarations'):
-            facts['_preparationOmissions'] = {'facts': row.get('omittedForLimit', 0),
-                                             'declarations': row.get('omittedReachedDeclarations', 0)}
+        omitted, declarations, unbound = (row.get(key, 0) for key in (
+            'omittedForLimit', 'omittedReachedDeclarations', 'unboundPropositions'))
+        if omitted or declarations or unbound:
+            facts['_preparationOmissions'] = {'facts': omitted, 'declarations': declarations, 'unbound': unbound,
+                                             'reasons': row.get('factOmissions', {})}
         if facts:
             result[identity] = dict(facts)
     return result
@@ -478,7 +483,8 @@ def single_line(value):
 def workspace_sections(groups, citations, file, heading):
     if not any(groups.values()):
         return b''
-    headings = {'facts': 'Facts', 'boundaries': 'Boundaries', 'factLimits': 'Coverage limits'}
+    headings = {'facts': 'Facts', 'boundaries': 'Boundaries', 'factLimits': 'Coverage limits',
+                '_preparationOmissions': 'Preparation omissions'}
     lines, sources = [heading, ''], {}
     for (labels, category), items in groups.items():
         if not items:
@@ -486,6 +492,19 @@ def workspace_sections(groups, citations, file, heading):
         label = f"{headings[category]} for {', '.join(labels)}"
         if category == 'factLimits':
             lines += [label, *('- ' + ', '.join(limits) for limits in items), '']
+            continue
+        if category == '_preparationOmissions':
+            lines.append(label)
+            for counts in items:
+                for reason, count in counts['reasons'].items():
+                    lines.append(f"- {count} facts exceeded the {reason.lower().replace('_', ' ')} limit.")
+                if counts['facts'] and not counts['reasons']:
+                    lines.append(f"- {counts['facts']} facts exceeded preparation limits.")
+                if counts['declarations']:
+                    lines.append(f"- {counts['declarations']} reached declarations exceeded the traversal limit.")
+                if counts['unbound']:
+                    lines.append(f"- {counts['unbound']} facts lacked usable source citations.")
+            lines.append('')
             continue
         authority = items[0]['authority']
         common_authority = len(items) > 1 and all(fact['authority'] == authority for fact in items)
@@ -551,8 +570,10 @@ def workspace_views(home, required, rows, citations, view_files, budget):
     views = defaultdict(dict)
     for identity, row in rows.items():
         view, label = required[identity]
-        for category in ('facts', 'boundaries', 'factLimits'):
-            values = (row[category],) if category == 'factLimits' and category in row else row.get(category, ())
+        for category in ('facts', 'boundaries', 'factLimits', '_preparationOmissions'):
+            values = row.get(category, ())
+            if values and category in {'factLimits', '_preparationOmissions'}:
+                values = (values,)
             for value in values:
                 key = (category, digest(value))
                 labels, _ = views[view].setdefault(key, ([], value))
@@ -810,7 +831,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             background = background_entries(service, requirements, all_units, exact, files, managed, job, deadline,
                                             page_slots, view_budget)
     discovered = {}
-    result, cite_index, total_bytes, projections = {}, {}, 0, {}
+    result, cite_index, projections = {}, {}, {}
     ordered = sorted(requirements, key=lambda row: row['kind'] != 'ENTRY') if background else requirements
     for requirement in ordered:
         entry_id = requirement['id']
@@ -882,6 +903,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             propositions.extend(accepted)
             unbound += rejected
         projections[entry_id] = requirement, process, context, propositions, unbound, projection_limits, failed, unavailable
+    local_candidates = {}
     indexed = REACHED['index_discovery']((item[3] for item in projections.values() if item[0]['kind'] == 'DISCOVERY'), exact)
     for entry_id, (requirement, process, context, propositions, unbound, projection_limits, failed, unavailable) in projections.items():
         row = result[entry_id]
@@ -896,17 +918,11 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
                 projection_limits.append('REACHED_DECLARATION_LIMIT')
             if edge_module:
                 edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
-        visible, limited = [], 0
+        local_candidates[entry_id] = propositions
         for internal in propositions:
-            # The continuation index still owns the private causal metadata.
-            fact = {key: value for key, value in internal.items() if not key.startswith('_')}
-            size = len(encode(fact))
-            if len(visible) >= MAX_FACTS or total_bytes + size > MAX_PACKET_BYTES:
-                limited += 1
-                continue
-            visible.append(fact)
-            total_bytes += size
-            for handle in fact['sources']:
+            for handle in internal['sources']:
+                if handle in cite_index:
+                    continue
                 source = exact[handle]
                 cite_index[handle] = {key: source[key] for key in ('file', 'startLine', 'endLine')}
                 if 'manifest' in source:
@@ -918,45 +934,127 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             status = 'PROJECTOR_FAILED'
         elif unavailable or limits:
             status = 'PROJECTOR_UNAVAILABLE'
-        if visible:
-            status = 'PREPARED' if not all(map(is_boundary, visible)) else 'BOUNDARIES_ONLY'
-        row.update(status=status, propositions=visible, unboundPropositions=unbound, omittedForLimit=limited)
+        row.update(status=status, unboundPropositions=unbound)
         if failed:
             row['failedProjectors'] = failed
         if unavailable:
             row['unavailableProjectors'] = unavailable
         if limits:
             row['projectionLimits'] = limits
+    selection = {'entries': result, 'citations': cite_index, 'localCandidates': local_candidates,
+                 'isolated': job.get('authorMode') == 'ISOLATED_PAGES', 'discovered': discovered}
     if edge_module:
         edge_citations = {handle: {key: source[key] for key in ('file', 'service', 'revision', 'startLine', 'endLine')}
                           | {'manifest': source.get('manifest', base_manifest), 'textDigest': source.get('textDigest')}
                           for handle, source in (exact | contract_sources).items()}
-        return {'entries': result, 'citations': cite_index, 'edgeCitations': edge_citations, 'contractFacts': contract_facts,
-                'bytes': total_bytes, 'discovered': discovered}
-    return {**finish(job, service, home, result, cite_index), 'discovered': discovered}
+        return {**selection, 'edgeCitations': edge_citations, 'contractFacts': contract_facts}
+    merge_edges(selection, {}, {}, home)
+    return {**finish(job, service, home, result, selection['citations']), 'discovered': discovered}
+
+
+def interleave(groups):
+    active = deque(iter(group) for group in groups)
+    while active:
+        group = active.popleft()
+        if (item := next(group, None)) is not None:
+            yield item
+            active.append(group)
+
+
+def local_group(fact):
+    if fact.get('_reachedDeclaration'):
+        return 'reached-declaration'
+    if fact.get('_writeFocus'):
+        return 'selected-write'
+    return 'local'
+
+
+def ranked_facts(local, peers):
+    """Give each evidence origin, kind and branch an early representative."""
+    groups, unique = {}, set()
+    ordered = []
+    for origin, rows in (('peer', peers), (None, local)):
+        for internal in rows:
+            fact = {key: value for key, value in internal.items() if not key.startswith('_')}
+            encoded = encode(fact)
+            identity = hashlib.sha256(encoded).digest()
+            if identity in unique:
+                continue
+            unique.add(identity)
+            channel = groups.setdefault(origin or local_group(internal), {})
+            kind = channel.setdefault(fact['kind'], {})
+            branch = kind.setdefault(fact.get('condition') or '', [])
+            item = fact, len(encoded) + 1
+            branch.append(item)
+            ordered.append(item)
+    return ordered, interleave(interleave(interleave(kinds.values()) for kinds in channel.values())
+                               for channel in groups.values())
+
+
+def allocate_facts(selection, peers):
+    """Allocate after edge qualification, with independent caps for isolated scopes."""
+    rows = selection['entries']
+    local = selection.pop('localCandidates', {identity: row.get('propositions', ()) for identity, row in rows.items()})
+    isolated = selection.get('isolated', False)
+    stats = {identity: {'bytes': 0, 'omitted': Counter(), 'propositions': []} for identity in rows}
+    ordered = {identity: ranked_facts(local.get(identity, ()), peers.get(identity, ())) for identity in rows}
+    sizes = {identity: sum(size for _, size in natural) for identity, (natural, _) in ordered.items()}
+    shared_limit = not isolated and sum(sizes.values()) > MAX_PACKET_BYTES
+    candidates = []
+    for identity, row in rows.items():
+        natural, ranked = ordered[identity]
+        limit = MAX_DISCOVERY_FACT_BYTES if row.get('kind') == 'DISCOVERY' else MAX_OPERATION_FACT_BYTES
+        # Preserve the projector's presentation order when there is no competition for space.
+        if len(natural) <= MAX_FACTS and not shared_limit and (not isolated or sizes[identity] <= limit):
+            ranked = natural
+        candidates.append(zip(repeat(identity), ranked))
+    total = 0
+    for identity, (fact, size) in interleave(candidates):
+        result = stats[identity]
+        row = rows[identity]
+        discovery = row.get('kind') == 'DISCOVERY'
+        limit = MAX_DISCOVERY_FACT_BYTES if discovery else MAX_OPERATION_FACT_BYTES
+        if len(result['propositions']) >= MAX_FACTS:
+            result['omitted']['ENTRY_FACT_LIMIT'] += 1
+        elif isolated and result['bytes'] + size > limit:
+            result['omitted']['DISCOVERY_FACT_BYTES' if discovery else 'OPERATION_FACT_BYTES'] += 1
+        elif not isolated and total + size > MAX_PACKET_BYTES:
+            result['omitted']['WORKSPACE_FACT_BYTES'] += 1
+        else:
+            result['propositions'].append(fact)
+            result['bytes'] += size
+            total += size
+    for identity, result in stats.items():
+        row = rows[identity]
+        if result['propositions'] or result['omitted'] or identity in local:
+            facts = result['propositions']
+            row.update(propositions=facts, omittedForLimit=sum(result['omitted'].values()))
+            if result['omitted']:
+                row['factOmissions'] = dict(result['omitted'])
+            if facts:
+                row['status'] = 'BOUNDARIES_ONLY' if all(map(is_boundary, facts)) else 'PREPARED'
+            elif result['omitted'] and row.get('status') == 'NO_CITABLE_FACTS':
+                row['status'] = 'PREPARATION_LIMIT'
+    selection['bytes'] = total
 
 
 def merge_edges(selection, edges, sources, home):
     result, citations = selection['entries'], selection['citations']
+    eligible = defaultdict(list)
+    edge_handles = set()
     for identity, row in result.items():
-        additions = []
         for edge in edges.get(identity, ()):
-            size = len(encode(edge))
-            if (len(row.get('propositions', ())) + len(additions) >= MAX_FACTS
-                    or selection['bytes'] + size > MAX_PACKET_BYTES):
-                row['omittedForLimit'] = row.get('omittedForLimit', 0) + 1
-                continue
             if any(handle not in sources or sources[handle]['manifest'] is None for handle in edge['sources']):
                 row['unboundPropositions'] = row.get('unboundPropositions', 0) + 1
                 continue
-            for handle in edge['sources']:
-                source = sources[handle]
-                citations[handle] = {**source, 'manifest': os.path.relpath(source['manifest'], home)}
-            additions.append(edge)
-            selection['bytes'] += size
-        if additions:
-            row['propositions'] = additions + row.get('propositions', [])
-            row['status'] = 'BOUNDARIES_ONLY' if all(map(is_boundary, row['propositions'])) else 'PREPARED'
+            eligible[identity].append(edge)
+            edge_handles.update(edge['sources'])
+    allocate_facts(selection, eligible)
+    chosen = {handle for row in result.values() for fact in row.get('propositions', ()) for handle in fact['sources']}
+    for handle in sorted(chosen & edge_handles):
+        source = sources[handle]
+        citations[handle] = {**source, 'manifest': os.path.relpath(source['manifest'], home)}
+    selection['citations'] = {handle: value for handle, value in citations.items() if handle in chosen}
 
 
 def finish(job, service, home, result, cite_index):

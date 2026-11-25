@@ -2422,6 +2422,139 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             self.assertIn("Cite front-call, depot-registration, depot-return", text)
             self.assertIn("```java\nsource body\n```\n", text)
 
+    def test_preparation_preserves_late_operation_and_peer_evidence_under_discovery_pressure(self):
+        dispatch = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units/42"}}
+        front, terminal = (
+            self.retained("intake", name="receive", entry_kind="KAFKA_LISTENER",
+                          trigger={"configuration": {"topics": ["parcel.received"]}}, events=[("fetch", "client.get()", dispatch)]),
+            self.retained("catalog", name="lookup", path="/units/{key}",
+                          events=[("return", "return selectedUnit;", {"kind": "RETURN"})]),
+        )
+        requirements, inventories, exact = [], {}, {}
+        for side, _, sources in (front, terminal):
+            service = side["service"]
+            side.update(handlerId="entry-" + service, entrySymbol=side["entrypoint"],
+                        sourceIds=list(sources), rootDeclarations=["root"])
+            for source in sources.values():
+                source["file"] = "Operations.kt"
+            exact[service] = sources
+            inventories[service] = {"coverage": {"coverage": "SYNTAX"}, "work": service + "-work",
+                                    "revision": next(iter(sources.values()))["revision"]}
+            if service == "intake":
+                for i in range(3):
+                    handle = "discovery-" + str(i)
+                    source = {**sources["receive-body"], "id": handle, "file": f"Support{i}.kt",
+                              "references": [handle]}
+                    sources[handle] = source
+                    requirements.append({"id": handle, "kind": "DISCOVERY", "service": service, "page": "intake.md",
+                                         "file": source["file"], "sourceIds": [handle], "sourceReferences": [handle]})
+            requirements.append(side)
+        inventory = {"snapshot": F["SNAPSHOT"], "requirements": requirements, "services": inventories}
+        projectors = runpy.run_path
+
+        def projection(process, context, **_):
+            handle = context["sourceRanges"][0]["id"]
+
+            def fact(kind, text, **details):
+                return {"kind": kind, "authority": "RETAINED_SOURCE", "text": text, "sources": [handle], **details}
+
+            if not process["root"]:
+                return [fact("validation_predicate", f"Discovery clause {i}. " + "A retained description. " * 55)
+                        for i in range(96)], {}
+            if process["service"] != "intake":
+                return [fact("return", "Returns the selected catalog unit.")], {}
+            common = fact("sql-write", "The operation reaches a local write.")
+            return [*(common for _ in range(50)), *(fact("guarded-outcome", f"Candidate {i}. " + "A path detail. " * 20,
+                                       condition="matched input" if i < 145 else "otherwise") for i in range(146)),
+                    fact("write_lineage", "The reached helper passes the selected identifier to the store.",
+                         _writeFocus={"site": "helper"})], {}
+
+        def contexts(job, scope, home, selected, deadline):
+            if intake := next((row for row in selected if row['kind'] == 'ENTRY'), None):
+                body = intake['sourceReferences'][1]
+                witness, event = (('receive-fetch', dispatch) if intake['service'] == 'intake'
+                                  else ('lookup-return', {'kind': 'RETURN'}))
+                return {'root': [{'id': kind + ':' + handle, 'obligationKind': kind,
+                                  'record': {'declaration': 'root', 'sourceIds': [handle], 'event': evidence},
+                                  'sourceReferences': [handle]}
+                                 for kind, handle, evidence in (('BODY', body, None), ('EVENT', witness, event))]}, {}
+            return {}, {}
+
+        def scripted_projectors(filename, **kwargs):
+            name = Path(filename).name
+            if name == "managed_languages.py":
+                return {"project": projection}
+            if name == "docs_run_contract_sources.py":
+                return {"prepare": lambda *args: ({}, {})}
+            loaded = projectors(filename, **kwargs)
+            if name == "docs_run_prepared.py":
+                loaded["prepare"].__globals__.update(
+                    collect_contexts=contexts,
+                    csharp_background_units=lambda *args: [], csharp_units=lambda *args: [],
+                    acquire_sources=lambda *args: {}, local_repository=lambda *args: None,
+                )
+            return loaded
+
+        def citation_load(path):
+            side = Path(path).resolve().parent.name
+            known = exact[side]
+            records = {handle: {key: value for key, value in row.items() if key != "text"}
+                       for handle, row in known.items()}
+            packet = {"scope": {"snapshot": F["SNAPSHOT"]}, "work": inventories[side]["work"],
+                      "texts": {handle: row["text"] for handle, row in known.items()},
+                      "outcomes": [{"source": source, "sourceBinding": {"reference": known[handle]["references"][0]},
+                                    "textKey": handle} for handle, source in records.items()]}
+            return {}, packet, {}, {handle: {"source": row} for handle, row in records.items()}
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            service_preparation = {}
+            for service, scope in inventories.items():
+                folder = home / service
+                folder.mkdir()
+                ready = {row["id"]: {"evidenceCandidates": row["sourceIds"], "views": ["source.md"]}
+                         for row in requirements if row["service"] == service}
+                D["save"](folder / "requirements.json", ready)
+                (folder / "source.md").write_text("# Retained source\n\nAn owned excerpt.\n")
+                service_preparation[service] = {"sourceIndex": str(folder / "index.md"),
+                    "manifest": str(folder / "citations.json"), "coverage": scope["coverage"],
+                    "deferredResourceFiles": [], "views": {"source": {"view": "source.md", "file": "Operations.kt"}}}
+            prepared = {"bounds": {"visibleBytes": 256 * 1024}, "visibleBytes": 0,
+                        "requirements": requirements, "services": service_preparation}
+            job = {"authorMode": "ISOLATED_PAGES", "services": list(inventories), "snapshot": F["SNAPSHOT"],
+                   "request": "Describe the source behavior.", "language": "en", "node": "allocated-fixture"}
+            with patch.object(runpy, "run_path", scripted_projectors), patch.dict(D["M"]["C"], {"load": citation_load}):
+                D["prepare_facts"](job, inventory, prepared)
+            intake = D["load"](home / "intake/prepared-facts.json")["entries"]
+            large = intake["discovery-0"]
+            self.assertGreater(large["factOmissions"]["DISCOVERY_FACT_BYTES"], 0)
+            operation = intake[front[0]["id"]]
+            kinds = [fact["kind"] for fact in operation["propositions"]]
+            self.assertIn("http-peer-outcome", kinds)
+            self.assertIn("write_lineage", kinds)
+            self.assertEqual(kinds.count("sql-write"), 1)
+            self.assertGreater(operation["factOmissions"].get("ENTRY_FACT_LIMIT", 0), 0, operation["factOmissions"])
+            self.assertTrue(any(fact.get("condition") == "otherwise" for fact in operation["propositions"]))
+            pages = D["P"]
+            for name, size in (("normal", 192 * 1024), ("limited", 18 * 1024)):
+                with patch.dict(pages["page_jobs"].__globals__, {"citation_load": citation_load, "MAX_PACKET_BYTES": size}):
+                    plan = pages["page_jobs"](job, inventory, prepared, home / name, D["M"]["MAX_PAGES"], "Owned instructions.")
+                slot = next(item for item in plan["slots"] if item["requirement"] == front[0]["id"])
+                path = home / slot["prompt"]
+                packet = json.loads(path.read_text().split("\n\n")[-1])
+                facts = packet["facts"][front[0]["id"]]["facts"]
+                self.assertTrue(any(item["kind"] == "http-peer-outcome" and "return selectedUnit" in item["text"]
+                                    for item in facts), facts)
+                self.assertTrue(any(item["kind"] == "write_lineage" for item in facts), facts)
+                self.assertEqual(set(packet["facts"]), {front[0]["id"]})
+                self.assertGreater(packet["preparationOmissions"][front[0]["id"]]["reasons"]["ENTRY_FACT_LIMIT"], 0)
+                self.assertLessEqual(path.stat().st_size, size)
+                if name == "limited":
+                    self.assertGreater(packet["omittedPreparedFacts"], 0)
+                else:
+                    self.assertEqual(packet["omittedPreparedFacts"], 0)
+
     def test_response_decoding_failure_does_not_establish_upstream_rollback(self):
         site = "front-body"
         cause = {"_edgeCause": "call-1", "_edgePhase": "RESPONSE_DECODING"}

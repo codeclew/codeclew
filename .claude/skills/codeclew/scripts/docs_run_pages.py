@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import hashlib
+from itertools import chain
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ import runpy
 MODE = 'ISOLATED_PAGES'
 MAX_PACKET_BYTES = 192 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
+MAX_OVERVIEW_FACTS = 64
 REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
@@ -179,6 +181,28 @@ def peer_declarations(inventory, entries):
 
 
 
+def limit_facts(scoped, maximum):
+    """Sample fixed-page or byte-limited facts across requirement scopes and boundaries."""
+    count = sum(len(face.get(group, ())) for face in scoped.values() for group in ('facts', 'boundaries'))
+    if maximum is None or count <= maximum:
+        return scoped, 0
+    kept = {identity: {**face, 'facts': [], 'boundaries': []} for identity, face in scoped.items()}
+    remaining = maximum
+    groups = [(kept[identity][group], iter(face.get(group, ())))
+              for identity, face in scoped.items() for group in ('facts', 'boundaries') if face.get(group)]
+    while groups and remaining:
+        active = []
+        for target, queue in groups:
+            if (fact := next(queue, None)) is not None:
+                target.append(fact)
+                remaining -= 1
+                active.append((target, queue))
+            if remaining == 0:
+                break
+        groups = active
+    return kept, count - maximum
+
+
 def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
     need(prepared is not None, 'ISOLATED_PAGE_SOURCE_UNAVAILABLE', blocked=True)
     directory.mkdir(mode=0o700)
@@ -225,7 +249,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 evidence_requirements = ([required] if owner == service else []) + selected_peers.get(owner, [])
             else:
                 evidence_requirements = owned
-            for row in evidence_requirements:
+            for row in sorted(evidence_requirements, key=lambda row: row['kind'] != 'ENTRY'):
                 ready = index['ready'].get(row['id'], {})
                 group = mandatory if required and row['id'] == required['id'] else supplemental
                 group.extend(ready.get('evidenceCandidates', []))
@@ -238,45 +262,50 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
             if kind in ('GUIDE', 'CONTRACTS'):
                 supplemental.extend(handle for handle, source in index['sources'].items() if source['service'] == owner)
 
-        fact_handles = [handle for scoped in scoped_facts.values() for category in ('facts', 'boundaries')
-                        for fact in scoped.get(category, ()) for handle in fact['sources']]
-        optional = list(dict.fromkeys([*fact_handles, *supplemental]))
+        overview_limit = MAX_OVERVIEW_FACTS if kind not in ('OPERATION', 'DISCOVERY') else None
+        scoped_facts, omitted_overview = limit_facts(scoped_facts, overview_limit)
+        fact_groups = [fact['sources'] for scoped in scoped_facts.values() for category in ('facts', 'boundaries')
+                       for fact in scoped.get(category, ())]
+        optional = set(supplemental) | {handle for group in fact_groups for handle in group}
         views = source_views(scoped_facts, all_sources, set(mandatory) | set(supplemental))
-        # Discovery requires proven complete file evidence. Operations keep every
-        # required entry range and its literal witnesses. Fixed pages sample a
-        # bounded overview of the retained source, with exact omission counts.
+        # Add all citations for a fact together so a disconnected peer range cannot consume the page budget.
         handles = list(dict.fromkeys(mandatory))
         remaining = MAX_PACKET_BYTES - len(instructions.encode()) - 16 * 1024
         included = {range_key(all_sources[handle]) for handle in handles}
         bytes_used = sum(len(all_sources[handle]['text'].encode()) for handle in handles)
-        for handle in optional:
-            if handle in handles:
-                continue
-            excerpts = views.get(handle, {range_key(all_sources[handle]): all_sources[handle]})
-            size = sum(len(row['text'].encode()) + 256 for key, row in excerpts.items() if key not in included) + 128
+        selected_handles = set(handles)
+        supplemental_groups = ((handle,) for handle in dict.fromkeys(supplemental))
+        for group in chain(fact_groups, supplemental_groups):
+            new_handles = list(dict.fromkeys(handle for handle in group if handle not in selected_handles))
+            excerpts = {key: row for handle in new_handles for key, row in
+                        views.get(handle, {range_key(all_sources[handle]): all_sources[handle]}).items() if key not in included}
+            size = sum(len(row['text'].encode()) + 256 for row in excerpts.values()) + 128 * len(new_handles)
             if bytes_used + size <= remaining:
-                handles.append(handle)
+                handles.extend(new_handles)
+                selected_handles.update(new_handles)
                 included.update(excerpts)
                 bytes_used += size
         need(handles, 'PAGE_SLOT_SOURCE_UNAVAILABLE', page=page, kind=kind, blocked=True)
 
-        def serialize(selected):
+        def serialize(selected, maximum_facts=None):
             aliases, citations, sources = source_payload(selected, all_sources, views)
             reverse = {handle: alias for alias, handle in aliases.items()}
             facts, filtered = {}, {}
-            omitted_facts = 0
+            missing_citations = 0
             prepared_omissions = {}
             for identity, scoped in scoped_facts.items():
                 row = {category: [fact for fact in scoped.get(category, ())
                                    if all(handle in reverse for handle in fact['sources'])]
                        for category in ('facts', 'boundaries')}
-                omitted_facts += sum(len(scoped.get(category, ())) - len(items) for category, items in row.items())
+                missing_citations += sum(len(scoped.get(category, ())) - len(items) for category, items in row.items())
                 if 'factLimits' in scoped:
                     row['factLimits'] = scoped['factLimits']
                 filtered[identity] = row
                 if omitted := scoped.get('_preparationOmissions'):
                     prepared_omissions[identity] = omitted
                 facts[identity] = {}
+            filtered, omitted_bytes = limit_facts(filtered, maximum_facts)
+            visible_count = sum(len(row.get(category, ())) for row in filtered.values() for category in ('facts', 'boundaries'))
             add_prepared_facts({identity: (identity, target) for identity, target in facts.items()}, filtered, reverse)
             cited_services = dict.fromkeys([*available, *(all_sources[handle]['service'] for handle in selected)])
             packet = {'slot': key, 'type': kind, 'page': page, 'request': job['request'], 'language': job['language'],
@@ -289,20 +318,28 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                                            'deferredResources': indexes[owner]['deferred'],
                                            'peerDeclarations': inventory['services'][owner].get('peerDeclarationCoverage', 'UNAVAILABLE')}
                                    for owner in cited_services},
-                      'omittedOptionalRanges': len(set(optional) - set(selected)),
-                      'omittedPreparedFacts': omitted_facts,
+                      'omittedOptionalRanges': len(optional - set(selected)),
+                      'omittedPreparedFacts': omitted_overview + missing_citations + omitted_bytes,
                       'preparationOmissions': prepared_omissions}
             if required:
                 packet['requirement'] = {key: required[key] for key in (
                     'id', 'kind', 'file', 'entryKind', 'entrySymbol', 'method', 'path', 'authority', 'boundaries') if key in required}
             prompt = instructions + '\n\n' + json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n'
-            return prompt, aliases
+            return prompt, aliases, visible_count
 
         required_count = max(1, len(set(mandatory)))
-        prompt, aliases = serialize(handles)
+        prompt, aliases, visible_count = serialize(handles)
+        maximum_facts = None
+        # Keep the first representatives and their peer citations before shrinking source coverage.
+        while len(prompt.encode()) > MAX_PACKET_BYTES and visible_count > 16:
+            maximum_facts = max(16, visible_count - max(1, visible_count // 8))
+            prompt, aliases, visible_count = serialize(handles, maximum_facts)
         while len(prompt.encode()) > MAX_PACKET_BYTES and len(handles) > required_count:
             handles = handles[:max(required_count, len(handles) - max(1, len(handles) // 8))]
-            prompt, aliases = serialize(handles)
+            prompt, aliases, visible_count = serialize(handles, maximum_facts)
+        while len(prompt.encode()) > MAX_PACKET_BYTES and visible_count:
+            maximum_facts = visible_count - max(1, visible_count // 8)
+            prompt, aliases, visible_count = serialize(handles, maximum_facts)
         need(len(prompt.encode()) <= MAX_PACKET_BYTES, 'PAGE_SLOT_PACKET_LIMIT', page=page, kind=kind,
              bytes=len(prompt.encode()), limit=MAX_PACKET_BYTES, blocked=True,
              nextAction='Use a smaller retained subject or document this source boundary explicitly in the workspace workflow.')
