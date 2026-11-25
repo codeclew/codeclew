@@ -727,6 +727,7 @@ else:
         self.assertEqual({citations[alias] for alias in packet['facts'][operation['id']]['facts'][1]['sources']},
                          {'root', 'unit', 'repository-unit'})
 
+        exposed[operation['id']]['facts'][1]['text'] += ' Additional retained detail.' * 650
         with patch.dict(pages['page_jobs'].__globals__, {
             'service_evidence': lambda *_: index, 'MAX_PACKET_BYTES': 16975,
         }):
@@ -2426,11 +2427,28 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         dispatch = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
             "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units/42"}}
         front, terminal = (
-            self.retained("intake", name="receive", entry_kind="KAFKA_LISTENER",
-                          trigger={"configuration": {"topics": ["parcel.received"]}}, events=[("fetch", "client.get()", dispatch)]),
+            self.retained("intake", name="receive", entry_kind="SCHEDULED_JOB",
+                          events=[("fetch", "client.get()", dispatch)]),
             self.retained("catalog", name="lookup", path="/units/{key}",
                           events=[("return", "return selectedUnit;", {"kind": "RETURN"})]),
         )
+        helper_lines = (
+            'val key = item.ref', 'val expiry = seen[key]', 'if (expiry?.isAfter(now) == true) return',
+            'seen[key] = expiresAt', 'transaction.executeWithoutResult {',
+            '    try {', '        client.get()', '        store.update(key)',
+            '    } catch (error: IOException) {', '        throw error', '    }', '}',
+        )
+        helper_body = '\n'.join(helper_lines)
+        essentials = {
+            'ENTRY': 'The retained schedule uses fixedDelay = 1000.',
+            'SQL_LITERAL': 'The callback selects pending parcels before starting the loop.',
+            'CALLBACK_BOUNDARY': 'The selected helper executes its store update inside the transaction callback.',
+            'EARLY_EXIT': 'A still-valid expiry returns before sending or updating the store.',
+            'HEAP_WRITE_BEFORE_CALL': 'The helper writes the expiry under item.ref before sending.',
+            'SAME_KEY_HEAP_RETRY': 'A failed send can leave the same-key expiry in the map despite database rollback.',
+            'EXCEPTION_BOUNDARY': 'The catch rethrows IOException before the store update completes.',
+            'guarded-outcome': 'If the expiry has passed, the helper proceeds to the call.',
+        }
         requirements, inventories, exact = [], {}, {}
         for side, _, sources in (front, terminal):
             service = side["service"]
@@ -2438,6 +2456,18 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                         sourceIds=list(sources), rootDeclarations=["root"])
             for source in sources.values():
                 source["file"] = "Operations.kt"
+            if service == 'intake':
+                for handle, literal, line in (
+                    ('receive-registration', '@Scheduled(fixedDelay = 1000)', 1),
+                    ('receive-body', 'val items = store.query("SELECT ref FROM pending")\nfor (item in items) apply(item)', 2),
+                    ('receive-helper', helper_body, 5),
+                ):
+                    sources[handle] = {**sources['receive-body'], 'id': handle, 'references': [handle],
+                                       'text': literal, 'textDigest': D['sha'](literal.encode()),
+                                       'startLine': line, 'endLine': line + literal.count('\n'),
+                                       'startByte': line * 128, 'endByte': line * 128 + len(literal.encode()),
+                                       'occurrence': {'snapshot': F['SNAPSHOT'], 'blob': 'a' * 40,
+                                                      'startByte': line * 128, 'endByte': line * 128 + len(literal.encode())}}
             exact[service] = sources
             inventories[service] = {"coverage": {"coverage": "SYNTAX"}, "work": service + "-work",
                                     "revision": next(iter(sources.values()))["revision"]}
@@ -2464,21 +2494,45 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                         for i in range(96)], {}
             if process["service"] != "intake":
                 return [fact("return", "Returns the selected catalog unit.")], {}
-            common = fact("sql-write", "The operation reaches a local write.")
-            return [*(common for _ in range(50)), *(fact("guarded-outcome", f"Candidate {i}. " + "A path detail. " * 20,
-                                       condition="matched input" if i < 145 else "otherwise") for i in range(146)),
-                    fact("write_lineage", "The reached helper passes the selected identifier to the store.",
-                         _writeFocus={"site": "helper"})], {}
+            helper = exact['intake']['receive-helper']
+
+            def narrower(start, stop):
+                lines = helper_lines[start:stop]
+                site = '\n'.join(lines)
+                byte = helper['startByte'] + sum(len(line.encode()) + 1 for line in helper_lines[:start])
+                return {**helper, 'text': site, 'textDigest': D['sha'](site.encode()),
+                        'startLine': helper['startLine'] + start, 'endLine': helper['startLine'] + stop - 1,
+                        'startByte': byte, 'endByte': byte + len(site.encode())}
+
+            lifted = {key: narrower(start, stop) for key, start, stop in (
+                ('pointer', 0, 2), ('guard', 1, 3), ('heap', 2, 4), ('tx', 3, 6),
+                ('send', 5, 7), ('write', 6, 8), ('catch', 8, 10),
+            )}
+            common = fact('sql-write', 'The operation reaches a local write.', sources=['tx', 'write'])
+            essential_sources = [('receive-registration',), ('receive-body',), ('tx', 'write'), ('guard',),
+                                 ('heap', 'send'), ('pointer', 'heap', 'catch'), ('catch',), ('guard', 'send')]
+            reached = [fact(kind, text, sources=cites, **({'condition': 'otherwise'} if kind == 'guarded-outcome' else {}))
+                       for (kind, text), cites in zip(essentials.items(), essential_sources)]
+            bulk = [fact('write_lineage', f'Projection {i}. ' + 'A retained value witness. ' * 10,
+                         sources=['pointer', 'guard', 'tx', 'send', 'write'], condition='selected parcel',
+                         _writeFocus={'occurrence': 'single-store-update'}) for i in range(235)]
+            inventory = fact('composed-effect-inventory', 'Composes the reachable call steps. ' + 'A retained call. ' * 1200,
+                             sources=['tx', 'send', 'write', 'catch'])
+            return [inventory, *bulk, *(common if i % 2 else {**common, 'sources': ['write', 'tx']} for i in range(50)),
+                    *reached], lifted
 
         def contexts(job, scope, home, selected, deadline):
             if intake := next((row for row in selected if row['kind'] == 'ENTRY'), None):
                 body = intake['sourceReferences'][1]
                 witness, event = (('receive-fetch', dispatch) if intake['service'] == 'intake'
                                   else ('lookup-return', {'kind': 'RETURN'}))
+                rows = [('BODY', 'root', body, None), ('EVENT', 'root', witness, event)]
+                if intake['service'] == 'intake':
+                    rows.append(('BODY', 'helper', 'receive-helper', None))
                 return {'root': [{'id': kind + ':' + handle, 'obligationKind': kind,
-                                  'record': {'declaration': 'root', 'sourceIds': [handle], 'event': evidence},
+                                  'record': {'declaration': declaration, 'sourceIds': [handle], 'event': evidence},
                                   'sourceReferences': [handle]}
-                                 for kind, handle, evidence in (('BODY', body, None), ('EVENT', witness, event))]}, {}
+                                 for kind, declaration, handle, evidence in rows]}, {}
             return {}, {}
 
         def scripted_projectors(filename, **kwargs):
@@ -2513,7 +2567,7 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             for service, scope in inventories.items():
                 folder = home / service
                 folder.mkdir()
-                ready = {row["id"]: {"evidenceCandidates": row["sourceIds"], "views": ["source.md"]}
+                ready = {row["id"]: {"evidenceCandidates": row["sourceReferences"], "views": ["source.md"]}
                          for row in requirements if row["service"] == service}
                 D["save"](folder / "requirements.json", ready)
                 (folder / "source.md").write_text("# Retained source\n\nAn owned excerpt.\n")
@@ -2534,7 +2588,11 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             self.assertIn("http-peer-outcome", kinds)
             self.assertIn("write_lineage", kinds)
             self.assertEqual(kinds.count("sql-write"), 1)
-            self.assertGreater(operation["factOmissions"].get("ENTRY_FACT_LIMIT", 0), 0, operation["factOmissions"])
+            self.assertEqual(operation['omittedForLimit'], 0)
+            self.assertEqual(kinds.count('write_lineage'), 235)
+            catalog = prepared['services']['intake']['preparedFacts']['witnessCatalog']
+            self.assertEqual(len(catalog), 7)
+            self.assertEqual(len({json.dumps(proof, sort_keys=True) for proof in catalog}), 7)
             self.assertTrue(any(fact.get("condition") == "otherwise" for fact in operation["propositions"]))
             pages = D["P"]
             for name, size in (("normal", 192 * 1024), ("limited", 18 * 1024)):
@@ -2548,12 +2606,23 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                                     for item in facts), facts)
                 self.assertTrue(any(item["kind"] == "write_lineage" for item in facts), facts)
                 self.assertEqual(set(packet["facts"]), {front[0]["id"]})
-                self.assertGreater(packet["preparationOmissions"][front[0]["id"]]["reasons"]["ENTRY_FACT_LIMIT"], 0)
+                self.assertNotIn(front[0]['id'], packet['preparationOmissions'])
+                delivered = {item['kind']: item for group in ('facts', 'boundaries')
+                             for item in packet['facts'][front[0]['id']].get(group, ())}
+                self.assertTrue(essentials.keys() <= delivered.keys(), delivered.keys())
+                self.assertEqual(delivered['guarded-outcome']['condition'], 'otherwise')
+                self.assertTrue(delivered['SAME_KEY_HEAP_RETRY']['lines'])
+                self.assertEqual(len(packet['sourceRanges']), len({(row['file'], row['startLine'], row['endLine'], row['text'])
+                                                                 for row in packet['sourceRanges'].values()}))
+                self.assertNotIn('_sourceWitnessIds', json.dumps(packet))
                 self.assertLessEqual(path.stat().st_size, size)
                 if name == "limited":
-                    self.assertGreater(packet["omittedPreparedFacts"], 0)
+                    self.assertGreater(packet['omittedPreparedFacts'], 0)
+                    self.assertNotIn('composed-effect-inventory', delivered)
                 else:
-                    self.assertEqual(packet["omittedPreparedFacts"], 0)
+                    self.assertEqual(packet['omittedPreparedFacts'], 0)
+                    self.assertIn('composed-effect-inventory', delivered)
+                    self.assertEqual(sum(item['kind'] == 'write_lineage' for item in facts), 235)
 
     def test_response_decoding_failure_does_not_establish_upstream_rollback(self):
         site = "front-body"

@@ -131,7 +131,7 @@ def add_prepared_facts(targets, prepared, aliases):
             target['factLimits'] = limits
         for category in ('facts', 'boundaries'):
             for fact in row.get(category, ()):
-                value = {key: item for key, item in fact.items() if key != '_sourceWitnesses'}
+                value = {key: item for key, item in fact.items() if not key.startswith('_')}
                 key = (category, json.dumps(value, ensure_ascii=False, sort_keys=True))
                 if key in seen:
                     original_ref, value = seen[key]

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
 import hashlib
-from itertools import repeat
+from itertools import chain, repeat
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -23,7 +23,6 @@ MAX_ROOTS = 32
 MAX_REFS = 384
 MAX_FACTS = 128
 MAX_PACKET_BYTES = 256 * 1024
-MAX_OPERATION_FACT_BYTES = 64 * 1024
 MAX_DISCOVERY_FACT_BYTES = 40 * 1024
 MAX_SOURCE_VIEW_PREFIX_BYTES = 6 * 1024
 MAX_FILE_BYTES = 128 * 1024
@@ -440,12 +439,12 @@ def is_boundary(fact):
     return 'boundary' in kind or kind.endswith(('scope-limit', 'coverage-limit'))
 
 
-def author_entries(entries, citations):
+def author_entries(entries, citations, witness_catalog=None):
     """Keep reader-facing fields and narrower line anchors without replay metadata."""
     result = {}
     for identity, row in entries.items():
         facts = defaultdict(list)
-        for fact in row.get('propositions', ()):
+        for rank, fact in enumerate(row.get('propositions', ())):
             value = {key: item for key, item in fact.items() if key != 'witnesses'}
             lines = defaultdict(list)
             for witness in fact.get('witnesses', ()):
@@ -455,8 +454,14 @@ def author_entries(entries, citations):
                     lines[handle].append(site)
             if lines:
                 value['lines'] = dict(lines)
+            if witness_catalog is not None:
+                value['_rank'] = rank
             if witnesses := fact.get('witnesses'):
-                value['_sourceWitnesses'] = witnesses
+                if witness_catalog is None:
+                    value['_sourceWitnesses'] = witnesses
+                else:
+                    value['_sourceWitnessIds'] = [witness_catalog.setdefault(tuple(sorted(proof.items())), len(witness_catalog))
+                                                  for proof in witnesses]
             facts['boundaries' if is_boundary(fact) else 'facts'].append(value)
         limits = row.get('scopeLimits', []) + row.get('projectionLimits', [])
         if limits:
@@ -966,29 +971,51 @@ def local_group(fact):
         return 'reached-declaration'
     if fact.get('_writeFocus'):
         return 'selected-write'
+    if fact['kind'].replace('_', '-').lower().endswith('-effect-inventory'):
+        return 'effect-inventory'
     return 'local'
 
 
-def ranked_facts(local, peers):
-    """Give each evidence origin, kind and branch an early representative."""
+def fact_event(internal):
+    return ((internal.get('_edge') or {}).get('occurrence')
+            or (internal.get('_writeFocus') or {}).get('occurrence')
+            or internal.get('_edgeCause') or internal.get('_reachedDeclaration')
+            or tuple(sorted(internal['sources'])))
+
+
+def ranked_facts(local, peers, *, operation=False):
+    """Group exact evidence and lead with representatives of supported local behavior."""
     groups, unique = {}, set()
     ordered = []
     for origin, rows in (('peer', peers), (None, local)):
         for internal in rows:
             fact = {key: value for key, value in internal.items() if not key.startswith('_')}
-            encoded = encode(fact)
-            identity = hashlib.sha256(encoded).digest()
+            proof = sorted({tuple(sorted(row.items())) for row in fact.get('witnesses', ())})
+            key = {**fact, 'sources': sorted(fact['sources']), 'witnesses': proof}
+            identity = hashlib.sha256(encode(key)).digest()
             if identity in unique:
                 continue
             unique.add(identity)
             channel = groups.setdefault(origin or local_group(internal), {})
             kind = channel.setdefault(fact['kind'], {})
-            branch = kind.setdefault(fact.get('condition') or '', [])
-            item = fact, len(encoded) + 1
-            branch.append(item)
+            branch = kind.setdefault(fact.get('condition') or '', {})
+            # Stable site and branch grouping can prioritize representatives without merging outcomes.
+            branch.setdefault(fact_event(internal), []).append(item := (fact, 0 if operation else len(encode(fact)) + 1))
             ordered.append(item)
-    return ordered, interleave(interleave(interleave(kinds.values()) for kinds in channel.values())
-                               for channel in groups.values())
+
+    ranked = {group: interleave(interleave(interleave(branch.values()) for branch in kind.values())
+                                for kind in kinds.values()) for group, kinds in groups.items()}
+    if not operation:
+        return ordered, interleave(ranked.values())
+    # Local boundary, receipt and continuation kinds get up to one representative
+    # before bulk write projections and composed paths compete for room.
+    primary = ['local', 'reached-declaration']
+    # Sample every local kind, even if a single reached write produced many elaborations.
+    primary_rows = [interleave(interleave(branch.values()) for branch in kind.values())
+                    for group in primary for kind in groups.get(group, {}).values()]
+    representatives = [next(queue) for queue in primary_rows]
+    rest = [queue for group, queue in ranked.items() if group not in primary]
+    return ordered, chain(representatives, interleave([*rest, *primary_rows]))
 
 
 def allocate_facts(selection, peers):
@@ -997,27 +1024,29 @@ def allocate_facts(selection, peers):
     local = selection.pop('localCandidates', {identity: row.get('propositions', ()) for identity, row in rows.items()})
     isolated = selection.get('isolated', False)
     stats = {identity: {'bytes': 0, 'omitted': Counter(), 'propositions': []} for identity in rows}
-    ordered = {identity: ranked_facts(local.get(identity, ()), peers.get(identity, ())) for identity in rows}
+    isolated_operations = {identity for identity, row in rows.items() if isolated and row.get('kind') == 'ENTRY'}
+    ordered = {identity: ranked_facts(local.get(identity, ()), peers.get(identity, ()),
+                                      operation=identity in isolated_operations) for identity in rows}
     sizes = {identity: sum(size for _, size in natural) for identity, (natural, _) in ordered.items()}
     shared_limit = not isolated and sum(sizes.values()) > MAX_PACKET_BYTES
     candidates = []
-    for identity, row in rows.items():
+    for identity in rows:
         natural, ranked = ordered[identity]
-        limit = MAX_DISCOVERY_FACT_BYTES if row.get('kind') == 'DISCOVERY' else MAX_OPERATION_FACT_BYTES
+        if identity in isolated_operations:
+            # Only the real operation prompt charges these candidates and their shared citations.
+            stats[identity]['propositions'] = [fact for fact, _ in ranked]
+            continue
         # Preserve the projector's presentation order when there is no competition for space.
-        if len(natural) <= MAX_FACTS and not shared_limit and (not isolated or sizes[identity] <= limit):
+        if len(natural) <= MAX_FACTS and not shared_limit and (not isolated or sizes[identity] <= MAX_DISCOVERY_FACT_BYTES):
             ranked = natural
         candidates.append(zip(repeat(identity), ranked))
     total = 0
     for identity, (fact, size) in interleave(candidates):
         result = stats[identity]
-        row = rows[identity]
-        discovery = row.get('kind') == 'DISCOVERY'
-        limit = MAX_DISCOVERY_FACT_BYTES if discovery else MAX_OPERATION_FACT_BYTES
         if len(result['propositions']) >= MAX_FACTS:
             result['omitted']['ENTRY_FACT_LIMIT'] += 1
-        elif isolated and result['bytes'] + size > limit:
-            result['omitted']['DISCOVERY_FACT_BYTES' if discovery else 'OPERATION_FACT_BYTES'] += 1
+        elif isolated and result['bytes'] + size > MAX_DISCOVERY_FACT_BYTES:
+            result['omitted']['DISCOVERY_FACT_BYTES'] += 1
         elif not isolated and total + size > MAX_PACKET_BYTES:
             result['omitted']['WORKSPACE_FACT_BYTES'] += 1
         else:
@@ -1062,6 +1091,9 @@ def finish(job, service, home, result, cite_index):
     save(home / 'prepared-facts.json', {'schema': FACT_SCHEMA, 'snapshot': job['snapshot'], 'service': service,
                                        'entries': result, 'summary': summary})
     propositions = [fact for row in result.values() for fact in row.get('propositions', ())]
+    catalog = {} if job.get('authorMode') == 'ISOLATED_PAGES' else None
+    authors = author_entries(result, cite_index, catalog)
     return {'statusCounts': summary, 'facts': sum(not is_boundary(fact) for fact in propositions),
             'boundaries': sum(map(is_boundary, propositions)),
-            'authorEntries': author_entries(result, cite_index), 'citations': cite_index}
+            'authorEntries': authors, 'citations': cite_index,
+            **({'witnessCatalog': [dict(proof) for proof in catalog]} if catalog else {})}

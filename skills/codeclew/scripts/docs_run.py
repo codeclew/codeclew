@@ -745,9 +745,12 @@ def prepare_facts(job, inventory, prepared):
         helper['merge_edges'](selection, combined, sources, home)
         selected = helper['finish'](job, service, home, selection['entries'], selection['citations'])
         citations, rows = selected.pop('citations'), selected.pop('authorEntries')
+        witness_catalog = selected.pop('witnessCatalog', ())
         destinations, view_files = {}, {}
         if rows:
             scope['preparedFacts'] = {'entries': rows, 'citations': citations}
+            if witness_catalog:
+                scope['preparedFacts']['witnessCatalog'] = witness_catalog
         workspace_rows = {} if job.get('authorMode') == P['MODE'] else rows
         if workspace_rows:
             ready = load(home / 'requirements.json')
