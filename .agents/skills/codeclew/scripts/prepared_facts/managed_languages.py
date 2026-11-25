@@ -253,7 +253,8 @@ def typescript(process, context, node):
         site = complete_site(context)
         if site is None:
             return []
-        body = {"id": site["id"], "file": site["file"], "text": site["text"], "anchors": []}
+        body = {"id": site["id"], "file": site["file"], "text": site["text"],
+                "startLine": site["startLine"], "anchors": []}
         request = projector["request_for"](process, {site["id"]: body}, {}, allow_retained_body=True)
         request["fileRoot"] = site["id"]
     else:

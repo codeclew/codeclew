@@ -452,6 +452,25 @@ data class Label(val value: String) {
         self.assertEqual(extra, {})
 
 
+    def test_typescript_early_exit_distinguishes_repeated_call_occurrences(self):
+        self.require_typescript()
+        text = """async function run(stop: boolean) {
+    if (stop) {
+        await record("FINISH");
+        return;
+    }
+    await record("FINISH");
+}
+"""
+        process, context = selected("worker.ts", text)
+        facts, _ = self.project(process, context)
+        exits = [row for row in facts if row["kind"] == "early_exit"]
+        self.assertEqual(len(exits), 1, facts)
+        text = exits[0]["text"]
+        self.assertIn("reaches the earlier call at line 3", text)
+        self.assertIn("before reaching the later call at line 6", text)
+        self.assertIn(HANDLE, exits[0]["sources"])
+
     def test_typescript_keeps_native_navigation_candidate_open(self):
         self.require_typescript()
         caller = "function score(amount: number) { return check(amount); }"

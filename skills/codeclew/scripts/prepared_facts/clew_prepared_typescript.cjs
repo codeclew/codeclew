@@ -309,6 +309,12 @@ function scan(scope, inherited) {
         });
     }
     const bypasses = new Map(), observedCalls = new Map();
+    function instance(call, place, site, awaited) {
+        const start = call.getStart(scope.file);
+        const line = Number.isInteger(scope.excerpt.startLine) ? scope.excerpt.startLine +
+            scope.excerpt.text.slice(0, start + scope.offset).split("\n").length - 1 : undefined;
+        return {place, site, awaited, start, line, spelling: short(call.getText(scope.file), 260)};
+    }
     function retainBypass(exit, call, current) {
         if (!bypasses.has(exit)) bypasses.set(exit, {calls: new Map(), limited: false});
         const skipped = bypasses.get(exit);
@@ -879,9 +885,9 @@ function scan(scope, inherited) {
                     " before " + place + ".", [previous.site, catcher.site, site], state);
             }
         }
-        const current = {place, site, awaited};
-        if (!focus) observedCalls.set(call, current);
-        for (const exit of state.exits) retainBypass(exit, call, current);
+        const current = !focus && instance(call, place, site, awaited);
+        if (current) observedCalls.set(call, current);
+        if (current) for (const exit of state.exits) retainBypass(exit, call, current);
         const separate = !sql && (effect.kind === "http_forward" || awaited && !depth && !state.inCleanup);
         const offset = separate && awaited && ts.isPropertyAccessExpression(method) &&
             method.name.text === "commitOffsets" && call.arguments.length === 1 && !ts.isSpreadElement(call.arguments[0])
@@ -951,7 +957,8 @@ function scan(scope, inherited) {
                 messageEvidence: validated ? [...new Set([...state.messageEvidence, site, target.id, ...validated.sites])] : state.messageEvidence};
             state = bindMessage(state, binding, value);
         }
-        return {state: {...state, last, commit, helpers, awaitExits}, errors, evaluated};
+        const recentCalls = current ? [...(state.recentCalls || []), current].slice(-8) : state.recentCalls;
+        return {state: {...state, last, commit, helpers, awaitExits, recentCalls}, errors, evaluated};
     }
     function bounded(rows, limit) {
         if (compatibility && rows.length > limit) focus.incomplete();
@@ -1337,10 +1344,18 @@ function scan(scope, inherited) {
     }
     for (const [exit, skipped] of bypasses) {
         const calls = [...skipped.calls.values()];
-        const descriptions = [...new Set(calls.map(item => (item.awaited ? "the await of " : "") + item.place))];
-        emit("early_exit", exit.text + " before reaching " + descriptions.join(", ") + ".",
-            [exit.site, ...calls.map(item => item.site)], exit.state,
-            "The cited call sites are bypassed if the exit takes effect." + (skipped.limited ? " Further bypassed sites remain open." : ""),
+        const exitStart = exit.statement.getStart(scope.file);
+        const previous = (exit.resume.recentCalls || []).filter(earlier => earlier.start < exitStart &&
+            earlier.spelling && calls.some(item => item.start !== earlier.start && item.spelling === earlier.spelling));
+        const describe = (item, position) => "the " + position + " call" +
+            (item.line ? " at line " + item.line : "") + " to " + item.place + (item.awaited ? " (awaited)" : "");
+        const descriptions = calls.map(item => describe(item, item.start > exitStart ? "later" : "alternate"));
+        const prior = [...new Map(previous.map(item => [item.start, item])).values()];
+        const opening = prior.length ? "This path reaches " + prior.map(item => describe(item, "earlier")).join(", ") +
+            ". It then " + exit.text[0].toLowerCase() + exit.text.slice(1) : exit.text;
+        emit("early_exit", opening + " before reaching " + descriptions.join(", ") + ".",
+            [exit.site, ...prior.map(item => item.site), ...calls.map(item => item.site)], exit.state,
+            "The listed later or alternate call sites are bypassed if the exit takes effect." + (skipped.limited ? " Further bypassed sites remain open." : ""),
             {scope: "CALLABLE_SOURCE_CONTINUATION", coverage: skipped.limited ? "PARTIAL" : "PROVEN_RETAINED_SITES"});
     }
     inventory && inventory.finish();

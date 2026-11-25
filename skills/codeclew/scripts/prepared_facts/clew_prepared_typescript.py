@@ -54,7 +54,8 @@ def retained_ranges(process, context):
             matches = [(ref, source) for ref, source in candidates if source.get("textDigest") == digest(literal)]
             if not matches:
                 continue
-            excerpts[identifier] = {"id": identifier, "file": site["file"], "text": literal, "anchors": []}
+            excerpts[identifier] = {"id": identifier, "file": site["file"], "text": literal,
+                                    "startLine": site["startLine"], "anchors": []}
             matched[identifier] = matches
             for ref, _ in matches:
                 references[ref] = identifier
