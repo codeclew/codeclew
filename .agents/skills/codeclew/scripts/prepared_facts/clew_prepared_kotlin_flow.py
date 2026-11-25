@@ -131,30 +131,26 @@ class Controls:
                 yield part, suffix
 
     def emit_arm(self, guard, arm, arms, region, surrounding):
-        selected = self.shape(arms[arm], region).actions
+        # Nested sites belong to their own decisions, with both guards cited.
+        selected = [action for action in self.shape(arms[arm], region).actions if not action.choices]
         bypass = self.shape(arms.get(not arm, ()), region).actions
         if not selected and not bypass:
             return
-        predicate = self.body.guard_text(guard, arm)
-        condition = [*(note for note, _ in surrounding), guard]
-        prefix = self.opening(self.scope_for(region), (*surrounding, (guard, arm)))
+        guards = (*surrounding, (guard, arm))
+        predicate = join([self.body.guard_text(note, holds) for note, holds in guards])
+        condition = [note for note, _ in guards]
+        prefix = f"If execution reaches this decision in {self.scope_for(region)} and {predicate}, "
         notes = [item.note for item in unique(selected)]
         for part in chunks(notes):
-            self.body.projector.add("GUARDED_EFFECTS", prefix + " selects the arm containing "
+            self.body.projector.add("GUARDED_EFFECTS", prefix + "the selected arm contains the source sites for "
                                     + join([note.text for note in part]) + ".",
                                     [*condition, *part], self.proof,
                                     scope="SOURCE_DECISION", region=region, condition=predicate)
         for part, suffix in self.skip_groups(bypass, region):
-            self.body.projector.add("GUARDED_EFFECTS", prefix + " bypasses "
-                                    + join([note.text for note in part]) + suffix + " in the opposite arm.",
+            self.body.projector.add("GUARDED_EFFECTS", prefix + "the opposite arm is skipped, including "
+                                    + join([note.text for note in part]) + suffix + ".",
                                     [*condition, *part], self.proof,
                                     scope="SOURCE_DECISION", region=region, condition=predicate)
-
-    def opening(self, scope, guards):
-        if not guards:
-            return f"In {scope}, this source path"
-        predicates = [self.body.guard_text(guard, holds) for guard, holds in guards]
-        return f"In {scope}, when {join(predicates)}, this source path"
 
     def exit(self, statement, guards, subsequent, alternatives, region, callback, catches):
         terminal = self.body.note(statement.site)
@@ -170,8 +166,13 @@ class Controls:
             return
         if statement.kind == "throw" and catches:
             alternatives = ()
-        control = "reaches callback exit" if is_labeled else "reaches"
-        description = self.opening(self.scope_for(region), guards) + f" {control} {terminal.text}."
+        conditions = join([self.body.guard_text(guard, holds) for guard, holds in guards]) if guards else ""
+        branch = f" and {conditions}" if conditions else ""
+        control = {"return": "the callback returns" if is_labeled else "the callable returns",
+                   "throw": "the source throws", "break": "the loop exits",
+                   "continue": "the current iteration ends"}[statement.kind]
+        operand = " once its operand finishes evaluating" if statement.kind in {"return", "throw"} and words else ""
+        description = f"If execution reaches {terminal.text} in {self.scope_for(region)}{branch}, {control}{operand}."
         if statement.kind == "throw" and catches:
             description += " Continuation depends on matching a local catch."
         if not guards and not subsequent:

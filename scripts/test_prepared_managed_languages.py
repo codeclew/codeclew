@@ -99,6 +99,27 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertEqual({handle for row in facts for handle in row["sources"]}, {HANDLE})
         self.assertEqual(extra, {})
 
+    def test_kotlin_reports_nested_write_only_under_its_own_reached_guard(self):
+        text = """fun apply(skip: Boolean, quick: Boolean, allowed: Boolean) {
+    if (skip) return
+    if (quick) {
+        readLocal()
+    } else {
+        if (allowed) {
+            persist()
+        }
+    }
+}
+"""
+        process, context = selected("action.kt", text)
+        facts, _ = self.project(process, context)
+        arms = [row for row in facts if row["kind"] == "GUARDED_EFFECTS"]
+        writes = [row for row in arms if "arm contains" in row["text"] and "`persist()`" in row["text"]]
+        self.assertEqual(len(writes), 1, arms)
+        self.assertIn("If execution reaches this decision", writes[0]["text"])
+        self.assertEqual(writes[0]["condition"], "`quick` is false and `allowed`")
+        self.assertEqual(writes[0]["sources"], [HANDLE])
+
     def test_conflicting_source_digest_cannot_reuse_a_work_handle(self):
         process, context = selected("score.kt", KOTLIN)
         other = context["sourceRanges"][0]["text"].replace("400", "401")
@@ -214,6 +235,37 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertTrue(any("400" in row["text"] and "amount < 0" in row["text"] for row in facts), facts)
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
+
+    def test_roslyn_conflict_command_completion_does_not_assert_inserted_row(self):
+        self.require_roslyn()
+        header = """using Microsoft.AspNetCore.Http;
+using System.Data.Common;
+using System.Threading.Tasks;
+public static class ScoreApi
+{
+"""
+        declaration = """    public static async Task<IResult> Submit(DbConnection connection)
+    {
+        var transaction = await connection.BeginTransactionAsync();
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT INTO batch (id) VALUES (1) ON CONFLICT DO NOTHING RETURNING id";
+        if (await command.ExecuteScalarAsync() is not null)
+            return Results.BadRequest();
+        await transaction.CommitAsync();
+        return Results.Ok();
+    }"""
+        text = header + declaration + "\n}\n"
+        process, context = selected("ScoreApi.cs", text, standalone=declaration, start=6)
+        context["_nativeFiles"]["ScoreApi.cs"] = captured_csharp(text)
+        facts, _ = self.project(process, context)
+        found = [row for row in facts if row["kind"] == "http-commit-before-response"
+                 and "is not null` is false" in row.get("condition", "")]
+        self.assertTrue(found, facts)
+        for row in found:
+            self.assertIn("command execution", row["text"])
+            self.assertIn("leave the existing row unchanged", row["text"])
+            self.assertEqual(row["sources"], [HANDLE])
 
     def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]

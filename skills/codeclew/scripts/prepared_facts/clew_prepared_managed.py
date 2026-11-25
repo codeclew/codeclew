@@ -910,8 +910,13 @@ class Facts:
                 summary += f" before returning an {returned[0]}"
             summary += "."
             if writes:
-                descriptions = list(dict.fromkeys(self.sql_label(write["sourceSql"]) for write in writes))
-                summary = "completes " + " and ".join(descriptions) + " on the same transaction, then " + summary
+                statements = [write["sourceSql"] for write in writes]
+                descriptions = list(dict.fromkeys(self.sql_label(sql) for sql in statements))
+                summary = ("resumes after command execution for " + " and ".join(descriptions)
+                           + " on the same transaction, then " + summary)
+                if any((sql.get("conflict", {}).get("action") or "").upper() == "NOTHING" for sql in statements):
+                    summary += " With `DO NOTHING`, a handled conflict can leave the existing row unchanged."
+                summary += " Affected rows and durability remain open."
             if match["authority"] == "PROVIDER_COMMAND_AND_TRANSACTION_BINDING":
                 summary += " This ordering assumes the provider binds the command and commit APIs to the tracked transaction."
             self.add_path("http-commit-before-response" if http else "transactional-write-completion",
