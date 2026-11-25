@@ -93,7 +93,11 @@ def verify(options, base, service):
         facts = {row["kind"] for row in entry["propositions"]}
         assert "background-registration" in facts, entry
         if kind == "HOSTED_BACKGROUND_WORKER":
-            assert "worker-poll" in facts and "tryreserveasync" in lower, visible
+            assert {"worker-poll", "guarded_state_write", "await_bypass", "early_exit"} <= facts, visible
+            guarded = next(row for row in entry["propositions"] if row["kind"] == "guarded_state_write")
+            assert "TryReserveAsync" in guarded["text"] and "processed += 1" in guarded["text"], guarded
+            early = next(row for row in entry["propositions"] if row["kind"] == "early_exit")
+            assert "InvalidOperationException" in early["text"] and "return" in early["text"], early
             assert "parcelsweep.cs" in lower and "program.cs" in lower, visible
             assert requirement["entrySymbol"] == "ParcelSweep.ExecuteAsync", requirement
         elif kind == "KAFKA_LISTENER":

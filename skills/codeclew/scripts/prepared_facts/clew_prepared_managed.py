@@ -1113,6 +1113,34 @@ class Facts:
                              f"the modeled worker test on a later iteration observes that {condition}.",
                              [loop, written["step"], key], [path["id"]])
 
+    def structural_outcomes(self):
+        for item in self.graph.get("awaitedGuardWrites", ()):
+            sites = item["sites"]
+            test, awaited, write = (self.text(sites[name]) for name in ("condition", "awaitSite", "write"))
+            if not all((test, awaited, write)):
+                continue
+            truth = "true" if item["when"] else "false"
+            host = code(method(item["host"]))
+            condition = f"{code(test)} evaluates to {truth}"
+            self.add("guarded_state_write", f"In {host}, after {code(awaited)} resumes and {condition}, "
+                     f"the selected arm contains the state write {code(write)}.", sites.values(), sources=item["sources"],
+                     condition=condition, authority="ROSLYN_CONTROL_FLOW")
+            self.add("await_bypass", f"If {code(awaited)} faults or is cancelled before the guard completes, "
+                     f"this evaluation of the condition in {host} bypasses {code(write)}.", sites.values(),
+                     sources=item["sources"], authority="ROSLYN_CONTROL_FLOW")
+        for item in self.graph.get("catchReturns", ()):
+            sites = item["sites"]
+            caught = self.text(sites["exception"]) if "exception" in sites else None
+            filter_ = self.text(sites["filter"]) if "filter" in sites else None
+            subject = f"the catch for {code(caught)}" if caught else "the catch clause"
+            if filter_:
+                subject += " filtered by " + code(filter_)
+            host = code(method(item["host"]))
+            if returned := self.text(sites["returned"]):
+                self.add("early_exit", f"If control enters {subject} in {host} and reaches {code(returned)}, "
+                         "it takes the return path out of the callable through any enclosing cleanup.", sites.values(),
+                         sources=item["sources"], authority="ROSLYN_CONTROL_FLOW")
+
     def catch_continuations(self):
         for item in self.graph.get("catchContinuations", ()):
             caught = item["catch"]
@@ -1205,7 +1233,7 @@ class Facts:
         order = ("http-entry", "input", "http-outcome", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",
                  "helper-return", "sql-read", "sql-row", "lookup", "argument-projection", "protocol-request",
                  "sql-write", "conditional-no-write", "callable-scope", "worker-control", "worker-poll", "worker-state",
-                 "worker-reselection", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
+                 "worker-reselection", "guarded_state_write", "await_bypass", "early_exit", "handled-exception-continuation", "http-commit-before-response", "transactional-write-completion", "effect-order", "error-path")
         groups = [iter(self.rows[kind].values()) for kind in order]
         rows = []
         while groups and len(rows) < LIMIT:
@@ -1230,6 +1258,7 @@ def derive(process, context, graph):
     if worker:
         facts.worker_controls()
     facts.catch_continuations()
+    facts.structural_outcomes()
     traces = {}
     for path in facts.paths.values():
         if "NULL_ACCEPTING_NON_INSTANCE_DISPATCH_REQUIRED" in path["open"]:

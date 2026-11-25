@@ -70,7 +70,7 @@ internal static class HostedWorkers
                     name = worker.ToDisplayString() + ".ExecuteAsync",
                     registration = Range(invocation),
                     callback = Range(callback),
-                    helpers = Helpers(current.Compilation, callback),
+                    helpers = Helpers(withSdk, callback),
                     sdkImports = current == sdkModel
                 });
             }
@@ -97,11 +97,13 @@ internal static class HostedWorkers
         while (pending.TryDequeue(out var method))
         {
             var model = compilation.GetSemanticModel(method.SyntaxTree);
+            var projector = new EffectControlFlow(model, method, method.SyntaxTree.GetText().ToString());
             foreach (var call in method.DescendantNodes(node => node is not
                 (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax)).OfType<InvocationExpressionSyntax>())
             {
                 if (visited.Count >= 8) yield break;
-                if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol target ||
+                var target = model.GetSymbolInfo(call).Symbol as IMethodSymbol ?? projector.SourceCandidate(call);
+                if (target is null ||
                     target.IsAbstract || (target.IsVirtual && !target.IsSealed && !target.ContainingType.IsSealed) ||
                     target.DeclaringSyntaxReferences.Length != 1 ||
                     target.DeclaringSyntaxReferences[0].GetSyntax() is not MethodDeclarationSyntax candidate ||

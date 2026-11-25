@@ -260,6 +260,8 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             }).ToArray(),
             loopStructure = LoopStructure(),
             catchContinuations = CatchContinuations(),
+            awaitedGuardWrites = AwaitedGuardWrites(cfg),
+            catchReturns = CatchReturns(),
         };
     }
 
@@ -312,6 +314,81 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             }
         }
         return facts.Take(16).ToArray();
+    }
+
+    // A condition's own await must resume before a field assignment in its selected arm.
+    private object[] AwaitedGuardWrites(ControlFlowGraph cfg)
+    {
+        var reachable = cfg.Blocks.Where(block => block.IsReachable).ToArray();
+        var decisions = reachable.Where(block => block.ConditionKind != ControlFlowConditionKind.None && block.BranchValue is not null)
+            .SelectMany(block => block.BranchValue!.DescendantsAndSelf()).OfType<IAwaitOperation>()
+            .DistinctBy(operation => operation.Syntax.Span).ToDictionary(operation => operation.Syntax.Span);
+        var assignments = reachable.SelectMany(block => block.Operations).SelectMany(operation => operation.DescendantsAndSelf())
+            .Where(operation => operation is IAssignmentOperation or IIncrementOrDecrementOperation)
+            .DistinctBy(operation => operation.Syntax.Span).ToDictionary(operation => operation.Syntax.Span);
+        var facts = new List<object>();
+        foreach (var branch in method.DescendantNodes(CanDescend).OfType<IfStatementSyntax>().Take(24))
+        {
+            ExpressionSyntax condition = branch.Condition;
+            while (condition is ParenthesizedExpressionSyntax or PrefixUnaryExpressionSyntax)
+            {
+                if (condition is ParenthesizedExpressionSyntax parentheses)
+                    condition = parentheses.Expression;
+                else if (condition is PrefixUnaryExpressionSyntax unary &&
+                    model.GetOperation(unary) is IUnaryOperation { OperatorMethod: null, OperatorKind: UnaryOperatorKind.Not })
+                    condition = unary.Operand;
+                else
+                    break;
+            }
+            if (condition is not AwaitExpressionSyntax awaited || !decisions.TryGetValue(awaited.Span, out var operation))
+                continue;
+            foreach (var (arm, truth) in new[] { (branch.Statement, true), (branch.Else?.Statement, false) })
+            {
+                IEnumerable<StatementSyntax> statements = arm switch
+                {
+                    BlockSyntax block => block.Statements,
+                    null => Array.Empty<StatementSyntax>(),
+                    _ => new[] { arm },
+                };
+                foreach (var statement in statements.Take(8).OfType<ExpressionStatementSyntax>())
+                {
+                    if (!assignments.TryGetValue(statement.Expression.Span, out var write))
+                        continue;
+                    var target = write switch
+                    {
+                        IAssignmentOperation assignment => assignment.Target,
+                        IIncrementOrDecrementOperation increment => increment.Target,
+                        _ => null,
+                    };
+                    if (!(target is IFieldReferenceOperation ||
+                        target is IPropertyReferenceOperation { Arguments.IsEmpty: true } property && IsAutoProperty(property.Property)))
+                        continue;
+                    facts.Add(new { condition = Site(branch.Condition), awaitSite = Site(awaited),
+                        when = truth, write = Site(statement.Expression),
+                        callSite = operation.Operation is IInvocationOperation invocation ? Site(invocation.Syntax) : null });
+                }
+            }
+        }
+        return facts.Take(12).ToArray();
+    }
+
+    // Roslyn can lower a bare return to a regular edge to Exit, with no branch value.
+    private object[] CatchReturns()
+    {
+        var facts = new List<object>();
+        foreach (var clause in method.DescendantNodes(CanDescend).OfType<CatchClauseSyntax>().Take(8))
+        {
+            if (model.AnalyzeControlFlow(clause.Block) is not
+                { Succeeded: true, StartPointIsReachable: true, EndPointIsReachable: false } flow ||
+                clause.Block.Statements.LastOrDefault() is not ReturnStatementSyntax { Expression: null } returned ||
+                !flow.ReturnStatements.Contains(returned) ||
+                model.AnalyzeControlFlow(returned) is not { Succeeded: true, StartPointIsReachable: true })
+                continue;
+            facts.Add(new { handler = Site(clause), returned = Site(returned),
+                exception = clause.Declaration is { } declaration ? Site(declaration.Type) : null,
+                filter = clause.Filter is { } filter ? Site(filter.FilterExpression) : null });
+        }
+        return facts.ToArray();
     }
 
     private object[] CatchContinuations()
@@ -742,9 +819,10 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
         };
     }
 
-    private IMethodSymbol? SourceCandidate(InvocationExpressionSyntax invocation, string? name, int depth = 0)
+    internal IMethodSymbol? SourceCandidate(InvocationExpressionSyntax invocation, int depth = 0)
     {
-        if (name is null || model.GetDeclaredSymbol(method) is not IMethodSymbol owner) return null;
+        var name = CalleeName(invocation);
+        if (name is null || model.GetOperation(invocation) is IDynamicInvocationOperation || model.GetDeclaredSymbol(method) is not IMethodSymbol owner) return null;
         var access = invocation.Expression as MemberAccessExpressionSyntax;
         var implicitReceiver = access is null && invocation.Expression is SimpleNameSyntax;
         if (!implicitReceiver && access is null) return null;
@@ -814,12 +892,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             return awaitable.TypeArguments[0];
         if (expression is InvocationExpressionSyntax invocation)
         {
-            var method = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol ?? SourceCandidate(invocation, invocation.Expression switch
-            {
-                SimpleNameSyntax call => call.Identifier.ValueText,
-                MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
-                _ => null,
-            }, depth + 1);
+            var method = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol ?? SourceCandidate(invocation, depth + 1);
             if (method is not null) return method.ReturnType;
         }
         return proven;
@@ -836,12 +909,19 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                 owner, direct = true, shared = false } : null;
     }
 
+    private static string? CalleeName(InvocationExpressionSyntax invocation) => invocation.Expression switch
+    {
+        SimpleNameSyntax simple => simple.Identifier.ValueText,
+        MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+        _ => null,
+    };
+
     private void UnresolvedCall(IOperation operation, InvocationExpressionSyntax invocation)
     {
         var access = invocation.Expression as MemberAccessExpressionSyntax;
-        var name = (access?.Name ?? invocation.Expression as SimpleNameSyntax)?.Identifier.ValueText;
+        var name = CalleeName(invocation);
         // Dynamic invocation uses runtime dispatch, even if a declaration is visible.
-        var candidate = operation is IDynamicInvocationOperation ? null : SourceCandidate(invocation, name);
+        var candidate = operation is IDynamicInvocationOperation ? null : SourceCandidate(invocation);
         var receiver = candidate is { IsStatic: true } ? null : access is not null ? LexicalValue(access.Expression) :
             candidate is { IsStatic: false } ? new { kind = "instance" } : null;
         var selector = name == "FirstOrDefault" ? invocation.ArgumentList.Arguments.Select(argument => argument.Expression)

@@ -1094,12 +1094,13 @@ class Trace:
         guard_controls = self.structural_guard_controls(fn.citation, helper_models, hosts)
         host_controls = self.hosted_controls(hosts)
         caught = self.catch_continuations(fn.citation, helper_models, hosts)
+        guarded_writes, catch_returns = self.structural_outcomes(fn.citation, helper_models, hosts)
         executions, command_durable, transactions = self.commands["analyze"](
             paths, self.steps, self.sql_tables, self.storage, fn.citation if is_http else None)
         local_paths, local_executions = self.callable_paths(ref, helper_models, paths, executions)
         if (not guard_returns and not inventory and not composed_inventory and not executions and len(self.functions) == 1 and
                 not guard_controls and not host_controls
-                and not local_paths and not caught and not any(step.get("sourceSql") for step in self.steps.values())
+                and not local_paths and not caught and not guarded_writes and not catch_returns and not any(step.get("sourceSql") for step in self.steps.values())
                 and not any(step["kind"] in {"AWAIT", "THROW", "RETURN"} for step in self.steps.values())):
             return report("NO_RETAINED_AWAIT_OR_ABRUPT_EXIT", sorted(self.boundaries))
         guard_steps = {key for fact in guard_returns for key in (fact["condition"], fact["return"], *fact["bypasses"])}
@@ -1107,6 +1108,7 @@ class Trace:
         guard_steps.update(key for fact in guard_controls for key in (fact["condition"], fact["control"]))
         guard_steps.update(key for fact in host_controls for key in fact["sites"].values())
         guard_steps.update(key for fact in caught for key in fact["evidenceSteps"])
+        guard_steps.update(key for fact in (*guarded_writes, *catch_returns) for key in fact["sites"].values())
         used = {item["step"] for row in (*paths, *local_paths) for item in row["sequence"]} | helper_steps | guard_steps
         if inventory:
             used.update(item["step"] for item in inventory["sites"])
@@ -1143,6 +1145,8 @@ class Trace:
                       **({"structuralGuardControls": guard_controls} if guard_controls else {}),
                       **({"hostedLoopStructure": host_controls} if host_controls else {}),
                       **({"catchContinuations": caught} if caught else {}),
+                      **({"awaitedGuardWrites": guarded_writes} if guarded_writes else {}),
+                      **({"catchReturns": catch_returns} if catch_returns else {}),
                       postCompletionInterruptions=interruptions, openAwaitOrdering=self.open_await_ordering(paths),
                       **({"relationalCommandPaths": executions} if executions else {}),
                       **({"httpTransactionOutcomes" if is_http else "transactionalWriteCompletions": transactions}
@@ -1335,6 +1339,29 @@ class Trace:
                               "evidenceSteps": [*caught.values(), *(guard["step"] for guard in guards), *actions, *awaits],
                               **({"loop": raw["loop"]} if raw["loop"] else {})})
         return facts
+
+    def structural_outcomes(self, root, helpers, hosts):
+        selected = {root, *(item["id"] for item in helpers), *(self.functions[ref].citation for ref in hosts)}
+        writes, returns = [], []
+        for fn in self.functions.values():
+            if fn.citation not in selected:
+                continue
+            calls = {(op["site"]["start"], op["site"]["end"]): op for block in fn.graph["blocks"]
+                     if block["reachable"] for op in block["steps"] if op["kind"] == "CALL"}
+            for index, row in enumerate(fn.graph.get("awaitedGuardWrites", ())):
+                sites = {name: self.step(fn, f"guarded-write{index}/{name}", "AWAITED_GUARD_WRITE", row[name])
+                         for name in ("condition", "awaitSite", "write")}
+                refs = [fn.citation]
+                if (raw := row.get("callSite")) and (call := calls.get((raw["start"], raw["end"]))):
+                    target, binding = self.resolve(call)
+                    if target and binding == "ROSLYN_STATIC_BINDING":
+                        refs.append(self.functions[target].citation)
+                writes.append({"host": fn.graph["symbol"], "when": row["when"], "sites": sites, "sources": refs})
+            for index, row in enumerate(fn.graph.get("catchReturns", ())):
+                sites = {name: self.step(fn, f"catch-return{index}/{name}", "CATCH_RETURN", row[name])
+                         for name in ("handler", "returned", "exception", "filter") if row[name]}
+                returns.append({"host": fn.graph["symbol"], "sites": sites, "sources": [fn.citation]})
+        return writes, returns
 
     def structural_guard_controls(self, root_citation, helpers, hosts):
         selected = {root_citation, *(helper["id"] for helper in helpers), *(self.functions[ref].citation for ref in hosts)}
