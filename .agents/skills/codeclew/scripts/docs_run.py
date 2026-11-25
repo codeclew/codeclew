@@ -498,7 +498,7 @@ def _prepare_sources(job, inventory, directory):
 
     for service, scope in inventory['services'].items():
         home = directory / service; home.mkdir(mode=0o700)
-        resource_count, deferred_resources = None, []
+        resource_count, deferred_resources, contract_resources = None, [], []
         base = [sys.executable, '-I', '-S', str(HERE / 'evidence_packet.py')]
         common = ['--clew', job['clew'], '--root', job['root'], '--service', service, '--snapshot', job['snapshot']]
         source_scope = any(r['kind'] == 'THREAD_SCOPE' for r in scope['sourceInventory'])
@@ -525,6 +525,9 @@ def _prepare_sources(job, inventory, directory):
             need(resources['status'] == 'COMPLETE', 'PREPARED_RESOURCES_INCOMPLETE')
             resource_rows = load(home / 'resources/read-collection/items.json')
             resource_count = len(resource_rows)
+            if job.get('evidenceMode') == 'PREPARED_FACTS':
+                contract_resources = [row for row in resource_rows
+                                      if row.get('record', {}).get('source', {}).get('file', '').lower().endswith('.json')][:8]
             for row in resource_rows:
                 need(row['kind'] == 'SOURCE_NAVIGATION', 'PREPARED_RESOURCE_KIND_CHANGED')
                 identity, reference = row['id'], row['record']['fullRecordReference']
@@ -607,6 +610,7 @@ def _prepare_sources(job, inventory, directory):
                              'citationIndex': str(home / 'citation-index.json'), 'requirements': requirements_index,
                              'discoveryProofs': proofs, 'records': len(bindings), 'regions': len(regions), 'union': metrics,
                              'retainedResourceRecords': resource_count, 'deferredResourceFiles': sorted(set(deferred_resources)),
+                             **({'contractResources': contract_resources} if contract_resources else {}),
                              'inventoryKind': 'SOURCE_FILES' if source_scope else 'COMPILER_SYMBOLS_AND_RETAINED_RESOURCES',
                              'wholeServiceOrRuntimeCompletenessClaimed': False}
         lookup = ['# ' + service + ' source index', '', 'Open the individual source views needed for your explanation. Cite supplied handles directly.',
@@ -723,7 +727,7 @@ def prepare_facts(job, inventory, prepared):
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline, page_slots=page_slots if remaining >= 32 * 1024 else 0,
                                      view_budget=min(256 * 1024, remaining // 2), edge_records=records,
-                                     base_manifest=scope['manifest'])
+                                     base_manifest=scope['manifest'], contract_resources=scope.get('contractResources', ()))
         sources.update(selected.pop('edgeCitations'))
         discovered = selected.pop('discovered')
         if discovered:
@@ -735,7 +739,10 @@ def prepare_facts(job, inventory, prepared):
     edges = project_edges(inventory['requirements'], records)
     for service, (home, required, selection) in pending.items():
         scope = prepared['services'][service]
-        helper['merge_edges'](selection, edges, sources, home)
+        contract_facts = selection.pop('contractFacts')
+        combined = {identity: [*contract_facts.get(identity, ()), *edges.get(identity, ())]
+                    for identity in selection['entries']}
+        helper['merge_edges'](selection, combined, sources, home)
         selected = helper['finish'](job, service, home, selection['entries'], selection['citations'])
         citations, rows = selected.pop('citations'), selected.pop('authorEntries')
         destinations, view_files = {}, {}

@@ -2224,5 +2224,159 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertIn("message-peer-boundary", {row["kind"] for row in self.project(relay, wrong)[relay[0]["id"]]})
 
 
+class PreparedContractTests(unittest.TestCase):
+    service = "registry"
+    revision = "a" * 40
+
+    @classmethod
+    def setUpClass(cls):
+        scripts = ROOT / "skills/codeclew/scripts"
+        cls.contracts = runpy.run_path(str(scripts / "prepared_facts/clew_prepared_openapi.py"))
+        cls.runner = runpy.run_path(str(scripts / "docs_run_prepared.py"), init_globals={
+            name: D[name] for name in ("digest", "encode", "sha", "save")})
+
+    def requirements(self):
+        return [{"id": "entry", "entrypoint": "add", "entrySymbol": "Registry.Add",
+                 "kind": "ENTRY", "entryKind": "HTTP_ENDPOINT", "method": "POST", "path": "/units/:name"}]
+
+    def contract(self):
+        return {
+            "openapi": "3.1.0",
+            "paths": {"/units/{unitName}": {
+                "get": {"responses": {"404": {"description": "Unknown"}}},
+                "post": {"responses": {
+                    "202": {"description": "Accepted", "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"ticketId": {"type": "string"}}}}}},
+                    "409": {"description": "Conflict"},
+                }},
+            }},
+        }
+
+    def source(self, value, *, file="docs/registry.json", revision=None, authority="EXACT_SNAPSHOT_TEXT"):
+        text = value if isinstance(value, str) else json.dumps(value, indent=2) + "\n"
+        return {"id": "spec", "file": file, "service": self.service, "revision": revision or self.revision,
+                "text": text, "startLine": 1, "endLine": len(text.splitlines()), "textDigest": D["sha"](text.encode()),
+                "authority": authority, "references": ["spec-reference"],
+                "occurrence": {"startByte": 0, "endByte": len(text.encode()), "blob": "owned-blob"}}
+
+    def project(self, sources, *, operations=(), requirements=None):
+        return self.contracts["project"](self.service, self.revision, requirements or self.requirements(), sources, operations)
+
+    def test_declared_openapi_response_and_implementation_status_are_separate_author_facts(self):
+        source = self.source(self.contract())
+        overlay = self.project({"spec": source})
+        declared, = overlay["entry"]
+        self.assertIn("`POST /units/{unitName}`", declared["text"])
+        self.assertIn("`202` (`application/json` object with declared fields `ticketId`)", declared["text"])
+        self.assertIn("`409`", declared["text"])
+        self.assertNotIn("`404`", declared["text"])
+        span, = declared["witnesses"]
+        method_line = next(index for index, line in enumerate(source["text"].splitlines(), 1) if '"post"' in line)
+        self.assertEqual(span["startLine"], method_line)
+        self.assertLess(span["endLine"], source["endLine"])
+        self.assertEqual(span["textDigest"], D["sha"](source["text"].encode()[span["startByte"]:span["endByte"]]))
+        metadata = {"file": "Registry.cs", "startLine": 5, "endLine": 9}
+        implementation = {"kind": "http-outcome", "authority": "SUPPORTED_SOURCE", "text": "Returns an HTTP 201 result.",
+                          "sources": ["handler"]}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "view.md").write_text("Source header\n\n```csharp\nhandler body\n```\n")
+            prepared = {"entries": {"entry": {"propositions": [implementation]}}, "citations": {"handler": metadata}, "bytes": 0}
+            self.runner["merge_edges"](prepared, overlay, {"spec": {**source, "manifest": home / "spec/citations.json"}}, home)
+            self.assertEqual([row["kind"] for row in prepared["entries"]["entry"]["propositions"]],
+                             ["openapi-declared-response", "http-outcome"])
+            author = self.runner["author_entries"](prepared["entries"], prepared["citations"])
+            self.runner["workspace_views"](home, {"entry": ("view.md", "Page registry.md")}, author,
+                                            prepared["citations"], {"view.md": "Registry.cs"}, 8192)
+            delivered = (home / "view.md").read_text()
+            self.assertIn("`202`", delivered)
+            self.assertIn("HTTP 201", delivered)
+            self.assertIn("runtime enforcement", delivered)
+            self.assertIn("spec/citations.json", delivered)
+            self.assertIn("handler body", delivered)
+
+    def test_unrelated_dynamic_ambiguous_and_stale_contracts_do_not_choose_a_response(self):
+        value = self.contract()
+        invalid = [
+            self.source({**value, "paths": {"/unrelated/{name}": value["paths"]["/units/{unitName}"]}}),
+            self.source({**value, "paths": {"/units/{*name}": value["paths"]["/units/{unitName}"]}}),
+            self.source({**value, "paths": {"/units/{name}": {"get": value["paths"]["/units/{unitName}"]["get"]}}}),
+            self.source({"paths": value["paths"]}),
+            self.source('{ "openapi": "3.1.0", "openapi": "3.1.1", "paths": {} }'),
+            self.source(value, revision="b" * 40),
+            {**self.source(value), "textDigest": D["sha"](b"stale spec")},
+        ]
+        for source in invalid:
+            self.assertEqual(self.project({"spec": source}), {})
+        ambiguous, = self.project({"first": self.source(value), "other": self.source(value, file="docs/other.json")})["entry"]
+        self.assertEqual(ambiguous["status"], "AMBIGUOUS")
+        self.assertNotIn("`202`", ambiguous["text"])
+
+    def test_work_contract_uses_only_scoped_references(self):
+        source = self.source(
+            'openapi: 3.1.0\npaths:\n  /units/{name}:\n    post:\n      responses:\n        "204": {description: No body}\n',
+            file="api/registered.yaml", authority="DECLARED_OPENAPI")
+        operation = {"kind": "DEPENDENCY", "sourceReferences": ["spec-reference"], "record": {
+            "kind": "CONTRACT_OPERATION", "service": self.service, "normalized": {
+                "schema": "codeclew-documentation-contract-facts/1.0", "authority": "DECLARED_OPENAPI",
+                "runtimeEnforcement": "UNVERIFIED", "declaredSource": source["file"], "method": "POST",
+                "path": "/units/{name}", "entrypoint": "add", "sourceMapping": "SOURCE_ROUTE_MATCH_ONLY",
+                "operation": {"responses": {"204": {"description": "No body"}}},
+            },
+        }}
+        fact, = self.project({"spec": source}, operations=[operation])["entry"]
+        self.assertIn("`204`", fact["text"])
+        self.assertEqual(self.project({"spec": source}, operations=[{**operation, "sourceReferences": ["foreign-reference"]}]), {})
+
+    def test_compiler_resource_fallback_uses_committed_regular_files_and_native_citations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            repo = home / "repository"
+            repo.mkdir()
+            contract = repo / "docs" / "api.json"
+            contract.parent.mkdir()
+            text = self.source(self.contract())["text"]
+            contract.write_text(text)
+            (repo / "docs" / "ignored.json").symlink_to(contract)
+            for arguments in (["init", "--quiet"], ["add", "docs"],
+                              ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                               "commit", "--quiet", "-m", "Retain API declaration"]):
+                subprocess.run(["git", "-C", str(repo), *arguments], check=True, capture_output=True)
+            revision = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            contract.write_text('{"openapi":"3.1.0","paths":{}}')
+            source = self.source(text, file="docs/api.json", revision=revision,
+                                 authority="REGISTERED_NATIVE_BYTES_ONLY_NO_SEMANTIC_ANALYSIS")
+            job = {"clew": "/trusted/clew", "root": str(home), "snapshot": "frozen"}
+            calls = []
+
+            def command(argv, output, label, **_):
+                calls.append(label)
+                if label == "contracts-native":
+                    self.assertEqual(argv[argv.index("--snapshot") + 1], "frozen")
+                    request = D["load"](Path(argv[argv.index("--native-inputs") + 1]))
+                    self.assertEqual(request, [{"service": self.service, "files": ["docs/api.json"]}])
+                    return {"snapshot": "frozen", "items": [{"kind": "SOURCE_NATIVE", "id": "spec", "record": source}]}
+                self.assertEqual(label, "bind-native-contracts")
+                self.assertIn("import-native", argv)
+                self.assertEqual(argv[argv.index("--source") + 1], "spec")
+                return {"status": "SELECTED_NATIVE_SOURCES_READY"}
+
+            def citation_load(path):
+                self.assertEqual(path.name, "citations.json")
+                return {}, {"scope": {"service": self.service, "snapshot": "frozen"},
+                            "outcomes": [{"source": source, "textKey": "digest"}], "texts": {"digest": text}}, {}, {
+                                "native-spec": {"source": {key: value for key, value in source.items() if key != "text"}}}
+
+            helper = runpy.run_path(str(ROOT / "skills/codeclew/scripts/docs_run_contract_sources.py"), init_globals={
+                "save": D["save"], "command": command, "citation_load": citation_load,
+                "Stop": D["Stop"], "CitationStop": D["M"]["C"]["Stop"]})
+            retained = helper["pinned_sources"](job, self.service, revision, self.requirements(), str(repo), {},
+                                                 {"Registry.cs"}, self.contracts, home, time.monotonic() + 15)
+            self.assertEqual(calls, ["contracts-native", "bind-native-contracts"])
+            declared, = self.contracts["project"](self.service, revision, self.requirements(), retained, ())["entry"]
+            self.assertEqual(declared["sources"], ["native-spec"])
+            self.assertIn("`202`", declared["text"])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -28,13 +28,13 @@ CSHARP_FILE_LIMIT = 12
 FACT_SCHEMA = 'codeclew-docs-run-prepared-facts/1.0'
 
 
-def exact_sources(entries, packet):
+def exact_sources(entries, packet, *, authorities=("EXACT_SNAPSHOT_TEXT",)):
     """Project only source bytes already admitted by the ordinary manifest reader."""
     originals = {row['source']['id']: row for row in packet['outcomes']}
     selected = {}
     for handle, entry in entries.items():
         source = entry['source']
-        if source.get('authority') != 'EXACT_SNAPSHOT_TEXT':
+        if source.get('authority') not in authorities:
             continue
         original = originals[source['id']]
         reference = original.get('sourceBinding', {}).get('reference')
@@ -319,7 +319,7 @@ def collect_contexts(job, scope, home, requirements, deadline):
     return contexts, states
 
 
-def acquire_sources(job, service, scope, home, selections, exact, deadline):
+def acquire_sources(job, service, scope, home, selections, exact, deadline, *, authorities=("EXACT_SNAPSHOT_TEXT",)):
     bound = {ref for row in exact.values() for ref in row['references']}
     wanted = {}
     for rows in selections:
@@ -347,7 +347,7 @@ def acquire_sources(job, service, scope, home, selections, exact, deadline):
             if manifest.is_file():
                 manifest.rename(directory / 'unadmitted-citations.json')
             return {}, directory / 'packet.json'
-        return {handle: {**source, 'manifest': manifest} for handle, source in exact_sources(entries, packet).items()}, None
+        return {handle: {**source, 'manifest': manifest} for handle, source in exact_sources(entries, packet, authorities=authorities).items()}, None
 
     selected = [{'sourceId': key, 'sourceReference': value} for key, value in list(wanted.items())[:MAX_REFS]]
     if not selected or deadline - time.monotonic() <= 1:
@@ -742,12 +742,12 @@ def background_entries(service, requirements, units, exact, files, projector, jo
 
 
 def prepare(job, service, scope, requirements, entries, packet, home, deadline, *,
-            page_slots=0, view_budget=0, edge_records=None, base_manifest=None):
+            page_slots=0, view_budget=0, edge_records=None, base_manifest=None, contract_resources=()):
     """Produce a bounded author packet and explicit per-entry coverage."""
     # Preparation is a treatment. A refusal still leaves the original read kit.
     service_root = home / 'fact-evidence'
     service_root.mkdir(mode=0o700)
-    exact = exact_sources(entries, packet)
+    exact = exact_sources(entries, packet, authorities=('EXACT_SNAPSHOT_TEXT', 'DECLARED_OPENAPI'))
     edge_module = runpy.run_path(str(DIRECTORY / 'prepared_facts/clew_service_edges.py')) if edge_records is not None else None
     extensions = {ext for supported in ADAPTERS.values() for ext in supported}
     supported = [row for row in requirements if
@@ -763,6 +763,16 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
     boundaries = scope['coverage'].get('boundaries')
     allow_legacy_pinned = isinstance(boundaries, list) and 'WORKING_TREE_SOURCE' not in boundaries
     repository = local_repository(job, service, scope, service_root, deadline) if supported else None
+    contract_facts, contract_sources = {}, {}
+    if edge_records is not None:
+        openapi = runpy.run_path(str(DIRECTORY / 'prepared_facts/clew_prepared_openapi.py'))
+        contract_preparation = runpy.run_path(str(DIRECTORY / 'docs_run_contract_sources.py'), init_globals={
+            'save': save, 'command': command, 'citation_load': citation_load, 'CitationStop': CitationStop, 'Stop': Stop,
+            'openapi': openapi, 'work_rows': work_rows, 'acquire_sources': acquire_sources,
+        })
+        contract_facts, contract_sources = contract_preparation['prepare'](
+            job, service, scope, requirements, exact, contract_resources, repository if allow_legacy_pinned else None,
+            service_root, min(deadline, time.monotonic() + 20))
     pinned_cache = {}
 
     def read_pinned(file, revision):
@@ -888,8 +898,9 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
             row['projectionLimits'] = limits
     if edge_module:
         edge_citations = {handle: {key: source[key] for key in ('file', 'service', 'revision', 'startLine', 'endLine')}
-                          | {'manifest': source.get('manifest', base_manifest)} for handle, source in exact.items()}
-        return {'entries': result, 'citations': cite_index, 'edgeCitations': edge_citations,
+                          | {'manifest': source.get('manifest', base_manifest)}
+                          for handle, source in (exact | contract_sources).items()}
+        return {'entries': result, 'citations': cite_index, 'edgeCitations': edge_citations, 'contractFacts': contract_facts,
                 'bytes': total_bytes, 'discovered': discovered}
     return {**finish(job, service, home, result, cite_index), 'discovered': discovered}
 

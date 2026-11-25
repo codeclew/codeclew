@@ -100,6 +100,15 @@ accompany every hop, including deployment, delivery, row lineage and durability.
 Cross-service source anchors identify the owning service and revision. Their
 citation manifests are relative to the service index of the annotated view.
 
+When the retained method and route shape identify one OpenAPI operation,
+the entry's prepared source view also lists declared response statuses and
+available schema details. These keep their declaration authority and source
+lines. The view presents implementation statuses separately, with deployed
+routing and runtime enforcement open. Ambiguous declarations remain open.
+The runner reads registered contract references from Work and can register
+exact committed JSON files from bounded contract locations through the
+existing native evidence reader for compiler-backed services.
+
 The author checks propositions against retained source and fills gaps using the
 same Work. An unavailable adapter, unsupported source shape, missing operations
 or unbound propositions leave the ordinary source views available. Prepared facts
