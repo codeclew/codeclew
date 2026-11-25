@@ -93,3 +93,28 @@ result requires full independent coverage of all 45 atoms and zero material
 false claims. The validator verifies the reviewer’s evidence and accounting.
 Interpretation of prose and the absence of contradictions require independent
 semantic judgment.
+
+## Release-bound evidence report
+
+For the [draft promotion checkpoint](../../docs/operations/release-draft-promotion.md),
+use the exact official archive from the draft and the corresponding authenticated
+installation. Add the archive and peeled tag commit to the witness collection
+command. The resulting catalog carries the target payload identity. After the
+independent review, generate the release report:
+
+```sh
+python3 -I -S scripts/qualification/weather-preauthor.py \
+  --release-archive "$WEATHER_RELEASE_ARCHIVE" \
+  --release-commit "$(git rev-parse "$TASK_RELEASE_VERSION^{commit}")" \
+  --skill "$INSTALLED_SKILL" --runtime-key "$INSTALLED_RUNTIME_KEY" \
+  --run-dir "$RUN" --source-repo "$WEATHER_REPO" \
+  --review "$EVALUATION/review.json" > "$EVALUATION/release-report.json"
+```
+
+The report records the archive, source tree, runtime seed, bundled skill, frozen
+run, independent grade and witness catalog digests. Keep it with the original
+frozen inputs and review. A promotion verifier uses the same command with
+`--verify-release-report "$EVALUATION/release-report.json"`, without `--job`.
+This reruns only the mechanical validation against the original reviewed
+evidence. A stock-release result applies only to its original archive and
+installation. Failed or mismatched reports block promotion within this scope.

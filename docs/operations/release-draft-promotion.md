@@ -38,7 +38,36 @@ affected SOURCE paths. Preserve failed results. Confirm all required jobs passed
 for this exact commit and source tree, and all eight expected public assets and
 checksums match the independently accepted archives.
 
-When acceptance passes, promote the existing draft without rebuilding or
+## Installed documentation author inputs
+
+For a release with installed documentation author-input qualification in scope,
+require the [Weather checkpoint](../../scripts/qualification/weather-preauthor.md)
+before making the draft public. Run the checkpoint against one produced official
+core archive from this draft after the archive checksum and installation checks.
+The independent semantic review requires 45/45 full atoms and zero material
+false claims. Keep the frozen run, independent review and release-bound report
+outside the installed package and release assets.
+
+Verify the report against the same downloaded archive, the peeled release
+commit, the authenticated installation and the original frozen evidence:
+
+```sh
+python3 -I -S scripts/qualification/weather-preauthor.py \
+  --release-archive "$WEATHER_RELEASE_ARCHIVE" \
+  --release-commit "$(git rev-parse "$TASK_RELEASE_VERSION^{commit}")" \
+  --skill "$INSTALLED_SKILL" --runtime-key "$INSTALLED_RUNTIME_KEY" \
+  --run-dir "$RUN" --source-repo "$WEATHER_REPO" \
+  --review "$EVALUATION/review.json" \
+  --verify-release-report "$EVALUATION/release-report.json"
+```
+
+A nonzero result blocks this qualification. Verification checks the archive,
+seed, bundled skill and frozen inputs, then checks the independent grades and
+retained source proof again. It starts no author and performs no capture. A
+different archive, a stock release run or a standalone PASS summary cannot
+substitute for the matching frozen evidence.
+
+When every applicable qualification passes, promote the existing draft without rebuilding or
 uploading replacement assets:
 
 ```sh

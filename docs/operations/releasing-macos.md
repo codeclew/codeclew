@@ -76,7 +76,10 @@ native host; the same launcher and updater work on both macOS and Linux.
 
    The workflow checks out that exact tag, and the release builder still
    verifies that the tag points at the packaged commit.
-6. Verify the public installer on a clean Apple Silicon Mac, a clean Intel
+6. Apply the [draft promotion checkpoint](release-draft-promotion.md) to the
+   exact staged assets, including the installed Weather evidence report when
+   installed documentation author-input qualification is in scope.
+7. Verify the public installer on a clean Apple Silicon Mac, a clean Intel
    Mac, and a Linux x86_64 distribution inside WSL2:
 
    ```bash
@@ -93,7 +96,7 @@ native host; the same launcher and updater work on both macOS and Linux.
    The hosted Linux build checks do not establish WSL2-specific filesystem
    behavior; record a WSL2 smoke result separately when qualifying a release.
 
-The workflow creates a normal GitHub Release. The installer resolves the latest
+The workflow stages an official GitHub release draft for independent acceptance. The installer resolves the latest
 release API response to an immutable tag before fetching both the archive and
 checksum, avoiding mixed CDN state during publication. Release notes retain the
 `public pilot` qualification. The release builder and public

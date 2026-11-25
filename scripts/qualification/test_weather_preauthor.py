@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import runpy
+import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -146,6 +147,82 @@ class WeatherQualificationTests(unittest.TestCase):
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
             with self.assertRaisesRegex(ValueError, 'differs from its frozen slot'):
                 Q['collect'](run, inventory, plan)
+
+
+class WeatherReleaseEvidenceTests(unittest.TestCase):
+    def test_exact_archive_runtime_install_and_bundled_skill(self):
+        payload = runpy.run_path(str(Path(__file__).with_name('weather-release-payload.py')))
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            package = base / 'codeclew'
+            skill = package / 'source/skills/codeclew'
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text('fixture skill\n')
+            content = (skill / 'SKILL.md').read_bytes()
+            revision, tree = 'a' * 40, 'b' * 40
+            common = {'sourceRevision': revision, 'sourceTree': tree}
+            bytes_for = payload['canonical']
+            sha = payload['sha']
+            release = {**common, 'schema': 'codeclew-release/2.0', 'status': 'PILOT_READY',
+                       'profile': 'core', 'version': 'v1.1.0', 'operatingSystem': 'linux', 'architecture': 'x86_64'}
+            source = {**common, 'schema': 'codeclew-release-source/1.0', 'manifestDigest': '',
+                      'files': [{'path': 'skills/codeclew/SKILL.md', 'sha256': sha(content), 'size': len(content), 'mode': 0}]}
+            source['manifestDigest'] = sha(bytes_for(source))
+            seed = {**common, 'schema': 'codeclew-trusted-release-seed/2.0', 'mode': 'RELEASE',
+                    'sourcePayloadDigest': source['manifestDigest'], 'runtimeKey': sha(b'key'), 'manifestDigest': sha(b'manifest')}
+            seed['seedDigest'] = sha(bytes_for(seed))
+            launcher = package / 'bin/clew'
+            launcher.parent.mkdir()
+            launcher.write_text('fixture launcher\n')
+            seed_path = package / 'seed' / ('release-N-' + revision) / 'seed.json'
+            seed_path.parent.mkdir(parents=True)
+            for path, value in [(package / 'release.json', release), (package / 'source/release-source.json', source),
+                                (seed_path, seed)]:
+                path.write_bytes(bytes_for(value) + b'\n')
+            archive = base / 'codeclew-linux-x86_64.tar.gz'
+            with tarfile.open(archive, 'w:gz') as item:
+                item.add(package, arcname='codeclew')
+            proof, files = payload['read_archive'](archive, revision)
+            self.assertEqual(proof['sourcePayloadDigest'], source['manifestDigest'])
+            pins = {'skillFiles': files, 'clewVersion': 'clew 1.1.0',
+                    'clewCapabilities': {'runtimeMode': 'RELEASE', 'runtimeKey': seed['runtimeKey'],
+                                         'runtimeManifestDigest': seed['manifestDigest']}}
+            payload['check_pins'](proof, pins)
+            payload['check_install'](proof, files, {'clew': str(launcher)}, skill)
+            pins['clewCapabilities']['runtimeManifestDigest'] = sha(b'stock runtime')
+            with self.assertRaisesRegex(ValueError, 'not from the target runtime'):
+                payload['check_pins'](proof, pins)
+            with self.assertRaisesRegex(ValueError, 'archive metadata|payload member'):
+                payload['read_archive'](archive, 'c' * 40)
+            (skill / 'SKILL.md').write_text('substituted skill')
+            with self.assertRaisesRegex(ValueError, 'skill differs'):
+                payload['check_install'](proof, files, {'clew': str(launcher)}, skill)
+
+    def test_recomputed_release_report_rejects_mismatched_archive_and_old_review(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            review = base / 'review.json'
+            review.write_text('{"criteria":{"test":"independent original"}}')
+            (base / 'pins.json').write_text(json.dumps({'inputFiles': {'facts.json': 'digest'},
+                                                       'inventoryDigest': 'inventory', 'promptDigest': 'prompt'}))
+            report_file = base / 'report.json'
+            payload = {'archiveSha256': 'first archive'}
+            inventory = {'snapshot': 'snapshot'}
+            witness = {'mode': 'ISOLATED_PAGES'}
+            decision = {'status': 'PASS', 'full': 45, 'required': 45, 'materialFalseClaims': 0, 'verifiedAnchors': 30}
+            computed = Q['release_report'](payload, base, inventory, witness, review, decision)
+            report_file.write_text(json.dumps(computed))
+            Q['validate_release_report'](report_file, computed)
+            changed = Q['release_report']({'archiveSha256': 'another archive'}, base, inventory, witness, review, decision)
+            with self.assertRaisesRegex(ValueError, 'differs from exact archive'):
+                Q['validate_release_report'](report_file, changed)
+            review.write_text('{"criteria":{"test":"edited"}}')
+            changed = Q['release_report'](payload, base, inventory, witness, review, decision)
+            with self.assertRaisesRegex(ValueError, 'differs from exact archive'):
+                Q['validate_release_report'](report_file, changed)
+            computed['full'] = 44
+            with self.assertRaisesRegex(ValueError, '45/45'):
+                Q['validate_release_report'](report_file, computed)
 
 
 if __name__ == '__main__':

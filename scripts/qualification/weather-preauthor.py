@@ -10,6 +10,7 @@ import re
 import runpy
 import subprocess
 import sys
+import tarfile
 
 HERE = Path(__file__).resolve().parent
 REVISION = 'c9a4283cb5bbe2409b95561aca4e751a71255ff9'
@@ -325,6 +326,33 @@ def matches_source(blob, raw, first, last, occurrence):
     return 0 <= start < len(lines[first - 1]) and selected.find(raw, start + 1) < 0
 
 
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
+
+
+def release_report(payload, run, inventory, witness_catalog, review_path, decision):
+    pins = load(run / 'pins.json')
+    verifier = {file: sha((HERE / file).read_bytes()) for file in (
+        'weather-preauthor.py', 'weather-release-payload.py', 'weather-preauthor-rubric.json',
+        'weather-preauthor-components.tsv')}
+    return {'schema': 'codeclew-installed-weather-release-qualification/1.0', **decision,
+            'payload': payload, 'weatherRevision': REVISION, 'snapshot': inventory['snapshot'],
+            'authorMode': witness_catalog['mode'],
+            'evidence': {'frozenInputFilesDigest': sha(canonical(pins['inputFiles'])),
+                         'inventoryDigest': pins['inventoryDigest'], 'promptDigest': pins['promptDigest'],
+                         'reviewDigest': sha(review_path.read_bytes()), 'witnessCatalogDigest': sha(canonical(witness_catalog)),
+                         'validatorFilesDigest': sha(canonical(verifier))}}
+
+
+def validate_release_report(path, computed):
+    require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024,
+            'Qualification report is unavailable or oversized')
+    require(computed['status'] == 'PASS' and computed['full'] == computed['required'] == 45
+            and computed['materialFalseClaims'] == 0 and computed['verifiedAnchors'] > 0,
+            'Installed Weather qualification requires 45/45 full atoms and zero material false claims')
+    require(canonical(load(path)) == canonical(computed), 'Qualification report differs from exact archive or frozen evidence')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--skill', type=Path, required=True, help='Authenticated installed skill directory')
@@ -333,13 +361,29 @@ def main():
     parser.add_argument('--job', type=Path, help='Run ordinary installed prepare first using this job')
     parser.add_argument('--review', type=Path, help='Fresh independent semantic review JSON')
     parser.add_argument('--source-repo', type=Path, help='Git objects of pinned public Weather for review verification')
+    parser.add_argument('--release-archive', type=Path, help='Produced official core archive to qualify or match')
+    parser.add_argument('--release-commit', help='Exact peeled release tag commit expected in the archive')
+    parser.add_argument('--verify-release-report', type=Path, help='Match a previous report by rechecking frozen evidence')
     args = parser.parse_args()
+    require(bool(args.release_archive) == bool(args.release_commit), 'An archive and expected release commit are required together')
+    require(not args.verify_release_report or args.release_archive and args.review and not args.job,
+            'Release verification requires the target archive, frozen run, and independent review')
+    need_git = args.review is not None
+    require(not need_git or args.source_repo is not None, '--source-repo is required with --review')
+    payload_module, payload = None, None
+    if args.release_archive:
+        payload_module = runpy.run_path(str(HERE / 'weather-release-payload.py'))
+        payload, skill = payload_module['read_archive'](args.release_archive, args.release_commit)
+        payload_module['check_install'](payload, skill, load(args.job or args.run_dir / 'inputs/job.json'), args.skill)
+        require(args.runtime_key == payload['runtimeKey'], 'Requested runtime differs from the target release archive')
+        if args.review:
+            payload_module['digest_file'](args.review, 2 * 1024 * 1024)
     if args.job:
         subprocess.run([sys.executable, '-I', '-S', str(args.skill / 'scripts/docs_run.py'), 'prepare',
                         '--job', str(args.job), '--run-dir', str(args.run_dir)], check=True, stdout=sys.stderr)
-    need_git = args.review is not None
-    require(not need_git or args.source_repo is not None, '--source-repo is required with --review')
     inventory = admitted(args.run_dir, args.skill, args.runtime_key)
+    if payload_module:
+        payload_module['check_pins'](payload, load(args.run_dir / 'pins.json'))
     plan = load(args.run_dir / 'inputs/author-plan.json')
     scopes, statements = collect(args.run_dir, inventory, plan)
     report = {'rubricSha256': RUBRIC_SHA, 'runDigest': sha((args.run_dir / 'pins.json').read_bytes()),
@@ -347,6 +391,8 @@ def main():
               'scopes': {op: {key: row[key] for key in ('id', 'page', 'service')} for op, row in scopes.items()},
               'statements': statements}
     if not need_git:
+        if payload:
+            report['targetPayload'] = payload
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     review = load(args.review)
@@ -355,14 +401,19 @@ def main():
     count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors, locations)
     false_count = len(review['materialFalseClaims'])
     passed = full == len(report['criteria']) and not false_count
-    print(json.dumps({'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': len(report['criteria']),
-                      'materialFalseClaims': false_count, 'verifiedAnchors': count,
-                      'runDigest': report['runDigest'], 'rubricSha256': RUBRIC_SHA}, indent=2))
+    decision = {'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': len(report['criteria']),
+                'materialFalseClaims': false_count, 'verifiedAnchors': count,
+                'runDigest': report['runDigest'], 'rubricSha256': RUBRIC_SHA}
+    if payload:
+        decision = release_report(payload, args.run_dir, inventory, report, args.review, decision)
+    if args.verify_release_report:
+        validate_release_report(args.verify_release_report, decision)
+    print(json.dumps(decision, indent=2))
     return 0 if passed else 1
 
 
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError, tarfile.TarError) as error:
         raise SystemExit(str(error)) from error
