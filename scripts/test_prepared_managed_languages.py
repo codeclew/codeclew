@@ -230,25 +230,39 @@ import java.net.http.HttpClient""")
         remember(key, prior)
     }""", """private fun transmit(parcel: Parcel) {
         val key = parcel["lookup-key"].asText()
-        if (attempts[key]?.isAfter(Instant.now()) == true) return
-        attempts[key] = Instant.now()
-        val reply = relay.send(request, HttpResponse.BodyHandlers.discarding())
-        if (reply.statusCode() == 202) {
+        val cached = parcel.token.takeIf { it.isNotEmpty() }
+        if (cached != null) return
+        val status = if (key.isEmpty()) {
+            0
+        } else {
+            require(key.length < 200) { "label too long" }
+            val option = parcel.optional()?.takeIf { it.value.isNotEmpty() } ?: error("missing option")
+            if (attempts[key]?.isAfter(Instant.now()) == true) error("too early")
             attempts[key] = Instant.now()
+            val reply = relay.send(request, HttpResponse.BodyHandlers.discarding())
+            if (reply.statusCode() == 202) {
+                attempts[key] = if (option.value.isEmpty()) Instant.EPOCH else Instant.now()
+            }
+            reply.statusCode()
         }
     }""")
                   .replace("data class Parcel(val key: String, val token: String)", """data class Parcel(val key: String, val token: String) {
     operator fun get(name: String): Label = Label(if (name == "lookup-key") key else token)
+    fun optional(): Label? = Label(key)
 }
 data class Label(val value: String) {
     fun asText(): String = value
 }"""))
         facts, witnesses = self.scheduled_facts(source)
         found = {row["kind"]: row for row in facts}
-        expected = {"HEAP_GUARD_EXIT", "HEAP_WRITE_BEFORE_CALL", "HEAP_FAILURE_BYPASS",
+        expected = {"SCHEDULED_GUARD_EXIT", "HEAP_GUARD_EXIT", "HEAP_WRITE_BEFORE_CALL", "HEAP_FAILURE_BYPASS",
                     "HEAP_WRITE_AFTER_CALL", "SAME_KEY_HEAP_RETRY"}
         self.assertLessEqual(expected, found.keys(), facts)
+        self.assertIn("cached != null", found["SCHEDULED_GUARD_EXIT"]["condition"])
+        self.assertIn("relay.send", found["SCHEDULED_GUARD_EXIT"]["text"])
         self.assertIn("isAfter", found["HEAP_GUARD_EXIT"]["condition"])
+        self.assertIn("passes the Kotlin require guard", found["HEAP_WRITE_BEFORE_CALL"]["condition"])
+        self.assertIn("yields a non-null value", found["HEAP_WRITE_BEFORE_CALL"]["condition"])
         self.assertIn("statusCode", found["HEAP_WRITE_AFTER_CALL"]["condition"])
         self.assertIn("equal derived keys", found["SAME_KEY_HEAP_RETRY"]["uncertainty"])
         proof = [witnesses[ref]["text"] for ref in found["SAME_KEY_HEAP_RETRY"]["sources"] if ref in witnesses]
@@ -335,6 +349,7 @@ data class Label(val value: String) {
         self.assertTrue(any("400" in row["text"] for row in facts), facts)
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
+
 
     def test_typescript_keeps_native_navigation_candidate_open(self):
         self.require_typescript()

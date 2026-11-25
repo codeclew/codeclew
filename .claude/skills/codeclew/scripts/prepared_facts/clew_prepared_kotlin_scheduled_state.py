@@ -35,12 +35,12 @@ class Flow:
     last_external: tuple | None = None
 
 
-def project(unit, root, syntax, protocols, bind, native_calls):
+def project(unit, root, syntax, protocols, hard_guards, bind, native_calls):
     """Recognize ordered source effects without assuming scheduler or transaction activation."""
     owner = unit.enclosing_owner(root)
     if owner is None or root.expression_body:
         return []
-    projector = ScheduledState(unit, syntax, protocols, bind, owner, native_calls)
+    projector = ScheduledState(unit, syntax, protocols, hard_guards, bind, owner, native_calls)
     try:
         body = unit.suite(root.body + 1, root.end)
         projector.walk(body, {param.name: None for param in root.params}, Flow(),
@@ -51,7 +51,7 @@ def project(unit, root, syntax, protocols, bind, native_calls):
 
 
 class ScheduledState:
-    def __init__(self, unit, syntax, protocols, bind, owner, native_calls):
+    def __init__(self, unit, syntax, protocols, hard_guards, bind, owner, native_calls):
         self.unit, self.bind, self.native_calls = unit, bind, native_calls
         self.functions, self.fields = unit.members(owner)
         self.name, self.literal, self.site, self.words = (
@@ -62,6 +62,8 @@ class ScheduledState:
         self.foreach = protocols["FOREACH"]
         self.transactions, self.futures = protocols["TRANSACTIONS"], protocols["FUTURES"]
         self.remote = syntax["REMOTE"]
+        self.unsupported = syntax["Unsupported"]
+        self.hard_names, self.hard_pattern = hard_guards["EXCEPTIONS"], hard_guards["STDLIB"]
         self.rows, self.steps = {}, MAX_STATEMENTS
 
     def phrase(self, site):
@@ -344,6 +346,95 @@ class ScheduledState:
         parts = (tokens[:index], tokens[index + 1:])
         return next((read for part in parts if part and (read := self.access(part, env, allow_suffix=True))), None)
 
+    def assignment(self, tokens):
+        if not tokens:
+            return None
+        parts = tuple(self.split(tokens, "="))
+        return parts if len(parts) == 2 and all(parts) else None
+
+    def rhs_control(self, assignment):
+        if assignment is None or assignment[1][0].text not in {"if", "try"}:
+            return None
+        tokens = assignment[1]
+        first = self.unit.token_indices[tokens[0].start]
+        end = first + len(tokens)
+        try:
+            node, after = self.unit.statement(first, end, 0)
+        except self.unsupported:
+            return None
+        return node if after == end and node.kind in {"if", "try"} else None
+
+    def hard_atom(self, tokens, env):
+        if not (call := self.call(tokens)):
+            return None
+        labels, args, site, end = call
+        member = labels[-1]
+        if member not in self.hard_names or (len(labels) > 1 and labels != ("kotlin", ".", member)):
+            return None
+        if end != len(tokens):
+            first = self.unit.token_indices[tokens[0].start]
+            if self.unit.words[first + end] != "{" or self.unit.pairs.get(first + end) != first + len(tokens) - 1:
+                return None
+            site = self.site(tokens)
+        if len(args) not in ({1} if member == "error" else {1, 2}):
+            return None
+        native = [target for target, _ in self.native(site) if (api := self.make_call(target)) and api[1] == member]
+        if native:
+            if any(not (match := self.hard_pattern.match(target)) or match[1] != member for target in native):
+                return None
+        elif len(labels) == 1:
+            if (member in env or member in self.fields or member in self.functions or self.unit.stars or
+                    self.unit.imports.get(member, {f"kotlin.{member}"}) != {f"kotlin.{member}"} or
+                    any(self.unit.words[index + 1] == member and word in {"fun", "val", "var", "class", "object"}
+                        for index, word in enumerate(self.unit.words[:-1]))):
+                return None
+        elif "kotlin" in env or self.unit.imports.get("kotlin"):
+            return None
+        return member, self.site(args[0]), site
+
+    def hard_stop(self, statement, env):
+        if statement.kind in {"return", "throw", "continue", "break"}:
+            return statement.site
+        if statement.kind == "expression" and (hard := self.hard_atom(statement.expression, env)) and hard[0] == "error":
+            return hard[2]
+        return None
+
+    def expression_guard(self, tokens, env, flow):
+        paths = tuple(self.split(tokens, "?:"))
+        candidate = paths[-1] if len(paths) <= 2 and all(paths) else ()
+        hard = self.hard_atom(candidate, env)
+        if not hard:
+            return flow
+        kind, condition, anchor = hard
+        if len(paths) == 2 and kind == "error":
+            condition = self.site(paths[0])
+            premise = f"{self.code(condition)} yields a non-null value"
+        elif len(paths) == 1 and kind in {"require", "check"}:
+            premise = f"{self.code(condition)} passes the Kotlin {kind} guard"
+        else:
+            return None if kind == "error" and len(paths) == 1 else flow
+        return replace(flow, conditions=(*flow.conditions, premise), evidence=(*flow.evidence, condition, anchor))
+
+    def following_sites(self, suite, env, depth=0):
+        if depth >= 3:
+            return ()
+        sites = []
+        for item in suite[:6]:
+            assignment = self.assignment(item.expression) if item.kind == "expression" else None
+            inner = self.rhs_control(assignment) or item
+            if inner.kind in {"if", "try"}:
+                sites.extend(self.following_sites(inner.body, env, depth + 1))
+                sites.extend(self.following_sites(inner.alternative, env, depth + 1))
+            elif item.kind == "expression":
+                evaluated = assignment[1] if assignment else item.expression
+                if external := self.external(evaluated, env):
+                    sites.append(external[0])
+                elif assignment and self.access(assignment[0], env, write=True):
+                    sites.append(item.site)
+            if len(sites) >= 3 or self.hard_stop(item, env):
+                break
+        return tuple(sites[:3])
+
     def branch(self, statement, env, flow, stack, depth, following):
         guard = self.site(statement.expression)
         read = self.guard_read(statement.expression, env)
@@ -354,16 +445,16 @@ class ScheduledState:
             condition = f"{self.code(guard)} is {str(holds).lower()}"
             selected = replace(flow, conditions=(*flow.conditions, condition), evidence=(*flow.evidence, guard))
             self.walk(suite, dict(env), selected, stack, depth + 1)
-            if not suite or suite[-1].kind not in {"return", "throw", "continue", "break"}:
+            exit_site = self.hard_stop(suite[-1], env) if suite else None
+            if exit_site is None:
                 continuing.append((suite, selected))
-            elif read and following and suite[-1].kind in {"return", "throw"} and all(
-                    item.kind == "expression" for item in suite[:-1]):
-                exit_site = suite[-1].site
+            elif following and all(item.kind == "expression" for item in suite[:-1]):
                 continuation = ", ".join(self.code(site) for site in following)
-                self.add("HEAP_GUARD_EXIT",
-                         f"The in-memory guard can reach {self.code(exit_site)} before "
-                         f"the normal continuation to {continuation}.",
-                         selected, self.fields[read.receiver].site, read.site, *read.key.origins, exit_site, *following,
+                kind = "HEAP_GUARD_EXIT" if read else "SCHEDULED_GUARD_EXIT"
+                subject = "The in-memory guard" if read else "The guard"
+                proof = (self.fields[read.receiver].site, read.site, *read.key.origins) if read else ()
+                self.add(kind, f"{subject} can reach {self.code(exit_site)} before the normal continuation to {continuation}.",
+                         selected, *proof, exit_site, *following,
                          uncertainty="The selected arm and its preceding evaluations must reach the cited exit.")
         if not continuing:
             return None
@@ -379,31 +470,35 @@ class ScheduledState:
             if self.steps <= 0 or statement.kind in {"return", "throw", "break", "continue", "unsupported"}:
                 return
             tokens, words = statement.expression, self.words(statement.expression)
+            assignment = self.assignment(tokens) if statement.kind == "expression" else None
+            local = self.rhs_control(assignment) or statement
             if statement.kind == "for" and len(words) > 2 and self.name(words[0]) and words[1] == "in":
                 self.foreach_loop(words[0], self.site(tokens), statement.body, env, flow, stack, depth)
                 continue
-            if statement.kind == "try":
-                hazard = self.cleanup_writes((statement.cleanup, *(branch for _, _, branch in statement.handlers)), env)
-                self.walk(statement.body, dict(env), replace(flow, invalidated=flow.invalidated | hazard), stack, depth + 1)
+            if local.kind == "try":
+                hazard = self.cleanup_writes((local.cleanup, *(branch for _, _, branch in local.handlers)), env)
+                self.walk(local.body, dict(env), replace(flow, invalidated=flow.invalidated | hazard), stack, depth + 1)
                 flow = replace(flow, reads=(), writes=(), invalidated=flow.invalidated | hazard)
-                continue
-            if statement.kind == "if":
-                following = tuple(item.site for item in suite[index + 1:index + 4] if item.kind == "expression")
-                flow = self.branch(statement, env, flow, stack, depth, following)
+            if local.kind == "if":
+                following = self.following_sites(suite[index + 1:], env) or tuple(
+                    item.site for item in suite[index + 1:index + 3] if item.kind == "expression")
+                flow = self.branch(local, env, flow, stack, depth, following)
                 if flow is None:
                     return
+            if statement.kind in {"try", "if"}:
                 continue
             if statement.kind != "expression":
                 return
             self.callbacks(statement, env, flow, stack, depth)
-            assignment = tuple(self.split(tokens, "="))
-            assigned = len(assignment) == 2 and all(assignment)
-            evaluated = assignment[1] if assigned else tokens
+            evaluated = assignment[1] if assignment else tokens
+            flow = self.expression_guard(evaluated, env, flow)
+            if flow is None:
+                return
             self.helper(evaluated, env, flow, stack, depth)
             if external := self.external(evaluated, env):
                 self.outcome(external, flow, self.later(suite, index))
                 flow = replace(flow, last_external=external)
-            if assigned:
+            if assignment:
                 lhs, rhs = assignment
                 labels = self.words(lhs)
                 if labels[0] in {"val", "var"} and len(labels) > 1 and self.name(labels[1]):

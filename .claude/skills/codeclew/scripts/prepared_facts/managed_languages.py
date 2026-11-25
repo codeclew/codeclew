@@ -241,7 +241,8 @@ def kotlin_scheduled_state(process, context):
                                          "HTTP" if event.get("http") else "KAFKA" if event.get("kafka") else "CALL"))
 
     facts = module("prepared_kotlin_scheduled_state")["project"](
-        unit, method, syntax, module("prepared_kotlin_protocols"), bind, native_calls)
+        unit, method, syntax, module("prepared_kotlin_protocols"), module("prepared_kotlin_hard_exits"),
+        bind, native_calls)
     used = {ref for row in facts for ref in row["sources"]}
     return facts, {ref: value for ref, value in witnesses.items() if ref in used}
 
