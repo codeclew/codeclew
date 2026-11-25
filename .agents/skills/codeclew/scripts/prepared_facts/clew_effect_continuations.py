@@ -685,7 +685,7 @@ class Trace:
             step = key(symbol=operation["symbol"], command=operation.get("command"), unresolved=operation.get("unresolved"),
                        parameter=operation.get("parameter"),
                        **{name: operation[name] for name in ("httpResult", "objectType", "recordFields", "resourceFamily",
-                                                            "emptyList", "candidateEffectFamily", "transparentRecord")
+                                                            "emptyList", "candidateEffectFamily", "transparentRecord", "freshJsonOptions")
                           if operation.get(name)})
             arguments = argument_values(operation.get("arguments", ()), frame)
             work = forget_lists(replace(state, memory={}), tuple(arg["value"] for arg in arguments))
@@ -737,7 +737,7 @@ class Trace:
                    **{key: evidence[key] for key in ("sql", "sourceSql", "topic") if key in evidence},
                    **({"kafkaTopicPosition": kafka_position} if kafka_position is not None else {}),
                    **{key: call[key] for key in ("httpResult", "receiverFamily", "resultFamily", "valueFactory", "implicit", "nullDefault",
-                                                  "directEffectFamily", "localJsonSerialization")
+                                                  "directEffectFamily", "localJsonPayload")
                       if call.get(key)},
                    **({"predicateSite": fn.site(call["predicateSite"])} if call.get("predicateSite") else {}),
                    boundSources=[self.functions[target].citation] if target else [])

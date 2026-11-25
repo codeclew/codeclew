@@ -197,30 +197,53 @@ internal static class ManagedValues
         _ => false,
     };
 
-    internal static bool IsLocalJsonSerialization(IMethodSymbol method, IInvocationOperation invocation)
+    internal static bool IsFreshJsonOptions(IObjectCreationOperation creation)
     {
-        // Default serialization of an anonymous scalar payload cannot call application converters or getters.
-        if (ValueFactory(method) != "JSON_SERIALIZE" || method.Parameters is not [_, { Name: "options" }]) return false;
-        var arguments = invocation.Arguments;
-        return arguments.Any(argument => argument.Parameter?.Ordinal == 0 && LocalJsonValue(argument.Value.Type)) &&
-            arguments.All(argument => argument.Parameter?.Ordinal == 0 ||
-                argument.Parameter?.Ordinal == 1 && argument.Value.ConstantValue is { HasValue: true, Value: null });
+        if (creation.Initializer is not null || creation.Constructor is not { } method ||
+            method.ContainingAssembly.Name != "System.Text.Json" ||
+            method.ContainingType.ToDisplayString() != "System.Text.Json.JsonSerializerOptions") return false;
+        return method.Parameters.IsEmpty ||
+            method.Parameters is [{ Name: "defaults" } defaults] &&
+            defaults.Type.ToDisplayString() == "System.Text.Json.JsonSerializerDefaults" &&
+            creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: 0 or 1 } }];
     }
 
-    private static bool LocalJsonValue(ITypeSymbol? type, int depth = 0)
+    internal static object? LocalJsonPayload(IMethodSymbol method, IInvocationOperation invocation)
     {
-        if (type is null || depth > 4) return false;
+        if (ValueFactory(method) != "JSON_SERIALIZE" || method.Parameters is not [_, { Name: "options" } options] ||
+            options.Type.ToDisplayString().TrimEnd('?') != "System.Text.Json.JsonSerializerOptions") return null;
+        return LocalJsonShape(invocation.Arguments.SingleOrDefault(argument => argument.Parameter?.Ordinal == 0)?.Value.Type);
+    }
+
+    private static object? LocalJsonShape(ITypeSymbol? type, int depth = 0)
+    {
+        if (type is null || depth > 4) return null;
         if (type.SpecialType is SpecialType.System_Boolean or SpecialType.System_String or SpecialType.System_Char or
             SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
             SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or
             SpecialType.System_Decimal or SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_DateTime)
-            return true;
-        if (type is not INamedTypeSymbol named) return false;
+            return "scalar";
+        if (type is not INamedTypeSymbol named) return null;
         if (named.Name == "Guid" && named.ContainingNamespace.ToDisplayString() == "System" &&
-            named.ContainingAssembly.Name == "System.Private.CoreLib") return true;
+            named.ContainingAssembly.Name == "System.Private.CoreLib") return "scalar";
         if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
-            return LocalJsonValue(named.TypeArguments[0], depth + 1);
-        return named.IsAnonymousType && named.GetMembers().OfType<IPropertySymbol>()
-            .All(property => LocalJsonValue(property.Type, depth + 1));
+            return LocalJsonShape(named.TypeArguments[0], depth + 1);
+
+        var properties = named.GetMembers().OfType<IPropertySymbol>().Where(property =>
+            property.DeclaredAccessibility == Accessibility.Public && !property.IsStatic).ToArray();
+        if (!named.IsAnonymousType)
+        {
+            if (!named.IsRecord || named.InstanceConstructors.Count(IsTransparentRecordConstruction) != 1 ||
+                named.DeclaringSyntaxReferences[0].GetSyntax() is not RecordDeclarationSyntax declaration ||
+                declaration.AttributeLists.Count != 0 || declaration.ParameterList is not { } primary ||
+                primary.Parameters.Any(parameter => parameter.AttributeLists.Count != 0) ||
+                !properties.Select(property => property.Name).ToHashSet().SetEquals(
+                    primary.Parameters.Select(parameter => parameter.Identifier.ValueText))) return null;
+        }
+        if (properties.Length > 12) return null;
+        var fields = properties.Select(property => new { name = property.Name, shape = LocalJsonShape(property.Type, depth + 1) }).ToArray();
+        return fields.Any(field => field.shape is null) ? null : new {
+            kind = named.IsAnonymousType ? "anonymous" : "record", type = named.ToDisplayString(), fields,
+        };
     }
 }

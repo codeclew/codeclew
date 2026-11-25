@@ -1082,7 +1082,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                     ("receiverFamily", ManagedValues.ResourceFamily(invocation.Instance?.Type)),
                     ("resultFamily", ManagedValues.ResourceFamily(target.ReturnType)), ("implicit", invocation.IsImplicit),
                     ("valueFactory", factory), ("nullDefault", factory == "LINQ_FIRST_OR_DEFAULT" && ManagedValues.NullDefault(target.ReturnType)),
-                    ("localJsonSerialization", ManagedValues.IsLocalJsonSerialization(target, invocation)),
+                    ("localJsonPayload", ManagedValues.LocalJsonPayload(target, invocation)),
                     ("predicateSite", lambda is not null ? Site(lambda) : null),
                     ("selector", Selector(lambda)),
                     ("hasSelector", selector is not null),
@@ -1123,6 +1123,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                         listConstructor.Parameters.All(parameter => parameter.Name == "capacity")),
                     ("recordFields", ManagedValues.RecordFields(creation.Constructor)),
                     ("transparentRecord", ManagedValues.IsTransparentRecordConstruction(creation.Constructor)),
+                    ("freshJsonOptions", ManagedValues.IsFreshJsonOptions(creation)),
                     ("unresolved", false), ("parameter", AdoOperations.IsType(creation.Type, "DbParameter")));
                 break;
             case IInvalidOperation when operation.Syntax is BaseObjectCreationExpressionSyntax creation:

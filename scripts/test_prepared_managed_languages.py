@@ -1340,10 +1340,22 @@ public static class Intake
     private static int GetReadiness() => Task.Run(() => 1).GetAwaiter().GetResult();
 }''')
         custom_accessor = data.replace(record, record[:-1] + "\n{\n    public double East => 0;\n}")
+        options = payload.replace('var body = JsonSerializer.Serialize(new { Id = identifier });',
+                                  '''var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var alias = options;
+        var key = new ReceiptKey(identifier);
+        var body = JsonSerializer.Serialize(new { Item = key }, alias);''')
+        options += "public record ReceiptKey(Guid Id);\n"
+        changed_options = options.replace("var alias = options;", "var alias = options;\n        alias.WriteIndented = true;")
+        custom_payload = options.replace("public record ReceiptKey(Guid Id);",
+                                         "public record ReceiptKey(Guid Id) { public Guid Extra => Guid.NewGuid(); }")
         cases = (
             ("closed", source, "", ("SaveAsync",), True),
             ("payload and cleanup", payload, "", ("SaveAsync",), True),
             ("unverified serializer options", custom_options, "", ("SaveAsync",), False),
+            ("fresh default options and nested record", options, "", ("SaveAsync",), True),
+            ("changed fresh options", changed_options, "", ("SaveAsync",), False),
+            ("record with custom serialized getter", custom_payload, "", ("SaveAsync",), False),
             ("lookup precedes write", source.replace("if (!accepted) return Results.BadRequest();",
                                                      "if (!accepted) return Results.BadRequest();\n        " + lookup),
              "", ("SaveAsync",), True),

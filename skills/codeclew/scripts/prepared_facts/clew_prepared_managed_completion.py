@@ -23,6 +23,10 @@ DISPOSAL = {"Dispose", "DisposeAsync"}
 MAX_WRITES = 4
 
 
+def references(value, allocation):
+    return value == allocation or isinstance(value, (list, tuple)) and any(references(item, allocation) for item in value)
+
+
 class ClosedReturn:
     def __init__(self, facts, path):
         self.facts, self.steps = facts, facts.steps
@@ -31,19 +35,52 @@ class ClosedReturn:
         self.read_calls = {check["test"] for row in commands for check in row.get("rowChecks", ())}
         self.commits = {row["commitIndex"]: row for row in facts.transactions[path["id"]] if "status" in row}
         self.pending, self.resources = {}, {}
+        self.records, self.serializer_options = {}, set()
         self.proof, self.writes, self.reader_loops = [], [], set()
         self.awaited = False
 
     def construction(self, step, event):
         symbol = step.get("symbol") or ""
-        if (step.get("httpResult") or step.get("transparentRecord")
-                or step.get("emptyList") and symbol.startswith("M:System.Collections.Generic.List")):
+        arguments = event.get("arguments", ())
+        self.forget_options(*(argument["value"] for argument in arguments))
+        if step.get("freshJsonOptions"):
+            self.serializer_options.add(event["result"])
+            return True
+        if step.get("transparentRecord"):
+            self.records[event["result"]] = (step["objectType"], {argument.get("name"): argument["value"]
+                                                                  for argument in arguments})
+            return True
+        if step.get("httpResult") or step.get("emptyList") and symbol.startswith("M:System.Collections.Generic.List"):
             return True
         if family := step.get("resourceFamily"):
             if step.get("candidateEffectFamily") == "database" or symbol.startswith("M:System.Data.Common.Db"):
                 self.resources[event["result"]] = family
                 return True
         return False
+
+    def forget_options(self, *operands):
+        self.serializer_options.difference_update({options for options in self.serializer_options
+                                                   if any(references(operand, options) for operand in operands)})
+
+    def json_value(self, shape, value):
+        if value is None:
+            return False
+        if shape == "scalar" or value == ("literal", None):
+            return True
+        if shape["kind"] == "anonymous":
+            if value[0] != "record":
+                return False
+            fields = dict(value[1])
+        else:
+            if value not in self.records or self.records[value][0] != shape["type"]:
+                return False
+            fields = self.records[value][1]
+        return all(self.json_value(field["shape"], fields.get(field["name"])) for field in shape["fields"])
+
+    def json_serialization(self, shape, invocation):
+        arguments = {argument["position"]: argument["value"] for argument in invocation.get("arguments", ())}
+        options = arguments.get(1, ("literal", None))
+        return (options == ("literal", None) or options in self.serializer_options) and self.json_value(shape, arguments.get(0))
 
     def provider(self, step, invoked, index):
         name, role = step.get("spelling"), step.get("role")
@@ -84,7 +121,10 @@ class ClosedReturn:
         if done.get("composed") in COMPOSED:
             # The helper's effects have gone through the same closure check before this resume.
             return True
-        if step.get("httpResult") or step.get("valueFactory") == "GUID_NEW" or step.get("localJsonSerialization"):
+        if payload := step.get("localJsonPayload"):
+            return self.json_serialization(payload, invocation)
+        self.forget_options(invocation.get("receiver"), *(arg["value"] for arg in invocation.get("arguments", ())))
+        if step.get("httpResult") or step.get("valueFactory") == "GUID_NEW":
             return True
         role, factory = step.get("role"), step.get("valueFactory")
         if role in {"LIST_ADD", "LIST_CLEAR"} and step.get("directEffectFamily") == "local":
@@ -102,6 +142,8 @@ class ClosedReturn:
         step = self.steps[key]
         if outcome in OPEN_EVENTS or event.get("unexpandedSource") or step["kind"] == "CATCH":
             return False
+        if outcome in {"STATE_WRITE_REACHED", "RESOURCE_CONFIGURATION_REACHED"}:
+            self.forget_options(event.get("resource"), event.get("value"))
         if step.get("loopTest") and outcome in {"TRUE", "FALSE"}:
             if key not in self.read_calls:
                 return False
