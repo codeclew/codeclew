@@ -46,6 +46,12 @@ def plan(job, inventory, prepared, instructions):
     ready = load(home / 'requirements.json')
     selections = [ready[row['id']]['evidenceCandidates'] for row in discoveries + entries]
     handles = list(dict.fromkeys(handle for selection in selections for handle in selection))
+    prepared_facts = scope.get('preparedFacts')
+    if prepared_facts:
+        known_files = {row['file'] for row in discoveries}
+        if any(source['file'] not in known_files for source in prepared_facts['citations'].values()):
+            return workspace('PREPARED_FACTS_REQUIRE_WORKSPACE_SOURCE'), None
+        handles = list(dict.fromkeys([*handles, *sorted(prepared_facts['citations'])]))
     if len(handles) > MAX_CITATIONS:
         return workspace('INLINE_CITATION_LIMIT'), None
     aliases = {'S' + str(i): handle for i, handle in enumerate(handles, 1)}
@@ -79,12 +85,15 @@ def plan(job, inventory, prepared, instructions):
     checks = load(check_path) if check_path.exists() else []
     for i, check in enumerate(checks, 1):
         return_refs['R' + str(i)] = check
+    citation_locations = {handle: {key: row['source'][key] for key in ('file', 'startLine', 'endLine')}
+                          for handle, row in bindings.items()}
+    if prepared_facts:
+        citation_locations.update(prepared_facts['citations'])
     packet = {
         'request': job['request'], 'language': job['language'], 'service': service,
         'coverage': scope['coverage']['coverage'], 'limits': scope['coverage'].get('boundaries', []),
         'files': {ref: {key: value for key, value in row.items() if key != 'id'} for ref, row in files.items()},
-        'citations': {alias: {key: bindings[handle]['source'][key] for key in ('file', 'startLine', 'endLine')}
-                      for alias, handle in aliases.items()},
+        'citations': {alias: citation_locations[handle] for alias, handle in aliases.items()},
         'entries': {ref: {'method': row['method'], 'path': row['path'],
                           'cites': [handle_to_alias[h] for h in ready[row['id']]['evidenceCandidates']]}
                     for ref, row in entry_refs.items()},
@@ -92,6 +101,22 @@ def plan(job, inventory, prepared, instructions):
                           'condition': row['predicate'], 'cite': handle_to_alias[row['cite']]}
                     for ref, row in return_refs.items()},
     }
+    if prepared_facts:
+        facts = load(prepared_facts['path'])['entries']
+        entry_aliases = {row['id']: ref for ref, row in entry_refs.items()}
+        file_aliases = {row['id']: ref for ref, row in files.items()}
+        packet['preparedFacts'] = {
+            alias: [
+                {**fact, 'sources': [handle_to_alias[handle] for handle in fact['sources']],
+                 **({'witnesses': [{**row, 'cite': handle_to_alias[row['cite']]} for row in fact['witnesses']]}
+                    if 'witnesses' in fact else {})}
+                for fact in facts[identity].get('propositions', ())
+            ] for identity, alias in {**entry_aliases, **file_aliases}.items()
+            if facts[identity].get('propositions')
+        }
+        instructions += ('\n\nUse relevant preparedFacts for the named entry or file. Preserve their conditions, '
+                         'authority and uncertainty, and use the supplied citation aliases. '
+                         'Consult the retained source to complete the explanation and check each fact.')
     prompt = instructions + '\n\n' + json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n'
     prompt_bytes = len(prompt.encode())
     if prompt_bytes > MAX_PROMPT_BYTES:

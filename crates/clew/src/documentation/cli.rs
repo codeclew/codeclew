@@ -218,6 +218,9 @@ pub enum ServiceCommand {
         root: PathBuf,
         #[arg(long)]
         id: String,
+        /// Include the verified local checkout binding for this service.
+        #[arg(long)]
+        local_binding: bool,
     },
 }
 #[derive(Debug, Subcommand)]
@@ -377,12 +380,26 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                 let repo = Repository::open(&args.root)?;
                 inspect(&repo, repo.services()?, &args)
             }
-            ServiceCommand::Show { root, id } => {
+            ServiceCommand::Show {
+                root,
+                id,
+                local_binding,
+            } => {
                 let repo = Repository::open(&root)?;
                 let rows = repo.services()?;
-                Ok(
-                    json!({"schema":"codeclew-docs-record/1.0","inputDigest":repo.input_digest()?,"record":rows.get(&id).ok_or_else(||invalid("unknown service"))?}),
-                )
+                let service = rows.get(&id).ok_or_else(|| invalid("unknown service"))?;
+                let mut response = json!({
+                    "schema": "codeclew-docs-record/1.0",
+                    "inputDigest": repo.input_digest()?,
+                    "record": service,
+                });
+                if local_binding {
+                    response["localBinding"] = json!({
+                        "repository": analysis::bound_repository(&repo, service)?,
+                        "repositoryId": service.repository_id,
+                    });
+                }
+                Ok(response)
             }
         },
         Command::Interaction { command } => match command {

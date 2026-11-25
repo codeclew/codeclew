@@ -323,7 +323,7 @@ else:
                 self.assertRegex(html, r' —\s+--reserve &amp; fulfil</title>')
                 self.assertNotIn(REQUEST_MARKER, html)
 
-    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False):
+    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False, project=None):
         text = body or ('fun reserve(count: Int): Int {\n'
                         '    if (count < 0) return 0\n'
                         '    accepted.add(count)\n'
@@ -334,8 +334,13 @@ else:
         source = {**self.source, 'file': 'src/Reservations.kt', 'text': text,
                   'textDigest': D['sha'](raw), 'endLine': len(text.splitlines()),
                   'occurrence': {**self.source['occurrence'], 'blob': blob, 'endByte': len(raw)}}
+        if project is not None:
+            self.job['evidenceMode'] = 'PREPARED_FACTS'
+            source['authority'] = 'EXACT_SNAPSHOT_TEXT'
+            self.native_entry['sourceReferences'] = ['s9']
         shutil.rmtree(self.manifest.parent)
-        self.manifest, _, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work', record=source)
+        self.manifest, _, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work',
+                                           record=source, authority=source['authority'])
         scope = self.inventory['services'][self.service]
         files = [source['file']]
         inventory_rows = [self.native_entry, {'kind': 'THREAD_SCOPE'},
@@ -355,6 +360,10 @@ else:
                 rows = [{'id': source['id'], 'kind': 'SOURCE_NAVIGATION', 'record': {
                     'source': {key: value for key, value in source.items() if key != 'text'},
                     'recordDigest': F['digest'](source), 'textDelivered': False, 'authority': 'NAVIGATION_ONLY'}}]
+            elif selected == 'THREAD_CONTEXT':
+                rows = [{'kind': 'THREAD_OBLIGATION', 'id': 'BODY:owned-symbol', 'obligationKind': 'BODY',
+                         'record': {'declaration': 'owned-symbol', 'sourceIds': [source['id']]},
+                         'sourceReferences': ['s9']}]
             else:
                 rows = inventory_rows if selected == 'THREAD_INVENTORY' else [scope['coverage']]
             D['save'](output / 'items.json', rows)
@@ -363,6 +372,8 @@ else:
 
         native = D['command']
         def command(argv, directory, label, **kwargs):
+            if label == 'local-binding':
+                raise D['Stop']('OWNED_MISSING_LOCAL_BINDING')
             if label not in ('discover', 'read'):
                 return native(argv, directory, label, **kwargs)
             output = Path(argv[argv.index('--output-dir') + 1])
@@ -377,7 +388,14 @@ else:
         D['save'](self.job_path, self.job)
         run = self.root / 'inline-run'
         self.enterContext(patch.dict(D['T'], {'collect': collect}))
-        with patch.dict(D['prepare'].__globals__, {'command': command}):
+        actual_run_path = runpy.run_path
+
+        def run_path(filename, **kwargs):
+            if project is not None and filename.endswith('/managed_languages.py'):
+                return {'project': project}
+            return actual_run_path(filename, **kwargs)
+
+        with patch.dict(D['prepare'].__globals__, {'command': command}), patch.object(runpy, 'run_path', run_path):
             receipt = D['prepare'](self.job_path, run)
         shutil.rmtree(self.manifest.parent)
         return run, receipt, member_checks, source
@@ -405,6 +423,49 @@ else:
                     'discovery': 'ADDITIONAL_STARTS' if added else 'NO_ADDITIONAL_STARTS', 'starts': [start] if added else []}],
                 'unresolved': ['Wire response and registration remain unknown.'],
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
+
+    def test_prepared_facts_deliver_only_bound_witnesses_and_use_the_normal_renderer(self):
+        def project(process, context, *, node):
+            if process['root'] is None:
+                return [], {}
+            proof, = context['sourceRanges']
+            self.assertEqual(proof['references'], ['s9'])
+            text = 'return 0'
+            start = proof['text'].encode().find(text.encode())
+            witness = {**proof, 'text': text, 'startByte': start, 'endByte': start + len(text),
+                       'startLine': 2, 'endLine': 2, 'textDigest': D['sha'](text.encode())}
+            accepted = {'kind': 'return', 'authority': 'SOURCE_EVIDENCE', 'status': 'SUPPORTED',
+                        'text': 'The handler returns zero.', 'condition': [{'text': 'The count is negative.'}],
+                        'uncertainty': 'Serialization remains open.', 'sources': ['exact-witness']}
+            return [accepted, {**accepted, 'text': 'Foreign body.', 'sources': ['wrong-revision']}], {
+                'exact-witness': witness, 'wrong-revision': {**witness, 'revision': '0' * 40}}
+
+        run, prepared, _, _ = self.prepare_inline_fixture(project=project)
+        self.assertEqual(prepared['authorMode'], 'INLINE')
+        self.assertEqual(prepared['preparedFacts'][self.service]['facts'], 1)
+        self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'PREPARED': 1, 'NO_CITABLE_FACTS': 1})
+        prompt = (run / 'prompt.txt').read_text()
+        packet = json.loads(prompt.split('\n\n')[-1])
+        fact, = packet['preparedFacts']['E1']
+        self.assertEqual(fact['sources'], ['S1'])
+        self.assertEqual(fact['witnesses'][0]['cite'], 'S1')
+        self.assertEqual(fact['condition'], 'The count is negative.')
+        self.assertNotIn('Foreign body.', prompt)
+        response = self.inline_response()
+        D['save'](self.seed / 'inline-response.json', response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        html = Path(result['ready']) / 'html/reservations-post-reservations.html'
+        self.assertIn('Return the updated list size', html.read_text())
+
+    def test_prepared_facts_no_adapter_output_retains_inline_source_authoring(self):
+        run, prepared, _, source = self.prepare_inline_fixture(project=lambda *args, **kwargs: ([], {}))
+        self.assertEqual(prepared['authorMode'], 'INLINE')
+        self.assertEqual(prepared['preparedFacts'][self.service]['facts'], 0)
+        self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'], {'NO_CITABLE_FACTS': 2})
+        prompt = (run / 'prompt.txt').read_text()
+        self.assertNotIn('preparedFacts', prompt)
+        self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
 
     def test_inline_normal_entry_point_assembles_explicit_content_and_discovered_start(self):
         run, prepared, membership, source = self.prepare_inline_fixture()

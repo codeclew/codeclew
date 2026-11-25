@@ -64,6 +64,42 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
+## Prepared evidence propositions
+
+Set `"evidenceMode": "PREPARED_FACTS"` to use the packaged deterministic
+source projectors before authoring. The default is `RETAINED_SOURCE`.
+Prepare records per-entry and per-file coverage in `prepared-facts.json`.
+The runner supplies usable propositions with their conditions, authority,
+uncertainty and the ordinary citation handles. The author compares them to the
+retained source and fills gaps using the same Work. An unavailable adapter,
+unsupported source shape, missing operations or unbound propositions leave the
+ordinary retained source available. Prepared facts do not establish runtime
+execution, deployment, registration, or completeness.
+
+Preparation has a separate bounded window for the optional projectors. Java
+uses an available JDK 21 or later. The TypeScript projector uses the companion
+locked dependencies supplied with the installed skill. The managed projector
+uses an available .NET SDK 10 or later. Install optional dependencies outside
+the skill directory so the release package retains its identity. For TypeScript,
+copy `scripts/prepared_facts/package.json` and its lockfile into an isolated
+dependency directory and prepare with that module search path:
+
+```sh
+mkdir -p "$CODECLEW_FACT_DEPS"
+cp "$CODECLEW_SKILL_DIR/scripts/prepared_facts/package.json" "$CODECLEW_FACT_DEPS/"
+cp "$CODECLEW_SKILL_DIR/scripts/prepared_facts/package-lock.json" "$CODECLEW_FACT_DEPS/"
+npm ci --ignore-scripts --prefix "$CODECLEW_FACT_DEPS"
+NODE_PATH="$CODECLEW_FACT_DEPS/node_modules" python3 -I -S "$CODECLEW_SKILL_DIR/scripts/docs_run.py" prepare --job /absolute/job.json --run-dir /absolute/new-run
+```
+
+The projectors first use exact retained bytes. When a parser needs a full file
+and Work only has fragments, preparation can use the immutable Git commit in
+the locally bound checkout verified by `clew docs service show --local-binding`.
+This read uses the captured revision, with no checkout or network access. Exact
+Work citations still gate every proposition. A narrower witness has to match
+the bytes and coordinates of an admitted Work citation. The ordinary runner
+checks and renderer still apply to every final claim.
+
 ## Author delivery
 
 Prepare returns the author mode and the reason it was selected. A single service

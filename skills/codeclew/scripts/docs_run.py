@@ -225,7 +225,9 @@ def command(argv, directory, label, *, timeout=120):
 
 def validate_job(job):
     closed(job, ('schema', 'request', 'clew', 'root', 'snapshot', 'services', 'language', 'renderer', 'node', 'author', 'budget'),
-           ('components',))
+           ('components', 'evidenceMode'))
+    need(job.get('evidenceMode', 'RETAINED_SOURCE') in ('RETAINED_SOURCE', 'PREPARED_FACTS'),
+         'INVALID_EVIDENCE_MODE')
     need(job['schema'] == SCHEMA and isinstance(job['request'], str) and job['request'].strip(), 'INVALID_JOB')
     need(job['language'] in ('en', 'ru'), 'INVALID_LANGUAGE')
     need(isinstance(job['services'], list) and 1 <= len(job['services']) <= 16
@@ -257,7 +259,7 @@ def renderer_pins(job, receipts):
     return {'files': actual, 'parser': probe}
 
 
-def requirements(service, rows, initial):
+def requirements(service, rows, initial, *, prepared_facts=False):
     coverage = [r for r in initial if r['kind'] == 'COVERAGE']
     need(len(coverage) == 1 and coverage[0].get('revision'), 'SERVICE_REVISION_REQUIRED', service=service)
     result, seen, page_names = [], set(), set()
@@ -290,6 +292,8 @@ def requirements(service, rows, initial):
                            'sourceReferences': row.get('sourceReferences', []),
                            'rootDeclarations': record.get('rootDeclarations', []),
                            'authority': trigger.get('authority'), 'boundaries': entry.get('boundaries', [])})
+            if prepared_facts:
+                result[-1].update(entrySymbol=entry.get('symbol'), trigger=trigger)
     for row in rows:
         if row['kind'] == 'THREAD_FILE' and row['record']['input'].get('coverage') != 'FILE_ONLY':
             file = row['record']['path']
@@ -652,6 +656,39 @@ def _prepare_sources(job, inventory, directory):
     return result
 
 
+def prepare_facts(job, inventory, prepared):
+    helper = runpy.run_path(str(HERE / 'docs_run_prepared.py'), init_globals={
+        'load': load, 'save': save, 'command': command, 'need': need, 'sha': sha,
+        'encode': encode, 'digest': digest, 'Stop': Stop, 'collect': T['collect'],
+        'citation_load': M['C']['load'], 'CitationStop': M['C']['Stop'],
+    })
+    deadline = time.monotonic() + 180
+    summaries = {}
+    for service, scope in prepared['services'].items():
+        home = Path(scope['sourceIndex']).parent
+        if scope['manifest']:
+            _, packet, _, entries = M['C']['load'](scope['manifest'])
+        else:
+            packet, entries = {'outcomes': [], 'texts': {}}, {}
+        required = [row for row in inventory['requirements']
+                    if row['service'] == service and row['kind'] in ('ENTRY', 'DISCOVERY')]
+        selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
+                                     packet, home, deadline)
+        citations = selected.pop('citations')
+        summaries[service] = selected
+        if not selected['facts']:
+            continue
+        scope['preparedFacts'] = {'path': str(home / 'prepared-facts.json'), 'citations': citations}
+        with (home / 'index.md').open('a', encoding='utf-8') as index:
+            index.write('\n## Prepared evidence propositions\n\n'
+                        'Open prepared-facts.json for cited propositions relevant to the request. '
+                        'Preserve each condition, authority and uncertainty when using a proposition. '
+                        'Use its listed source handles and check it against retained evidence. '
+                        'A missing proposition leaves the ordinary retained source workflow in place.\n')
+    tree(Path(next(iter(prepared['services'].values()))['sourceIndex']).parents[1])
+    return summaries
+
+
 def start_kind(requirement):
     return {'HTTP_ENDPOINT': 'http', 'KAFKA_LISTENER': 'kafka',
             'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
@@ -716,6 +753,7 @@ def prepare(job_path, run):
     need(isinstance(capabilities, dict) and capabilities.get('runtimeMode') == 'RELEASE', 'SUPPORTED_RELEASE_RUNTIME_REQUIRED', blocked=True)
     renderer = renderer_pins(job, inputs / 'receipts')
     scopes, expected = {}, []
+    prepared_facts = job.get('evidenceMode') == 'PREPARED_FACTS'
     request = {'schema': 'codeclew-documentation-work-request/1.0', 'audience': 'Service documentation',
                'documentationLanguage': job['language'], 'maxItems': 100, 'maxBytes': 49152}
     # --language is the supported CLI selector; keep the request schema portable.
@@ -736,7 +774,7 @@ def prepare(job_path, run):
             need(collection['identity']['snapshot'] == job['snapshot'], 'SNAPSHOT_MISMATCH')
         initial_rows = load(directory / 'initial/items.json')
         rows = load(directory / 'threads/items.json')
-        members, coverage = requirements(service, rows, initial_rows)
+        members, coverage = requirements(service, rows, initial_rows, prepared_facts=prepared_facts)
         expected.extend(members)
         scopes[service] = {'work': work, 'revision': coverage['revision'],
                            'contextDigest': selected['identity']['contextDigest'], 'inputDigest': selected['identity']['inputDigest'],
@@ -748,6 +786,7 @@ def prepare(job_path, run):
     need(required_pages <= M['MAX_PAGES'], 'REQUIRED_PAGE_LIMIT', requiredPages=required_pages, limit=M['MAX_PAGES'],
          nextAction='For multiple services, prepare smaller service groups. If one service exceeds the limit, use the retained Work and compose explicit groups of entry pages as separate docsets.')
     prepared_sources = prepare_sources(job, inventory, inputs / 'author-source')
+    fact_summary = prepare_facts(job, inventory, prepared_sources) if prepared_facts else None
     selected, inline_prompt = I['plan'](job, inventory, prepared_sources,
                                        (SKILL / 'templates/docs-run-inline-prompt.txt').read_text())
     save(inputs / 'author-plan.json', selected)
@@ -775,7 +814,8 @@ def prepare(job_path, run):
     save(run / 'state.json', {'schema': 'codeclew-docs-run-state/1.0', 'status': 'PREPARED', 'attempts': [],
                               'modelTokens': 0, 'usageAvailable': True, 'authorStartedAt': None})
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins),
-            'authorMode': selected['mode'], 'authorModeReason': selected['reason']}
+            'authorMode': selected['mode'], 'authorModeReason': selected['reason'],
+            **({'preparedFacts': fact_summary} if fact_summary is not None else {})}
 
 
 def frozen_inputs(run):
