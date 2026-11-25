@@ -467,6 +467,22 @@ else:
         self.assertNotIn('preparedFacts', prompt)
         self.assertIn(json.dumps(source['text'], ensure_ascii=False), prompt)
 
+    def test_prepared_facts_projector_failure_preserves_retained_source_and_reason(self):
+        def project(process, context, *, node):
+            if process['root']:
+                raise AttributeError('Private literal from an unsupported language structure')
+            return [], {}
+
+        run, prepared, _, source = self.prepare_inline_fixture(project=project)
+        self.assertEqual(prepared['authorMode'], 'INLINE')
+        self.assertEqual(prepared['preparedFacts'][self.service]['statusCounts'],
+                         {'PROJECTOR_FAILED': 1, 'NO_CITABLE_FACTS': 1})
+        sidecar = run / 'inputs/author-source' / self.service / 'prepared-facts.json'
+        entries = D['load'](sidecar)['entries']
+        self.assertEqual(entries[self.entry['id']]['failedProjectors'], {'managed_languages': 'AttributeError'})
+        self.assertNotIn('Private literal', sidecar.read_text())
+        self.assertIn(json.dumps(source['text'], ensure_ascii=False), (run / 'prompt.txt').read_text())
+
     def test_inline_normal_entry_point_assembles_explicit_content_and_discovered_start(self):
         run, prepared, membership, source = self.prepare_inline_fixture()
         self.assertEqual(prepared['authorMode'], 'INLINE')

@@ -378,7 +378,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
         if not languages:
             row['status'] = 'NO_RETAINED_ROOT_BODY'
             continue
-        propositions, unbound, unavailable = [], 0, []
+        propositions, unbound, unavailable, failed = [], 0, [], {}
         local = {site['id'] for site in context['sourceRanges']}
         for filename, allowed in ADAPTERS.items():
             if not languages & allowed:
@@ -388,10 +388,13 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
                 if filename not in projectors:
                     projectors[filename] = runpy.run_path(str(path))['project']
                 raw, extra = projectors[filename](process, context, node=job['node'])
-            except (FileNotFoundError, PermissionError, subprocess.SubprocessError):
+                accepted, rejected = bound_facts(raw, extra, exact, local, read_pinned)
+            except (OSError, ImportError, subprocess.SubprocessError):
                 unavailable.append(path.stem)
                 continue
-            accepted, rejected = bound_facts(raw, extra, exact, local, read_pinned)
+            except (AttributeError, IndexError, KeyError, RecursionError, TypeError, ValueError) as error:
+                failed[path.stem] = type(error).__name__
+                continue
             propositions.extend(accepted)
             unbound += rejected
         visible, limited = [], 0
@@ -406,10 +409,16 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline):
                 cite_index[handle] = {key: exact[handle][key] for key in ('file', 'startLine', 'endLine')}
         limits = sorted({code for code in projection_limits
                          if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z_0-9]{0,79}', code)})
-        status = 'PROJECTOR_UNAVAILABLE' if unavailable or limits else 'NO_CITABLE_FACTS'
+        status = 'NO_CITABLE_FACTS'
+        if failed:
+            status = 'PROJECTOR_FAILED'
+        elif unavailable or limits:
+            status = 'PROJECTOR_UNAVAILABLE'
         if visible:
             status = 'PREPARED' if any('boundary' not in fact['kind'] for fact in visible) else 'BOUNDARIES_ONLY'
         row.update(status=status, propositions=visible, unboundPropositions=unbound, omittedForLimit=limited)
+        if failed:
+            row['failedProjectors'] = failed
         if unavailable:
             row['unavailableProjectors'] = unavailable
         if limits:
