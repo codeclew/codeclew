@@ -5,6 +5,7 @@ import runpy
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 Q = runpy.run_path(str(Path(__file__).with_name('weather-preauthor.py')))
 
@@ -168,6 +169,86 @@ class WeatherQualificationTests(unittest.TestCase):
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
             with self.assertRaisesRegex(ValueError, 'differs from its frozen slot'):
                 Q['collect'](run, inventory, plan)
+
+
+class WeatherRetainedSourceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.run_dir = Path(temporary.name)
+        self.author_source = self.run_dir / 'inputs/author-source'
+        self.author_source.mkdir(parents=True)
+        self.blob = b'first\nselected reply\nlast\n'
+        self.row = {'id': 'source-1', 'service': 'dashboard', 'file': 'contracts/interface.json',
+                    'revision': Q['REVISION'], 'startLine': 1, 'endLine': 3, 'textDigest': Q['sha'](self.blob),
+                    'authority': 'DECLARED_OPENAPI'}
+        self.authority = self.row['authority']
+        self.fact = {'authority': 'DECLARED_OPENAPI', 'kind': 'openapi-declared-response', 'text': 'Declares a reply'}
+        self.excerpt = {'service': 'dashboard', 'file': self.row['file'], 'startLine': 2, 'endLine': 2,
+                        'text': 'selected reply\n'}
+        self.manifest = {'id': Q['sha'](b'frozen fixture')}
+        self.handle = 'm' + self.manifest['id'][7:19] + ':e1'
+        self.packet_alias = self.handle
+        self.anchor = f'{self.handle} (lines 2)'
+
+    def verify(self, extra=None):
+        (self.author_source / 'citations.json').write_text(json.dumps(self.manifest))
+        plan = {'slots': [{'prompt': 'prompt.txt', 'citations': {'S1': self.packet_alias}}]}
+        (self.run_dir / 'inputs/author-plan.json').write_text(json.dumps(plan))
+        packet = {'citations': {'S1': {'region': 'V1', 'authority': self.authority}},
+                  'sourceRanges': {'V1': self.excerpt}}
+        if extra:
+            packet['citations']['S1']['regions'] = ['V1', 'V2']
+            packet['sourceRanges']['V2'] = extra
+        (self.run_dir / 'inputs/prompt.txt').write_text('Frozen prompt\n\n' + json.dumps(packet))
+        visible = {key: value for key, value in self.excerpt.items() if key != 'text'}
+        visible.update(authority=self.authority, bodySha256=Q['sha'](self.excerpt['text'].encode()))
+        fact = {'location': 'inputs/prompt.txt#entry/facts/0', 'anchors': [self.anchor],
+                'locations': {self.handle: visible}, 'text': json.dumps(self.fact)}
+        raw = {'outcomes': [{'source': self.row, 'textKey': 'only'}], 'texts': {'only': self.blob.decode()}}
+        entry = {'source': self.row, 'manifestId': self.manifest['id'],
+                 'scope': {'snapshot': 'saved', 'service': 'dashboard'}}
+        loader = { 'load': lambda path: (self.manifest, raw, None, {self.handle: entry}) }
+        with patch('runpy.run_path', return_value=loader), patch('subprocess.check_output', return_value=self.blob):
+            return Q['check_sources'](self.run_dir, self.run_dir, self.run_dir, 'saved', {self.anchor}, [fact])
+
+    def test_declared_openapi_retains_exact_delivered_subrange(self):
+        self.assertEqual(1, self.verify())
+
+    def test_exact_snapshot_can_deliver_an_anchor_in_a_secondary_region(self):
+        self.row['authority'] = self.authority = 'EXACT_SNAPSHOT_TEXT'
+        self.fact = {'authority': 'SOURCE_BODY', 'kind': 'return', 'text': 'Returns from implementation'}
+        self.anchor = f'{self.handle} (lines 3)'
+        extra = {**self.excerpt, 'startLine': 3, 'endLine': 3, 'text': 'last\n'}
+        self.assertEqual(1, self.verify(extra))
+        with self.assertRaisesRegex(ValueError, 'Witness lines absent from its isolated packet'):
+            self.verify()
+
+    def test_mutated_display_bytes_and_wrong_identity_are_refused(self):
+        self.excerpt['text'] = 'changed reply\n'
+        with self.assertRaisesRegex(ValueError, 'citation bytes differ from Git'):
+            self.verify()
+        self.excerpt.update(text='selected reply\n', file='contracts/another.json')
+        with self.assertRaisesRegex(ValueError, 'citation source identity differs'):
+            self.verify()
+
+    def test_undelivered_handle_and_substituted_authority_are_refused(self):
+        self.packet_alias = 'm123:another'
+        with self.assertRaisesRegex(ValueError, 'citation not delivered to its packet'):
+            self.verify()
+        self.packet_alias = self.handle
+        self.authority = 'EXACT_SNAPSHOT_TEXT'
+        with self.assertRaisesRegex(ValueError, 'citation authority differs'):
+            self.verify()
+
+    def test_openapi_alone_cannot_qualify_implementation_and_retained_digest_is_required(self):
+        self.fact['kind'] = 'return'
+        with self.assertRaisesRegex(ValueError, 'cannot support an implementation statement'):
+            self.verify()
+        self.fact['kind'] = 'openapi-declared-response'
+        self.row['textDigest'] = Q['sha'](b'different retained original')
+        with self.assertRaisesRegex(ValueError, 'Digest mismatch'):
+            self.verify()
 
 
 class WeatherReleaseEvidenceTests(unittest.TestCase):

@@ -282,7 +282,7 @@ def coverage(report, review):
     return full, anchors
 
 
-def check_sources(run, skill, repository, snapshot, anchors, locations=()):
+def check_sources(run, skill, repository, snapshot, anchors, statements=()):
     loader = cache(runpy.run_path(str(skill / 'scripts/author_citations.py'))['load'])
     manifests = {}
     for path in sorted((run / 'inputs/author-source').rglob('citations.json')):
@@ -290,57 +290,153 @@ def check_sources(run, skill, repository, snapshot, anchors, locations=()):
         manifests.setdefault('m' + identity[:12], []).append(path)
 
     @cache
-    def source(handle):
-        tag = handle.split(':', 1)[0]
-        for path in manifests.get(tag, ()):
-            _, packet, _, entries = loader(path)
-            if handle in entries:
-                entry = entries[handle]
-                require(entry['scope']['snapshot'] == snapshot, f'Foreign snapshot for {handle}')
-                row = entry['source']
-                require(row['revision'] == REVISION and row['authority'] == 'EXACT_SNAPSHOT_TEXT',
-                        f'Nonexact or foreign source for {handle}')
-                outcome = next(item for item in packet['outcomes'] if item['source']['id'] == row['id'])
-                raw = packet['texts'][outcome['textKey']].encode()
-                require(sha(raw) == row['textDigest'], f'Digest mismatch for {handle}')
-                return row, raw
-        raise ValueError(f'No installed retained manifest owns {handle}')
-
-    @cache
     def blob(file):
         return subprocess.check_output(['git', '-C', str(repository), 'cat-file', 'blob', f'{REVISION}:{file}'])
 
+    @cache
+    def source(handle):
+        tag = handle.split(':', 1)[0]
+        for path in manifests.get(tag, ()):
+            manifest, packet, _, entries = loader(path)
+            if handle in entries:
+                entry = entries[handle]
+                row = entry['source']
+                require(entry['scope']['snapshot'] == snapshot and entry['scope']['service'] == row['service'],
+                        f'Foreign snapshot or service for {handle}')
+                require(entry['manifestId'] == manifest['id'] and row['revision'] == REVISION
+                        and row['authority'] in {'EXACT_SNAPSHOT_TEXT', 'DECLARED_OPENAPI'},
+                        f'Nonexact or foreign source for {handle}')
+                outcome = next(item for item in packet['outcomes'] if item['source']['id'] == row['id'])
+                raw = packet['texts'][outcome['textKey']].encode()
+                require(outcome['source'] == row and sha(raw) == row['textDigest'], f'Digest mismatch for {handle}')
+                full = blob(row['file'])
+                occurrence = row.get('occurrence')
+                if occurrence and 'blob' in occurrence:
+                    identity = occurrence['blob']
+                    # Compiler captures can name a retained CAS blob rather
+                    # than a Git object. The manifest re-admits that identity.
+                    require(isinstance(identity, str) and (re.fullmatch(r'sha256:[0-9a-f]{64}', identity)
+                                                          or git_blob_matches(full, identity)),
+                            f'Git blob identity changed for {handle}')
+                span = source_span(full, raw, row['startLine'], row['endLine'], occurrence)
+                require(span is not None, f'Source span mismatch for {handle}')
+                return row, full, span
+        raise ValueError(f'No installed retained manifest owns {handle}')
+
+    slots = None
+
+    @cache
+    def delivered(path, handle):
+        nonlocal slots
+        if slots is None:
+            plan = load(run / 'inputs/author-plan.json')
+            slots = {'inputs/' + slot['prompt']: slot for slot in plan['slots']}
+        require(path in slots, f'Isolated citation outside a frozen author packet for {handle}')
+        packet, aliases = packet_citations(path)
+        require(handle in aliases, f'Isolated citation not delivered to its packet for {handle}')
+        alias = packet['citations'][aliases[handle]]
+        row, full, span = source(handle)
+        require(alias['authority'] == row['authority'], f'Isolated citation authority differs for {handle}')
+        primary = alias['region']
+        region_ids = alias.get('regions', [primary])
+        require(isinstance(region_ids, list) and primary in region_ids, f'Isolated citation lacks its primary range for {handle}')
+        ranges, location = [], None
+        for identity in region_ids:
+            region = packet['sourceRanges'][identity]
+            require((region['service'], region['file']) == (row['service'], row['file']),
+                    f'Isolated citation source identity differs for {handle}')
+            first, last, raw = region['startLine'], region['endLine'], region['text'].encode()
+            displayed = source_span(full, raw, first, last)
+            require(displayed is not None, f'Isolated citation bytes differ from Git for {handle}')
+            # Shared views can contain more than the original cite. Only their
+            # byte intersection with that cite can support one of its anchors.
+            start, end = max(span[0], displayed[0]), min(span[1], displayed[1])
+            require(start < end, f'Isolated citation range outside retained source for {handle}')
+            start_line = full.count(b'\n', 0, start) + 1
+            ranges.append((start_line, start_line + full[start:end].removesuffix(b'\n').count(b'\n')))
+            if identity == primary:
+                location = {key: region[key] for key in ('service', 'file', 'startLine', 'endLine')}
+                location.update(authority=alias['authority'], bodySha256=sha(raw))
+        return ranges, location
+
+    @cache
+    def packet_citations(path):
+        packet = prompt_packet(run / path)
+        return packet, {handle: alias for alias, handle in slots[path]['citations'].items()}
+
+    def anchor_source(anchor):
+        require(bool(ANCHOR.fullmatch(anchor)), 'Invalid retained witness anchor')
+        handle, _, lines = anchor.partition(' (lines ')
+        row, _, _ = source(handle)
+        intervals = []
+        for interval in lines.removesuffix(')').split(', ') if lines else ():
+            first, _, last = interval.partition('-')
+            intervals.append((int(first), int(last or first)))
+        require(all(row['startLine'] <= first <= last <= row['endLine'] for first, last in intervals),
+                f'Witness outside retained source for {handle}')
+        return handle, row, intervals
+
     for anchor in sorted(anchors):
-        handle, _, ranges = anchor.partition(' (lines ')
-        row, raw = source(handle)
-        first, last = row['startLine'], row['endLine']
-        full = blob(row['file'])
-        require(matches_source(full, raw, first, last, row.get('occurrence')), f'Source span mismatch for {handle}')
-        for location in ranges.removesuffix(')').split(', ') if ranges else ():
-            a, _, b = location.partition('-')
-            require(first <= int(a) <= int(b or a) <= last, f'Witness outside source location for {handle}')
-    for location in locations:
-        for handle, visible in location.items():
-            row, raw = source(handle)
-            retained = {key: row[key] for key in ('service', 'file', 'startLine', 'endLine', 'authority')}
-            require(visible == {**retained, 'bodySha256': sha(raw)}, f'Isolated packet citation differs for {handle}')
+        anchor_source(anchor)
+    for statement in statements:
+        authorities = set()
+        locations = statement['locations']
+        for anchor in statement['anchors']:
+            handle, row, intervals = anchor_source(anchor)
+            authorities.add(row['authority'])
+            if locations:
+                path = statement['location'].partition('#')[0]
+                ranges, primary = delivered(path, handle)
+                require(locations.get(handle) == primary, f'Isolated packet citation digest differs for {handle}')
+                require(all(any(start <= first <= last <= end for start, end in ranges)
+                            for first, last in intervals), f'Witness lines absent from its isolated packet for {handle}')
+        if authorities == {'DECLARED_OPENAPI'}:
+            require(openapi_declaration(statement['text']),
+                    'Declared OpenAPI without implementation evidence cannot support an implementation statement')
     return len(anchors)
 
 
-def matches_source(blob, raw, first, last, occurrence):
-    if not raw or not 0 < first <= last:
+def openapi_declaration(text):
+    kinds = {'openapi-declared-response', 'http-peer-declared-response'}
+    if text.startswith('- ['):
+        return text[3:].partition(']')[0].split(',')[0] in kinds
+    fact = json.loads(text)
+    return fact.get('authority') == 'DECLARED_OPENAPI' and fact.get('kind') in kinds
+
+
+def git_blob_matches(blob, identity):
+    match = re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', identity)
+    if match is None:
         return False
+    content = hashlib.new('sha1' if len(identity) == 40 else 'sha256')
+    content.update(f'blob {len(blob)}\0'.encode())
+    content.update(blob)
+    return content.hexdigest() == identity
+
+
+def source_span(blob, raw, first, last, occurrence=None):
+    if not raw or type(first) is not int or type(last) is not int or not 0 < first <= last:
+        return None
     if occurrence and type(occurrence.get('startByte')) is int and type(occurrence.get('endByte')) is int:
         start, end = occurrence['startByte'], occurrence['endByte']
-        return (0 <= start < end <= len(blob) and blob[start:end] == raw
+        if (0 <= start < end <= len(blob) and blob[start:end] == raw
                 and blob.count(b'\n', 0, start) + 1 == first
-                and first + raw.removesuffix(b'\n').count(b'\n') == last)
+                and first + raw.removesuffix(b'\n').count(b'\n') == last):
+            return start, end
+        return None
     lines = blob.splitlines(keepends=True)
     if last > len(lines) or first + raw.removesuffix(b'\n').count(b'\n') != last:
-        return False
+        return None
     selected = b''.join(lines[first - 1:last])
     start = selected.find(raw)
-    return 0 <= start < len(lines[first - 1]) and selected.find(raw, start + 1) < 0
+    if 0 <= start < len(lines[first - 1]) and selected.find(raw, start + 1) < 0:
+        start += sum(map(len, lines[:first - 1]))
+        return start, start + len(raw)
+    return None
+
+
+def matches_source(blob, raw, first, last, occurrence):
+    return source_span(blob, raw, first, last, occurrence) is not None
 
 
 def canonical(value):
@@ -414,8 +510,7 @@ def main():
         return 0
     review = load(args.review)
     full, anchors = coverage(report, review)
-    locations = [statement['locations'] for statement in statements.values()]
-    count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors, locations)
+    count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors, statements.values())
     false_count = len(review['materialFalseClaims'])
     passed = full == len(report['criteria']) and not false_count
     decision = {'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': len(report['criteria']),
