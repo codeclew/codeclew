@@ -500,27 +500,41 @@ function scan(scope, inherited) {
         return declaration?.initializer && declaration.end <= node.getStart(scope.file)
             ? transportConstant(declaration.initializer, depth + 1) : node;
     }
-    function requestAddress(expression) {
+    function addressPrefix(expression) {
+        const value = transportConstant(expression);
+        if (ts.isStringLiteralLike(value)) {
+            if (/^https?:\/\/[^/?#\s]+(?:\/[^?#\s]*)?$/i.test(value.text) && !value.text.endsWith("/")) {
+                return {prefix: value.text, configuredOrigin: false};
+            }
+            return;
+        }
+        const reference = item => ts.isIdentifier(item) || ts.isPropertyAccessExpression(item) &&
+            !item.questionDotToken && reference(item.expression);
+        if (reference(unwrap(expression))) return {prefix: "", configuredOrigin: true};
+    }
+    function requestAddress(expression, depth = 0) {
         const node = transportConstant(expression);
-        if (!node) return;
+        if (!node || depth >= 4) return;
         if (ts.isStringLiteralLike(node)) return {uri: node.text};
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+            const left = addressPrefix(node.left);
+            const right = requestAddress(node.right, depth + 1);
+            if (left && right?.uri.startsWith("/") && !right.uri.startsWith("//") && !right.configuredOrigin) {
+                return {...right, uri: left.prefix + right.uri, configuredOrigin: left.configuredOrigin};
+            }
+            return;
+        }
         if (!ts.isTemplateExpression(node) || node.templateSpans.length > 8) return;
         let rendered = node.head.text;
         let configuredOrigin = false, encodedSegment = false;
-        const reference = item => ts.isIdentifier(item) || ts.isPropertyAccessExpression(item) &&
-            !item.questionDotToken && reference(item.expression);
         for (const [index, span] of node.templateSpans.entries()) {
             const value = transportConstant(span.expression), tail = span.literal.text;
             if (rendered.includes("?")) break;
             if (!index && !rendered && tail.startsWith("/") && !tail.startsWith("//")) {
-                if (ts.isStringLiteralLike(value)) {
-                    if (!/^https?:\/\/[^/?#\s]+\/?$/i.test(value.text) || value.text.endsWith("/")) return;
-                    rendered = value.text + tail;
-                    continue;
-                }
-                if (!reference(unwrap(span.expression))) return;
-                configuredOrigin = true;
-                rendered = tail;
+                const origin = addressPrefix(span.expression);
+                if (!origin) return;
+                rendered = origin.prefix + tail;
+                configuredOrigin = origin.configuredOrigin;
                 continue;
             }
             if (!rendered.endsWith("/") || tail && !tail.startsWith("/") && !tail.startsWith("?")) return;

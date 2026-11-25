@@ -217,6 +217,35 @@ class PreparedManagedLanguages(unittest.TestCase):
         rows, _ = self.project(process, context)
         self.assertFalse(any(row.get("_edgePhase") == "RESPONSE_DECODING" for row in rows))
 
+    def test_qualified_origin_concatenation_survives_nested_await_and_reply_code(self):
+        self.require_typescript()
+        text = """async function score(reply: Reply, base: string, id: string) {
+    const path = `/books/${encodeURIComponent(id)}/claim`;
+    try {
+        const res = await fetch(base + path, {method: "POST", signal: AbortSignal.timeout(500)});
+        return reply.code(res.status).send(await res.json());
+    } catch {
+        return reply.code(502).send({error: "REMOTE_UNAVAILABLE"});
+    }
+}
+"""
+        process, context = selected("Books.ts", text)
+        rows, _ = self.project(process, context)
+        request, = (row for row in rows if row["kind"] == "http_request")
+        edge = request["_edge"]
+        self.assertEqual((edge["method"], edge["uri"]), ("POST", "/books/{segment}/claim"))
+        self.assertTrue(edge["configuredOrigin"] and edge["encodedSegment"])
+        decoding = [row for row in rows if row.get("_edgePhase") == "RESPONSE_DECODING"]
+        self.assertTrue(all(row["_edgeCause"] == edge["occurrence"] for row in decoding))
+        status, = (row for row in decoding if row["kind"] == "status_body")
+        self.assertIn("reply.code receives 502", status["text"])
+        self.assertIn("REMOTE_UNAVAILABLE", status["text"])
+        self.assertIn("res.json", status["condition"])
+        for unsupported in ("base + id", 'base + "//untrusted.example/action"', "base + new Request(path)"):
+            process, context = selected("Books.ts", text.replace("base + path", unsupported))
+            rows, _ = self.project(process, context)
+            self.assertFalse(any(row["kind"] == "http_request" or row.get("_edgePhase") for row in rows))
+
     def test_kafkajs_topics_require_an_awaited_subscription_on_the_same_consumer_setup(self):
         self.require_typescript()
         text = """import { Kafka } from "kafkajs";
