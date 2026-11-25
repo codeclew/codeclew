@@ -2699,12 +2699,23 @@ class PreparedServiceEdgeTests(unittest.TestCase):
     }
 }
 """
+        catalogue = """async Task<int> Claim(DbConnection db, bool notify, string slug) {
+    if (slug.Length == 0) return 400;
+    var claimId = Guid.NewGuid();
+    await db.ExecuteAsync("INSERT INTO claims (id) VALUES (@id)", new { id = claimId });
+    if (notify) {
+        var body = JsonSerializer.Serialize(new ClaimCreated { Slug = slug });
+        await db.ExecuteAsync("INSERT INTO notices (body) VALUES (@body)", new { body });
+    }
+    return 201;
+}
+"""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             services, scopes, requirements, work_rows = {}, {}, [], {}
             for name, file, body, route in (
                 ("gateway", "Gateway.ts", front, "/claim"),
-                ("catalogue", "Catalogue.kt", "fun claim(): Int { return 201 }\n", "/books/{id}/claim"),
+                ("catalogue", "Catalogue.cs", catalogue, "/books/{id}/claim"),
             ):
                 home = root / name
                 home.mkdir()
@@ -2798,6 +2809,14 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                         facet("guard-return-bypass", "The missing lookup's early return bypasses the enqueue."),
                         facet("argument-projection", "The selected book row supplies id and title to the persisted object.",
                               condition="lookup matches the book"),
+                        facet("sql-write", "The source supplies an INSERT on claims without a selected slot.",
+                              _edge={"kind": "INSERT", "table": "claims", "site": proof["id"], "occurrence": "claim-write"}),
+                        facet("sql-write", "The INSERT INTO claims binds @id from Guid.NewGuid().", _writeBinding=True,
+                              condition="slug is nonempty",
+                              _edge={"kind": "INSERT", "table": "claims", "site": proof["id"], "occurrence": "claim-write"}),
+                        facet("sql-write", "The INSERT INTO notices binds @body from JsonSerializer.Serialize over ClaimCreated.",
+                              _writeBinding=True, condition="notify is true",
+                              _edge={"kind": "INSERT", "table": "notices", "site": proof["id"], "occurrence": "notice-write"}),
                     ])
                     return outcomes, {}
                 return {**module, "project": adapt}
@@ -2844,6 +2863,17 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                                     ("http-peer-value-lineage", "id and title")):
                     row, = (row for row in facts if row["kind"] == kind)
                     self.assertIn(value, row["text"])
+                claims, notices = (row for row in facts if row["kind"] == "http-peer-sql-write")
+                self.assertIn("claims binds @id from Guid.NewGuid()", claims["text"])
+                self.assertIn("slug is nonempty", claims["condition"])
+                self.assertNotIn("ClaimCreated", claims["text"])
+                self.assertIn("notices binds @body from JsonSerializer.Serialize over ClaimCreated", notices["text"])
+                self.assertIn("notify is true", notices["condition"])
+                self.assertNotIn("Guid.NewGuid", notices["text"])
+                for write in (claims, notices):
+                    files = {issue["sourceRanges"][issue["citations"][handle]["region"]]["file"] for handle in write["sources"]}
+                    self.assertEqual(files, {"Gateway.ts", "Catalogue.cs"})
+                    self.assertIn("commit, visibility and timing remain unknown", write["uncertainty"])
                 for bad_binding, bad_text in (({"revision": "stale"}, contract_text), (native["binding"], "different bytes")):
                     with patch.dict(native, {"binding": bad_binding}), patch.dict(packet["texts"], {spec["textDigest"]: bad_text}):
                         with self.assertRaisesRegex(D["Stop"], "PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED"):
@@ -2965,8 +2995,16 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             operation("receive", "UPDATE", table="visible_records", condition="the projection key is accepted")])
         public_read = self.retained("public", name="read", path="/visible", facts=[
             operation("read", "SELECT", table="visible_records")])
-        result = self.project(origin, first, validator, second, index, query, third, viewer, public_read)
+        call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units"}}
+        request = self.retained("gateway", path="/start", events=[("call", "client.get()", call)])
+        result = self.project(request, origin, first, validator, second, index, query, third, viewer, public_read)
         facts = result[origin[0]["id"]]
+        hop, = (row for row in result[request[0]["id"]] if row["kind"] == "http-further-subscriber-outbox")
+        self.assertIn("INSERT on `changes` in `validator.md`", hop["text"])
+        self.assertIn("independently registered poller in `change-poll.md`", hop["text"])
+        self.assertIn("payload passes validation", hop["condition"])
+        self.assertIn("validator-body", hop["sources"])
         reached = next(row for row in result[first[0]["id"]]
                        if row["kind"] == "further-subscriber-readback" and "availability.md" in row["text"])
         self.assertIn("booking.allocated", reached["text"])

@@ -771,12 +771,13 @@ class Facts:
                 continue
             kind = "sql-read" if sql["verb"] == "SELECT" else "sql-write"
             statement, proof, refs = self.sql_label(sql), [key], ()
+            guards = self.path_condition(events[:index]) if focus is not None or kind == "sql-write" else ()
+            bindings = []
             if command:
                 phase = ("resumes after" if outcome == "RESUMED" else "returns from" if outcome == "RETURNED" else
                          "starts" if outcome == "AWAITABLE_RETURNED" else "is interrupted during")
                 if command["authority"] == "CONDITIONAL_COMMAND_API":
                     phase += " a candidate API call to"
-                guards = self.path_condition(events[:index]) if focus is not None else ()
                 text = self.when(guards) + f"{phase} {name} configured with {statement}"
                 binding_proof = []
                 bindings = [f"{code(item['name'])} from {code(value)}" for item in command["bindings"]
@@ -785,9 +786,10 @@ class Facts:
                     text += ", binding " + ", ".join(bindings)
                 if transaction := self.transaction(command["transaction"], command.get("transactionStart")):
                     text += " with " + transaction
-                proof, refs = [*(key for _, key in guards), *command["evidenceSteps"], *binding_proof], command["sources"]
+                proof, refs = [*command["evidenceSteps"], *binding_proof], command["sources"]
             elif outcome == "INVOKED":
-                text = f"The source passes {statement} to {name}"
+                heading = self.when(guards) if guards else "The source "
+                text = heading + f"passes {statement} to {name}"
                 args = {arg.get("name"): arg["value"] for arg in event.get("arguments", ()) if arg.get("name")}
                 if transaction := self.transaction(args.get("transaction")):
                     text += " with " + transaction + " as its transaction argument"
@@ -796,9 +798,11 @@ class Facts:
             anchor = step["site"]
             write_range = {"host": step["sources"][0], "start": anchor["startByte"], "end": anchor["endByte"],
                            "units": "ABSOLUTE_BYTES", "textDigest": anchor["textDigest"]}
-            self.add_path(kind, text + ".", path, events, proof, sources=refs,
+            self.add_path(kind, text + ".", path, events, [*(step for _, step in guards), *proof], sources=refs,
                           _edge={"kind": sql["verb"], "table": sql["table"], "site": step["sources"][0],
                                  "occurrence": key},
+                          **({"condition": " and ".join(label for label, _ in guards)} if guards else {}),
+                          **({"_writeBinding": True} if kind == "sql-write" and bindings else {}),
                           **({"_writeRange": write_range} if kind == "sql-write" and focus is None else {}))
             if command:
                 for check in command.get("rowChecks", ()):

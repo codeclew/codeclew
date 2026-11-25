@@ -1156,6 +1156,43 @@ async function boot() {
         self.assertTrue(all(row["sources"] == [HANDLE] for row in facts))
         self.assertEqual(extra, {})
 
+    def test_roslyn_retains_distinct_generated_and_serialized_sql_bindings(self):
+        self.require_roslyn()
+        header = """using System;
+using System.Data.Common;
+using System.Text.Json;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+sealed record ClaimCreated(string Slug);
+static class Catalogue {
+"""
+        cases = (
+            ("claims", "id", "Guid.NewGuid()", "`@id` from `Guid.NewGuid()`"),
+            ("notices", "body", "JsonSerializer.Serialize(new ClaimCreated(slug))",
+             "`@body` from `JSON from JsonSerializer.Serialize over ClaimCreated initialized with Slug = slug`"),
+        )
+        for table, slot, value, expected in cases:
+            with self.subTest(table=table):
+                declaration = f"""    static async Task<IResult> Claim(DbConnection db, bool allowed, string slug) {{
+        if (!allowed) return Results.BadRequest();
+        var command = db.CreateCommand();
+        command.CommandText = "INSERT INTO {table} ({slot}) VALUES (@{slot})";
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "{slot}";
+        parameter.Value = {value};
+        command.Parameters.Add(parameter);
+        await command.ExecuteNonQueryAsync();
+        return Results.Ok();
+    }}"""
+                text = header + declaration + "\n}\n"
+                process, context = selected("Catalogue.cs", text, standalone=declaration, start=header.count("\n") + 1)
+                context["_nativeFiles"]["Catalogue.cs"] = captured_csharp(text, "Catalogue.cs")
+                rows, _ = self.project(process, context)
+                bound = [row for row in rows if row.get("_writeBinding") and row.get("_edge", {}).get("table") == table]
+                self.assertTrue(bound, rows)
+                self.assertTrue(any(expected in row["text"] for row in bound), bound)
+                self.assertTrue(all("allowed" in row["condition"] for row in bound), bound)
+
     def test_roslyn_conflict_command_completion_does_not_assert_inserted_row(self):
         self.require_roslyn()
         header = """using Microsoft.AspNetCore.Http;
