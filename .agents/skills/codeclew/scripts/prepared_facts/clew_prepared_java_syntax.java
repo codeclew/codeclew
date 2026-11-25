@@ -31,6 +31,10 @@ class ClewPreparedJavaSyntax {
     }
 
     static Object parse(String text, boolean fullUnit) throws Exception {
+        return parse(text, fullUnit, false);
+    }
+
+    static Object parse(String text, boolean fullUnit, boolean dispatchSyntax) throws Exception {
         String wrapped = fullUnit ? text : PREFIX + text + "\n}";
         var file = new SimpleJavaFileObject(URI.create("string:///ClewRetainedMethod.java"), JavaFileObject.Kind.SOURCE) {
             @Override public CharSequence getCharContent(boolean ignoreEncodingErrors) { return wrapped; }
@@ -44,7 +48,7 @@ class ClewPreparedJavaSyntax {
                 return null;
             }
             var syntax = new ClewPreparedJavaSyntax(unit, Trees.instance(task).getSourcePositions(),
-                    fullUnit ? DocTrees.instance(task) : null, text, fullUnit);
+                    fullUnit ? DocTrees.instance(task) : null, text, fullUnit, dispatchSyntax);
             if (fullUnit) {
                 return syntax.compilationUnit();
             }
@@ -77,14 +81,17 @@ class ClewPreparedJavaSyntax {
     final DocTrees docs;
     final int[] byteOffsets;
     final boolean fullUnit;
+    final boolean dispatchSyntax;
     int nodes;
     int depth;
 
-    ClewPreparedJavaSyntax(CompilationUnitTree unit, SourcePositions positions, DocTrees docs, String text, boolean fullUnit) {
+    ClewPreparedJavaSyntax(CompilationUnitTree unit, SourcePositions positions, DocTrees docs, String text,
+                          boolean fullUnit, boolean dispatchSyntax) {
         this.unit = unit;
         this.positions = positions;
         this.docs = docs;
         this.fullUnit = fullUnit;
+        this.dispatchSyntax = dispatchSyntax;
         this.byteOffsets = new int[text.length() + 1];
         for (int index = 0; index < text.length();) {
             int point = text.codePointAt(index);
@@ -172,8 +179,10 @@ class ClewPreparedJavaSyntax {
                         .findFirst().orElse(parameter);
                 compact = true;
             }
-            params.add(node(address, "parameter", parameter.getName().toString(), typeName(parameter.getType()),
-                    parameterized(parameter.getType()) ? "GENERIC" : "DIRECT"));
+            var symbol = node(address, "parameter", parameter.getName().toString(), typeName(parameter.getType()),
+                    parameterized(parameter.getType()) ? "GENERIC" : "DIRECT");
+            if (dispatchSyntax) symbol.add(typeArguments(parameter.getType()));
+            params.add(symbol);
         }
         return node(method, "method", method.getName().toString(), typeName(method.getReturnType()),
                 modifiers(method.getModifiers()), params, annotations(method.getModifiers()), body,
@@ -198,8 +207,11 @@ class ClewPreparedJavaSyntax {
     }
 
     List<Object> annotations(ModifiersTree modifiers) {
-        return modifiers.getAnnotations().stream().map(annotation -> node(annotation, "annotation", annotation.getAnnotationType().toString()))
-                .map(Object.class::cast).toList();
+        return modifiers.getAnnotations().stream().map(annotation -> {
+            var symbol = node(annotation, "annotation", annotation.getAnnotationType().toString());
+            if (dispatchSyntax) symbol.add(annotation.getArguments().stream().map(this::expression).toList());
+            return (Object) symbol;
+        }).toList();
     }
 
     String typeName(Tree type) {
@@ -218,6 +230,14 @@ class ClewPreparedJavaSyntax {
     boolean parameterized(Tree type) {
         return type instanceof ParameterizedTypeTree
                 || type instanceof AnnotatedTypeTree annotated && parameterized(annotated.getUnderlyingType());
+    }
+
+    List<String> typeArguments(Tree type) {
+        return switch (type) {
+            case ParameterizedTypeTree generic -> generic.getTypeArguments().stream().map(this::typeName).toList();
+            case AnnotatedTypeTree annotated -> typeArguments(annotated.getUnderlyingType());
+            default -> List.of();
+        };
     }
 
     Object statement(StatementTree tree) {
@@ -281,12 +301,19 @@ class ClewPreparedJavaSyntax {
         return switch (tree) {
             case ParenthesizedTree group -> expression(group.getExpression());
             case IdentifierTree name -> node(tree, "id", name.getName().toString());
+            case LiteralTree literal when dispatchSyntax && literal.getValue() instanceof String value ->
+                    node(tree, "literal", value.isEmpty() ? "EMPTY_STRING" : "NONEMPTY_STRING", value);
             case LiteralTree literal -> node(tree, "literal", switch (literal.getValue()) {
                 case null -> "NULL";
                 case Boolean truth -> truth ? "TRUE" : "FALSE";
                 case String text -> text.isEmpty() ? "EMPTY_STRING" : "NONEMPTY_STRING";
                 default -> null;
             });
+            case MemberReferenceTree reference when dispatchSyntax -> node(tree, "methodref",
+                    expression(reference.getQualifierExpression()), reference.getName().toString(), reference.getMode().name());
+            case LambdaExpressionTree lambda when dispatchSyntax -> node(tree, "deferred",
+                    lambda.getParameters().stream().map(parameter -> parameter.getName().toString()).toList(),
+                    lambda.getBody() instanceof ExpressionTree body ? expression(body) : statement((StatementTree) lambda.getBody()));
             case LambdaExpressionTree lambda -> node(tree, "deferred");
             case MemberSelectTree member -> node(tree, "member", expression(member.getExpression()), member.getIdentifier().toString());
             case MethodInvocationTree call -> node(tree, "call", expression(call.getMethodSelect()),
@@ -347,12 +374,13 @@ class ClewPreparedJavaSyntax {
     }
 
     public static void main(String[] args) throws Exception {
-        boolean fullUnit = Arrays.asList(args).contains("--unit");
+        boolean dispatch = Arrays.asList(args).contains("--dispatch-unit");
+        boolean fullUnit = dispatch || Arrays.asList(args).contains("--unit");
         var input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         for (String row; (row = input.readLine()) != null;) {
             Object syntax = null;
             try {
-                syntax = parse(new String(Base64.getDecoder().decode(row), StandardCharsets.UTF_8), fullUnit);
+                syntax = parse(new String(Base64.getDecoder().decode(row), StandardCharsets.UTF_8), fullUnit, dispatch);
             } catch (RuntimeException | StackOverflowError unsupported) {
                 // A malformed or oversized excerpt cannot produce syntax facts.
             }

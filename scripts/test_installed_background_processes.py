@@ -51,6 +51,8 @@ def verify(options, base, service):
         run(["dotnet", "restore", "Host.csproj", "--ignore-failed-sources", "--nologo"], repository, env)
         spec.update(language="csharp", profile="csharp-dotnet-msbuild-read-only",
                     compilations=["csproj:Host.csproj@net10.0"])
+    elif service == "java-dispatch":
+        spec.update(language="java", profile="source-syntax", source={"roots": ["src"], "dialect": "17"})
     else:
         language = "kotlin" if service == "producer" else "typescript"
         spec.update(language=language, profile="source-syntax", source={"roots": ["."], "dialect": "declared"})
@@ -74,16 +76,28 @@ def verify(options, base, service):
              "--job", save("job.json", job), "--run-dir", str(destination)], base, env)
         return json.loads((destination / "inputs/inventory.json").read_text())
 
-    if service == "producer":
+    if service in {"producer", "java-dispatch"}:
         job["authorMode"] = "ISOLATED_PAGES"
         prepare(output, "PREPARED_FACTS")
         plan = json.loads((output / "inputs/author-plan.json").read_text())
         slot, = (slot for slot in plan["slots"] if slot["kind"] == "OPERATION")
         prompt = (output / "inputs" / slot["prompt"]).read_text()
         packet = FACT_CONTEXT["expand_fact_context"](json.loads(prompt.split("\n\n")[-1]))
-        assert packet["requirement"]["entryKind"] == "SCHEDULED_JOB", packet["requirement"]
         group = packet["facts"][slot["requirement"]]
         kinds = {row["kind"] for key in ("facts", "boundaries") for row in group.get(key, [])}
+        if service == "java-dispatch":
+            assert packet["requirement"]["entryKind"] == "JAVA_TYPED_DISPATCH", packet["requirement"]
+            assert packet["requirement"]["entrySymbol"] == "neutral.assembly.ReceiptHandler.accept", packet["requirement"]
+            assert {"background-registration", "java-guarded-outcome"} <= kinds, kinds
+            registration, = (row for row in group["facts"] if row["kind"] == "background-registration")
+            assert all(text in registration["text"] for text in ("receipts.pending", "neutral.assembly.BatchArrived")), registration
+            assert "transport" in registration["uncertainty"], registration
+            regions = {row["file"].rsplit("/", 1)[-1] for row in packet["sourceRanges"].values()}
+            assert {"DispatchWiring.java", "ReceiptHandler.java"} <= regions and "UnusedTable.java" not in regions, regions
+            assert any("IllegalArgumentException" in row["text"] for row in group["facts"]), group
+            print(f"{service}: {len(prompt.encode())} isolated packet bytes for the wired callback")
+            return
+        assert packet["requirement"]["entryKind"] == "SCHEDULED_JOB", packet["requirement"]
         assert {"POSSIBLE_REPEAT_AFTER_MARK_FAILURE", "WAIT_TRANSACTION_BOUNDARY"} <= kinds, kinds
         repeat, = (row for row in group["facts"] if row["kind"] == "POSSIBLE_REPEAT_AFTER_MARK_FAILURE")
         assert "sent_at IS NULL" in repeat["text"] and "fails to commit" in repeat["text"], repeat
@@ -135,7 +149,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clew", default=shutil.which("clew"))
     parser.add_argument("--skill", type=Path, default=ROOT / "skills/codeclew")
-    parser.add_argument("--service", choices=("host", "subscriber", "producer"), action="append")
+    parser.add_argument("--service", choices=("host", "subscriber", "producer", "java-dispatch"), action="append")
     options = parser.parse_args()
     options.skill = options.skill.resolve()
     for service in options.service or ("host", "subscriber", "producer"):

@@ -635,6 +635,7 @@ BACKGROUND_KINDS = {
     'HOSTED_SERVICE': ('HOSTED_BACKGROUND_WORKER', 'ROSLYN_FRAMEWORK_REGISTRATION'),
     'INTERVAL': ('SCHEDULED_JOB', 'TIMER_RETAINED_SOURCE'),
     'EACH_MESSAGE': ('KAFKA_LISTENER', 'KAFKAJS_RETAINED_SOURCE'),
+    'JAVA_TYPED_DISPATCH': ('JAVA_TYPED_DISPATCH', 'RETAINED_JAVA_DISPATCHER_WIRING'),
 }
 
 
@@ -678,7 +679,10 @@ def background_operation(service, found, files, exact):
     if not registration or not callback:
         return None
     name = found['name']
-    identity = hashlib.sha256(encode((service, kind, registration, callback))).hexdigest()[:16]
+    identity_parts = (service, kind, registration, callback)
+    if kind == 'JAVA_TYPED_DISPATCH':
+        identity_parts += (found['channel'], found['eventType'])
+    identity = hashlib.sha256(encode(identity_parts)).hexdigest()[:16]
     trigger = {'name': name, 'kind': found['kind'], 'authority': authority, 'registration': registration,
                'callback': callback}
     subscriptions = [bind(row) for row in found.get('subscriptions', ())]
@@ -695,6 +699,14 @@ def background_operation(service, found, files, exact):
     refs = [registration, callback]
     if proven_topics:
         refs.extend(dict.fromkeys([*subscriptions, *topic_sources]))
+    if kind == 'JAVA_TYPED_DISPATCH':
+        assembly = [bind(row) for row in found['assemblySources']]
+        if not assembly or not all(assembly):
+            return None
+        trigger['configuration'] = {'adapter': found['adapter'], 'channel': found['channel'],
+                                    'eventType': found['eventType']}
+        trigger['assemblySources'] = list(dict.fromkeys(assembly))
+        refs = list(dict.fromkeys([*refs, *assembly]))
     origins = list(dict.fromkeys(handles[ref] for ref in refs))
     page = service + '-background-' + identity + '.md'
     requirement = {'id': service + ':background:' + identity, 'kind': 'ENTRY', 'service': service,
@@ -727,10 +739,13 @@ def background_operation(service, found, files, exact):
                                'offsets': [row[:3] for row in offsets], 'publications': publications,
                                'anchored': list(dict.fromkeys([first for first, _ in calls] +
                                                             [row[0] for row in (*offsets, *publications)]))}}
+    uncertainty = ('The source candidate assumes the declared dispatcher, bean and handler bindings. '
+                   'Activation, transport, wire compatibility, delivery and execution timing remain open.'
+                   if kind == 'JAVA_TYPED_DISPATCH' else
+                   'Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
+                   + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))
     facts = [dict(kind='background-registration', authority=authority, sources=refs,
-                  text=background_registration(found, trigger),
-                  uncertainty='Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
-                              + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))]
+                  text=background_registration(found, trigger), uncertainty=uncertainty)]
     if trigger.get('topicCoverageOpen'):
         facts.append(dict(kind='background-topic-boundary', authority=authority, sources=[registration],
                           text='Additional subscription topics and activation remain open.'))
@@ -747,6 +762,9 @@ def background_registration(found, trigger):
         return f'`AddHostedService` registers the type whose `BackgroundService` override is `{name}`.'
     if found['kind'] == 'INTERVAL':
         return f'`setInterval` selects the cited callback and supplies `{found["interval"]}` milliseconds as its repeat interval.'
+    if found['kind'] == 'JAVA_TYPED_DISPATCH':
+        return (f'The retained dispatcher bean uses the handler table that registers `{name}` '
+                f'for `{found["eventType"]}` on channel `{found["channel"]}`.')
     topics = trigger.get('configuration', {}).get('topics', ())
     suffix = ' The same consumer has a preceding awaited subscription to ' + ', '.join(repr(topic) for topic in topics) + '.' if topics else ''
     return f'KafkaJS `consumer.run` selects `{name}` as `eachMessage`.' + suffix
@@ -759,11 +777,18 @@ def background_entries(service, requirements, units, exact, files, projector, jo
     if typescript and sum(len(row['text'].encode()) for row in typescript.values()) <= 2 * 1024 * 1024:
         selections.append(('typescript', typescript))
     selections.extend(('csharp', scope) for scope in background_units(units, exact))
+    java = {file: source for file, source in files.items() if Path(file).suffix.lower() == '.java'}
+    if java:
+        selections.append(('java', java))
     entries, remaining = {}, min(page_slots, MAX_ROOTS)
     for family, complete in selections:
         if remaining <= 0 or deadline - time.monotonic() <= 1:
             break
-        found = projector['discover_background'](complete, node=job['node'], deadline=deadline, family=family)
+        if family == 'java':
+            dispatch = runpy.run_path(str(DIRECTORY / 'prepared_facts/clew_java_dispatch.py'))
+            found = dispatch['discover'](complete, deadline=min(deadline, time.monotonic() + 12))
+        else:
+            found = projector['discover_background'](complete, node=job['node'], deadline=deadline, family=family)
         for candidate in found or ():
             if candidate.get('kind') not in BACKGROUND_KINDS:
                 continue
@@ -852,7 +877,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         return pinned_cache.get(file)
 
     projectors, background = {}, {}
-    background_extensions = {'.cs', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}
+    background_extensions = {'.cs', '.java', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'}
     if page_slots and any(Path(file).suffix.lower() in background_extensions for file in files):
         path = DIRECTORY / 'prepared_facts' / 'managed_languages.py'
         managed = runpy.run_path(str(path))

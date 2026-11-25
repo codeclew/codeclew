@@ -1236,13 +1236,13 @@ def lookup_facts(snapshot, events, identifier):
 
 
 @contextmanager
-def open_units(snapshot):
+def open_units(snapshot, *, dispatch=False):
     java = shutil.which("java")
     if not java:
         yield None
         return
     script = Path(__file__).with_name("clew_prepared_java_syntax.java")
-    with subprocess.Popen([java, "--source", "21", str(script), "--unit"], stdin=subprocess.PIPE,
+    with subprocess.Popen([java, "--source", "21", str(script), "--dispatch-unit" if dispatch else "--unit"], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as parser:
         try:
             yield Units(snapshot, parser)

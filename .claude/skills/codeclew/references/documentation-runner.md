@@ -108,6 +108,12 @@ C# discovery binds the framework `AddHostedService<T>()` call to a retained
 binds a supported `setInterval` call or KafkaJS `eachMessage` registration to
 the selected callback, including a uniquely resolved relative import. Existing
 Spring scheduled and listener entries use the ordinary captured entry roots.
+Java typed dispatch discovery links an Eventuate Tram handler table to its
+retained Spring bean wiring. A known channel and event class can select a
+method reference or a lambda that delegates directly to one retained handler.
+The resulting operation is conditional on the declared bean and provider bindings.
+Opaque handler assembly and conflicting registrations within a table leave the
+candidate unresolved.
 A discovered background entry has its own starter page, sequence template,
 registration and callback source view, and review requirement.
 
