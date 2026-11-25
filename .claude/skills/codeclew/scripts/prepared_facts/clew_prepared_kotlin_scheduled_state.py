@@ -1,18 +1,20 @@
 """Connect a scheduled iteration to a narrowly bound heap-state continuation."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 
 MAX_DEPTH = 8
 MAX_STATEMENTS = 160
-MAX_FACTS = 16
+MAX_FACTS = 24
+MAX_KEY_PARTS = 6
 KAFKA = "org.springframework.kafka.core.KafkaTemplate"
 
 
 @dataclass(frozen=True)
 class Key:
     loop: object
-    properties: tuple
+    projections: tuple
+    origins: tuple = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class Flow:
     writes: tuple = ()
     invalidated: frozenset = frozenset()
     transaction: bool = False
+    last_external: tuple | None = None
 
 
 def project(unit, root, syntax, protocols, bind, native_calls):
@@ -51,7 +54,8 @@ class ScheduledState:
     def __init__(self, unit, syntax, protocols, bind, owner, native_calls):
         self.unit, self.bind, self.native_calls = unit, bind, native_calls
         self.functions, self.fields = unit.members(owner)
-        self.name, self.site, self.words = (syntax[key] for key in ("name", "token_site", "strings"))
+        self.name, self.literal, self.site, self.words = (
+            syntax[key] for key in ("name", "literal", "token_site", "strings"))
         self.invoke, self.named, self.split = (syntax[key] for key in ("invocation", "named_argument", "groups"))
         self.callback = syntax["callback_body"]
         self.make_call = protocols["jvm_target"]
@@ -82,11 +86,34 @@ class ScheduledState:
         words = self.words(tokens)
         if not words or not (origin := env.get(words[0])):
             return None
-        tail = words[1:]
-        if len(tail) % 2 or any(op != "." or not self.name(field)
-                               for op, field in zip(tail[::2], tail[1::2])):
-            return None
-        return Key(origin.loop, (*origin.properties, *tail[1::2]))
+        parts = list(origin.projections)
+        index = 1
+        while index < len(words) and len(parts) < MAX_KEY_PARTS:
+            word = words[index]
+            if word == "[" and words[index + 2:index + 3] == ("]",) and self.literal(words[index + 1]):
+                parts.append(("index", words[index + 1]))
+                index += 3
+            elif word in {".", "?."} and index + 1 < len(words) and self.name(words[index + 1]):
+                member = words[index + 1]
+                index += 2
+                literals = None
+                if words[index:index + 1] == ("(",):
+                    first = self.unit.token_indices[tokens[0].start]
+                    closing = self.unit.pairs.get(first + index, -1) - first
+                    if not index < closing < len(tokens):
+                        return None
+                    operands = tuple(self.split(tokens[index + 1:closing]))
+                    if len(operands) > 2 or any(len(item) != 1 or not self.literal(item[0].text) for item in operands):
+                        return None
+                    literals = tuple(item[0].text for item in operands)
+                    index = closing + 1
+                parts.append((word, member, literals))
+            else:
+                return None
+        if index == len(words):
+            sites = (*origin.origins, self.site(tokens)) if len(words) > 1 else origin.origins
+            return Key(origin.loop, tuple(parts), sites)
+        return None
 
     def receiver(self, labels, env):
         if len(labels) == 1 and labels[0] not in env:
@@ -95,14 +122,19 @@ class ScheduledState:
             return self.fields.get(labels[2])
         return None
 
-    def map_part(self, tokens, env):
+    def map_part(self, tokens, env, allow_suffix):
         words = self.words(tokens)
-        if "[" not in words or words[-1:] != ("]",):
+        if "[" not in words:
             return None
         opening = words.index("[")
+        first = self.unit.token_indices[tokens[0].start]
+        closing = self.unit.pairs.get(first + opening, -1) - first
+        if not opening < closing < len(words) or (
+                closing + 1 < len(words) and (not allow_suffix or words[closing + 1] not in {".", "?."})):
+            return None
         receiver = self.receiver(words[:opening], env)
-        if receiver and receiver.storage == "MAP" and (key := self.value(tokens[opening + 1:-1], env)):
-            return Access(receiver.name, key, self.site(tokens))
+        if receiver and receiver.storage == "MAP" and (key := self.value(tokens[opening + 1:closing], env)):
+            return Access(receiver.name, key, self.site(tokens[:closing + 1]))
         return None
 
     def call(self, tokens):
@@ -128,13 +160,14 @@ class ScheduledState:
             return field, labels[-1], args, site, end
         return None
 
-    def access(self, tokens, env, *, write=False):
-        if indexed := self.map_part(tokens, env):
+    def access(self, tokens, env, *, write=False, allow_suffix=False):
+        if indexed := self.map_part(tokens, env, allow_suffix):
             return indexed
         names = {"put", "set"} if write else {"get"}
         if call := self.receiver_call(tokens, env, names):
             field, _, args, site, end = call
-            if (field.storage == "MAP" and len(args) == (2 if write else 1) and end == len(tokens)
+            if (field.storage == "MAP" and len(args) == (2 if write else 1)
+                    and (end == len(tokens) or allow_suffix and tokens[end].text in {".", "?."})
                     and (key := self.value(args[0], env))):
                 return Access(field.name, key, site)
         return None
@@ -242,7 +275,7 @@ class ScheduledState:
         return '`' + self.phrase(site) + '`'
 
     def later(self, suite, index):
-        if index + 1 < len(suite) and suite[index + 1].kind in {"expression", "return", "throw"}:
+        if index + 1 < len(suite) and suite[index + 1].kind != "unsupported":
             return suite[index + 1].site
         return None
 
@@ -250,7 +283,7 @@ class ScheduledState:
         call, evidence = external
         for write in flow.writes:
             field = self.fields[write.receiver]
-            proof = (field.site, write.site, call, *evidence)
+            proof = (field.site, write.site, *write.key.origins, call, *evidence)
             self.add("HEAP_WRITE_BEFORE_CALL",
                      f"The source reaches the in-memory map write {self.code(write.site)} before {self.code(call)}.",
                      flow, *proof, uncertainty="Earlier operations and the map write must complete normally.")
@@ -263,13 +296,14 @@ class ScheduledState:
                 if ((read.receiver, read.key) != (write.receiver, write.key) or read.site.start >= write.site.start
                         or write.receiver in flow.invalidated):
                     continue
-                rollback = " A database rollback does not undo this in-memory mutation." if flow.transaction else ""
+                rollback = " This heap mutation has its own lifetime through database rollback." if flow.transaction else ""
                 self.add("SAME_KEY_HEAP_RETRY",
                          f"A later scheduled iteration can read the value written to {self.code(write.site)} "
                          f"even if {self.code(call)} failed after the write." + rollback,
-                         flow, *proof, read.site,
-                         uncertainty="Requires the same receiver and evaluated key, the earlier write to have completed, "
-                                     "and no intervening write, removal, clearing or replacement.")
+                         flow, *proof, read.site, *read.key.origins,
+                         uncertainty="Requires the same receiver, equal derived keys, the earlier write to have completed, "
+                                     "and no intervening write, removal, clearing or replacement. "
+                                     "Accessor return values can vary across evaluations.")
 
     def cleanup_writes(self, suites, env):
         names = set()
@@ -287,21 +321,33 @@ class ScheduledState:
         return names
 
     def with_write(self, flow, write):
+        if flow.last_external:
+            call, evidence = flow.last_external
+            self.add("HEAP_WRITE_AFTER_CALL",
+                     f"After {self.code(call)} returns normally, the source continuation reaches "
+                     f"the in-memory write {self.code(write.site)}.",
+                     flow, call, *evidence, self.fields[write.receiver].site, write.site, *write.key.origins)
         # A later direct write to this receiver can replace the tracked value.
         return replace(flow, writes=(*(item for item in flow.writes if item.receiver != write.receiver), write))
 
     def guard_read(self, tokens, env):
-        split = next((word for word in self.words(tokens) if word in {"==", "!=", "<", ">", "<=", ">="}), None)
-        if split is None or any(word in {"&&", "||", "?:"} for word in self.words(tokens)):
+        if not tokens:
             return None
-        parts = tuple(self.split(tokens, split))
-        if len(parts) != 2:
+        first = self.unit.token_indices[tokens[0].start]
+        container = self.unit.container[first]
+        operators = [(index, token.text) for index, token in enumerate(tokens)
+                     if self.unit.container[first + index] == container
+                     and token.text in {"==", "!=", "<", ">", "<=", ">=", "&&", "||", "?:"}]
+        if len(operators) != 1 or operators[0][1] in {"&&", "||", "?:"}:
             return None
-        return next((read for part in parts if part and (read := self.access(part, env))), None)
+        index, _ = operators[0]
+        parts = (tokens[:index], tokens[index + 1:])
+        return next((read for part in parts if part and (read := self.access(part, env, allow_suffix=True))), None)
 
-    def branch(self, statement, env, flow, stack, depth):
+    def branch(self, statement, env, flow, stack, depth, following):
         guard = self.site(statement.expression)
-        if read := self.guard_read(statement.expression, env):
+        read = self.guard_read(statement.expression, env)
+        if read:
             flow = replace(flow, reads=(*flow.reads, read))
         continuing = []
         for suite, holds in ((statement.body, True), (statement.alternative, False)):
@@ -310,6 +356,15 @@ class ScheduledState:
             self.walk(suite, dict(env), selected, stack, depth + 1)
             if not suite or suite[-1].kind not in {"return", "throw", "continue", "break"}:
                 continuing.append((suite, selected))
+            elif read and following and suite[-1].kind in {"return", "throw"} and all(
+                    item.kind == "expression" for item in suite[:-1]):
+                exit_site = suite[-1].site
+                continuation = ", ".join(self.code(site) for site in following)
+                self.add("HEAP_GUARD_EXIT",
+                         f"The in-memory guard can reach {self.code(exit_site)} before "
+                         f"the normal continuation to {continuation}.",
+                         selected, self.fields[read.receiver].site, read.site, *read.key.origins, exit_site, *following,
+                         uncertainty="The selected arm and its preceding evaluations must reach the cited exit.")
         if not continuing:
             return None
         if len(continuing) == 1 and not continuing[0][0]:
@@ -333,7 +388,8 @@ class ScheduledState:
                 flow = replace(flow, reads=(), writes=(), invalidated=flow.invalidated | hazard)
                 continue
             if statement.kind == "if":
-                flow = self.branch(statement, env, flow, stack, depth)
+                following = tuple(item.site for item in suite[index + 1:index + 4] if item.kind == "expression")
+                flow = self.branch(statement, env, flow, stack, depth, following)
                 if flow is None:
                     return
                 continue
@@ -346,11 +402,13 @@ class ScheduledState:
             self.helper(evaluated, env, flow, stack, depth)
             if external := self.external(evaluated, env):
                 self.outcome(external, flow, self.later(suite, index))
+                flow = replace(flow, last_external=external)
             if assigned:
                 lhs, rhs = assignment
                 labels = self.words(lhs)
                 if labels[0] in {"val", "var"} and len(labels) > 1 and self.name(labels[1]):
-                    env[labels[1]] = self.value(rhs, env) if labels[0] == "val" else None
+                    value = self.value(rhs, env) if labels[0] == "val" else None
+                    env[labels[1]] = replace(value, origins=(*value.origins, statement.site)) if value else None
                     if read := self.access(rhs, env):
                         flow = replace(flow, reads=(*flow.reads, read))
                 elif write := self.access(lhs, env, write=True):

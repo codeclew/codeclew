@@ -215,6 +215,45 @@ class PreparedManagedLanguages(unittest.TestCase):
         self.assertTrue(any("val attempts" in text for text in proof), proof)
         self.assertTrue(any("transmit(parcel.key)" in text for text in proof), proof)
 
+
+    def test_kotlin_scheduled_accessor_guard_and_after_call_overwrite(self):
+        source = (SCHEDULED.replace("import java.net.http.HttpClient", """import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+import java.net.http.HttpClient""")
+                  .replace("transmit(parcel.key)", "transmit(parcel)")
+                  .replace("private val attempts = mutableMapOf<String, Long>()",
+                           "private val attempts = ConcurrentHashMap<String, Instant>()")
+                  .replace("""private fun transmit(key: String) {
+        val prior = attempts[key]
+        attempts[key] = 4L
+        relay.send(request, HttpResponse.BodyHandlers.discarding())
+        remember(key, prior)
+    }""", """private fun transmit(parcel: Parcel) {
+        val key = parcel["lookup-key"].asText()
+        if (attempts[key]?.isAfter(Instant.now()) == true) return
+        attempts[key] = Instant.now()
+        val reply = relay.send(request, HttpResponse.BodyHandlers.discarding())
+        if (reply.statusCode() == 202) {
+            attempts[key] = Instant.now()
+        }
+    }""")
+                  .replace("data class Parcel(val key: String, val token: String)", """data class Parcel(val key: String, val token: String) {
+    operator fun get(name: String): Label = Label(if (name == "lookup-key") key else token)
+}
+data class Label(val value: String) {
+    fun asText(): String = value
+}"""))
+        facts, witnesses = self.scheduled_facts(source)
+        found = {row["kind"]: row for row in facts}
+        expected = {"HEAP_GUARD_EXIT", "HEAP_WRITE_BEFORE_CALL", "HEAP_FAILURE_BYPASS",
+                    "HEAP_WRITE_AFTER_CALL", "SAME_KEY_HEAP_RETRY"}
+        self.assertLessEqual(expected, found.keys(), facts)
+        self.assertIn("isAfter", found["HEAP_GUARD_EXIT"]["condition"])
+        self.assertIn("statusCode", found["HEAP_WRITE_AFTER_CALL"]["condition"])
+        self.assertIn("equal derived keys", found["SAME_KEY_HEAP_RETRY"]["uncertainty"])
+        proof = [witnesses[ref]["text"] for ref in found["SAME_KEY_HEAP_RETRY"]["sources"] if ref in witnesses]
+        self.assertTrue(any('parcel["lookup-key"].asText()' in text for text in proof), proof)
+
     def test_kotlin_scheduled_state_excludes_unbound_receiver_key_and_order(self):
         cases = [
             (SCHEDULED.replace("        attempts[key] = 4L", "        attempts[key] = 4L\n        attempts.clear()"),
