@@ -959,6 +959,8 @@ class Trace:
             if checked and (is_null and checked in state.nonnull or not is_null and checked in state.null):
                 return []
             details = {"modeledOperandValue": known[1]} if known and type(known[1]) is bool else {}
+            if decision.get("switchTest") and condition and condition[0] == "equal":
+                details["switchInputValue"] = condition[1]
             state_for_choice = state
             if checked and is_null:
                 completed = [event["step"] for event in state.sequence
@@ -983,7 +985,9 @@ class Trace:
         decision = block["decision"]
         return self.step(fn, f"if{block['id']}", "CONDITION", decision["site"],
                          **({"sourcePredicate": True} if decision.get("sourcePredicate") else {}),
-                         **({"loopTest": decision["loopTest"]} if decision.get("loopTest") else {}))
+                         **({"loopTest": decision["loopTest"]} if decision.get("loopTest") else {}),
+                         **({"switchTest": {name: fn.site(site) for name, site in decision["switchTest"].items()}}
+                            if decision.get("switchTest") else {}))
 
     def null_dispatch(self, state):
         self.boundaries.add(NULL_DISPATCH)

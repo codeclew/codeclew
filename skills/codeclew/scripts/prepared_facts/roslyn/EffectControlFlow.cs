@@ -185,6 +185,11 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
                 site = Site(terminator ?? value.Syntax),
                 value = OperationValue(value),
                 explicitThrow = terminator is ThrowStatementSyntax or ThrowExpressionSyntax,
+                switchTest = value is IIsPatternOperation { Pattern: IConstantPatternOperation } &&
+                    value.Syntax is SwitchExpressionArmSyntax { Pattern: ConstantPatternSyntax pattern,
+                        Parent: SwitchExpressionSyntax selection }
+                    ? new { input = Site(selection.GoverningExpression), pattern = Site(pattern) }
+                    : null,
                 // A lowered null test can use the syntax of its non-Boolean operand.
                 sourcePredicate = block.ConditionKind != ControlFlowConditionKind.None &&
                     value is not IIsNullOperation && value.Syntax is ExpressionSyntax expression &&
@@ -651,6 +656,7 @@ internal sealed class EffectControlFlow(SemanticModel model, BaseMethodDeclarati
             IConversionOperation conversion when conversion.OperatorMethod is null => Child(conversion.Operand),
             IUnaryOperation { OperatorKind: UnaryOperatorKind.Not, OperatorMethod: null } unary =>
                 new { kind = "not", value = Child(unary.Operand) },
+            IIsPatternOperation { Pattern: IDiscardPatternOperation } => new { kind = "literal", value = true },
             IIsPatternOperation { Pattern: IConstantPatternOperation pattern } tested =>
                 new { kind = "equal", left = Child(tested.Value), right = Child(pattern.Value) },
             IIsPatternOperation { Pattern: INegatedPatternOperation { Pattern: IConstantPatternOperation pattern } } tested =>

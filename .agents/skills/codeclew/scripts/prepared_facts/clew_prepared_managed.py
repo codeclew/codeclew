@@ -189,8 +189,19 @@ class Facts:
         step = self.steps[key]
         return self.sources.text(step["site"], step["sources"])
 
-    def condition(self, key, truth):
-        if self.steps[key].get("sourcePredicate") and (text := self.text(key)):
+    def switch_input(self, key, event=None):
+        step = self.steps[key]
+        operand = event.get("switchInputValue") if event else None
+        return (value_text(operand) or self.sources.text(step["switchTest"]["input"], step["sources"]))
+
+    def condition(self, key, truth, event=None):
+        step = self.steps[key]
+        if switch := step.get("switchTest"):
+            subject = self.switch_input(key, event)
+            pattern = self.sources.text(switch["pattern"], step["sources"])
+            if subject and pattern:
+                return f"{code(subject)} {'matches' if truth else 'differs from'} {code(pattern)}"
+        if step.get("sourcePredicate") and (text := self.text(key)):
             if self.steps[key].get("selectionPredicate"):
                 return (f"the remaining candidate matches {code(text)}" if truth else
                         f"no row in the tracked collection matches {code(text)}")
@@ -590,19 +601,15 @@ class Facts:
         return "a return from the handler", [returned]
 
     def path_condition(self, events):
-        guards = []
+        guards = {}
         for event in events:
             key, outcome = event["step"], event["outcome"]
             if outcome not in {"TRUE", "FALSE"} or self.steps[key].get("loopTest"):
                 continue
-            if description := self.condition(key, outcome == "TRUE"):
-                pair = description, key
-                if pair not in guards:
-                    guards.append(pair)
-        counts = defaultdict(int)
-        for _, key in guards:
-            counts[key] += 1
-        return [(description, key) for description, key in guards if counts[key] == 1]
+            if description := self.condition(key, outcome == "TRUE", event):
+                subject = self.switch_input(key, event) if self.steps[key].get("switchTest") else None
+                guards.setdefault((key, subject), set()).add(description)
+        return [(next(iter(descriptions)), key) for (key, _), descriptions in guards.items() if len(descriptions) == 1]
 
     def first_empty_reads(self, path, events):
         owners = set()

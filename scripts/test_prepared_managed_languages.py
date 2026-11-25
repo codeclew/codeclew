@@ -753,6 +753,44 @@ static class Finder
                     self.assertFalse(any("No row in the tracked collection satisfies" in label or
                                          "HTTP 404" in label for label in labels), labels)
 
+    def test_roslyn_switch_result_payload_stays_with_its_input_case(self):
+        self.require_roslyn()
+        header = """using Microsoft.AspNetCore.Http;
+record Item(string Id, string Caption);
+record Filter(string Id);
+static class Reader
+{
+"""
+        root = """    public static IResult Show(Filter input)
+    {
+        var item = Select(input.Id);
+        if (item is null) return Results.BadRequest();
+        return Results.Ok(item);
+    }"""
+        helper = """    private static Item? Select(string id) => id switch
+    {
+        "a" => new("a", "First"),
+        "b" => new("b", "Second"),
+        _ => null,
+    };"""
+        text = header + root + "\n" + helper + "\n}\n"
+        process, context = selected("Reader.cs", text, standalone=root, start=header.count("\n") + 1)
+        callee, _ = selected("Reader.cs", text, standalone=helper, start=header.count("\n") + root.count("\n") + 2)
+        body = callee["sources"]["s1"]
+        process["sources"]["s2"] = body
+        process["facts"].append({"kind": "BODY", "declaration": "helper", "sources": ["s2"]})
+        context["sourceRanges"].append({**body, "id": "m123456789abc:e2", "references": ["s2"]})
+        context["_nativeFiles"]["Reader.cs"] = captured_csharp(text, "Reader.cs")
+        facts, _ = self.project(process, context)
+        success = [row["text"] for row in facts if row["kind"] == "http-outcome" and "HTTP 200" in row["text"]]
+        self.assertTrue(any('`input.Id` matches `"a"`' in row and 'First' in row for row in success), success)
+        self.assertTrue(any('`input.Id` matches `"b"`' in row and 'Second' in row for row in success), success)
+        self.assertTrue(all('`input.Id` matches `"a"`' in row for row in success if 'First' in row), success)
+        self.assertTrue(all('`input.Id` matches `"b"`' in row for row in success if 'Second' in row), success)
+        invalid = [row["text"] for row in facts if row["kind"] == "http-outcome" and "HTTP 400" in row["text"]]
+        self.assertTrue(any('`input.Id` differs from `"a"`' in row and
+                            '`input.Id` differs from `"b"`' in row for row in invalid), invalid)
+
     def test_roslyn_rejects_same_body_in_differently_declared_git_unit(self):
         declaration = CSHARP.split("\n", 4)[4].rsplit("\n}", 1)[0]
         captured = CSHARP.replace("using Microsoft.AspNetCore.Http;", "using Results = Other.Results;")
