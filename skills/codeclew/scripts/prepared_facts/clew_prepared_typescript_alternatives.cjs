@@ -1,6 +1,6 @@
 /* Keep coherent exceptional alternatives and reserve room for distinct outcomes. */
 const concrete = new Set(["transaction_step", "sql_request", "sql_columns", "sql_result_check", "sql_result_flow", "post_commit_call", "post_helper_call", "broker_replay_window",
-    "conditional_repeat", "await_bypass", "result_continuation", "iteration_guard", "status_body", "response_body_read", "cleanup_call", "call_arguments", "helper_result", "helper_outcome", "return", "early_exit"]);
+    "response_decode_failure_outcome", "conditional_repeat", "await_bypass", "result_continuation", "iteration_guard", "status_body", "response_body_read", "cleanup_call", "call_arguments", "helper_result", "helper_outcome", "return", "early_exit"]);
 
 function rendered(sources, clauses) {
     const condition = clauses.length ? clauses.join(" and ") : undefined;

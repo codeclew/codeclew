@@ -23,7 +23,7 @@ const limit = 58;
 const BODY_READS = new Set(["json", "text", "arrayBuffer", "blob", "formData", "bytes"]);
 const priority = [
     "registered_callback", "registration_step", "transaction_step", "sql_request", "sql_columns", "sql_parameters", "sql_result_check", "sql_result_flow",
-    "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write",
+    "post_commit_call", "post_helper_call", "broker_replay_window", "broker_offset_call", "guarded_state_write", "response_decode_failure_outcome",
     "conditional_repeat", "helper_outcome", "finally", "cleanup_call", "finally_resume", "finally_override", "status_body", "http_forward", "response_body_read", "exception_route", "exception_bypass",
     "http_request", "message_request", "request_after_commit_failure",
     "return_rejection", "await_bypass", "result_continuation", "iteration_helper_binding", "iteration_guard", "early_exit", "direct_effect_inventory", "return", "throw", "argument_binding", "helper_result", "result_use", "call_arguments",
@@ -664,7 +664,8 @@ function scan(scope, inherited) {
                 state, "The mapping applies under PostgreSQL-style positional binding.");
         }
     }
-    function statusBody(call, site, state) {
+    function statusResponse(call) {
+        if (!call || !ts.isCallExpression(call)) return;
         const callee = unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee) || !["json", "send"].includes(callee.name.text)) return;
         const receiver = unwrap(callee.expression);
@@ -675,11 +676,13 @@ function scan(scope, inherited) {
         if (!ts.isNumericLiteral(code) || !/^[1-5][0-9]{2}$/.test(code.getText()) || call.arguments.length > 1 ||
                 call.arguments.some(ts.isSpreadElement)) return;
         const body = call.arguments.length && caption(call.arguments[0]);
-        emit("status_body", callName(receiver) + " receives " + code.getText() + ". The returned receiver's " +
-            callee.name.text + (body ? " receives " + body : call.arguments.length ? " receives the evaluated argument" :
-                " is called without an argument") + ".", [source(scope, receiver), site], state,
-            "The framework binding determines the actual HTTP status and response.", arrivalEvidence(state));
-        return Number(code.getText());
+        return {
+            text: callName(receiver) + " receives " + code.getText() + ". The returned receiver's " +
+                callee.name.text + (body ? " receives " + body : call.arguments.length ? " receives the evaluated argument" :
+                    " is called without an argument") + ".",
+            sites: [source(scope, receiver), source(scope, call)],
+            status: Number(code.getText()),
+        };
     }
     function orderedChildren(node) {
         if (ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isTypeNode(node)) return [];
@@ -746,7 +749,7 @@ function scan(scope, inherited) {
         return {...state, last: undefined, exits: [], failed: signature && waited ? {signature, site} : undefined,
             ...(focus ? {writeTransactions: new Map()} : {}),
             ...(compatibility ? {messageValues: compatibility.dropRecords(state.messageValues)} : {}),
-            errorArrival: waited ? {name, site, occurrence, phase} : state.errorArrival,
+            errorArrival: waited ? {name, site, occurrence, phase, catcher: catcher.site, decodingProof} : state.errorArrival,
             guards: [...state.guards, {text: failure, source: site}]};
     }
     function evaluate(expression, statement, state, catcher, ending, binding, depth = 0, evaluated = new Map()) {
@@ -878,7 +881,12 @@ function scan(scope, inherited) {
         if (ts.isPropertyAccessExpression(method) || ts.isElementAccessExpression(method)) {
             describeFlow(method.expression, "The receiver of " + place, site, state);
         }
-        const status = statusBody(call, site, state);
+        const response = statusResponse(call);
+        if (response) {
+            emit("status_body", response.text, response.sites, state,
+                "The framework binding determines the actual HTTP status and response.", arrivalEvidence(state));
+        }
+        const status = response?.status;
         if (query && ts.isPropertyAccessExpression(method) && ["json", "send"].includes(method.name.text) &&
                 call.arguments.length && !call.arguments.some(ts.isSpreadElement)) {
             const reads = query.outputs(call.arguments[0], state, evaluated);
@@ -1168,6 +1176,14 @@ function scan(scope, inherited) {
             const terminated = !final ? caught.exits.flatMap(exit => {
                 const arrival = exit.resume.errorArrival;
                 if (!arrival || !(exit.kind === "return" || exit.kind === "throw" && !enclosing)) return [];
+                if (!state.cleanup && arrival.decodingProof && arrival.catcher === handlerRoute.site) {
+                    const response = exit.kind === "return" ? statusResponse(unwrap(exit.statement.expression)) : undefined;
+                    emit("response_decode_failure_outcome",
+                        response?.text || exit.text + ".", [arrival.site, handlerRoute.site, exit.site,
+                            ...arrival.decodingProof, ...(response?.sites || [])], exit.resume,
+                        "The catch outcome depends on completing the cited operands and any framework binding.",
+                        arrivalEvidence(exit.resume));
+                }
                 return [{...arrival, mode: exit.kind, sites: [handlerRoute.site, exit.site], guards: exit.resume.guards}];
             }) : [];
             const continued = tried.normal.map(path => ({...path,

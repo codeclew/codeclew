@@ -28,6 +28,7 @@ PEER_CONTRACTS = {"openapi-declared-response": "http-peer-declared-response",
 CALLER_PATHS = {"java-guarded-outcome", "java-ordered-effects", "http-outcome", "error-path",
                 "effect-order", "handled-exception-continuation", "return_rejection", "await_bypass",
                 "exception_route", "request_after_commit_failure", "response_body_read", "status_body",
+                "response_decode_failure_outcome",
                 "result_continuation", "return", "throw", "EARLY_EXIT", "HARD_EXIT",
                 "GUARDED_EFFECTS", "ORDERED_EFFECTS"}
 HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown. An application exception "
@@ -478,19 +479,16 @@ def project(requirements, records, *, contracts=None):
                 emit(owner, "http-peer-outcome-boundary", f"An observable handler return or exception for {name} remains open.",
                      boundary, call, cited[0], status="UNKNOWN")
             local_paths = [row for row in local["paths"] if continuation(row, call)]
-            decoding = [row for row in local_paths if row.get("_edgePhase") == "RESPONSE_DECODING"]
-            failure = next((row for row in decoding if row["kind"] == "exception_route"), None)
-            if failure and target["commits"]:
-                terminal = next((row for kind in ("status_body", "return", "throw")
-                                 for row in decoding if row["kind"] == kind), failure)
-                if decode_read := next((row for row in decoding if row["kind"] == "response_body_read"), None):
-                    for commit in target["commits"]:
-                        emit(owner, "http-failure-after-peer-commit",
-                             f"If the matched handler in {name} takes its cited commit-before-response path, "
-                             f"the caller can still fail while decoding the resulting response. {terminal['text']}",
-                             boundary + " The upstream write may already be committed. The caller failure does not "
-                             "establish upstream rollback, durability or the wire status.",
-                             call, cited[0], commit, decode_read, failure, terminal)
+            decoding = (row for row in local_paths if row["kind"] == "response_decode_failure_outcome"
+                        and row.get("_edgePhase") == "RESPONSE_DECODING")
+            for outcome in islice(decoding, MAX_MATCHES):
+                for commit in target["commits"]:
+                    emit(owner, "http-failure-after-peer-commit",
+                         f"If the matched handler in {name} takes its cited commit-before-response path, "
+                         f"the caller can still fail while decoding the resulting response. {outcome['text']}",
+                         boundary + " The upstream write may already be committed. The caller failure does not "
+                         "establish upstream rollback, durability or the wire status. " + outcome.get("uncertainty", ""),
+                         call, cited[0], commit, outcome)
             for outcome in local_paths[:MAX_MATCHES]:
                 emit(owner, "http-caller-continuation", outcome["text"],
                      boundary + " Persistence and rollback of any earlier effects remain unknown. "

@@ -2562,12 +2562,18 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             return {"kind": kind, "authority": "RETAINED_PATH", "text": text, "sources": [handle], **metadata}
         route = fact("http_request", "The operation awaits fetch.", site,
                      _edge={"kind": "HTTP", "method": "GET", "uri": "/units", "site": site, "occurrence": "call-1"})
-        front = self.retained("front", path="/front", facts=[route,
-            fact("response_body_read", "Awaits decoding the fetched value.", site, **cause),
-            fact("exception_route", "If decoding rejects, control enters the catch.", site, **cause),
-            fact("status_body", 'reply.status receives 502. The body says "Unavailable".', site, **cause)])
+        fragments = [route,
+                     fact("response_body_read", "Awaits decoding the fetched value.", site, **cause),
+                     fact("exception_route", "If decoding rejects, control enters the catch.", site, **cause),
+                     fact("status_body", 'reply.status receives 502. The body says "Unavailable".', site, **cause)]
         commit = fact("http-commit-before-response", "The handler commits its write before constructing HTTP 200.", "peer-body")
         peer = self.retained("peer", facts=[commit])
+        unrelated = self.retained("front", path="/front", facts=fragments)
+        self.assertFalse(any(row["kind"] == "http-failure-after-peer-commit"
+                             for row in self.project(unrelated, peer)[unrelated[0]["id"]]))
+        matched = fact("response_decode_failure_outcome", 'reply.status receives 502. The body says "Unavailable".',
+                       site, **cause)
+        front = self.retained("front", path="/front", facts=[*fragments, matched])
         pivot, = (row for row in self.project(front, peer)[front[0]["id"]] if row["kind"] == "http-failure-after-peer-commit")
         self.assertIn("502", pivot["text"])
         self.assertIn("Unavailable", pivot["text"])

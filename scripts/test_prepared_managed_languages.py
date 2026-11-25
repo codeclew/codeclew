@@ -217,6 +217,35 @@ class PreparedManagedLanguages(unittest.TestCase):
         rows, _ = self.project(process, context)
         self.assertFalse(any(row.get("_edgePhase") == "RESPONSE_DECODING" for row in rows))
 
+    def test_typescript_response_decode_outcomes_keep_their_own_catch_and_arm(self):
+        self.require_typescript()
+        text = """async function load(flag: boolean, reply: Reply) {
+    const res = await fetch("/books");
+    if (flag) {
+        try { return await res.json(); }
+        catch { reply.code(503).send({error: "SIDE_EFFECT"}); return 418; }
+    } else {
+        try { return await res.text(); }
+        catch { return reply.code(422).send({error: "UNREADABLE"}); }
+    }
+}
+"""
+        process, context = selected("Books.ts", text)
+        rows, _ = self.project(process, context)
+        request, = (row for row in rows if row["kind"] == "http_request")
+        outcomes = [row for row in rows if row["kind"] == "response_decode_failure_outcome"]
+        self.assertEqual(len(outcomes), 2)
+        for outcome, expected, condition, decode, disjoint in [
+            (outcomes[0], "Returns 418", "flag is true", "res.json", "flag is false"),
+            (outcomes[1], "reply.code receives 422", "flag is false", "res.text", "flag is true"),
+        ]:
+            self.assertIn(expected, outcome["text"])
+            self.assertIn(condition, outcome["condition"])
+            self.assertIn(decode, outcome["condition"])
+            self.assertNotIn(disjoint, outcome["condition"])
+            self.assertNotIn("SIDE_EFFECT", outcome["text"])
+            self.assertEqual(outcome["_edgeCause"], request["_edge"]["occurrence"])
+
     def test_qualified_origin_concatenation_survives_nested_await_and_reply_code(self):
         self.require_typescript()
         text = """async function score(reply: Reply, base: string, id: string) {
