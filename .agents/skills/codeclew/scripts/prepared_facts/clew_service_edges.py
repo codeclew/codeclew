@@ -222,9 +222,16 @@ def record(requirement, process, context, facts, exact):
 
     write_focus, poll_paths = defaultdict(lambda: defaultdict(list)), defaultdict(dict)
     write_statements, write_shapes = defaultdict(list), defaultdict(set)
-    response_facts = defaultdict(list)
+    response_facts, completions = defaultdict(list), defaultdict(list)
     for fact in facts:
         response_facts[fact["kind"]].append(fact)
+        if fact["kind"] == "http-local-completion" and (proof := fact.get("_httpCompletion")):
+            status = proof.get("status")
+            if type(status) is int and 200 <= status < 300:
+                for write in proof.get("writes", ()):
+                    identity = write.get("occurrence"), write.get("table"), write.get("verb")
+                    if all(isinstance(part, str) and part for part in identity):
+                        completions[identity].append(fact)
         if (pair := fact.get("_pollPublication")) and pair.get("readOccurrence") and pair.get("publicationOccurrence"):
             poll_paths[pair["readOccurrence"]].setdefault(pair["publicationOccurrence"], stored_face(fact))
         if (focus := fact.get("_writeFocus")) and focus.get("occurrence"):
@@ -269,7 +276,7 @@ def record(requirement, process, context, facts, exact):
                 {**write, "focus": write_focus.get(write["occurrence"], {}),
                  "singleShape": len(write_shapes[write["occurrence"]]) == 1}
                 for write in writes.values()],
-            "writeStatements": dict(write_statements),
+            "writeStatements": dict(write_statements), "completions": dict(completions),
             "responses": response_representatives(fact for fact in facts if fact["kind"] in PEER_RESPONSES),
             "facets": [(target, response_representatives(response_facts[kind]))
                        for kind, target in PEER_FACETS if response_facts[kind]],
@@ -698,6 +705,13 @@ def project(requirements, records, *, contracts=None, isolated=False):
                          f"The cited write names the same table as an independently registered poller in `{name}`. "
                          + selection["text"], STORAGE_OPEN + " " + MESSAGE_OPEN + " " + ASYNC_OPEN,
                          write, registration(target), read, publication, selection)
+                    for completion in local["completions"].get((write["occurrence"], table, write["verb"]), ()):
+                        emit(owner, "local-response-independent-poll", completion["text"] +
+                             f" The related poller in `{name}` has its own registration and can publish if it selects the visible row. "
+                             "The cited local response path can complete independently of that polling and delivery.",
+                             " ".join(filter(None, (completion.get("uncertainty"), STORAGE_OPEN, MESSAGE_OPEN,
+                                                    "Timing relative to the local HTTP response remains open."))),
+                             completion, registration(target), read, publication, {**selection, "condition": None})
                     subscribers = subscriptions.get(publication["topic"], ())
                     if len(subscribers) > MAX_MATCHES:
                         emit(owner, "storage-message-boundary", f"Multiple retained subscriptions follow the "
@@ -752,8 +766,10 @@ def project(requirements, records, *, contracts=None, isolated=False):
         for row in rows:
             by_kind.setdefault(row["kind"], row)
         activation = next((item for item in result[handler] if item["kind"] == "storage-poll-activation"), None)
+        completion = (item for item in result[handler] if item["kind"] == "local-response-independent-poll")
         initial = first_outbox_hops[handler] if isolated else first_outbox_hops[handler][:1]
-        rows = [*([activation] if activation else ()), *initial, *islice(by_kind.values(), 3)]
+        rows = [*([activation] if activation else ()), *initial,
+                *(completion if isolated else islice(completion, 1)), *islice(by_kind.values(), 3)]
         name = records[handler]["requirement"]["page"]
         for requester, call, registration_proof, boundary in requesters:
             for row in rows:
@@ -767,6 +783,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                  "http-peer-sql-write", "http-peer-write-binding", "http-peer-guarded-return",
                  "http-peer-return-bypass", "http-peer-declared-response",
                  "http-peer-declaration-boundary", "http-peer-outcome", "http-peer-value-lineage",
+                 "http-local-response-independent-poll", "local-response-independent-poll",
                  "http-storage-poll-activation", "http-further-subscriber-readback", "http-further-subscriber-outbox",
                  "further-subscriber-readback",
                  "message-storage-reader", "http-message-storage-reader", "storage-poll-activation", "further-subscriber-outbox",

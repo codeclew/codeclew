@@ -3170,11 +3170,17 @@ class PreparedServiceEdgeTests(unittest.TestCase):
                     "text": "The retained source reaches the cited request.",
                     "_edge": {"kind": operation, "site": site, **identity}}
 
-        writer = self.retained("catalog", name="writer", facts=[effect("writer", "INSERT", table="pending_jobs")])
+        request_write = effect("writer", "INSERT", table="pending_jobs", occurrence="insert")
+        completion = {"kind": "http-local-completion", "authority": "RETAINED_PATH", "sources": ["writer-body"],
+                      "text": "The handler resumes after the local write and returns HTTP 202.",
+                      "condition": "the handler accepts the job",
+                      "_httpCompletion": {"status": 202, "writeOccurrences": ["insert"],
+                                          "writes": [{"occurrence": "insert", "table": "pending_jobs", "verb": "INSERT"}]}}
+        writer = self.retained("catalog", name="writer", facts=[request_write, completion])
         operations = [effect("relay", "SELECT", table="pending_jobs", occurrence="select"),
                       effect("relay", "PUBLISH", topic="jobs.ready", occurrence="send")]
         relay = self.retained("catalog", name="relay", entry_kind="SCHEDULED_JOB",
-                              facts=[*operations, self.poll_proof("relay")])
+                              facts=[*operations, {**self.poll_proof("relay"), "condition": "the poll observes a ready row"}])
         trigger = {"configuration": {"topics": ["jobs.ready"]}}
         listener = self.retained("index", name="listener", entry_kind="KAFKA_LISTENER", trigger=trigger,
                                  facts=[effect("listener", "INSERT", table="inbox")])
@@ -3205,6 +3211,18 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertIn("Any wait for downstream completion", activation["uncertainty"])
         self.assertIn("relative to an original HTTP response remain open", activation["uncertainty"])
         self.assertIn("relay-registration", activation["sources"])
+        local, = (row for row in result[front[0]["id"]] if row["kind"] == "http-local-response-independent-poll")
+        self.assertIn("returns HTTP 202", local["text"])
+        self.assertIn("can complete independently", local["text"])
+        self.assertEqual(local["condition"], "the handler accepts the job")
+        self.assertTrue({"front-call", "writer-body", "relay-registration", "relay-body"} <= set(local["sources"]))
+        proof = completion["_httpCompletion"]
+        for update in ({"table": "unrelated"}, {"verb": "UPDATE"}, {"occurrence": "another-call"}):
+            stale = {**completion, "_httpCompletion": {**proof, "writes": [{**proof["writes"][0], **update}]}}
+            mismatch = self.retained("catalog", name="writer", facts=[request_write, stale])
+            unqualified = self.project(front, mismatch, relay, listener, reader)[front[0]["id"]]
+            self.assertTrue(any(row["kind"] == "http-storage-poll-activation" for row in unqualified))
+            self.assertFalse(any(row["kind"] == "http-local-response-independent-poll" for row in unqualified))
         self.assertTrue(any(row["kind"] == "message-storage-reader" for row in result[relay[0]["id"]]))
         self.assertNotIn(wrong[0]["id"], result)
         self.assertEqual(result[disabled[0]["id"]][0]["status"], "DISABLED_IN_SOURCE")
