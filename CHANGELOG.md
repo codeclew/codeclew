@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.20
+
+- Prepare separate operation packets for retained scheduled jobs, hosted
+  workers, and message handlers. Include cited guards, awaited outcomes, and
+  retry conditions wherever retained source supports them.
+- Link prepared operations across services using retained request routes,
+  message registrations, and typed publications. Keep deployment, delivery,
+  and runtime activation qualified.
+- Carry supporting operation and contract evidence, with its source citations,
+  into isolated author packets.
+
 ## 0.15.19
 
 - Add an opt-in prepared-facts mode to the installed documentation runner.
