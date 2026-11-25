@@ -49,8 +49,10 @@ class ClosedReturn:
             self.serializer_options.add(event["result"])
             return True
         if step.get("transparentRecord"):
-            self.records[event["result"]] = (step["objectType"], {argument.get("name"): argument["value"]
-                                                                  for argument in arguments})
+            values = {argument["position"]: argument["value"] for argument in arguments}
+            # Roslyn supplies positional properties in their selected constructor's parameter order.
+            fields = {field["name"]: values[index] for index, field in enumerate(step["recordFields"]) if index in values}
+            self.records[event["result"]] = (step["objectType"], fields)
             return True
         if candidate := step.get("targetTypedRecord"):
             values = {arg["position"]: arg["value"] for arg in arguments if not arg.get("byRef")}
@@ -76,9 +78,11 @@ class ClosedReturn:
                                                    if any(references(operand, options) for operand in operands)})
 
     def json_value(self, shape, value):
+        if shape == "scalar":
+            return True  # The compiler-proven type excludes hooks even when the modeled value is unknown.
         if value is None:
             return False
-        if shape == "scalar" or value == ("literal", None):
+        if value == ("literal", None):
             return True
         if shape["kind"] == "anonymous":
             if value[0] != "record":
@@ -88,7 +92,8 @@ class ClosedReturn:
             if value not in self.records or self.records[value][0] != shape["type"]:
                 return False
             fields = self.records[value][1]
-        return all(self.json_value(field["shape"], fields.get(field["name"])) for field in shape["fields"])
+        return all(field["name"] in fields and self.json_value(field["shape"], fields[field["name"]])
+                   for field in shape["fields"])
 
     def json_serialization(self, shape, invocation):
         arguments = {argument["position"]: argument["value"] for argument in invocation.get("arguments", ())}

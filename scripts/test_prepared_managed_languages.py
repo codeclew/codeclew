@@ -1349,6 +1349,15 @@ public static class Intake
         changed_options = options.replace("var alias = options;", "var alias = options;\n        alias.WriteIndented = true;")
         custom_payload = options.replace("public record ReceiptKey(Guid Id);",
                                          "public record ReceiptKey(Guid Id) { public Guid Extra => Guid.NewGuid(); }")
+        unknown_number = options.replace("Task observation)", "Task observation, double scale)")
+        unknown_number = unknown_number.replace("SaveAsync(database).ConfigureAwait", "SaveAsync(database, scale).ConfigureAwait")
+        unknown_number = unknown_number.replace("SaveAsync(DbConnection database)", "SaveAsync(DbConnection database, double scale)")
+        unknown_number = unknown_number.replace("ReceiptKey(Guid Id)", "ReceiptKey(Guid Id, double Adjusted)")
+        unknown_number = unknown_number.replace("new ReceiptKey(identifier)", "new ReceiptKey(Adjusted: scale * 2.0, Id: identifier)")
+        unknown_record = options.replace("Task observation)", "Task observation, ReceiptKey key)")
+        unknown_record = unknown_record.replace("SaveAsync(database).ConfigureAwait", "SaveAsync(database, key).ConfigureAwait")
+        unknown_record = unknown_record.replace("SaveAsync(DbConnection database)", "SaveAsync(DbConnection database, ReceiptKey key)")
+        unknown_record = unknown_record.replace("var key = new ReceiptKey(identifier);", "")
         cases = (
             ("closed", source, "", ("SaveAsync",), True),
             ("payload and cleanup", payload, "", ("SaveAsync",), True),
@@ -1356,6 +1365,8 @@ public static class Intake
             ("fresh default options and nested record", options, "", ("SaveAsync",), True),
             ("changed fresh options", changed_options, "", ("SaveAsync",), False),
             ("record with custom serialized getter", custom_payload, "", ("SaveAsync",), False),
+            ("compiler primitive without symbolic numeric value", unknown_number, "", ("SaveAsync",), True),
+            ("unknown runtime record value", unknown_record, "", ("SaveAsync",), False),
             ("lookup precedes write", source.replace("if (!accepted) return Results.BadRequest();",
                                                      "if (!accepted) return Results.BadRequest();\n        " + lookup),
              "", ("SaveAsync",), True),
