@@ -31,22 +31,32 @@ def page_link(title, page, anchor=None):
     return f'[{label}]({draft_target(page, anchor)})'
 
 
-def service_evidence(scope):
+def service_evidence(scope, owner, services, snapshot):
     home = Path(scope['sourceIndex']).parent
     ready = load(home / 'requirements.json')
     manifest_paths = [scope['manifest']] if scope['manifest'] else []
     facts = scope.get('preparedFacts', {})
-    manifest_paths.extend(row['manifest'] for row in facts.get('citations', {}).values() if 'manifest' in row)
+    qualified = facts.get('citations', {})
+    manifest_paths.extend(row['manifest'] for row in qualified.values() if 'manifest' in row)
     sources = {}
     for manifest in dict.fromkeys(manifest_paths):
-        path = Path(manifest)
-        if not path.is_absolute():
-            path = home / path
+        path = home / manifest
         _, packet, _, entries = citation_load(path)
         by_id = {entry['source']['id']: packet['texts'][entry['textKey']] for entry in packet['outcomes']}
         for handle, value in entries.items():
             source = value['source']
-            need(source['revision'] == scope['revision'], 'PAGE_SOURCE_REVISION_CHANGED', file=source['file'])
+            service = source['service']
+            if service != owner:
+                proof = qualified.get(handle, {})
+                # Another service's manifest can carry additional ranges beyond
+                # the exact handles selected by this page's prepared facts.
+                if 'manifest' not in proof or home / proof['manifest'] != path:
+                    continue
+                need(service in services and all(proof.get(key) == source.get(key) for key in (
+                    'service', 'revision', 'file', 'startLine', 'endLine'))
+                    and packet['scope']['snapshot'] == snapshot and packet['work'] == services[service]['work'],
+                    'PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED', file=source['file'])
+            need(source['revision'] == services[service]['revision'], 'PAGE_SOURCE_REVISION_CHANGED', file=source['file'])
             sources[handle] = {**source, 'text': by_id[source['id']]}
     return_path = home / 'literal-returns.json'
     return {'ready': ready, 'sources': sources, 'facts': facts.get('entries', {}),
@@ -120,7 +130,8 @@ def peer_declarations(inventory, entries):
 def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
     need(prepared is not None, 'ISOLATED_PAGE_SOURCE_UNAVAILABLE', blocked=True)
     directory.mkdir(mode=0o700)
-    indexes = {service: service_evidence(scope) for service, scope in prepared['services'].items()}
+    indexes = {service: service_evidence(scope, service, inventory['services'], inventory['snapshot'])
+               for service, scope in prepared['services'].items()}
     entries = entry_index(inventory)
     peer_links = peer_declarations(inventory, entries)
     by_handler = {row['handlerId']: row for row in inventory['requirements'] if row['kind'] == 'ENTRY'}
@@ -173,7 +184,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                     (value for value in index['returns'] if value['page'] == page), 1)})
                 mandatory.extend(row['cite'] for row in returns.values())
             if kind in ('GUIDE', 'CONTRACTS'):
-                supplemental.extend(index['sources'])
+                supplemental.extend(handle for handle, source in index['sources'].items() if source['service'] == owner)
 
         fact_handles = [handle for scoped in scoped_facts.values() for category in ('facts', 'boundaries')
                         for fact in scoped.get(category, ()) for handle in fact['sources']]
@@ -207,6 +218,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 filtered[identity] = row
                 facts[identity] = {}
             add_prepared_facts({identity: (identity, target) for identity, target in facts.items()}, filtered, reverse)
+            cited_services = dict.fromkeys([*available, *(all_sources[handle]['service'] for handle in selected)])
             packet = {'slot': key, 'type': kind, 'page': page, 'request': job['request'], 'language': job['language'],
                       'service': service, 'context': context, 'citations': citations, 'sourceRanges': sources,
                       'facts': {identity: value for identity, value in facts.items() if value},
@@ -216,7 +228,7 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                                            'limits': indexes[owner]['coverage'].get('boundaries', []),
                                            'deferredResources': indexes[owner]['deferred'],
                                            'peerDeclarations': inventory['services'][owner].get('peerDeclarationCoverage', 'UNAVAILABLE')}
-                                   for owner in available},
+                                   for owner in cited_services},
                       'omittedOptionalRanges': len(set(optional) - set(selected)),
                       'omittedPreparedFacts': omitted_facts}
             if required:

@@ -525,6 +525,36 @@ else:
         self.assertEqual(error.exception.code, 'PAGE_AUTHOR_THREAD_REUSED_ACROSS_SLOTS')
         self.assertFalse((run / 'ready').exists())
 
+    def test_isolated_prepared_peer_requires_selected_handle_and_matching_work_revision(self):
+        pages = D['P']
+        home = self.root / 'page-source'
+        home.mkdir()
+        D['save'](home / 'requirements.json', {})
+        peer_manifest = home / 'peer' / 'citations.json'
+        proof = {'file': 'peer.ts', 'startLine': 3, 'endLine': 3, 'service': 'peer', 'revision': 'c' * 40,
+                 'manifest': 'peer/citations.json'}
+        selected = {**proof, 'id': 'chosen'}
+        unrelated = {**proof, 'id': 'other', 'file': 'unrelated.ts'}
+        packet = {'scope': {'snapshot': F['SNAPSHOT']}, 'work': 'peer-work',
+                  'outcomes': [{'source': source, 'textKey': source['id']} for source in (selected, unrelated)],
+                  'texts': {'chosen': 'Read peer', 'other': 'Unrelated peer'}}
+        entries = {'peer:cite': {'source': selected}, 'peer:other': {'source': unrelated}}
+        source_scope = {'sourceIndex': str(home / 'index.md'), 'manifest': None,
+                        'coverage': {}, 'deferredResourceFiles': [],
+                        'preparedFacts': {'citations': {'peer:cite': proof}}}
+        scopes = {self.service: {'revision': self.source['revision']}, 'peer': {'revision': 'c' * 40, 'work': 'peer-work'}}
+
+        def citation_load(path):
+            self.assertEqual(path, peer_manifest)
+            return {}, packet, {}, entries
+
+        with patch.dict(pages['service_evidence'].__globals__, {'citation_load': citation_load}):
+            loaded = pages['service_evidence'](source_scope, self.service, scopes, F['SNAPSHOT'])
+            self.assertEqual(set(loaded['sources']), {'peer:cite'})
+            packet['work'] = 'different-work'
+            with self.assertRaisesRegex(D['Stop'], 'PAGE_PEER_SOURCE_MEMBERSHIP_CHANGED'):
+                pages['service_evidence'](source_scope, self.service, scopes, F['SNAPSHOT'])
+
     def test_isolated_declared_peer_packet_and_route_keep_exact_service_ownership(self):
         reservation = self.entry | {'entrySymbol': 'demo.Reservations.reserve'}
         warehouse = reservation | {'id': 'warehouse:entry', 'handlerId': 'entry-warehouse', 'service': 'warehouse',
@@ -535,7 +565,7 @@ else:
         declaration = {'id': 'stock-check', 'title': 'Declared stock lookup',
                        'from': {'service': self.service, 'selector': {'owner': 'demo.Reservations', 'name': 'reserve'}},
                        'to': {'service': 'warehouse'}, 'transport': {'kind': 'HTTP', 'method': 'GET', 'path': '/stock'}}
-        inventory = {'requirements': [reservation, warehouse, unrelated, *(
+        inventory = {'snapshot': F['SNAPSHOT'], 'requirements': [reservation, warehouse, unrelated, *(
             {'id': service + ':service-scope', 'service': service, 'kind': 'SERVICE', 'page': service + '.md'}
             for service in (self.service, 'warehouse'))], 'services': {
                 self.service: {'peerDeclarations': [{'kind': 'DEPENDENCY', 'record': {
@@ -552,7 +582,7 @@ else:
         for index in by_service.values():
             index.update(returns=[], coverage={'coverage': 'SYNTAX'}, deferred=[])
         pages = D['P']
-        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service: by_service[service]}):
+        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service, *_: by_service[service]}):
             job = dict(self.job, services=[self.service, 'warehouse'])
             directory = self.root / 'page-prompts'
             plan = pages['page_jobs'](job, inventory, {'services': {key: key for key in by_service}},
