@@ -1,7 +1,7 @@
 // Explicit reader destinations, not inferred service ownership or a computation graph.
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 const kinds=new Set(['http','kafka','scheduled','background','manual','other']);
-function need(ok,path,message){if(!ok)throw new Error(`Invalid navigation ${path}: ${message}`)}
+function need(ok,path,message,details){if(!ok)throw Object.assign(new Error(`Invalid navigation ${path}: ${message}`),{file:'navigation.json',path,details})}
 function object(value,path,keys){need(value&&typeof value==='object'&&!Array.isArray(value),path,'expected object');need(Object.keys(value).every(k=>keys.includes(k)),path,'unknown property')}
 function label(value,path){need(typeof value==='string'&&value.trim().length>0,path,'expected nonempty text');return value}
 function array(value,path){need(Array.isArray(value),path,'expected array');return value}
@@ -19,7 +19,7 @@ export function htmlIds(html){
  return ids;
 }
 
-export function localTarget(value,path,byFile){
+function resolveTarget(value,path,byFile,checkAnchor){
   label(value,path);need(!/[\u0000-\u001f\\?]/u.test(value),path,'use a flat Markdown page and optional anchor');
   const split=value.indexOf('#'),file=split<0?value:value.slice(0,split),raw=split<0?'':value.slice(split+1);let fragment;
   try{fragment=decodeURIComponent(raw)}catch{need(false,path,'invalid anchor encoding')}
@@ -27,16 +27,24 @@ export function localTarget(value,path,byFile){
   need(byFile.has(file),path,'page does not exist');
   if(split>=0){
    need(fragment.length>0,path,'empty anchor');
-   const ids=htmlIds(byFile.get(file).html);
-   need(ids.filter(id=>id===fragment).length===1,path,'anchor missing or ambiguous');
+   if(checkAnchor){
+    const ids=htmlIds(byFile.get(file).html);
+    need(ids.filter(id=>id===fragment).length===1,path,'anchor missing or ambiguous');
+   }
   }
   return {file,fragment,href:encodeURIComponent(file.replace(/\.md$/,'.html'))+(fragment?'#'+encodeURIComponent(fragment):'')};
  }
 
-export function validateNavigation(value,pages){
+export function localTarget(value,path,byFile){return resolveTarget(value,path,byFile,true)}
+export function draftTarget(value,path,byFile){return resolveTarget(value,path,byFile,false)}
+
+export function validateNavigation(value,pages){return navigation(value,pages,localTarget)}
+export function validateDraftNavigation(value,files){return navigation(value,files.map(file=>({file})),draftTarget)}
+
+function navigation(value,pages,resolve){
  object(value,'/',['schema','home','services','routes']);need(value.schema==='codeclew-markdown-navigation/1','/schema','unsupported schema');
  const byFile=new Map(pages.map(p=>[p.file,p]));
- const target=(value,path)=>localTarget(value,path,byFile);
+ const target=(value,path)=>resolve(value,path,byFile);
  function link(v,path,trigger=false){
   object(v,path,trigger?['title','target','kind','summary']:['title','target']);label(v.title,path+'/title');
   if(trigger){need(kinds.has(v.kind),path+'/kind','expected http, kafka, scheduled, background, manual or other');label(v.summary,path+'/summary')}
@@ -56,7 +64,9 @@ export function validateNavigation(value,pages){
  });
  const routeIds=new Set();
  const routes=array(value.routes,'/routes').map((r,i)=>{
-  const path='/routes/'+i;object(r,path,['id','title','target','origin','participants']);label(r.id,path+'/id');label(r.title,path+'/title');need(!routeIds.has(r.id),path+'/id','duplicate route');routeIds.add(r.id);const to=target(r.target,path+'/target');need(!owners.has(to.file),path+'/target','shared route page cannot be owned by one service');
+  const path='/routes/'+i;object(r,path,['id','title','target','origin','participants']);label(r.id,path+'/id');label(r.title,path+'/title');need(!routeIds.has(r.id),path+'/id','duplicate route');routeIds.add(r.id);const to=target(r.target,path+'/target');
+  if(owners.has(to.file))need(false,path+'/target','shared route page cannot be owned by one service',
+   {route:r.id,target:r.target,owner:owners.get(to.file),nextAction:'Give the shared route its own page outside the service page list.'});
   function participant(v,path,origin=false){
    object(v,path,origin?['service','title','kind','target']:['service','title','role','target','section']);need(serviceIds.has(v.service),path+'/service','unknown service');label(v.title,path+'/title');const local=target(v.target,path+'/target');need(owners.get(local.file)===v.service,path+'/target','participant destination is not owned by this service');
    if(origin)need(kinds.has(v.kind),path+'/kind','invalid trigger kind');

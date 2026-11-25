@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 const {renderDirectory}=await import(new URL('render.mjs',pathToFileURL(process.env.CODECLEW_MARKDOWN_RENDERER+'/')));
+const {validateDraftRouteCatalog}=await import(new URL('docset-routes.mjs',pathToFileURL(process.env.CODECLEW_MARKDOWN_RENDERER+'/')));
 const registry=JSON.parse(await readFile(new URL('../fixtures/docs-cross-docset-routes/registry.json',import.meta.url),'utf8'));
 const files={portal:{'index.md':'# Directory\n'},journeys:{'index.md':'# Journeys\n','stock-query.md':'# Stock\n\n## Success\n\n## Returned\n\n## Scope\n','order-submit.md':'# Submit\n\n## Completed\n\n## Rejected\n\n## Handoff\n\n## Pending\n\n## Scope\n'},'orders-docs':{'overview.md':'# Orders\n','incoming.md':'# Incoming\n\n## Request\n\n## Response\n','submit.md':'# Submit\n\n## Entry\n\n## Callback\n\n## Completed\n\n## Publish\n'},'inventory-docs':{'overview.md':'# Inventory\n','handler.md':'# Handler\n\n## Lookup\n','reservation.md':'# Reservation\n\n## Reserve\n'}};
 function options(id,value=registry){
@@ -46,6 +47,31 @@ test('registry byte bound accepts exactly 1 MiB, rejects +1 before output and do
   await writeFile(path,raw+' '.repeat(limit-Buffer.byteLength(raw)));await renderDirectory(source,join(root,'exact'),options('portal',path));
   await writeFile(path,raw+' '.repeat(limit+1-Buffer.byteLength(raw)));const output=join(root,'overflow');await assert.rejects(renderDirectory(source,output,options('portal',path)),/1 MiB/);await assert.rejects(stat(output));
   const bad=options('portal');delete bad.docsetVersion;await assert.rejects(renderDirectory(source,join(root,'incomplete'),bad),/require/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+test('draft route check and final renderer share ownership rules; final renderer verifies actual anchors',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-docset-preflight-'));
+ try{
+  const docset='orders-docs',source=await input(root,docset),output=join(root,'out');
+  const value=structuredClone(registry),opts=options(docset,value),filesInDraft=Object.keys(files[docset]);
+  const check=()=>validateDraftRouteCatalog(value,opts.navigation,filesInDraft,docset,opts.docsetVersion);
+  const route=value.routes[0];
+  const narrative=route.narrative;
+  route.narrative={docset,page:'incoming.html',anchor:'request'};
+  const ownership=error=>{
+   assert.equal(error.path,'/routes/0/narrative');
+   assert.equal(error.details.route,route.id);
+   assert.deepEqual(error.details.conflict,{file:'navigation.json',path:'/services/0/pages/1',service:'api',target:'incoming.md'});
+   return true;
+  };
+  assert.throws(check,ownership);
+  await assert.rejects(renderDirectory(source,output,opts),ownership);
+  route.narrative=narrative;
+  route.occurrences[0].target.anchor='absent';
+  opts.navigation.services[0].starts[0].target='incoming.md#absent';
+  assert.doesNotThrow(check);
+  await assert.rejects(renderDirectory(source,output,opts),/anchor missing or ambiguous/);
+  await assert.rejects(stat(output));
  }finally{await rm(root,{recursive:true,force:true})}
 });
 test('unknown data renders safely and remote target problems keep a disabled process entry',async()=>{

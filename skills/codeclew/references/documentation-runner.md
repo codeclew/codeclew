@@ -163,11 +163,22 @@ Author-written PASS reports are ignored. No gate command or skip list comes from
 the job. Native declaration component tickets, when supplied, keep their own cells,
 coverage and authority through the existing validators.
 
-After writing annotated originals, the author can run `review-template --run-dir
-RUN` and save its JSON as draft/self-review.json. This read-only template command
-works during the active author invocation; it performs no gate or promotion.
-It validates frozen inputs without native commands or receipt writes. Verification
-and promotion still probe the admitted runtime version and Markdown parser.
+After writing the draft, run `review-template --run-dir RUN` and save its JSON
+as `draft/self-review.json` when the command succeeds. For multiple services,
+the command checks `routes.json` against the authored pages and `navigation.json`.
+Give each catalog route its own narrative page. All anchors on a page share the
+same canonical owner. Keep that page out of service page lists and legacy route
+entries in `navigation.json`. A known local origin names a service occurrence
+whose kind, page and anchor match a declared start for its service. Keep the
+origin and each outcome's terminal occurrence out of that outcome's internal list.
+When the command reports a conflict, use its JSON paths and destinations to edit
+the draft and rerun it before completing the review.
+
+The template command works during the active author invocation and checks frozen
+inputs without native commands or receipt writes. Verification repeats the route
+declaration check before binding sources. The final renderer checks anchor
+existence and uniqueness in the rendered pages. Verification and promotion probe
+the admitted runtime version and Markdown parser.
 The compact 1.1 review maps stable requirement IDs to explicit semantic answers,
 and maps page/fragment IDs to explicit claim dispositions. Pages, duplicate claim
 evidence and default entry/discovery cite candidates are derived from immutable

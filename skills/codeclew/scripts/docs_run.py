@@ -855,9 +855,34 @@ def inputs_unchanged(run):
     return job, inventory, pins
 
 
+def route_preflight(job, draft, files):
+    request = {'files': list(files), 'services': job['services']}
+    for key, name, maximum in (('registry', 'routes.json', 1024 * 1024),
+                               ('navigation', 'navigation.json', 32 * 1024 * 1024)):
+        try:
+            request[key] = load(draft / name, maximum)
+        except (Stop, OSError, ValueError) as error:
+            raise Stop('ROUTE_DECLARATION_FILE_INVALID', file=name, message=getattr(error, 'code', str(error)),
+                       nextAction='Save a valid JSON declaration in the draft and rerun review-template.') from error
+    try:
+        process = subprocess.run([job['node'], str(HERE / 'docs_run_routes.mjs'), job['renderer']],
+                                 input=encode(request), capture_output=True, timeout=30)
+        value = json.loads(process.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise Stop('ROUTE_PREFLIGHT_UNAVAILABLE', failure=type(error).__name__) from error
+    if process.returncode == 2 and value.get('status') == 'FAILED':
+        raise Stop(value['code'], **value['details'])
+    need(process.returncode == 0 and value.get('status') == 'ROUTE_DECLARATIONS_CHECKED',
+         'ROUTE_PREFLIGHT_UNAVAILABLE', exitCode=process.returncode)
+    return request['navigation'], value
+
+
 def review_for_run(run):
-    _, inventory, _ = frozen_inputs(run)
-    template = review_template(inventory, load(run / 'workspace/draft/original.json'))
+    job, inventory, _ = frozen_inputs(run)
+    draft = run / 'workspace/draft'; original = load(draft / 'original.json')
+    template = review_template(inventory, original)
+    if len(job['services']) > 1:
+        route_preflight(job, draft, (page['page'] for page in original['pages']))
     candidates = frozen_return_checks(run / 'inputs/author-source')
     if candidates:
         template['returnClaims'] = {row['id']: None for row in candidates}
@@ -1219,7 +1244,11 @@ def verify(run, *, debug=False):
             M['configure_engine'](job['clew'], job['root'], job['components']['path'], job['components']['digest'])
         pages, composed, _ = M['compose_pages'](original)
         need(all(r['page'] in pages and pages[r['page']].strip() for r in inventory['requirements']), 'MISSING_REQUIRED_PAGE')
-        checks[stage] = {'status': 'PASS', 'pages': len(pages)}
+        route_catalog = None
+        if len(job['services']) > 1:
+            navigation, route_catalog = route_preflight(job, draft, pages)
+        checks[stage] = {'status': 'PASS', 'pages': len(pages),
+                         **({'routeCatalog': route_catalog} if route_catalog is not None else {})}
         stage = 'provenance'; manifests, entries = cite_entries(job, inventory, draft, directory / 'sources', run / 'inputs/author-source')
         checks[stage] = {'status': 'PASS', 'handles': len(entries)}
         stage = 'selfReview'; review = load(draft / 'self-review.json')
@@ -1240,7 +1269,8 @@ def verify(run, *, debug=False):
         need(sequence.get('status') == 'ENTRY_SEQUENCES_CHECKED', 'ENTRY_SEQUENCES_NOT_CHECKED')
         checks[stage] = {'status': 'PASS', 'result': sequence}
         stage = 'finalize'
-        navigation = load(draft / 'navigation.json')
+        if route_catalog is None:
+            navigation = load(draft / 'navigation.json')
         home = navigation.get('home')
         reader_title = home.get('title') if isinstance(home, dict) else None
         need(isinstance(reader_title, str) and reader_title.strip(), 'NAVIGATION_HOME_TITLE_REQUIRED')
@@ -1262,14 +1292,10 @@ def verify(run, *, debug=False):
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
         export_sequences = bool(navigation['routes']) or any(
             start['kind'] == 'http' for service in navigation['services'] for start in service['starts'])
-        if len(job['services']) > 1:
-            registry = load(draft / 'routes.json')
-            local = registry.get('catalog', {}).get('docset')
-            docsets = [d for d in registry['docsets'] if d['id'] == local]
-            need(len(docsets) == 1 and {s['id'] for s in docsets[0]['services']} == set(job['services']), 'LOCAL_PROCESS_CATALOG_REQUIRED')
-            argv += ['--docset-routes', str(draft / 'routes.json'), '--docset', local, '--docset-version', docsets[0]['version']]
-            export_sequences |= any(route['narrative']['docset'] == local and not route['narrative'].get('problem')
-                                    for route in registry['routes'])
+        if route_catalog is not None:
+            argv += ['--docset-routes', str(draft / 'routes.json'), '--docset', route_catalog['docset'],
+                     '--docset-version', route_catalog['version']]
+            export_sequences |= route_catalog['localNarratives']
         save(renderer, argv)
         args = [sys.executable, '-I', '-S', str(HERE / 'reader_export_check.py'), 'finalize', '--compose-root', str(compose),
                 '--clew', job['clew'], '--root', job['root'], '--renderer-command', str(renderer), '--source-footers',

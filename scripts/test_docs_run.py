@@ -1074,6 +1074,106 @@ if args[:2] == ['docs', 'context'] and args[args.index('--source')+1] == {large[
         self.assertEqual(D['tree'](self.run), before)
         self.assertFalse((self.run / 'ready').exists())
 
+    def multi_service_route_draft(self):
+        job = D['load'](self.run / 'inputs/job.json')
+        job['services'].append('warehouse')
+        D['save'](self.run / 'inputs/job.json', job)
+        pins = D['load'](self.run / 'pins.json')
+        pins.update(jobDigest=D['digest'](job), inputFiles=D['tree'](self.run / 'inputs'))
+        D['save'](self.run / 'pins.json', pins)
+        self.original['pages'].extend({'page': name + '.md', 'fragments': [{'text': text}]}
+                                      for name, text in [('warehouse', '# Warehouse\n'),
+                                                         ('process-one', '# First process\n\n## First\n\n## Other\n'),
+                                                         ('process-two', '# Second process\n\n## Second\n')])
+        self.navigation['services'].append({'id': 'warehouse', 'title': 'Warehouse', 'overview': 'warehouse.md',
+                                            'pages': ['warehouse.md'], 'starts': [], 'data': []})
+        target = {'docset': 'local', 'page': self.entry['page'].removesuffix('.md') + '.html', 'anchor': 'handler'}
+        actor = {'kind': 'service', 'docset': 'local', 'service': self.service}
+        catalog = {'schema': 'codeclew-cross-docset-routes/1.1', 'revision': 'r1',
+                   'catalog': {'docset': 'local', 'page': 'process-one.html'}, 'externalActors': [],
+                   'docsets': [{'id': 'local', 'title': 'Local services', 'version': 'r1',
+                                'baseURL': 'https://docs.example.invalid/local/', 'services': [
+                                    {'id': s['id'], 'title': s['title'], 'overview': {
+                                        'docset': 'local', 'page': s['overview'].removesuffix('.md') + '.html'}}
+                                    for s in self.navigation['services']]}], 'routes': []}
+        for name, anchor in [('process-one', 'first'), ('process-two', 'second')]:
+            narrative = {'docset': 'local', 'page': name + '.html', 'anchor': anchor}
+            catalog['routes'].append({'id': name, 'version': 'r1', 'title': name, 'narrative': narrative,
+                                      'origin': {'status': 'known', 'occurrence': 'request', 'kind': 'http',
+                                                 'title': 'Request', 'summary': 'Start the process.'},
+                                      'occurrences': [{'id': 'request', 'actor': actor, 'role': 'Accept request',
+                                                       'target': dict(target)}], 'branches': [], 'outcomes': [],
+                                      'coverage': {'outcomeInventory': 'unknown', 'scope': 'Fixture scope',
+                                                   'reference': dict(narrative)}})
+        self.seed_files()
+        D['save'](self.seed / 'routes.json', catalog)
+        return catalog
+
+    def test_multi_service_review_template_reports_route_conflicts_before_review(self):
+        import fcntl
+        catalog = self.multi_service_route_draft()
+        draft = self.run / 'workspace/draft'
+        for name in ('original.json', 'navigation.json', 'routes.json'):
+            shutil.copy(self.seed / name, draft / name)
+        argv = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'),
+                'review-template', '--run-dir', str(self.run)]
+        with (self.run / '.runner.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            original = D['load'](self.seed / 'routes.json')
+            catalog['routes'][1]['narrative'] = {'docset': 'local', 'page': 'process-one.html', 'anchor': 'other'}
+            D['save'](draft / 'routes.json', catalog)
+            before = D['tree'](self.run)
+            result = subprocess.run(argv, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            failure = json.loads(result.stdout)
+            self.assertEqual(failure['code'], 'INVALID_ROUTE_DECLARATIONS')
+            detail = failure['details']
+            self.assertEqual((detail['file'], detail['path'], detail['route'], detail['destination']['anchor']),
+                             ('routes.json', '/routes/1/narrative', 'process-two', 'other'))
+            self.assertEqual(detail['conflict'], {'route': 'process-one', 'file': 'routes.json', 'path': '/routes/0/narrative',
+                                                  'destination': original['routes'][0]['narrative']})
+            self.assertEqual(D['tree'](self.run), before)
+
+            original['routes'][0]['occurrences'][0]['target']['anchor'] = 'wrong-anchor'
+            original['routes'][0]['origin']['kind'] = 'scheduled'
+            D['save'](draft / 'routes.json', original)
+            result = subprocess.run(argv, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            detail = json.loads(result.stdout)['details']
+            self.assertEqual((detail['path'], detail['occurrence'], detail['kind'], detail['destination']['anchor']),
+                             ('/routes/0/origin', 'request', 'scheduled', 'wrong-anchor'))
+            self.assertEqual(detail['owner']['service'], self.service)
+            self.assertEqual(detail['navigation']['starts'], [{'kind': 'http', 'path': '/services/0/starts/0',
+                                                              'target': self.entry['page'] + '#handler'}])
+
+            shutil.copy(self.seed / 'routes.json', draft / 'routes.json')
+            self.navigation['services'][0]['starts'][0]['target'] = self.entry['page'] + '#%68andler'
+            D['save'](draft / 'navigation.json', self.navigation)
+            before = D['tree'](self.run)
+            result = subprocess.run(argv, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['schema'], D['COMPACT_REVIEW'])
+            self.assertEqual(D['tree'](self.run), before)
+
+    def test_multi_service_verify_surfaces_navigation_ownership_before_binding_or_render(self):
+        self.multi_service_route_draft()
+        section = 'process-one.md#other'
+        start = self.navigation['services'][0]['starts'][0]['target']
+        self.navigation['routes'] = [{'id': 'legacy-process', 'title': 'Legacy route', 'target': section,
+                                      'origin': {'service': self.service, 'title': 'Request', 'kind': 'http', 'target': start},
+                                      'participants': [{'service': self.service, 'title': 'Request', 'role': 'Start',
+                                                        'target': start, 'section': section}]}]
+        self.seed_files()
+        self.generated()
+        result = self.check()
+        detail = result['checks']['output']['details']
+        self.assertEqual(result['checks']['output']['code'], 'INVALID_ROUTE_DECLARATIONS')
+        self.assertEqual((detail['route'], detail['path'], detail['conflict']['target'], detail['conflict']['route']),
+                         ('process-one', '/routes/0/narrative', section, 'legacy-process'))
+        self.assertEqual((detail['conflict']['file'], detail['conflict']['path']), ('navigation.json', '/routes/0/target'))
+        self.assertEqual(result['checks']['provenance']['status'], 'NOT_RUN')
+        self.assertEqual(result['checks']['finalize']['status'], 'NOT_RUN')
+
     def test_whole_document_initial_author_and_same_thread_repair_remain_the_default(self):
         self.mode.write_text('repair-on-resume')
         self.original['pages'][0]['fragments'][1]['text']+='\n[Missing](absent.html)\n'

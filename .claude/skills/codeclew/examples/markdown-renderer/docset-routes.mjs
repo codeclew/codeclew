@@ -1,7 +1,7 @@
 // Navigation declarations only. No source acquisition, graph traversal or remote fetch.
-import {localTarget} from './navigation.mjs';
+import {draftTarget,localTarget,validateDraftNavigation} from './navigation.mjs';
 export const REGISTRY_BYTES=1024*1024;
-const fail=(ok,path,message)=>{if(!ok)throw Error(`Invalid docset routes ${path}: ${message}`)};
+const fail=(ok,path,message,details)=>{if(!ok)throw Object.assign(Error(`Invalid docset routes ${path}: ${message}`),{path,details})};
 function shape(v,keys,path,optional=[]){
  fail(v&&typeof v==='object'&&!Array.isArray(v),path,'expected object');
  fail(Object.keys(v).every(k=>keys.includes(k))&&keys.filter(k=>!optional.includes(k)).every(k=>Object.hasOwn(v,k)),path,'unknown or missing property');
@@ -18,6 +18,17 @@ function baseURL(raw,path){
 }
 export const serviceKey=a=>`${a.docset}/${a.service}`;
 export function validateDocsetRoutes(value,nav,docset,version){
+ return validateRegistry(value,nav,docset,version,localTarget);
+}
+
+// Before rendering, check ownership and declared start identity against authored destinations.
+// Anchor existence and uniqueness are still verified against rendered HTML.
+export function validateDraftRouteCatalog(value,navigation,files,docset,version){
+ const nav=validateDraftNavigation(navigation,files);
+ return validateRegistry(value,nav,docset,version,draftTarget);
+}
+
+function validateRegistry(value,nav,docset,version,resolve){
  const semanticVersion=value?.schema==='codeclew-cross-docset-routes/1.2';
  shape(value,['schema','revision','catalog','docsets','externalActors','routes',...(semanticVersion?['semanticCatalog']:[])],'/',['catalog','semanticCatalog']);fail(semanticVersion||value.schema==='codeclew-cross-docset-routes/1.1','/schema','unsupported schema');id(value.revision,'/revision');fail(Buffer.byteLength(JSON.stringify(value),'utf8')<=REGISTRY_BYTES,'/','input exceeds 1 MiB');
  const sets=unique(list(value.docsets,'/docsets',1,64),'/docsets');
@@ -31,6 +42,12 @@ export function validateDocsetRoutes(value,nav,docset,version){
  }
  fail(sets.has(docset),'/docset','current docset not declared');fail(sets.get(docset).version===version,'/version','current docset version differs');
  const local=sets.get(docset);fail(local.services.length===nav.services.length&&local.services.every(s=>nav.services.some(n=>n.id===s.id)),'/services','local service inventory differs');
+ function navigationOwner(file){
+  if(!nav.owners.has(file))return null;
+  const service=nav.owners.get(file),i=nav.services.findIndex(s=>s.id===service);
+  const path=i<0?'/services':`/services/${i}/pages/${nav.services[i].pages.indexOf(file)}`;
+  return {file:'navigation.json',path,service,target:file};
+ }
  const actors=unique(list(value.externalActors,'/externalActors',0,64),'/externalActors');
  for(const a of actors.values()){shape(a,['id','title',...(semanticVersion?['canonical']:[])],'/externalActors',['canonical']);text(a.title,'/externalActors',160)}
  function actor(a,p,recipient=false){
@@ -41,15 +58,20 @@ export function validateDocsetRoutes(value,nav,docset,version){
   else if(recipient&&a.kind==='none')shape(a,['kind'],p);
   else fail(false,p,'unsupported actor kind');
  }
- function destination(t,p,owner){
+ function destination(t,p,owner,route){
   shape(t,['docset','page','anchor','problem'],p,['anchor','problem']);fail(sets.has(t.docset),p,'unknown destination docset');
   fail(typeof t.page==='string'&&t.page.length>=6&&t.page.length<=255&&t.page.normalize('NFC')===t.page&&/^[^/\\:%?#\s\u0000-\u001f\u007f]+\.html$/u.test(t.page),p,'use a raw flat HTML filename');
   if(t.anchor!==undefined)fail(typeof t.anchor==='string'&&t.anchor.length>0&&t.anchor.length<=512&&t.anchor.normalize('NFC')===t.anchor&&!/[/\\%#?\s\u0000-\u001f\u007f]/u.test(t.anchor),p,'use a raw anchor');
   if(t.problem!==undefined){shape(t.problem,['kind','note','reportedBy','observedVersion'],p+'/problem',['observedVersion']);fail(['reported-missing','reported-renamed','reported-version-drift'].includes(t.problem.kind),p,'unsupported problem');text(t.problem.note,p);text(t.problem.reportedBy,p,160);if(t.problem.observedVersion!==undefined)id(t.problem.observedVersion,p)}
-  if(owner)fail(t.docset===owner.docset,p,'service destination has foreign ownership');
+  if(owner&&t.docset!==owner.docset)fail(false,p,'service destination has foreign ownership',{route,destination:t,owner});
   if(t.docset===docset){
-   fail(!t.problem,p,'resolve the local target problem');const to=localTarget(t.page.slice(0,-5)+'.md'+(t.anchor?'#'+encodeURIComponent(t.anchor):''),p,nav.byFile);
-   if(owner)fail(nav.owners.get(to.file)===owner.service,p,'local destination not owned by its service');return {...to,kind:'LOCAL_DOCSET',docset};
+   fail(!t.problem,p,'resolve the local target problem');const target=t.page.slice(0,-5)+'.md'+(t.anchor?'#'+encodeURIComponent(t.anchor):'');
+   let to;try{to=resolve(target,p,nav.byFile)}catch(error){throw Object.assign(error,{file:'routes.json',details:{route,destination:t}})}
+   if(owner&&nav.owners.get(to.file)!==owner.service){
+    fail(false,p,'local destination not owned by its service',{route,destination:t,owner,conflict:navigationOwner(to.file),
+     nextAction:'Use a target on a page owned by the named service in navigation.json.'});
+   }
+   return {...to,kind:'LOCAL_DOCSET',docset};
   }
   const d=sets.get(t.docset);return {kind:'REMOTE_DOCSET',docset:t.docset,href:baseURL(d.baseURL,p)+encodeURIComponent(t.page)+(t.anchor?'#'+encodeURIComponent(t.anchor):''),problem:t.problem};
  }
@@ -59,20 +81,53 @@ export function validateDocsetRoutes(value,nav,docset,version){
   if(s.docset===docset){const n=nav.services.find(x=>x.id===s.id);fail(!to.fragment&&to.file===n.overview.file,'/overview','local overview differs')}
   resolvedServices.push({...s,to});
  }
- const routes=unique(list(value.routes,'/routes',0,128),'/routes'),canonical=new Set(),canonicalKeys=new Set();
+ unique(list(value.routes,'/routes',0,128),'/routes');
+ const canonical=new Set(),canonicalOwners=new Map();
+ const legacyClaim=(route,index,key='target')=>({file:'navigation.json',path:`/routes/${index}/${key}`,route:route.id,target:route.target});
+ function claimCanonical(key,path,claim,message,nextAction){
+  if(canonicalOwners.has(key))fail(false,path,message,{...claim,conflict:canonicalOwners.get(key),nextAction});
+  canonicalOwners.set(key,{...claim,file:'routes.json',path});
+ }
  const resolved=[];
  for(const [ri,r] of value.routes.entries()){
   const p=`/routes/${ri}`;shape(r,['id','version','title','narrative','origin','occurrences','branches','outcomes','coverage'],p);id(r.version,p);text(r.title,p,160);
-  fail(!nav.routes.some(x=>x.id===r.id),p,'legacy route ID collision');const to=destination(r.narrative,p+'/narrative');const key=r.narrative.docset+'/'+r.narrative.page;
-  fail(!canonicalKeys.has(key),p,'duplicate canonical narrative page');canonicalKeys.add(key);
-  if(to.kind==='LOCAL_DOCSET'){fail(!nav.owners.has(to.file)&&!nav.routes.some(x=>x.to.file===to.file),p,'shared narrative ownership collision');canonical.add(to.file)}
+  const claim={route:r.id,destination:r.narrative},narrativePath=p+'/narrative';
+  const idCollision=nav.routes.findIndex(x=>x.id===r.id);
+  if(idCollision>=0)fail(false,p+'/id','legacy route ID collision',{...claim,conflict:legacyClaim(nav.routes[idCollision],idCollision,'id'),
+   nextAction:'Declare each catalog route in routes.json and remove any duplicate declaration from navigation.json.'});
+  const to=destination(r.narrative,narrativePath,null,r.id),key=r.narrative.docset+'/'+r.narrative.page;
+  claimCanonical(key,narrativePath,claim,'duplicate canonical narrative page',
+   'Give each distinct route its own narrative page. Different anchors on the same page share one canonical owner.');
+  if(to.kind==='LOCAL_DOCSET'){
+   const index=nav.routes.findIndex(x=>x.to.file===to.file);
+   const conflict=navigationOwner(to.file)??(index<0?null:legacyClaim(nav.routes[index],index));
+   if(conflict)fail(false,narrativePath,'shared narrative ownership collision',{...claim,conflict,
+    nextAction:'Use a dedicated narrative page whose ownership is declared in routes.json alone.'});
+   canonical.add(to.file);
+  }
   const occurrences=unique(list(r.occurrences,p+'/occurrences',0,128),p+'/occurrences');const occurrenceRows=[];
-  for(const o of occurrences.values()){shape(o,['id','actor','role','target'],p+'/occurrence');actor(o.actor,p);text(o.role,p);occurrenceRows.push({...o,to:destination(o.target,p+'/occurrence/target',o.actor.kind==='service'?o.actor:null)})}
+  for(const [i,o] of r.occurrences.entries()){
+   const path=`${p}/occurrences/${i}`;shape(o,['id','actor','role','target'],path);actor(o.actor,path+'/actor');text(o.role,path+'/role');
+   occurrenceRows.push({...o,to:destination(o.target,path+'/target',o.actor.kind==='service'?o.actor:null,r.id)});
+  }
   fail(r.origin&&typeof r.origin==='object',p+'/origin','expected tagged origin');
   if(r.origin.status==='known'){
-   shape(r.origin,['status','occurrence','kind','title','summary'],p+'/origin');const o=occurrences.get(r.origin.occurrence);fail(o&&o.actor.kind==='service',p,'origin must name a service occurrence');
-   fail(['http','kafka','scheduled','background','manual','other'].includes(r.origin.kind),p,'invalid trigger kind');text(r.origin.title,p,160);text(r.origin.summary,p);
-   if(o.actor.docset===docset){const n=nav.services.find(x=>x.id===o.actor.service),target=occurrenceRows.find(x=>x.id===o.id).to;fail(n.starts.some(s=>s.kind===r.origin.kind&&s.to.file===target.file&&s.to.fragment===target.fragment),p,'local origin is not a documented start')}
+   shape(r.origin,['status','occurrence','kind','title','summary'],p+'/origin');const o=occurrences.get(r.origin.occurrence);
+   if(o?.actor.kind!=='service')fail(false,p+'/origin/occurrence','origin must name a service occurrence',{route:r.id,occurrence:r.origin.occurrence,
+    nextAction:'Use the ID of a documented service occurrence, or provide an unknown origin with a source-bounded reason.'});
+   fail(['http','kafka','scheduled','background','manual','other'].includes(r.origin.kind),p+'/origin/kind','invalid trigger kind');text(r.origin.title,p,160);text(r.origin.summary,p);
+   if(o.actor.docset===docset){
+    const serviceIndex=nav.services.findIndex(x=>x.id===o.actor.service),{starts}=nav.services[serviceIndex];
+    const occurrenceIndex=occurrenceRows.findIndex(x=>x.id===o.id),target=occurrenceRows[occurrenceIndex].to;
+    if(!starts.some(s=>s.kind===r.origin.kind&&s.to.file===target.file&&s.to.fragment===target.fragment)){
+     const choices=starts.map((s,index)=>({path:`/services/${serviceIndex}/starts/${index}`,kind:s.kind,target:s.target,file:s.to.file}));
+     const onPage=choices.filter(s=>s.file===target.file);
+     fail(false,p+'/origin','local origin is not a documented start',{route:r.id,occurrence:o.id,owner:o.actor,kind:r.origin.kind,
+      destination:o.target,occurrencePath:`${p}/occurrences/${occurrenceIndex}/target`,
+      navigation:{file:'navigation.json',path:`/services/${serviceIndex}/starts`,starts:(onPage.length?onPage:choices).slice(0,8).map(({path,kind,target})=>({path,kind,target}))},
+      nextAction:'Match the occurrence page and anchor and the origin kind to a documented start owned by that service.'});
+    }
+   }
   }else{shape(r.origin,['status','reason'],p+'/origin');fail(r.origin.status==='unknown',p,'invalid origin status');text(r.origin.reason,p)}
   const branches=unique(list(r.branches,p+'/branches',0,64),p+'/branches');
   for(const b of branches.values()){shape(b,['id','title','condition','target'],p+'/branch');text(b.title,p,160);text(b.condition,p);destination(b.target,p+'/branch/target')}
@@ -102,7 +157,7 @@ export function validateDocsetRoutes(value,nav,docset,version){
    if(r.kind==='representation')fail(records.has(r.represents)&&records.get(r.represents).kind==='concept',p,'representation must reference a concept');
    else fail(!Object.hasOwn(r,'represents'),p,'only a representation has represents');
    const to=destination(r.target,p+'/target',r.scope),key=r.target.docset+'/'+r.target.page;
-   fail(!canonicalKeys.has(key),p,'duplicate canonical page');canonicalKeys.add(key);
+   claimCanonical(key,p+'/target',{record:r.id,destination:r.target},'duplicate canonical page','Give each canonical record or route its own page.');
    if(to.kind==='LOCAL_DOCSET'){
     fail(!nav.routes.some(route=>route.to.file===to.file),p,'semantic page cannot be a process narrative');
     fail(r.scope?nav.owners.get(to.file)===r.scope.service:!nav.owners.has(to.file),p,'shared catalog page cannot be service-owned');canonical.add(to.file);

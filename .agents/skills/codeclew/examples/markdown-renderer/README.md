@@ -160,8 +160,10 @@ unencoded ASCII path and trailing slash, without credentials/query/fragment.
 Namespaces on one origin must be disjoint. Page is a raw flat `.html` filename;
 anchor is a raw identifier, encoded once. No slash/encoded traversal or filesystem
 URLs. Local `.html` maps to existing `.md`: anchors must be unique, service targets
-owned, and a local origin must match a declared start. Shared canonical pages and
-the optional catalog are not owned by a service; zero-service docsets are valid.
+owned, and a local origin must match the service's declared start kind, page and
+anchor. Each canonical route narrative has its own page, regardless of anchor.
+Keep shared canonical pages out of service page lists and legacy route entries.
+The optional catalog also lives outside service page lists. Zero-service docsets are valid.
 Remote URLs never enter the local path resolver and are not fetched/verified.
 
 Route IDs stay stable; declaration/docset versions and the exact registry digest

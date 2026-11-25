@@ -27,13 +27,21 @@ Prepared source index: {prepared_sources}
    Steps use from/to participant IDs, kind call/return/async/await/note, label and
    optional condition/target. The supplied entry step, alone, is only a template.
    Update navigation for any added pages and starts. For multiple services also
-   author routes.json using the renderer's local process catalog contract.
+   author routes.json using the renderer's local process catalog contract and
+   {skill}/examples/markdown-renderer/docset-routes.example.json. Give each
+   catalog route its own narrative page, even when using different anchors.
+   Declare the page's ownership only in routes.json. Keep entry and participant
+   pages owned by their service in navigation.json. A known local origin must
+   match the owning service's declared start kind, page and anchor. Keep the
+   origin and each outcome's terminal occurrence out of its internal list.
    For details when needed, see {skill}/references/compose-original.md and
    {skill}/references/http-reader-closure.md.
 
-3. Review both directions against the actual source. Get the mechanical review
-   shell after writing the original:
-   python3 -I -S {skill}/scripts/docs_run.py review-template --run-dir {run} > {draft}/self-review.json
+3. Review both directions against the actual source. After writing the draft,
+   generate the mechanical review shell. For multiple services this checks
+   the route declarations and reports conflicts before you finish the review.
+   template=$(python3 -I -S "{skill}/scripts/docs_run.py" review-template --run-dir "{run}") && printf '%s\n' "$template" > "{draft}/self-review.json" || printf '%s\n' "$template"
+   Fix any reported route paths or owning destinations and rerun the command.
    In requirements choose EXPLAINED or EXPLICIT_UNKNOWN. Keep the supplied
    sections/entry diagram indexes or correct them to your actual layout.
    Discovery requires NO_ADDITIONAL_STARTS with [] after reading that file, or
