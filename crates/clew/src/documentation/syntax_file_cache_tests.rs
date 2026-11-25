@@ -159,7 +159,15 @@ fn typescript_full_file_and_partial_enumeration_match_uncached_cold_and_warm() {
     let revision = fixture.commit();
     let fresh = fixture.uncached(&service, &revision);
     assert_eq!(fresh.coverage, "PARTIAL");
-    assert!(fresh.sources.values().any(|source| source.text == text));
+    let id = super::analysis::source_id(&service.id, "file:weather.ts").unwrap();
+    let source = &fresh.sources[&id];
+    let occurrence = source.occurrence.as_ref().unwrap();
+    assert_eq!(source.text, text);
+    assert_eq!(source.authority, "EXACT_SNAPSHOT_TEXT");
+    assert_eq!(
+        (occurrence.start_byte, occurrence.end_byte),
+        (0, text.len())
+    );
     syntax::take_file_cache_stats();
     let cold = fixture.cached(&service, &revision);
     let stats = syntax::take_file_cache_stats();
@@ -591,8 +599,11 @@ fn cache_hits_recharge_overlapping_source_bytes_and_current_source_and_fact_coun
         emitted_bytes > text.len(),
         "nested declarations must emit overlapping source ranges"
     );
+    // Capture retains the original before replaying declaration recipes.
+    let original = super::analysis::source_id(&service.id, "file:orders.py").unwrap();
     let mut empty = captured.clone();
-    empty.sources.clear();
+    empty.sources.retain(|id, _| id == &original);
+    assert_eq!(empty.sources[&original].text, text);
     empty.observations.clear();
     empty.entrypoints.clear();
     empty.boundaries.clear();

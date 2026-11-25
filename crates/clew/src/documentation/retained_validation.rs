@@ -95,8 +95,8 @@ pub(super) fn retained_file_scope_binds_source(
     let file = &scope.normalized["inventory"][&source.file];
     let inventory_matches = match file["coverage"].as_str() {
         Some("FILE_ONLY") => file["digest"] == source.text_digest,
-        Some("SYNTAX") => {
-            // SYNTAX inventory stores a tree fingerprint, not a text SHA256.
+        Some(coverage @ ("SYNTAX" | "PARTIAL")) => {
+            // Parsed-source inventory stores a tree fingerprint, not a text SHA256.
             // Only the producer's complete file record can use this binding;
             // an arbitrary declaration or expression span must not widen it.
             super::analysis::source_id(&source.service, &format!("file:{}", source.file))
@@ -106,7 +106,7 @@ pub(super) fn retained_file_scope_binds_source(
                 && scope.normalized["language"]
                     .as_str()
                     .is_some_and(|language| {
-                        super::syntax::retained_file_fingerprint(language, &source.text)
+                        super::syntax::retained_file_fingerprint(language, &source.text, coverage)
                             .ok()
                             .is_some_and(|fingerprint| file["digest"] == fingerprint)
                     })
@@ -119,7 +119,8 @@ pub(super) fn retained_file_scope_binds_source(
     let Some(occurrence) = &source.occurrence else {
         return false;
     };
-    occurrence.start_byte == 0
+    occurrence.generated_origin.is_none()
+        && occurrence.start_byte == 0
         && occurrence.end_byte == source.text.len()
         && !occurrence.snapshot.is_empty()
         && !occurrence.blob.is_empty()

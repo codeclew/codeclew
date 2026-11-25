@@ -787,10 +787,11 @@ missing production endpoint. This command does not recapture or require Work
 preparation. Read the report summary, then the exact finding/source references.
 
 
-## Exact complete retained Kotlin files
+## Exact complete retained source files
 
-Fresh Kotlin SOURCE_SYNTAX captures preserve nonempty committed `.kt`/`.kts`
-files including package/import headers, comments, whitespace and original bytes.
+Fresh SOURCE_SYNTAX captures preserve the original bytes of nonempty committed
+`.java`, `.kt`, `.kts`, `.py`, `.ts`, `.mts` and `.cts` files, including headers,
+comments and whitespace. Registered Kotlin non-code inputs also support this projection.
 Use the existing saved Work with this exact selection:
 
 ```json
@@ -804,8 +805,8 @@ reference through ordinary `docs work read-part`, continuing until its cursor is
 null. Declarations and default raw SOURCE queries keep their existing behavior.
 
 Old snapshots lacking the complete record refuse with `WHOLE_FILE_NOT_RETAINED`.
-No current-checkout/Git fallback or historical snapshot upgrade occurs. Empty or
-generated files and Java compiler inputs are not added by this route. Complete
+The read uses the saved snapshot exclusively. Eligibility requires nonempty
+committed files in the captured source scope. Complete
 records share the existing 2 MiB per-file, 32 MiB aggregate text and 32768 record
 limits; a near-limit capture may explicitly refuse and require narrower roots.
 Exact retained bytes establish no compiler resolution or runtime correctness.

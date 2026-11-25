@@ -3173,15 +3173,16 @@ fn whole_file_row(work: &Work, query: &Query) -> Result<Value, ClewError> {
         .values()
         .find(|d| d.service == evidence.service && d.kind == "SOURCE_SCOPE")
         .ok_or_else(|| invalid("WHOLE_FILE requires source scope"))?;
-    if scope.normalized["language"] != "kotlin" {
-        return Err(invalid(
-            "WHOLE_FILE is supported for retained Kotlin SOURCE_SYNTAX files and their registered non-code inputs",
-        ));
-    }
     let file = query
         .file
         .as_deref()
         .ok_or_else(|| invalid("WHOLE_FILE requires an exact file"))?;
+    let language = scope.normalized["language"].as_str().unwrap_or_default();
+    if language != "kotlin" && !super::syntax::supports_file(language, file) {
+        return Err(invalid(
+            "WHOLE_FILE requires a supported committed SOURCE_SYNTAX file or a registered Kotlin non-code input",
+        ));
+    }
     let id = super::analysis::source_id(&evidence.service, &format!("file:{file}"))?;
     let source = evidence.sources.get(&id).ok_or_else(|| invalid("WHOLE_FILE_NOT_RETAINED: this immutable snapshot has no complete original file record; capture explicitly, without upgrading historical evidence"))?;
     let valid = source.authority == "EXACT_SNAPSHOT_TEXT"
@@ -4963,7 +4964,7 @@ mod section_context_tests {
             .unwrap();
         scope.normalized["language"] = json!("kotlin");
         scope.normalized["roots"] = json!([source.file]);
-        scope.normalized["inventory"] = json!({source.file.clone():{"coverage":"SYNTAX","digest":super::super::syntax::retained_file_fingerprint("kotlin", &source.text).unwrap()}});
+        scope.normalized["inventory"] = json!({source.file.clone():{"coverage":"SYNTAX","digest":super::super::syntax::retained_file_fingerprint("kotlin", &source.text, "SYNTAX").unwrap()}});
         scope.digest = digest(&scope.normalized).unwrap();
         work.checked
             .dependencies
@@ -5445,7 +5446,8 @@ mod section_context_tests {
         };
         let source = evidence.sources.values().next().unwrap();
         let inventory_digest = if coverage == "SYNTAX" {
-            super::super::syntax::retained_file_fingerprint("typescript", &source.text).unwrap()
+            super::super::syntax::retained_file_fingerprint("typescript", &source.text, "SYNTAX")
+                .unwrap()
         } else {
             source.text_digest.clone()
         };

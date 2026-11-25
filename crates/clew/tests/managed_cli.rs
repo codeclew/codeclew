@@ -5063,6 +5063,72 @@ fn durable_source_documentation_without_build_tools_reads_and_preserves_legacy_p
         assert_eq!(value["services"][language]["coverage"], "SYNTAX", "{value}");
         assert!(value["services"][language]["entrypoints"].as_u64().unwrap() > 1);
     }
+    let write_request = |name: &str, value: Value| {
+        let path = temporary.path().join(name);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        path
+    };
+    let request = write_request(
+        "java-work.json",
+        json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers"}),
+    );
+    let (code, prepared) = run(&[
+        "docs",
+        "work",
+        "prepare",
+        "--root",
+        root,
+        "--subject",
+        "service:java",
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{prepared}");
+    let work = prepared["work"].as_str().unwrap();
+    let file = "src/main/java/example/Reservations.java";
+    let query = write_request(
+        "java-whole-file.json",
+        json!({"query":{"kind":"SOURCE","projection":"WHOLE_FILE","file":file}}),
+    );
+    let (code, whole) = run(&[
+        "docs",
+        "work",
+        "read",
+        "--root",
+        root,
+        "--work",
+        work,
+        "--input",
+        query.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{whole}");
+    let record = &whole["items"][0]["record"];
+    assert_eq!(record["wholeFileCapture"], "EXACT_RETAINED_FILE");
+    assert!(record["source"].get("text").is_none());
+    let source_request = write_request(
+        "java-original-bytes.json",
+        json!({"schema":"codeclew-documentation-source-part-request/1.0",
+            "reference":record["fullRecordReference"],"cursor":null}),
+    );
+    let original = fs::read_to_string(repositories["java"].join(file)).unwrap();
+    let (code, part) = run(&[
+        "docs",
+        "work",
+        "read-part",
+        "--root",
+        root,
+        "--work",
+        work,
+        "--input",
+        source_request.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{part}");
+    assert_eq!(part["text"], original);
+    assert!(original.starts_with("package example;\n\nimport "));
+    assert!(part["nextCursor"].is_null());
+    assert_eq!(part["source"]["occurrence"]["startByte"], 0);
+    assert_eq!(part["source"]["occurrence"]["endByte"], original.len());
+
     let checked: Check = clew::documentation::check::Check::load(
         &clew::documentation::store::Repository::open(&docs).unwrap(),
         &docs.join(".codeclew/cache/latest-check.json"),

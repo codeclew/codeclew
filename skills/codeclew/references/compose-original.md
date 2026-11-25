@@ -101,9 +101,9 @@ allowlist or semantic pruning is implied. The helper drains native pages; failed
 reads and unresolved/omitted coverage remain visible. For routine inspection
 against context already received intact, use the existing repeat-reference option:
 
-The `--whole-files` example requires retained Kotlin SOURCE_SYNTAX whole-file
-records. For other or fragment-only captures, omit that flag as described below;
-file grouping alone does not establish complete original files.
+The `--whole-files` example requires exact complete files retained by
+SOURCE_SYNTAX capture. File grouping alone does not establish complete original
+files. Omit the flag for fragment-only captures.
 
 ```sh
 python3 -I -S "$CODECLEW_SKILL_DIR/scripts/evidence_packet.py" read-files --clew CLEW --root ROOT --service SERVICE --snapshot SNAPSHOT --packet DISCOVERY/packet.json --selection FILES_JSON --whole-files --output-format metadata --output-dir READ

@@ -41,8 +41,20 @@ pub(super) fn take_file_cache_stats() -> FileCacheStats {
 fn budget() -> ClewError {
     ClewError::new(
         ErrorCode::SliceBudgetExceeded,
-        "source documentation exceeds its bounded scope, including complete original Kotlin file records: shared text limit 32 MiB, fact/source limit 32768; narrow source roots",
+        "source documentation exceeds its bounded scope, including complete original source file records: shared text limit 32 MiB, fact/source limit 32768; narrow source roots",
     )
+}
+
+pub(super) fn supports_file(language: &str, path: &str) -> bool {
+    match language {
+        "python" => path.ends_with(".py"),
+        "java" => path.ends_with(".java"),
+        "kotlin" => path.ends_with(".kt") || path.ends_with(".kts"),
+        "typescript" => [".ts", ".mts", ".cts"]
+            .iter()
+            .any(|extension| path.ends_with(extension)),
+        _ => false,
+    }
 }
 
 pub(super) fn capture_cached(
@@ -169,15 +181,7 @@ fn capture_with_store_selected(
             e.boundaries.push(format!("NON_UTF8_FILE:{}", entry.path));
             continue;
         };
-        let supported = match service.language.as_str() {
-            "python" => entry.path.ends_with(".py"),
-            "java" => entry.path.ends_with(".java"),
-            "kotlin" => entry.path.ends_with(".kt") || entry.path.ends_with(".kts"),
-            "typescript" => [".ts", ".mts", ".cts"]
-                .iter()
-                .any(|extension| entry.path.ends_with(extension)),
-            _ => false,
-        };
+        let supported = supports_file(&service.language, &entry.path);
         let file = File {
             service,
             path: &entry.path,
@@ -195,10 +199,10 @@ fn capture_with_store_selected(
             source_bytes: &source_bytes,
             recipes: None,
         };
-        // Preserve original committed Kotlin file bytes independently of syntax
-        // recipes. This also runs on a file-cache hit; declarations stay intact.
+        // Preserve complete committed originals independently of declarations
+        // and cache hits. TypeScript already records the whole module in extract.
         if supported
-            && service.language == "kotlin"
+            && service.language != "typescript"
             && file.generated_origin.is_none()
             && !text.is_empty()
         {
@@ -458,13 +462,22 @@ fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
 /// coordinates and inter-token whitespace do not make relocation a semantic edit.
 /// Reproduce an immutable SOURCE inventory identity from retained bytes only.
 /// This is syntax verification, without source checkout or name resolution.
-pub(super) fn retained_file_fingerprint(language: &str, text: &str) -> Result<String, ClewError> {
+pub(super) fn retained_file_fingerprint(
+    language: &str,
+    text: &str,
+    coverage: &str,
+) -> Result<String, ClewError> {
     if text.len() > MAX_FILE {
         return Err(budget());
     }
     let tree = parse(language, text)?;
-    if has_syntax_error(language, tree.root_node()) {
-        return Err(invalid("retained whole file has syntax errors"));
+    let actual = if has_syntax_error(language, tree.root_node()) {
+        "PARTIAL"
+    } else {
+        "SYNTAX"
+    };
+    if coverage != actual {
+        return Err(invalid("retained whole file syntax coverage differs"));
     }
     fingerprint(tree.root_node(), text)
 }
@@ -1578,7 +1591,7 @@ mod tests {
         assert!(
             error
                 .message
-                .contains("complete original Kotlin file records")
+                .contains("complete original source file records")
         );
         assert_eq!(charged.get(), 32 * 1024 * 1024 - text.len() + 1);
         assert_eq!(evidence.sources.len(), count);
