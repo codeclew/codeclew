@@ -2225,6 +2225,55 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         self.assertTrue(all("absence" in fact["text"] and "remains deleted" in fact["text"] for fact in readbacks))
         self.assertFalse(any(fact["kind"].startswith("storage-message") for fact in projected[listener[0]["id"]]))
 
+    def test_chain_prioritizes_a_public_projection_and_keeps_a_guarded_terminal_path(self):
+        def operation(site, kind, **identity):
+            condition = identity.pop("condition", None)
+            return {"kind": "source-effect", "authority": "RETAINED_PATH", "text": f"The source reaches {site}.",
+                    "condition": condition, "sources": [site + "-body"],
+                    "_edge": {"kind": kind, "site": site + "-body", **identity}}
+
+        def consumer(service, name, topic, effects):
+            return self.retained(service, name=name, entry_kind="KAFKA_LISTENER",
+                                 trigger={"configuration": {"topics": [topic]}}, facts=effects)
+
+        origin = self.retained("orders", name="request", facts=[operation("request", "INSERT", table="booking_events")])
+        first = self.retained("orders", name="booking-poll", entry_kind="SCHEDULED_JOB", facts=[
+            operation("booking-poll", "SELECT", table="booking_events"),
+            operation("booking-poll", "PUBLISH", topic="booking.requested")])
+        validator = consumer("allocation", "validator", "booking.requested", [
+            operation("validator", "INSERT", table="received"),
+            operation("validator", "INSERT", table="declined", condition="payload lacks a required member"),
+            operation("validator", "INSERT", table="changes", condition="payload passes validation"),
+        ])
+        second = self.retained("allocation", name="change-poll", entry_kind="HOSTED_BACKGROUND_WORKER", facts=[
+            operation("change-poll", "SELECT", table="changes"),
+            operation("change-poll", "PUBLISH", topic="booking.allocated"),
+            operation("change-poll", "PUBLISH", topic="booking.requested"),
+        ])
+        index = consumer("reader", "index", "booking.allocated", [
+            operation("index", "INSERT", table="incoming"),
+            operation("index", "INSERT", table="bookkeeping"),
+            operation("index", "UPDATE", table="availability", condition="revision passes the stale-input test"),
+        ])
+        query = self.retained("reader", name="availability", path="/availability", facts=[
+            operation("availability", "SELECT", table="availability")])
+        result = self.project(origin, first, validator, second, index, query)
+        facts = result[origin[0]["id"]]
+        reached, = (row for row in facts if row["kind"] == "further-subscriber-readback")
+        self.assertIn("booking.allocated", reached["text"])
+        self.assertIn("availability.md", reached["text"])
+        self.assertIn("payload passes validation", reached["condition"])
+        self.assertIn("revision passes the stale-input test", reached["condition"])
+        self.assertEqual(reached["sources"], ["request-body", "booking-poll-registration", "booking-poll-body",
+                                              "validator-registration", "validator-body", "change-poll-registration",
+                                              "change-poll-body", "index-registration", "index-body",
+                                              "availability-registration", "availability-body"])
+        self.assertTrue(any(row["kind"] == "storage-message-effect" and
+                            "payload lacks a required member" in row.get("condition", "") for row in facts))
+        self.assertTrue(any(row["kind"] == "further-outbox-boundary" and
+                            "previously considered callback" in row["text"] for row in facts))
+        self.assertLessEqual(len(facts), self.edges["MAX_LINKS"])
+
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):
             site = service + "-body"
