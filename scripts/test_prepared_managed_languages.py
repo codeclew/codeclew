@@ -1192,6 +1192,68 @@ public static class ScoreApi
             else:
                 self.assertEqual(row["sources"], [HANDLE])
 
+    def test_managed_write_bypass_needs_the_selected_leaf_even_with_only_an_outer_comparison(self):
+        managed = runpy.run_path(str(MANAGED / "clew_prepared_managed.py"))
+        facts = managed["Facts"]({}, {})
+        facts.steps = {"outer": {"sourcePredicate": True}, "inner": {"sourcePredicate": True}}
+        text = {"outer": "accepted"}
+        facts.text = text.get
+        skipped = [{"step": "outer", "outcome": "TRUE"}, {"step": "inner", "outcome": "FALSE"}]
+        writers = [[{"step": "outer", "outcome": "FALSE"}]]
+        self.assertFalse(facts.bypass_conditions(skipped, writers))
+        text["inner"] = "row is not null"
+        self.assertEqual(facts.bypass_conditions(skipped, writers),
+                         {"`accepted` is true": ["outer"], "`row is not null` is false": ["inner"]})
+
+    def test_roslyn_nested_write_bypass_requires_leaf_or_failed_await(self):
+        self.require_roslyn()
+        header = """using Microsoft.AspNetCore.Http;
+using System.Data.Common;
+using System.Threading.Tasks;
+static class LedgerApi
+{
+"""
+        entry = """    public static async Task<IResult> Record(DbConnection connection, int mode)
+    {
+        var label = mode switch { 4 => "incoming", 8 => "external", _ => null };
+        if (label is null) return Results.BadRequest();
+        await RecordIfFound(connection);
+        return Results.Ok(label);
+    }"""
+        helper = """    private static async Task RecordIfFound(DbConnection connection)
+    {
+        var lookup = connection.CreateCommand();
+        lookup.CommandText = "SELECT id FROM ledger";
+        if (await lookup.ExecuteScalarAsync() is not null)
+        {
+            var append = connection.CreateCommand();
+            append.CommandText = "INSERT INTO audit_log (id) VALUES (1)";
+            await append.ExecuteNonQueryAsync();
+        }
+    }"""
+        source = header + entry + "\n" + helper + "\n}\n"
+        process, context = selected("LedgerApi.cs", source, standalone=entry, start=header.count("\n") + 1)
+        helper_bindings, _ = selected("LedgerApi.cs", source, standalone=helper,
+                                      start=header.count("\n") + entry.count("\n") + 2)
+        bound = helper_bindings["sources"]["s1"]
+        process["sources"]["s2"] = bound
+        process["facts"].append({"kind": "BODY", "declaration": "helper", "sources": ["s2"]})
+        context["sourceRanges"].append({**bound, "id": "m123456789abc:e2", "references": ["s2"]})
+        context["_nativeFiles"]["LedgerApi.cs"] = captured_csharp(source, "LedgerApi.cs")
+        facts, _ = self.project(process, context)
+        skipped = [row for row in facts if row["kind"] == "conditional-no-write" and "audit_log" in row["text"]]
+        normal = [row for row in skipped if "is not null` is false" in row.get("condition", "")]
+        fault = [row for row in skipped if "lookup.ExecuteScalarAsync()` faults or is cancelled" in row.get("condition", "")]
+        self.assertTrue(normal, skipped)
+        self.assertTrue(fault, skipped)
+        for row in skipped:
+            condition = row["condition"]
+            if "`mode` matches `4`" in condition or "`mode` matches `8`" in condition:
+                self.assertTrue("is not null` is false" in condition or "throws" in condition or "faults or is cancelled" in condition,
+                                row)
+        self.assertTrue(all("is not null` is false" not in row["condition"] for row in fault), fault)
+        self.assertTrue(any(row["kind"] == "sql-write" and "audit_log" in row["text"] for row in facts), facts)
+
     def test_roslyn_stored_row_delivery_uses_matching_key_receiver_and_order(self):
         self.require_roslyn()
         header = """using System.Threading.Tasks;

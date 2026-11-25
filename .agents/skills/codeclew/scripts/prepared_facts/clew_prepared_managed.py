@@ -1070,10 +1070,44 @@ class Facts:
             " has a retained source body. Its additional resource effects remain open.")
         self.add("callable-scope", statement, sites, sources=scope["sources"])
 
+    @staticmethod
+    def first_divergence(events, other):
+        return next(((left, right) for left, right in zip(events, other)
+                     if (left["step"], left["outcome"]) != (right["step"], right["outcome"])), (None, None))
+
+    def bypass_conditions(self, events, writers):
+        visible_guards = set(self.path_condition(events))
+        reasons = {}
+        for item in events:
+            key, outcome = item["step"], item["outcome"]
+            if outcome in {"TRUE", "FALSE"} and not self.steps[key].get("loopTest"):
+                label = self.condition(key, outcome == "TRUE", item)
+                if (label, key) not in visible_guards:
+                    return {}
+                reasons[label] = [key]
+            elif outcome in INTERRUPTED:
+                call = item.get("call")
+                if not call or not (text := self.text(call)):
+                    return {}
+                reasons[f"{code(text)} {INTERRUPTED[outcome]}"] = [call, key]
+        for other in writers:
+            left, right = self.first_divergence(events, other)
+            if left is None or left["step"] != right["step"]:
+                return {}
+            key, outcome = left["step"], left["outcome"]
+            if {outcome, right["outcome"]} == {"TRUE", "FALSE"}:
+                label = self.condition(key, outcome == "TRUE", left)
+                if (label, key) not in visible_guards:
+                    return {}
+                if self.steps[key].get("switchTest") and self.switch_input(key, left) != self.switch_input(key, right):
+                    return {}
+            elif outcome not in INTERRUPTED or right["outcome"] not in COMPLETED | {"AWAITABLE_RETURNED"}:
+                return {}
+        return reasons
+
     def skipped_writes(self, path, events, focus=None):
         if path["outcome"] not in TERMINAL:
             return
-        guards = dict((key, label) for label, key in self.path_condition(events))
         omissions = list(path["skippedOnThisPath"])
         reached = {event["step"] for event in events}
         # Local bindings and parameter configuration can exhaust the generic
@@ -1087,30 +1121,33 @@ class Facts:
                               command["call"] not in reached]
                 if not candidates:
                     continue
-                other = self.trace(self.paths[alternative])
-                divergence = next(((left, right) for left, right in zip(events, other)
-                                   if (left["step"], left["outcome"]) != (right["step"], right["outcome"])), None)
-                if divergence and divergence[0]["step"] == divergence[1]["step"]:
-                    pivot = divergence[0]["step"]
-                    omissions.extend({"step": step, "after": pivot, "alternative": alternative} for step in candidates)
+                omissions.extend({"step": step, "alternative": alternative} for step in candidates)
+        if not omissions:
+            return
+        alternatives = {key: self.trace(row) for key, row in self.paths.items() if key != path["id"]}
+        compared = set()
         for omitted in omissions:
-            key, pivot, alternative = omitted["step"], omitted["after"], omitted["alternative"]
-            if focus is not None and key != focus:
+            key, alternative = omitted["step"], omitted["alternative"]
+            if key in reached or key in compared or (focus is not None and key != focus):
                 continue
             step = self.steps[key]
             command = next((row for row in self.commands.get(alternative, ()) if row["call"] == key), {})
             sql = command.get("sourceSql") or step.get("sourceSql")
             if not sql or sql["verb"] == "SELECT":
                 continue
-            if pivot in guards:
-                prefix = "When " + guards[pivot] + ", this modeled path "
-            else:
-                cut = next((event for event in events if event["step"] == pivot and event["outcome"] in INTERRUPTED), None)
-                if not cut or not (name := self.name(cut.get("call", pivot))):
-                    continue
-                prefix = f"If {name} {INTERRUPTED[cut['outcome']]}, this modeled path "
-            self.add_path("conditional-no-write", prefix + f"bypasses the call configured for {self.sql_label(sql)}.",
-                          path, events, [pivot, key, *command.get("evidenceSteps", ())], [alternative])
+            compared.add(key)
+            writers = {identity: other for identity, other in alternatives.items()
+                       if any(item["step"] == key and item["outcome"] == "INVOKED" for item in other)}
+            # A single outer divergence can pair this non-write leaf with
+            # another branch's write while a sibling still writes in this arm.
+            if not writers or not (reasons := self.bypass_conditions(events, writers.values())):
+                continue
+            condition = " and ".join(reasons)
+            proof = [step for steps in reasons.values() for step in steps]
+            self.add_path("conditional-no-write",
+                          f"When {condition}, this modeled path bypasses the call configured for {self.sql_label(sql)}.",
+                          path, events, [*proof, key, *command.get("evidenceSteps", ())], writers,
+                          condition=condition)
 
     def worker(self, path, events):
         loops, writes, calls, delays = {}, {}, {}, {}
