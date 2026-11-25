@@ -756,7 +756,8 @@ def start_kind(requirement):
 def starter(inventory, language, directory):
     """Render only fixed destinations and source-level entry identities."""
     pages, navigation_services = [], []
-    labels = {'client': 'HTTP client', 'handler': 'Handler'}
+    labels = {'client': 'HTTP client', 'handler': 'Handler', 'timer': 'Timer',
+              'kafkaBroker': 'Kafka broker', 'serviceHost': 'Service host'}
     if language == 'ru':
         labels = load(SKILL / 'examples/markdown-renderer/assets/ru.json')['sequence']
     for service in inventory['services']:
@@ -783,8 +784,8 @@ def starter(inventory, language, directory):
                 initiator = labels['client']
                 if background:
                     kind = requirement['entryKind']
-                    initiator = {'SCHEDULED_JOB': ('Timer', 'Таймер'), 'KAFKA_LISTENER': ('Kafka broker', 'Брокер Kafka'),
-                                 'HOSTED_BACKGROUND_WORKER': ('Service host', 'Хост службы')}[kind][language == 'ru']
+                    initiator = labels[{'SCHEDULED_JOB': 'timer', 'KAFKA_LISTENER': 'kafkaBroker',
+                                        'HOSTED_BACKGROUND_WORKER': 'serviceHost'}[kind]]
                 sequence = {'title': title, 'participants': [{'id': 'caller', 'title': initiator},
                              {'id': entry, 'title': labels['handler'], 'target': target}],
                             'steps': [{'from': 'caller', 'to': entry, 'label': title, 'kind': 'call' if method else 'async',

@@ -25,6 +25,9 @@
   "sequence": {
     "client": "HTTP-клиент",
     "handler": "Обработчик",
+    "timer": "Таймер",
+    "kafkaBroker": "Брокер Kafka",
+    "serviceHost": "Хост службы",
     "call": "Вызов",
     "return": "Возврат",
     "async": "Запуск без ожидания",
