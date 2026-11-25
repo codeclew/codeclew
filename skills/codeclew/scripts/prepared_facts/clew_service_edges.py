@@ -176,6 +176,16 @@ def response_representatives(rows):
     return selected
 
 
+def write_coordinates(site):
+    if not site:
+        return None
+    first, last = site.get("startByte"), site.get("endByte")
+    identity = tuple(site.get(key) for key in ("file", "revision", "textDigest"))
+    if type(first) is type(last) is int and 0 <= first < last and all(identity):
+        return (*identity, first, last)
+    return None
+
+
 def record(requirement, process, context, facts, exact):
     """Retain only small indexes needed after all ordinary projections complete."""
     sources = {ref: {**exact[row["id"]], "handle": row["id"]}
@@ -222,7 +232,7 @@ def record(requirement, process, context, facts, exact):
             keep(publishes, (refs[0], value), {**face, "topic": value, "precise": True})
 
     write_focus, poll_paths = defaultdict(lambda: defaultdict(list)), defaultdict(dict)
-    write_statements, write_shapes = defaultdict(list), defaultdict(set)
+    write_statements, write_shapes, write_sites = defaultdict(list), defaultdict(set), defaultdict(set)
     response_facts, completions = defaultdict(list), defaultdict(list)
     for fact in facts:
         response_facts[fact["kind"]].append(fact)
@@ -259,11 +269,17 @@ def record(requirement, process, context, facts, exact):
                 identity = (face["occurrence"] or site, table, link["kind"])
                 indexed = {**face, "table": table, "verb": link["kind"]}
                 index = reads if link["kind"] == "SELECT" else writes
+                slot = (*identity, face.get("condition"))
                 if index is writes:
                     indexed["writeSite"] = fact.get("_writeSite")
                     write_shapes[face["occurrence"]].add((table, link["kind"]))
+                    if coordinate := write_coordinates(indexed["writeSite"]):
+                        write_sites[face["occurrence"]].add(coordinate)
+                        earlier = writes.get(slot)
+                        if earlier and not earlier.get("writeSite") and earlier["site"] == indexed["site"]:
+                            writes[slot] = {**earlier, "writeSite": indexed["writeSite"]}
                     write_statements[identity].append({**indexed, "bound": fact.get("_writeBinding") is True})
-                keep(index, (*identity, face.get("condition")), indexed, MAX_WRITE_SITES)
+                keep(index, slot, indexed, MAX_WRITE_SITES)
 
     registration_witnesses = []
     for ref in trigger_refs:
@@ -276,7 +292,7 @@ def record(requirement, process, context, facts, exact):
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
             "reads": list(reads.values()), "writes": [
                 {**write, "focus": write_focus.get(write["occurrence"], {}),
-                 "singleShape": len(write_shapes[write["occurrence"]]) == 1}
+                 "uniqueWrite": len(write_shapes[write["occurrence"]]) == 1 and len(write_sites[write["occurrence"]]) <= 1}
                 for write in writes.values()],
             "writeStatements": dict(write_statements), "completions": dict(completions),
             "responses": response_representatives(fact for fact in facts if fact["kind"] in PEER_RESPONSES),
@@ -395,7 +411,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
         for kind in ("write_request", "sql-write", "write_guard", "write_lineage"):
             candidates = [item for item in rows if item["kind"] == kind
                           and item["_writeFocus"].get("compatibility") != "INCOMPATIBLE"]
-            independent = write["singleShape"] and kind in {"write_request", "sql-write"}
+            independent = write["uniqueWrite"] and kind in {"write_request", "sql-write"}
             variants = {}
             for row in candidates:
                 premise = row.get("condition")
@@ -431,18 +447,9 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 emit(owner, "message-peer-write-detail", message + " " + detail["text"],
                      qualifier + " " + detail.get("uncertainty", ""), *proof, detail)
 
-    def write_coordinates(site):
-        if not site:
-            return None
-        first, last = site.get("startByte"), site.get("endByte")
-        identity = tuple(site.get(key) for key in ("file", "revision", "textDigest"))
-        if type(first) is type(last) is int and 0 <= first < last and all(identity):
-            return (*identity, first, last)
-        return None
-
     def outbox_write_facets(owner, write, topic, writer_page, poller, read, qualifier, *upstream):
         site = write.get("writeSite")
-        if not write["singleShape"] or not (coordinate := write_coordinates(site)):
+        if not write["uniqueWrite"] or not (coordinate := write_coordinates(site)):
             return
         details = defaultdict(list)
         for row in focused_rows(write, topic):

@@ -3215,6 +3215,7 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         operation = {"kind": "UPDATE", "site": "apply-body", "table": "edits", "occurrence": "one-write"}
         focus = {"occurrence": "one-write", "topic": "draft.queued", "compatibility": "COMPATIBLE"}
         paths = [
+            fact("apply", "sql-write", _edge=operation, condition="deduplication allows the event"),
             fact("apply", "sql-write", _edge=operation, _writeSite="store", sources=["apply-body", "store"],
                  condition="deduplication allows the event"),
             *[fact("apply", "write_request", condition=guard,
@@ -3289,6 +3290,12 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         ambiguous, = first_hops(callback([*paths, fact("apply", "sql-write",
                                                       _edge={**operation, "table": "other_table"})]))
         self.assertEqual(ambiguous["condition"], "deduplication allows the event")
+        conflicting_site = callback([*paths, fact("apply", "sql-write", _edge=operation,
+                                                    sources=["apply-body", "other"], _writeSite="other")])
+        conflicts = self.project(client, origin, first, conflicting_site, second, subscriber,
+                                 isolated=True)[client[0]["id"]]
+        self.assertFalse(any(row["kind"] in {"http-further-subscriber-write-lineage",
+                                            "http-further-subscriber-write-bypass"} for row in conflicts))
 
     def test_continuation_budget_retains_a_cited_frontier(self):
         def fact(site, kind, **identity):
