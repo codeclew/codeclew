@@ -189,6 +189,34 @@ class PreparedManagedLanguages(unittest.TestCase):
                 rows, _ = self.project(process, context)
                 self.assertFalse(any(row["kind"] == "http_request" for row in rows))
 
+    def test_typescript_response_decode_preserves_request_occurrence_and_local_status(self):
+        self.require_typescript()
+        text = """async function score(reply: Reply) {
+    try {
+        const response = await fetch("/units", {method: "POST"});
+        const result = await response.json();
+        return reply.status(200).json(result);
+    } catch (error) {
+        return reply.status(502).json({message: "Response unavailable"});
+    }
+}
+"""
+        process, context = selected("Units.ts", text)
+        rows, _ = self.project(process, context)
+        request, = (row for row in rows if row["kind"] == "http_request")
+        origin = request["_edge"]["occurrence"]
+        decoding = [row for row in rows if row.get("_edgePhase") == "RESPONSE_DECODING"]
+        self.assertTrue(decoding)
+        self.assertTrue(all(row["_edgeCause"] == origin for row in decoding))
+        failure, = (row for row in decoding if row["kind"] == "status_body")
+        self.assertIn("reply.status receives 502", failure["text"])
+        self.assertIn("Response unavailable", failure["text"])
+        self.assertTrue(any(row["kind"] == "response_body_read" for row in decoding))
+
+        process, context = selected("Units.ts", text.replace("await response.json()", "await unrelated.json()"))
+        rows, _ = self.project(process, context)
+        self.assertFalse(any(row.get("_edgePhase") == "RESPONSE_DECODING" for row in rows))
+
     def test_kafkajs_topics_require_an_awaited_subscription_on_the_same_consumer_setup(self):
         self.require_typescript()
         text = """import { Kafka } from "kafkajs";

@@ -2149,6 +2149,29 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             self.assertIn("Cite front-call, depot-registration, depot-return", text)
             self.assertIn("```java\nsource body\n```\n", text)
 
+    def test_response_decoding_failure_does_not_establish_upstream_rollback(self):
+        site = "front-body"
+        cause = {"_edgeCause": "call-1", "_edgePhase": "RESPONSE_DECODING"}
+        def fact(kind, text, handle, **metadata):
+            return {"kind": kind, "authority": "RETAINED_PATH", "text": text, "sources": [handle], **metadata}
+        route = fact("http_request", "The operation awaits fetch.", site,
+                     _edge={"kind": "HTTP", "method": "GET", "uri": "/units", "site": site, "occurrence": "call-1"})
+        front = self.retained("front", path="/front", facts=[route,
+            fact("response_body_read", "Awaits decoding the fetched value.", site, **cause),
+            fact("exception_route", "If decoding rejects, control enters the catch.", site, **cause),
+            fact("status_body", 'reply.status receives 502. The body says "Unavailable".', site, **cause)])
+        commit = fact("http-commit-before-response", "The handler commits its write before constructing HTTP 200.", "peer-body")
+        peer = self.retained("peer", facts=[commit])
+        pivot, = (row for row in self.project(front, peer)[front[0]["id"]] if row["kind"] == "http-failure-after-peer-commit")
+        self.assertIn("502", pivot["text"])
+        self.assertIn("Unavailable", pivot["text"])
+        self.assertIn("may already be committed", pivot["uncertainty"])
+        self.assertIn("does not establish upstream rollback", pivot["uncertainty"])
+        self.assertEqual(pivot["sources"], [site, "peer-registration", "peer-body"])
+        no_commit = self.retained("peer", facts=[fact("http-outcome", "Returns HTTP 200.", "peer-body")])
+        self.assertFalse(any(row["kind"] == "http-failure-after-peer-commit"
+                             for row in self.project(front, no_commit)[front[0]["id"]]))
+
     def test_http_peer_ambiguity_does_not_select_an_outcome_and_missing_proof_stays_open(self):
         call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
             "adapter": "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "method": "GET", "path": "/units"}}

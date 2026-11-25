@@ -19,7 +19,8 @@ HTTP_ADAPTERS = {"SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0", "SPRING_REST_CLIENT_
 PEER_RESPONSES = {"http-outcome", "http-commit-before-response", "status_body"}
 CALLER_PATHS = {"java-guarded-outcome", "java-ordered-effects", "http-outcome", "error-path",
                 "effect-order", "handled-exception-continuation", "return_rejection", "await_bypass",
-                "exception_route", "request_after_commit_failure", "result_continuation", "return", "throw", "EARLY_EXIT", "HARD_EXIT",
+                "exception_route", "request_after_commit_failure", "response_body_read", "status_body",
+                "result_continuation", "return", "throw", "EARLY_EXIT", "HARD_EXIT",
                 "GUARDED_EFFECTS", "ORDERED_EFFECTS"}
 HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown. An application exception "
              "does not establish the status or exception observed by the client.")
@@ -216,6 +217,7 @@ def record(requirement, process, context, facts, exact):
             "calls": list(calls.values()), "publishes": list(publishes.values()),
             "reads": list(reads.values()), "writes": list(writes.values()),
             "responses": [fact for fact in facts if fact["kind"] in PEER_RESPONSES][:MAX_MATCHES],
+            "commits": [fact for fact in facts if fact["kind"] == "http-commit-before-response"][:2],
             "exits": list(source_exits(process, sources))[:MAX_MATCHES],
             "paths": [fact for fact in facts if fact["kind"] in CALLER_PATHS]}
 
@@ -313,7 +315,21 @@ def project(requirements, records):
             if not target["responses"] and not target["exits"]:
                 emit(owner, "http-peer-outcome-boundary", f"An observable handler return or exception for {name} remains open.",
                      boundary, call, cited[0], status="UNKNOWN")
-            for outcome in [row for row in local["paths"] if continuation(row, call)][:MAX_MATCHES]:
+            local_paths = [row for row in local["paths"] if continuation(row, call)]
+            decoding = [row for row in local_paths if row.get("_edgePhase") == "RESPONSE_DECODING"]
+            failure = next((row for row in decoding if row["kind"] == "exception_route"), None)
+            if failure and target["commits"]:
+                terminal = next((row for kind in ("status_body", "return", "throw")
+                                 for row in decoding if row["kind"] == kind), failure)
+                if decode_read := next((row for row in decoding if row["kind"] == "response_body_read"), None):
+                    for commit in target["commits"]:
+                        emit(owner, "http-failure-after-peer-commit",
+                             f"If the matched handler in {name} takes its cited commit-before-response path, "
+                             f"the caller can still fail while decoding the resulting response. {terminal['text']}",
+                             boundary + " The upstream write may already be committed. The caller failure does not "
+                             "establish upstream rollback, durability or the wire status.",
+                             call, cited[0], commit, decode_read, failure, terminal)
+            for outcome in local_paths[:MAX_MATCHES]:
                 emit(owner, "http-caller-continuation", outcome["text"],
                      boundary + " Persistence and rollback of any earlier effects remain unknown. "
                      + outcome.get("uncertainty", ""), call, cited[0], outcome)

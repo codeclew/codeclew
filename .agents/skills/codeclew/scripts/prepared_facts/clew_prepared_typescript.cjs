@@ -587,7 +587,7 @@ function scan(scope, inherited) {
                 (address.encodedSegment ? " Each encoded value must supply one nonempty, non-dot path segment." : "");
             emit("http_request", "The source " + (awaited ? "awaits" : "calls") + " the retained fetch expression.",
                 [site], state, uncertainty, {_edge: {kind: "HTTP", site, ...address, occurrence, method}});
-            return occurrence;
+            return {occurrence, site, kind: "HTTP"};
         } else if (ts.isPropertyAccessExpression(target) && target.name.text === "send" && args.length === 1) {
             const qualified = exact(scope, call).find(id => request.publications?.[id]);
             const options = members(args[0]);
@@ -596,7 +596,7 @@ function scan(scope, inherited) {
             emit("message_request", "The source " + (awaited ? "awaits" : "calls") + " the retained KafkaJS producer send.",
                 [qualified, ...request.publications[qualified]], state, "Runtime broker binding and delivery remain open.",
                 {_edge: {kind: "PUBLISH", site: qualified, occurrence, topic: topic.text}});
-            return occurrence;
+            return {occurrence, site: qualified, kind: "PUBLISH"};
         }
     }
     function sqlFact(sql, call, site, state, awaited) {
@@ -659,7 +659,7 @@ function scan(scope, inherited) {
         emit("status_body", callName(receiver) + " receives " + code.getText() + ". The returned receiver's " +
             callee.name.text + (body ? " receives " + body : call.arguments.length ? " receives the evaluated argument" :
                 " is called without an argument") + ".", [source(scope, receiver), site], state,
-            "The framework binding determines the actual HTTP status and response.");
+            "The framework binding determines the actual HTTP status and response.", arrivalEvidence(state));
         return Number(code.getText());
     }
     function orderedChildren(node) {
@@ -705,14 +705,19 @@ function scan(scope, inherited) {
         lexical(call);
         return JSON.stringify([text, bindings]);
     }
-    function failureAt(catcher, site, name, waited, state, signature, occurrence) {
+    function arrivalEvidence(state) {
+        const arrived = state.errorArrival;
+        return arrived?.occurrence ? {...(arrived.phase ? {_edgePhase: arrived.phase} : {}), _edgeCause: arrived.occurrence} : {};
+    }
+    function failureAt(catcher, site, name, waited, state, signature, occurrence, decodingProof) {
         if (!catcher) return undefined;
         const failure = name + (waited ? " throws during evaluation or the await rejects" : " throws before returning");
         const route = catcher.kind === "escape" ? "evaluation leaves this finally abruptly" :
             "control enters " + destination(catcher);
-        emit("exception_route", "If " + failure + ", " + route + ".", [site, catcher.site], state, undefined,
-            occurrence ? {_edgeCause: occurrence} : {});
-        if (occurrence && state.commit) {
+        const phase = decodingProof ? "RESPONSE_DECODING" : undefined;
+        emit("exception_route", "If " + failure + ", " + route + ".", [site, catcher.site, ...(decodingProof || [])],
+            state, undefined, arrivalEvidence({errorArrival: {occurrence, phase}}));
+        if (occurrence && !decodingProof && state.commit) {
             emit("request_after_commit_failure", "The source reaches this failure after the awaited " +
                 state.commit.name + " fulfills. The prior commit and the failing call take separate outcomes.",
                 [state.commit.site, site, catcher.site], state,
@@ -722,7 +727,7 @@ function scan(scope, inherited) {
         return {...state, last: undefined, exits: [], failed: signature && waited ? {signature, site} : undefined,
             ...(focus ? {writeTransactions: new Map()} : {}),
             ...(compatibility ? {messageValues: compatibility.dropRecords(state.messageValues)} : {}),
-            errorArrival: waited ? {name, site, occurrence} : state.errorArrival,
+            errorArrival: waited ? {name, site, occurrence, phase} : state.errorArrival,
             guards: [...state.guards, {text: failure, source: site}]};
     }
     function evaluate(expression, statement, state, catcher, ending, binding, depth = 0, evaluated = new Map()) {
@@ -825,7 +830,8 @@ function scan(scope, inherited) {
         const place = sql ? callName(call) + " with " + sql.label : effect.description || effect.name;
         inventory && inventory.record(call, {label: caption(call) || place, effect, target, sql});
         const argumentText = short(call.arguments.map(argument => caption(argument) || "an evaluated expression").join(", "), 208);
-        const occurrence = !focus && transport(call, state, awaited);
+        const dispatch = !focus && transport(call, state, awaited);
+        const occurrence = dispatch?.occurrence;
         if (sql) sqlFact(sql, call, site, state, awaited);
         else if (awaited || effect.kind === "http_forward" || effect.kind === "retained_effect") {
             emit(awaited && effect.kind === "call" ? "awaited_call" : effect.kind,
@@ -840,13 +846,15 @@ function scan(scope, inherited) {
             describeFlow(argument, "Argument " + (index + 1) + " to " + place, site, state);
         }
         const method = unwrap(call.expression);
-        if (ts.isPropertyAccessExpression(method) && BODY_READS.has(method.name.text)) {
-            const reply = state.values.get(symbol(unwrap(method.expression)));
-            if (reply?.requestSource) {
-                emit("response_body_read", "The operation " + (awaited ? "awaits " : "calls ") + method.name.text +
-                    " on the value returned by " + reply.call + ".", [...reply.sites, site], state,
-                    "Body decoding depends on the bound response API.", {requestSource: reply.requestSource, awaited: !!awaited});
-            }
+        const reply = ts.isPropertyAccessExpression(method) && BODY_READS.has(method.name.text)
+            ? state.values.get(symbol(unwrap(method.expression))) : undefined;
+        if (reply?.requestSource) {
+            emit("response_body_read", "The operation " + (awaited ? "awaits " : "calls ") + method.name.text +
+                " on the value returned by " + reply.call + ".", [...reply.sites, site], state,
+                "Body decoding depends on the bound response API.", {requestSource: reply.requestSource, awaited: !!awaited,
+                    ...arrivalEvidence({errorArrival: {
+                        occurrence: reply.requestOccurrence, phase: awaited ? "RESPONSE_DECODING" : undefined,
+                    }})});
         }
         if (ts.isPropertyAccessExpression(method) || ts.isElementAccessExpression(method)) {
             describeFlow(method.expression, "The receiver of " + place, site, state);
@@ -917,7 +925,9 @@ function scan(scope, inherited) {
             emit("conditional_repeat", "This path explicitly calls " + place + " again after the earlier awaited call fails.",
                 [state.failed.site, site], state, "The new call evaluates its operands again and takes its own runtime outcome.");
         }
-        const failure = failureAt(catcher, site, place, awaited, state, signature, occurrence);
+        const decoding = awaited && reply?.requestOccurrence;
+        const failure = failureAt(catcher, site, place, awaited, state, signature, occurrence || decoding,
+            decoding ? reply.sites : undefined);
         if (failure) errors.push(failure);
         if (catcher?.kind === "catch" && !awaited && ending === "The returned expression" && (promise || !target)) {
             const resumed = state.cleanup ? " If finally allows the return to resume, its rejection propagates." : "";
@@ -928,7 +938,9 @@ function scan(scope, inherited) {
         const passed = [...new Set(call.arguments.flatMap(argument => useSite(argument, state)))].filter(origin => !origin.awaited);
         if (binding && (awaited || helper && !helper.async)) {
             const origin = {name: binding.name, call: place, awaited,
-                sites: [...sites, helper?.target].filter(Boolean), sql: sql?.kind, requestSource: effect.requestSource};
+                sites: [...sites, helper?.target].filter(Boolean), sql: sql?.kind,
+                requestSource: effect.requestSource || (dispatch?.kind === "HTTP" ? dispatch.site : undefined),
+                requestOccurrence: dispatch?.kind === "HTTP" && awaited ? occurrence : undefined};
             if (awaited) {
                 emit("awaited_binding", binding.name + " receives the value from " + place + " if the await fulfills.", sites, state);
             }
@@ -1055,7 +1067,7 @@ function scan(scope, inherited) {
         const pending = state.cleanup ? " This " + (returning ? "return" : "exception") + " can remain pending through finally." : "";
         emit(returning ? "return" : "throw", text + "." + pending, [site, state.cleanup?.site], state, statement.expression ?
             "The outcome applies if evaluation of the operand completes normally." : undefined,
-            state.errorArrival?.occurrence ? {_edgeCause: state.errorArrival.occurrence} : {});
+            arrivalEvidence(state));
         if (!returning && catcher) {
             const transfer = catcher.kind === "escape" ? "leaves this finally abruptly" : "enters " + destination(catcher);
             emit("exception_route", "This explicit throw " + transfer + ".", [site, catcher.site], state,

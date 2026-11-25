@@ -489,8 +489,9 @@ def project(process, context, *, node):
         values = {key: row[key] for key in ("kind", "text", "condition", "uncertainty", "status") if key in row}
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
-        if "_edgeCause" in row:
-            values["_edgeCause"] = row["_edgeCause"]
+        for private in ("_edgeCause", "_edgePhase"):
+            if private in row:
+                values[private] = row[private]
         declared = row.get("authority")
         values["authority"] = declared if isinstance(declared, str) else (
             "RETAINED_COMPILER_CALL_SITE" if row.get("scope", "").startswith("COMPILER_SELECTED_") else authority)

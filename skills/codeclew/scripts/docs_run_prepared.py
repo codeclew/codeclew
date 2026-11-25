@@ -218,8 +218,9 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
                 'file', 'revision', 'startLine', 'endLine', 'startByte', 'endByte', 'textDigest') if key in lifted[ref]})
                 for ref in dict.fromkeys(refs) if ref in bindings]:
             values['witnesses'] = witnesses
-        if '_edgeCause' in row:
-            values['_edgeCause'] = row['_edgeCause']
+        for private in ('_edgeCause', '_edgePhase'):
+            if private in row:
+                values[private] = row[private]
         if edge := row.get('_edge'):
             site = bindings.get(edge['site'], edge['site'])
             if site in values['sources']:
@@ -873,6 +874,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         for fact in propositions:
             fact.pop('_edge', None)
             fact.pop('_edgeCause', None)
+            fact.pop('_edgePhase', None)
             size = len(encode(fact))
             if len(visible) >= MAX_FACTS or total_bytes + size > MAX_PACKET_BYTES:
                 limited += 1
