@@ -2183,6 +2183,25 @@ class PreparedServiceEdgeTests(unittest.TestCase):
             boundary, = self.project(front, peer)[front[0]["id"]]
             self.assertEqual(boundary["status"], "UNKNOWN")
 
+    def test_subscriber_delete_links_to_observed_absence_without_selecting_deleted_row_for_a_poll(self):
+        def operation(site, kind, **identity):
+            return {"kind": "effect", "authority": "RETAINED_PATH", "text": "The source requests the cited operation.",
+                    "sources": [site + "-body"], "_edge": {"kind": kind, "site": site + "-body", **identity}}
+
+        sender = self.retained("catalog", facts=[operation("catalog", "PUBLISH", topic="book.removed")])
+        listener = self.retained("stock", name="listener", entry_kind="KAFKA_LISTENER",
+                                 trigger={"configuration": {"topics": ["book.removed"]}},
+                                 facts=[operation("listener", "DELETE", table="record")])
+        reader = self.retained("stock", name="read", facts=[operation("read", "SELECT", table="record")])
+        relay = self.retained("stock", name="relay", entry_kind="SCHEDULED_JOB",
+                              facts=[operation("relay", "SELECT", table="record"),
+                                     operation("relay", "PUBLISH", topic="record.available")])
+        projected = self.project(sender, listener, reader, relay)
+        readbacks = [fact for fact in projected[sender[0]["id"]] if fact["kind"] == "message-storage-reader"]
+        self.assertTrue(readbacks)
+        self.assertTrue(all("absence" in fact["text"] and "remains deleted" in fact["text"] for fact in readbacks))
+        self.assertFalse(any(fact["kind"].startswith("storage-message") for fact in projected[listener[0]["id"]]))
+
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):
             site = service + "-body"

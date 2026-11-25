@@ -272,9 +272,11 @@ def project(requirements, records):
                 continue
             observed = records[reader]
             name = observed["requirement"]["page"]
+            observed_outcome = ("can observe the row's absence once the deletion becomes visible and while it remains deleted"
+                                if effect["verb"] == "DELETE" else
+                                "can see the affected row after the change becomes visible")
             emit(owner, "message-storage-reader", prefix
-                 + f"the retained read in `{name}` can see the affected row if "
-                   f"it uses the same database and row in `{table}` after the change becomes visible.",
+                 + f"the retained read in `{name}` {observed_outcome} if it uses the same database and row key in `{table}`.",
                  uncertainty, *evidence, effect, registration(observed), read)
 
     for owner, local in records.items():
@@ -376,9 +378,11 @@ def project(requirements, records):
                 target = records[reader]
                 name = target["requirement"]["page"]
                 emit(owner, "storage-reader", f"The `{write['verb']}` and the retained query in `{name}` "
-                     f"name `{write['table']}`. The reader is eligible if both operations use the same database and row.",
+                     f"name `{write['table']}`. The reader is eligible if both operations use the same database and row key.",
                      STORAGE_OPEN, write, registration(target), read)
-                if target["requirement"].get("entryKind") not in {"HOSTED_BACKGROUND_WORKER", "SCHEDULED_JOB"}:
+                if write["verb"] == "DELETE" or target["requirement"].get("entryKind") not in {
+                    "HOSTED_BACKGROUND_WORKER", "SCHEDULED_JOB"
+                }:
                     continue
                 if not target["publishes"]:
                     emit(owner, "storage-message-boundary", f"The registered reader in `{name}` has no qualified "

@@ -180,6 +180,8 @@ class PreparedManagedLanguages(unittest.TestCase):
             'fetch("/units", { ...options })',
             'fetch("/units", { method: options.method })',
             'fetch("/units", { method: "TRACE" })',
+            'fetch("/units", { method: "" })',
+            'fetch("/units", { __proto__: { method: "POST" } })',
             'fetch("/units", { method: "GET", body: id })',
         ):
             with self.subTest(call=call):
@@ -195,7 +197,14 @@ const consumer = kafka.consumer({ groupId: "a" });
 const runner = consumer;
 const other = kafka.consumer({ groupId: "b" });
 const known = "unit.available";
-async function receive() {}
+const producer = kafka.producer();
+async function receive() {
+    const display = { send(input: {topic: string; messages: string[]}) {
+        return input.topic.length + input.messages.length;
+    } };
+    display.send({topic: "not.published", messages: ["display text"]});
+    await producer.send({topic: "unit.processed", messages: []});
+}
 async function main(dynamic: string, enabled: boolean) {
     if (enabled) await consumer.subscribe({ topics: ["branch.only"] });
     await other.subscribe({ topic: "other.only" });
@@ -223,11 +232,19 @@ async function main(dynamic: string, enabled: boolean) {
         record, = context["sourceRanges"]
         occurrence = {"snapshot": "worker-snapshot", "blob": "worker-blob"}
         origin = {**record, "occurrence": occurrence}
-        requirement, _, _, _, facts = helper["background_operation"](
+        requirement, process, witnesses, _, facts = helper["background_operation"](
             "listener", candidate, {"Worker.ts": origin}, {HANDLE: origin})
         self.assertEqual(requirement["trigger"]["configuration"]["topics"], ["unit.available", "unit.completed"])
         self.assertEqual(len(requirement["trigger"]["subscriptionSources"]), 1)
         self.assertTrue(any(fact["kind"] == "background-topic-boundary" for fact in facts))
+        context = {"sourceRanges": list(witnesses.values()), "_sourceOccurrences": witnesses,
+                   "entrySources": process["entrySources"]}
+        facts, _ = self.project(process, context)
+        publish, = (fact for fact in facts if fact.get("_edge", {}).get("kind") == "PUBLISH")
+        self.assertEqual(publish["_edge"]["topic"], "unit.processed")
+        bound, = process["_background"]["publications"]
+        self.assertTrue(set(bound) <= set(publish["sources"]))
+        self.assertIn("KafkaJS producer", publish["text"])
 
     def test_kotlin_publication_uses_qualified_receiver_and_literal_topic(self):
         body = """fun score(publisher: org.springframework.kafka.core.KafkaTemplate<String, String>, value: String) {

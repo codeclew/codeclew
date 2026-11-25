@@ -664,7 +664,7 @@ def background_operation(service, found, files, exact):
                    'trigger': trigger, 'boundaries': ['RUNTIME_ACTIVATION_NOT_ESTABLISHED']}
     helpers = [ref for row in found.get('helpers', ()) if (ref := bind(row))]
     bodies = list(dict.fromkeys([callback, *helpers]))
-    calls, offsets = [], []
+    calls, offsets, publications = [], [], []
     for row in found.get('calls', ()):
         if (site := bind(row['site'])) and (target := bind(row['target'])) and target in bodies:
             calls.append((site, target))
@@ -672,15 +672,19 @@ def background_operation(service, found, files, exact):
         references = [bind(row[key]) for key in ('use', 'declaration', 'consumer', 'call')]
         if all(references):
             offsets.append(references)
+    for row in found.get('publications', ()):
+        members = [bind(row[key]) for key in ('call', 'producer', 'client')]
+        if all(members):
+            publications.append(members)
     process = {'id': identity, 'root': callback, 'service': service, 'title': name,
                'entrySymbol': name, 'entryKind': kind, 'trigger': trigger, 'routes': [],
                'entrySources': refs, 'sources': sources,
                'facts': [{'kind': 'BODY', 'declaration': ref, 'sources': [ref]} for ref in bodies],
                '_background': {'bodies': bodies, 'calls': calls,
                                **({'compilationFiles': sorted(files)} if kind == 'HOSTED_BACKGROUND_WORKER' else {}),
-                               'offsets': [row[:3] for row in offsets],
+                               'offsets': [row[:3] for row in offsets], 'publications': publications,
                                'anchored': list(dict.fromkeys([first for first, _ in calls] +
-                                                            [row[0] for row in offsets]))}}
+                                                            [row[0] for row in (*offsets, *publications)]))}}
     facts = [dict(kind='background-registration', authority=authority, sources=refs,
                   text=background_registration(found, trigger),
                   uncertainty='Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'

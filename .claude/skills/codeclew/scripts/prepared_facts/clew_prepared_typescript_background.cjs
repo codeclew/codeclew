@@ -121,14 +121,15 @@ module.exports = function discover(ts, files) {
             ts.isPropertyAccessExpression(node.expression) && !node.expression.questionDotToken &&
             node.expression.name.text === name && node.expression.expression;
     }
-    function consumer(node, method) {
+    function component(node, name, method) {
         const item = objectOrigin(node);
         if (!item || isReplaced(item, method)) return undefined;
-        const receiver = member(item.initializer, "consumer");
+        const receiver = member(item.initializer, name);
         const kafkaOwner = receiver && objectOrigin(receiver);
-        const kafka = kafkaOwner && !isReplaced(kafkaOwner, "consumer") && kafkaOwner.initializer;
-        if (kafka && ts.isNewExpression(kafka) && imported(kafka.expression, "Kafka", ["kafkajs"])) return item;
+        const kafka = kafkaOwner && !isReplaced(kafkaOwner, name) && kafkaOwner.initializer;
+        if (kafka && ts.isNewExpression(kafka) && imported(kafka.expression, "Kafka", ["kafkajs"])) return {item, kafka};
     }
+    const consumer = (node, method) => component(node, "consumer", method)?.item;
     function properties(node) {
         if (!node || !ts.isObjectLiteralExpression(node)) return undefined;
         const result = new Map();
@@ -158,7 +159,7 @@ module.exports = function discover(ts, files) {
         }
     }
     function context(root, receiver) {
-        const visited = new Set([root]), helpers = [], calls = [], offsets = [];
+        const visited = new Set([root]), helpers = [], calls = [], offsets = [], publications = [];
         function walk(node) {
             if (ts.isFunctionLike(node)) return;
             if (ts.isCallExpression(node) && !node.questionDotToken && !node.arguments.some(ts.isSpreadElement)) {
@@ -171,6 +172,10 @@ module.exports = function discover(ts, files) {
                         walk(target.body);
                     }
                 }
+                const producer = component(member(node, "send"), "producer", "send");
+                if (producer && publications.length < 8) {
+                    publications.push({call: range(node), producer: range(producer.item), client: range(producer.kafka)});
+                }
                 const use = member(node, "commitOffsets");
                 if (use && receiver && consumer(use, "commitOffsets") === receiver && offsets.length < 8) {
                     offsets.push({use: range(use), call: range(node), declaration: range(receiver),
@@ -180,7 +185,7 @@ module.exports = function discover(ts, files) {
             ts.forEachChild(node, walk);
         }
         walk(root.body);
-        return {helpers, calls, offsets};
+        return {helpers, calls, offsets, publications};
     }
     function visit(node) {
         const subscription = consumer(member(node, "subscribe"), "subscribe");

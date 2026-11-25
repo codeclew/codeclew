@@ -306,5 +306,9 @@ def background_anchors(request, references, sources, background):
         if all(ref in references for ref in (use, declaration, consumer)):
             request["offsetReceivers"].append(
                 {"use": references[use], "declaration": references[declaration], "consumer": references[consumer]})
+    request["publications"] = {references[call]: [references[producer], references[client]]
+                               for call, producer, client in background.get("publications", ())
+                               if all(ref in references for ref in (call, producer, client))
+                               and references[call] in attached}
     if registration := next(iter(request["callback"]["sources"]), None):
         request["setup"].append({"role": "Registration", "action": registration, "guards": []})

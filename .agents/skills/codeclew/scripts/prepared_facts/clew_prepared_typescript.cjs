@@ -555,7 +555,7 @@ function scan(scope, inherited) {
             const fields = new Map();
             for (const item of object.properties) {
                 if (!item.name || !(ts.isIdentifier(item.name) || ts.isStringLiteral(item.name)) ||
-                    fields.has(item.name.text)) return;
+                    fields.has(item.name.text) || item.name.text === "__proto__") return;
                 if (ts.isPropertyAssignment(item)) {
                     fields.set(item.name.text, transportConstant(item.initializer));
                 } else if (ts.isShorthandPropertyAssignment(item) && !item.objectAssignmentInitializer) {
@@ -574,7 +574,7 @@ function scan(scope, inherited) {
             if (args.length === 2 && !options) return;
             const methodValue = options?.get("method");
             if (methodValue && !ts.isStringLiteralLike(methodValue)) return;
-            const spelling = methodValue?.text || "GET";
+            const spelling = methodValue ? methodValue.text : "GET";
             const upper = spelling.toUpperCase();
             const method = /^(?:DELETE|GET|HEAD|OPTIONS|POST|PUT)$/.test(upper) ? upper : spelling;
             if (!/^(?:DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT)$/.test(method)) return;
@@ -589,12 +589,13 @@ function scan(scope, inherited) {
                 [site], state, uncertainty, {_edge: {kind: "HTTP", site, ...address, occurrence, method}});
             return occurrence;
         } else if (ts.isPropertyAccessExpression(target) && target.name.text === "send" && args.length === 1) {
+            const qualified = exact(scope, call).find(id => request.publications?.[id]);
             const options = members(args[0]);
             const topic = options?.get("topic");
-            if (!topic || !ts.isStringLiteralLike(topic) || !options.has("messages")) return;
-            emit("message_request", "The source " + (awaited ? "awaits" : "calls") + " the retained message send expression.",
-                [site], state, "The producer implementation and runtime broker binding remain open.",
-                {_edge: {kind: "PUBLISH", site, occurrence, topic: topic.text}});
+            if (!qualified || !topic || !ts.isStringLiteralLike(topic) || !options.has("messages")) return;
+            emit("message_request", "The source " + (awaited ? "awaits" : "calls") + " the retained KafkaJS producer send.",
+                [qualified, ...request.publications[qualified]], state, "Runtime broker binding and delivery remain open.",
+                {_edge: {kind: "PUBLISH", site: qualified, occurrence, topic: topic.text}});
             return occurrence;
         }
     }
