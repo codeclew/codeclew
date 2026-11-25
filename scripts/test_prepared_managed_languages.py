@@ -651,6 +651,60 @@ sealed class Relay
                 else:
                     self.assertFalse(deliveries or retries, facts)
 
+    def test_roslyn_replays_one_guarded_worker_invocation_through_returned_db_handle(self):
+        self.require_roslyn()
+        path = ROOT / "fixtures/documentation-background-processes/roslyn/DispatchWorker.cs"
+        fixture = path.read_text()
+        for label, text in {
+            "matched": fixture,
+            "different returned handle": fixture.replace('await db.ExecuteAsync',
+                'var other = await OpenAsync(source);\n        await other.ExecuteAsync'),
+            "different transaction": fixture.replace('await tx.CommitAsync();',
+                'var other = await db.BeginTransactionAsync();\n        await other.CommitAsync();'),
+            "independent sibling": fixture.replace('            if (enabled) await RelayAsync(source, broker);',
+                '            if (enabled) await RelayAsync(source, broker);\n            else await MarkAsync(source);').replace(
+                    '        await db.ExecuteAsync', '    }\n\n    private static async Task MarkAsync(NpgsqlDataSource source)\n    {\n'
+                    '        var db = await OpenAsync(source);\n        var tx = await db.BeginTransactionAsync();\n        await db.ExecuteAsync').replace(
+                        'new { id = row.Id },', 'new { id = 10 },'),
+        }.items():
+            with self.subTest(label=label):
+                names = ["ExecuteAsync", "RelayAsync", "OpenAsync"]
+                if label == "independent sibling":
+                    names.append("MarkAsync")
+                for index, name in enumerate(names, 1):
+                    line = next(line for line in text.splitlines() if line.startswith("    ") and
+                                "async Task" in line and f" {name}(" in line)
+                    first = text.index(line)
+                    end = text.index("\n    }", first) + len("\n    }")
+                    declaration = text[first:end]
+                    branch, current = selected(path.name, text, standalone=declaration,
+                                               start=text[:first].count("\n") + 1)
+                    if index == 1:
+                        process, context = branch, current
+                        process.update(entryKind="HOSTED_BACKGROUND_WORKER", entrySymbol="DispatchWorker.ExecuteAsync")
+                    else:
+                        ref = f"s{index}"
+                        source = branch["sources"]["s1"]
+                        process["sources"][ref] = source
+                        process["facts"].append({"kind": "BODY", "declaration": name, "sources": [ref]})
+                        context["sourceRanges"].append({**source, "id": f"m123456789abc:e{index}", "references": [ref]})
+                context["_nativeFiles"][path.name] = captured_csharp(text, path.name)
+                facts, _ = self.project(process, context)
+                deliveries = [row for row in facts if row["kind"] == "worker-row-delivery"]
+                commit_faults = [row for row in facts if row["kind"] == "worker-reselection" and
+                                 "`CommitAsync` can fail" in row["text"]]
+                if label == "matched":
+                    self.assertTrue(deliveries and commit_faults, facts)
+                    self.assertIn("`enabled` is true", commit_faults[0]["text"])
+                    self.assertIn("`RelayAsync(source, broker)`", commit_faults[0]["text"])
+                    self.assertIn("`row is null` is false", deliveries[0]["text"])
+                    self.assertIn("row.Payload", deliveries[0]["text"])
+                    self.assertIn("connection returned by `OpenAsync(source)`", deliveries[0]["text"])
+                    self.assertIn(HANDLE, commit_faults[0]["sources"])
+                    self.assertIn("m123456789abc:e3", commit_faults[0]["sources"])
+                else:
+                    self.assertFalse(deliveries or commit_faults, facts)
+
     def test_roslyn_lookup_checks_later_rows_before_claiming_no_match(self):
         self.require_roslyn()
         header = """using System.Collections.Generic;

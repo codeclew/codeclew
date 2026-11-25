@@ -478,21 +478,28 @@ def commit_argument_evidence(invocation):
     return arguments[0].get("cancellationTokenEvidence") if len(arguments) == 1 else None
 
 
-def read_gates_effect(path, comparisons, read, effect, effect_index):
-    for index, event in enumerate(path["sequence"][:effect_index]):
+def uses_value(value, origin):
+    return value == origin or isinstance(value, tuple) and any(uses_value(part, origin) for part in value)
+
+
+def read_gate(path, comparisons, row, effect, after_read, effect_index):
+    sequence = path["sequence"]
+    for index in range(after_read + 1, effect_index):
+        event = sequence[index]
         if event["outcome"] not in {"TRUE", "FALSE"}:
             continue
-        if not any(condition["step"] == event["step"] and contains_result(condition["operand"], read)
-                   for condition in path["conditions"]):
+        truth = event["outcome"] == "TRUE"
+        if not any(condition["step"] == event["step"] and condition["value"] == truth and
+                   uses_value(condition["operand"], row) for condition in path["conditions"]):
             continue
         for other in comparisons:
             route = other["sequence"]
             if (other["outcome"] in {"RETURNED", "NORMAL_EXIT"} and len(route) > index
-                    and route[:index] == path["sequence"][:index] and route[index]["step"] == event["step"]
+                    and route[:index] == sequence[:index] and route[index]["step"] == event["step"]
                     and route[index]["outcome"] != event["outcome"]
-                    and not any(item["step"] == effect for item in route)):
-                return True
-    return False
+                    and not any(item["step"] == effect for item in route[index:])):
+                return {"step": event["step"], "when": truth}
+    return None
 
 
 def row_origin(value, row):
@@ -523,14 +530,45 @@ def publication_arguments(invocation, sequence, row):
     return proof if proof or any(row_origin(value, row) for value in values) else None
 
 
+def returned_connection(steps, sequence, receiver):
+    """Keep the actual connection origin when a selected nested helper returns it."""
+    if not receiver or receiver[0] != "call-result":
+        return []
+    origin = steps.get(receiver[1], {})
+    if origin.get("candidateEffectFamily") != "database" or origin.get("spelling") not in {
+            "OpenConnection", "OpenConnectionAsync"}:
+        return []
+    proof = [origin["id"]]
+    for event in sequence:
+        if event.get("composed") and event.get("returnedValue") == receiver:
+            proof.extend((event["call"], event["step"]))
+    return proof
+
+
+def transaction_begin(calls, receiver, transaction, before, returned):
+    for index, operation, completion, invocation in calls:
+        if (index >= before or completion["outcome"] not in COMPLETED or invocation["result"] != transaction or
+                invocation["receiver"] != receiver):
+            continue
+        if operation["role"] == "TRANSACTION_BEGIN_REQUEST" or (
+                operation["spelling"] in {"BeginTransaction", "BeginTransactionAsync"} and
+                (operation.get("candidateEffectFamily") == "database" or
+                 returned and operation.get("dispatch") == "OPEN" and not operation.get("symbol"))):
+            return [operation["id"], completion["step"]]
+    return []
+
+
 def durable_candidates(paths, steps, budget):
     """Use a common path prefix and the matching write and commit to qualify repeat delivery."""
     found = {}
-    routes = [(path, list(event_calls(path["sequence"], steps))) for path in paths
+    routes = [(path, [(i, call, event, invocation) for i, call, event, invocation in event_calls(path["sequence"], steps)
+                      if i >= path.get("scope", {}).get("prefixEvents", 0)]) for path in paths
               if "NULL_ACCEPTING_NON_INSTANCE_DISPATCH_REQUIRED" not in path["open"]]
     for path, calls in routes:
         sequence = path["sequence"]
-        interruptions = [(index, event) for index, event in enumerate(sequence) if event["outcome"] in INTERRUPTED]
+        prefix_events = path.get("scope", {}).get("prefixEvents", 0)
+        interruptions = [(index, event) for index, event in enumerate(sequence) if index >= prefix_events and
+                         event["outcome"] in INTERRUPTED]
         for cut, interruption in interruptions:
             for j, external, event, invocation in calls:
                 ack_failure = (j == cut and event["outcome"] == "FAULT_OR_CANCELLATION" and
@@ -540,10 +578,10 @@ def durable_candidates(paths, steps, budget):
                 prefix_end = j if ack_failure else j + 1
                 for i, read, read_event, read_inv in calls:
                     if (i >= j or read["role"] != "SQL_READ_CANDIDATE" or read_event["outcome"] not in COMPLETED or
-                            not read_gates_effect(path, paths, read["id"], external["id"], j)):
+                            not (guard := read_gate(path, paths, read_inv["result"], external["id"], i, j))):
                         continue
                     payload = publication_arguments(invocation, sequence[i:j], read_inv["result"])
-                    if ack_failure and payload is None:
+                    if payload is None and (ack_failure or path.get("scope", {}).get("rootedWorker")):
                         continue
                     for normal, later in routes:
                         route = normal["sequence"]
@@ -567,18 +605,18 @@ def durable_candidates(paths, steps, budget):
                                 receiver, key, key_mode = matched
                                 if key_mode == "SELECTED_RECORD_MEMBER" and key[2] != read_inv["result"]:
                                     continue
-                                if ack_failure and not any(
-                                        begun < i and start["result"] == tx and start["receiver"] == receiver and
-                                        (op["role"] == "TRANSACTION_BEGIN_REQUEST" or
-                                         op.get("candidateEffectFamily") == "database" and
-                                         op.get("spelling") in {"BeginTransaction", "BeginTransactionAsync"}) and
-                                        done["outcome"] in COMPLETED for begun, op, done, start in later):
+                                commit_failure = (interruption.get("call") == commit["id"] and k == cut and
+                                                  route[:cut] == sequence[:cut] and done["step"] == interruption["step"])
+                                publication = external["role"] == "PUBLICATION_CANDIDATE"
+                                connection_proof = returned_connection(steps, route[:i], receiver)
+                                begin = transaction_begin(later, receiver, tx, i, connection_proof)
+                                if (ack_failure or commit_failure and publication) and not begin:
                                     continue
                                 fact = (read["id"], external["id"], interruption["step"], write["id"], commit["id"], ack_failure)
                                 callers = [item["step"] for item in route[:i] if item["outcome"] == "INVOKED" and
                                            read["id"].split("/", 1)[0] in steps[item["step"]].get("boundSources", ())]
-                                proof = list(dict.fromkeys([*callers, *fact[:5], *(payload or ()), route[j]["step"],
-                                                           write_event["step"], done["step"]]))
+                                proof = list(dict.fromkeys([*callers, *connection_proof, *begin, guard["step"], *fact[:5],
+                                                           *(payload or ()), route[j]["step"], write_event["step"], done["step"]]))
                                 token = commit_argument_evidence(invoked)
                                 sources = {source for step in proof for source in steps[step]["sources"]}
                                 if token:
@@ -591,7 +629,9 @@ def durable_candidates(paths, steps, budget):
                                     "completedAt": route[j]["step"], "interruption": interruption["step"],
                                     "matchingWrite": write["id"], "matchingCommit": commit["id"],
                                     "commitAuthority": authority, "commitSignature": signature,
-                                    "publicationAwaitFailed": ack_failure, "selectedRowSuppliesArguments": payload is not None,
+                                    "publicationAwaitFailed": ack_failure, "matchingCommitFailed": commit_failure,
+                                    "selectedRowSuppliesArguments": payload is not None, "rowGuard": guard,
+                                    **({"connectionEvidence": connection_proof} if connection_proof else {}),
                                     "failurePath": path["id"], "comparisonPath": normal["id"],
                                     "evidenceSteps": proof,
                                     "reentry": "IF_LATER_INVOCATION_REACHES_SELECT",

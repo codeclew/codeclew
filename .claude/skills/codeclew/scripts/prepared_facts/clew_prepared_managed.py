@@ -130,6 +130,7 @@ class Facts:
         self.events = {row["id"]: row for row in graph.get("sequenceEvents", ())}
         self.paths = {row["id"]: row for row in graph.get("paths", ())}
         self.local_paths = graph.get("boundedCallablePaths", ())
+        self.local_by_id = {row["id"]: row for row in self.local_paths}
         self.root = graph.get("root", {})
         self.root_refs = set(self.root.get("sources", ()))
         self.helpers = {row["id"]: method(row["symbol"]) for row in graph.get("retainedHelpers", ())}
@@ -1247,29 +1248,80 @@ class Facts:
                 continue
             if item["kind"] != "POSSIBLE_DURABLE_RESELECTION":
                 continue
-            table, column = code(item["selectTable"]), code(item["keyColumn"])
-            topic = self.steps[item["externalCall"]].get("topic")
-            action = f"{call} for topic {code(topic)}" if topic else call
-            if item.get("publicationAwaitFailed"):
-                failed = self.source_call(item["externalCall"]) or action
-                write = self.steps[item["matchingWrite"]].get("sourceSql")
-                mark = self.sql_label(write) if write else f"the update by {column}"
-                commit = self.name(item["matchingCommit"])
-                self.add("worker-row-delivery", f"The comparison path supplies data from the selected {table} row to {failed}. "
-                         f"After the send await resumes, it reaches {mark} for the same {column}, then {commit} on the matching transaction.",
-                         item["evidenceSteps"], [item["comparisonPath"]], item["sources"],
-                         uncertainty="The provider and broker must bind the cited APIs and honor the projected arguments.")
-                text = (f"If the await of {failed} faults or is cancelled, the broker may already have accepted the send. "
-                        f"If a later poll selects the same still-eligible {column} from {table}, it can attempt that send again. "
-                        f"The comparison path reaches {mark} and {commit} after the send await resumes.")
-            else:
-                text = (f"If a later poll selects the same still-eligible {column} from {table}, {action} can run again. "
-                        "The comparison path reaches the corresponding write and commit.")
-            self.add("worker-reselection", text,
-                     item.get("evidenceSteps", [item[key] for key in ("select", "externalCall", "completedAt", "interruption", "matchingWrite", "matchingCommit")]),
-                     [item["failurePath"], item["comparisonPath"]], item["sources"],
-                     uncertainty="Source order does not establish broker delivery or row eligibility after an interruption. "
-                                 "Eligibility depends on the provider and transaction.")
+            self.worker_delivery(item, call)
+
+    def worker_delivery(self, item, call):
+        table, column = code(item["selectTable"]), code(item["keyColumn"])
+        topic = self.steps[item["externalCall"]].get("topic")
+        action = f"{call} for topic {code(topic)}" if topic else call
+        proof = item.get("evidenceSteps", [item[key] for key in ("select", "externalCall", "completedAt", "interruption",
+                                                               "matchingWrite", "matchingCommit")])
+        prefix, scope_proof = self.worker_delivery_scope(item["comparisonPath"])
+        reached = self.source_call(item["externalCall"]) or action
+        write = self.steps[item["matchingWrite"]].get("sourceSql")
+        mark = self.sql_label(write) if write else f"the update by {column}"
+        commit = self.name(item["matchingCommit"])
+        guard = item.get("rowGuard")
+        condition = self.condition(guard["step"], guard["when"]) if guard else None
+        if item.get("selectedRowSuppliesArguments") and (item.get("publicationAwaitFailed") or item.get("matchingCommitFailed")):
+            selection = f"When {condition}, the comparison path" if condition else "The comparison path"
+            connection = next((name for key in item.get("connectionEvidence", ()) if self.steps[key].get("boundSources")
+                               and (name := self.source_call(key))), None)
+            handle = f" It uses the connection returned by {connection}." if connection else ""
+            self.add("worker-row-delivery", prefix + f"{selection} supplies data from the selected {table} row to {reached}. "
+                     f"After the send await resumes, it reaches {mark} for the same {column}, then {commit} on the matching transaction."
+                     + handle,
+                     [*scope_proof, *proof], [item["comparisonPath"]], item["sources"],
+                     uncertainty="The provider and broker must bind the cited APIs and honor the projected arguments.",
+                     **({"condition": condition} if condition else {}))
+        if item.get("publicationAwaitFailed"):
+            text = (f"If the await of {reached} faults or is cancelled, the broker may already have accepted the send. "
+                    f"If a later poll selects the same still-eligible {column} from {table}, it can attempt that send again. "
+                    f"The comparison path reaches {mark} and {commit} after the send await resumes.")
+        elif item.get("matchingCommitFailed") and item.get("selectedRowSuppliesArguments"):
+            text = (f"After {reached} completes and the source finishes {mark}, the matching {commit} can fail. "
+                    f"If a later poll selects the same still-eligible {column} from {table}, it can attempt that send again.")
+        else:
+            text = (f"If a later poll selects the same still-eligible {column} from {table}, {action} can run again. "
+                    "The comparison path reaches the corresponding write and commit.")
+        self.add("worker-reselection", prefix + text, [*scope_proof, *proof],
+                 [item["failurePath"], item["comparisonPath"]], item["sources"],
+                 uncertainty="Broker delivery and row eligibility after an interruption depend on the provider, broker and transaction.")
+
+    def worker_delivery_scope(self, path_id):
+        path = self.local_by_id.get(path_id)
+        if not path:
+            return "", []
+        scope = path["scope"]
+        prefix = self.trace(path)[:scope["prefixEvents"]]
+        active_calls = []
+        for event in prefix:
+            key = event["step"]
+            if event["outcome"] == "INVOKED" and self.steps[key].get("boundSources"):
+                active_calls.append(key)
+            elif event.get("call") in active_calls:
+                active_calls.remove(event["call"])
+        if scope["call"] not in active_calls:
+            active_calls.append(scope["call"])
+        names = [name for key in active_calls if (name := self.source_call(key))]
+        callers = {key.split("/", 1)[0] for key in active_calls}
+        latest = {}
+        for event in reversed(prefix):
+            key = event["step"]
+            if len(latest) >= 3:
+                break
+            if (key not in latest and key.split("/", 1)[0] in callers and event["outcome"] in {"TRUE", "FALSE"}
+                    and self.text(key) not in {"true", "false"}):
+                if condition := self.condition(key, event["outcome"] == "TRUE"):
+                    latest[key] = condition
+        conditions = " and ".join(reversed(latest.values()))
+        root = code(method(self.root.get("symbol", "")))
+        worker = f"the modeled path from {root}"
+        premise = f"When {conditions}, {worker}" if conditions else worker.capitalize()
+        binding = " enters the retained candidate " if scope["authority"] == "CONDITIONAL_SOURCE_CANDIDATE" else " enters "
+        helper = code(method(scope["symbol"]))
+        via = " via " + " then ".join(names) if names else ""
+        return f"{premise}{binding}{helper}{via}. ", [*active_calls, *latest]
 
     def output(self):
         order = ("http-entry", "input", "http-outcome", "finite-mapping", "lookup-guard-return", "guard-return-bypass", "direct-effect-inventory",

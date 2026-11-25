@@ -489,6 +489,7 @@ class Trace:
         self.entry_seeds = {}
         self.visit_limit = MAX_VISITS
         self.focal = False
+        self.focus_call = None
         self.path_limit = MAX_PATHS
         self.summary_queue = None
         self.summary_visits = 0
@@ -860,7 +861,8 @@ class Trace:
                                  call=step, **data)
             return fault(failed)
 
-        priority = self.commands["completion_boundary"](role, call.get("spelling"), call["dispatch"])
+        priority = (step == self.focus_call if self.focus_call else
+                    self.commands["completion_boundary"](role, call.get("spelling"), call["dispatch"]))
         return self.bounded(action() for action in (lambda: composed,
                                                     lambda: self.completions(work, complete, interrupt, priority)))
 
@@ -1104,7 +1106,7 @@ class Trace:
         guarded_writes, catch_returns = self.structural_outcomes(fn.citation, helper_models, hosts)
         executions, command_durable, transactions = self.commands["analyze"](
             paths, self.steps, self.sql_tables, self.storage, fn.citation if is_http else None)
-        local_paths, local_executions = self.callable_paths(ref, helper_models, paths, executions)
+        local_paths, local_executions = self.callable_paths(ref, helper_models, paths, executions, worker=bool(hosts))
         if (not guard_returns and not inventory and not composed_inventory and not executions and len(self.functions) == 1 and
                 not guard_controls and not host_controls
                 and not local_paths and not caught and not guarded_writes and not catch_returns and not any(step.get("sourceSql") for step in self.steps.values())
@@ -1129,6 +1131,7 @@ class Trace:
         used.update(key for row in local_paths for key in row["scope"].get("openSites", ()))
         interruptions, repeated = self.interruptions(paths, executions), self.repeated(path_rows)
         durable = self.storage["durable_candidates"](paths, self.steps, 12)
+        durable.extend(self.local_durable_paths(local_paths, durable))
         compact_paths, events = compact_paths_and_events([*paths, *local_paths])
         return report("PROJECTED" if paths else "OPEN", sorted(self.boundaries),
                       coverage="BOUNDED_RETAINED_SOURCE_ONLY",
@@ -1161,9 +1164,10 @@ class Trace:
                       **({"boundedCallableCommands": local_executions} if local_executions else {}),
                       possibleRepeatedEffects=[*repeated, *durable, *command_durable])
 
-    def callable_paths(self, root, helpers, paths, executions):
-        """Spend separate small coverage budgets on SQL and selector callables."""
-        if not self.boundaries.intersection({"TRACE_BUDGET", "PATH_ENUMERATION_BUDGET", "CALL_CYCLE_OR_DEPTH"}):
+    def callable_paths(self, root, helpers, paths, executions, *, worker):
+        """Spend separate small coverage budgets on selected callables and their rooted worker outcomes."""
+        fallback = self.boundaries.intersection({"TRACE_BUDGET", "PATH_ENUMERATION_BUDGET", "CALL_CYCLE_OR_DEPTH"})
+        if not fallback and not worker:
             return [], []
         retained = {self.functions[root].citation, *(helper["id"] for helper in helpers)}
         normal = {path["id"] for path in paths if path["outcome"] in {"RETURNED", "NORMAL_EXIT"} and
@@ -1187,7 +1191,13 @@ class Trace:
                 "ExecuteReader", "ExecuteReaderAsync", "ExecuteScalar", "ExecuteScalarAsync", "ExecuteNonQuery",
                 "ExecuteNonQueryAsync", "FirstOrDefault", *TRANSACTION_METHODS} or
                 op.get("kafkaTopicPosition") is not None or self.roles.get((ref, op["id"]), {}).get("sourceSql")}
-            if ref == root and not (wanted - visible):
+            seed = self.entry_seeds.get(ref)
+            commit_sites = [f"{fn.citation}/op{op['id']}" for op in operations
+                            if op.get("spelling") in {"Commit", "CommitAsync"}]
+            publication_sites = [f"{fn.citation}/op{op['id']}" for op in operations
+                                 if op.get("nominalPublication") or op.get("kafkaTopicPosition") is not None]
+            rooted = worker and seed and commit_sites and publication_sites
+            if (not fallback and not rooted) or ref == root and not (wanted - visible):
                 continue
             if len(round_robin) == LOCAL_CALLABLES:
                 break
@@ -1195,21 +1205,32 @@ class Trace:
                      "authority": "RETAINED_CALLABLE_DECLARATION"}
             frame = Frame(("entry-receiver",), {parameter["id"]: ("parameter", parameter["id"], parameter["name"])
                                                  for parameter in fn.graph["parameters"]})
-            native = self.local_witnesses(local, ref, State(), frame, scope, wanted, keep_normal=True)
-            if not native:
+            native = self.local_witnesses(local, ref, State(), frame, scope, wanted, keep_normal=True) if fallback else []
+            if fallback and not native:
                 open_sites = [self.step(fn, f"op{op['id']}", "CALL", op["site"], spelling=op.get("spelling"))
                               for op in operations if f"{fn.citation}/op{op['id']}" in wanted][:4]
                 native = [({"outcome": "OPEN", "sequence": [], "conditions": [], "sources": [fn.citation],
                             "scope": {**scope, "openSites": open_sites}, "open": ["CALLABLE_EFFECT_UNRESOLVED"]}, [])]
-            elif native[0][0]["scope"].get("unresolved"):
+            elif native and native[0][0]["scope"].get("unresolved"):
                 native[0][0]["scope"]["openSites"] = [self.step(fn, f"op{op['id']}", "CALL", op["site"], spelling=op.get("spelling"))
                                                        for op in operations if f"{fn.citation}/op{op['id']}" in wanted][:4]
             variants = []
-            if seed := self.entry_seeds.get(ref):
+            if seed:
                 state = replace(seed.state, event_base=len(seed.state.sequence), transfers=0, modeled_faults=0)
                 seeded = {**scope, "call": seed.call, "authority": seed.authority, "prefixEvents": state.event_base}
+                if rooted:
+                    seeded = {**seeded, "rootedWorker": True}
+                    local.local_only = False
                 variants.extend(self.local_witnesses(local, ref, state, seed.frame, seeded, wanted))
-            round_robin.append(iter([native[0], *variants, *native[1:]]))
+                if rooted:
+                    local.coverage, local.focal = False, True
+                    for site in [*commit_sites, *publication_sites][:4]:
+                        local.focus_call = site
+                        witnesses = self.local_witnesses(local, ref, state, seed.frame, seeded, wanted)
+                        variants.extend(witnesses[:2])
+                    local.coverage, local.focal, local.local_only, local.focus_call = True, False, True, None
+            witnesses = [*variants, *native] if rooted or not native else [native[0], *variants, *native[1:]]
+            round_robin.append(iter(witnesses))
         results, groups = [], []
         while round_robin and len(results) < LOCAL_OUTPUT_PATHS:
             remaining = []
@@ -1229,6 +1250,27 @@ class Trace:
             self.boundaries.add("CALLABLE_SCOPE_REPLAY_OUTER_JOIN_OPEN")
         return results, groups
 
+    def local_durable_paths(self, paths, existing):
+        """Compare alternatives only inside the same retained callback invocation prefix."""
+        groups = defaultdict(list)
+        for path in paths:
+            scope = path["scope"]
+            if scope.get("rootedWorker"):
+                prefix = json.dumps(path["sequence"][:scope["prefixEvents"]], sort_keys=True)
+                groups[scope["call"], scope["symbol"], prefix].append(path)
+        signature = ("select", "externalCall", "interruption", "matchingWrite", "matchingCommit")
+        seen = {tuple(row[key] for key in signature) for row in existing}
+        derived = []
+        for group in groups.values():
+            for row in self.storage["durable_candidates"](group, self.steps, 8):
+                key = tuple(row[field] for field in signature)
+                if key not in seen:
+                    seen.add(key)
+                    derived.append(row)
+            if len(derived) >= 8:
+                break
+        return derived[:8]
+
     def local_witnesses(self, local, ref, state, frame, scope, wanted, *, keep_normal=False):
         local.visits = 0
         results, seen = [], set()
@@ -1237,6 +1279,9 @@ class Trace:
             current = exit_.state
             suffix = current.sequence[scope["prefixEvents"]:]
             if NULL_DISPATCH in current.uncertainties:
+                continue
+            if local.focus_call and not any(event.get("call") == local.focus_call and
+                                            event["outcome"] in {"FAULT_OR_CANCELLATION", "CALL_EXCEPTION"} for event in suffix):
                 continue
             row = {"outcome": exit_.kind, "sequence": list(current.sequence), "scope": scope, "sources": scope["sources"],
                    "conditions": [{key: value for key, value in item.items() if key != "guard"} for item in current.conditions],
