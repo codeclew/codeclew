@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.19
+
+- Add an opt-in prepared-facts mode to the installed documentation runner.
+  Deterministic propositions carry retained source citations through the
+  existing authoring, review and export workflow.
+
 ## 0.13.55 — 2026-10-27
 
 - Show one HTTP method and route identity, with exact-path copy feedback and
