@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 Q = runpy.run_path(str(Path(__file__).with_name('weather-preauthor.py')))
+SKILL = Path(__file__).resolve().parents[2] / 'skills/codeclew'
 
 
 class WeatherQualificationTests(unittest.TestCase):
@@ -17,6 +18,7 @@ class WeatherQualificationTests(unittest.TestCase):
         self.statements = {}
         self.report = {'runDigest': 'bound-kit', 'rubricSha256': Q['RUBRIC_SHA'], 'criteria': self.criteria,
                        'scopes': self.scopes, 'statements': self.statements}
+        self.bind_counterevidence({})
         self.review = {'runDigest': 'bound-kit', 'rubricSha256': Q['RUBRIC_SHA'], 'reviewer': 'independent',
                        'materialFalseClaims': [], 'criteria': {}}
         for atom, row in self.criteria.items():
@@ -26,6 +28,13 @@ class WeatherQualificationTests(unittest.TestCase):
                 self.statements[key] = {'scopes': [row['route']], 'text': component, 'anchors': ['m123:a']}
                 witnesses[str(part)] = [key]
             self.review['criteria'][atom] = {'status': 'FULL', 'witnesses': witnesses}
+
+    def bind_counterevidence(self, assertions):
+        self.report.update(counterevidence=assertions, counterevidenceDigest=Q['sha'](Q['canonical'](assertions)))
+
+    def decision(self):
+        with patch.dict(Q['evaluate'].__globals__, check_sources=lambda *args: 1):
+            return Q['evaluate'](None, None, None, {'snapshot': 'fixture'}, self.report, self.review)
 
     def test_positive_and_deleted_atom(self):
         self.assertEqual((45, {'m123:a'}), Q['coverage'](self.report, self.review))
@@ -136,8 +145,9 @@ class WeatherQualificationTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             run = Path(directory)
             (run / 'prompt.txt').write_text('Use prepared evidence.\n\n' + json.dumps(packet) + '\n')
-            _, result = Q['collect'](run, {'requirements': [row]}, plan)
+            _, result, counterevidence = Q['collect'](run, {'requirements': [row]}, plan, SKILL)
             self.assertEqual(1, len(result))
+            self.assertEqual({}, counterevidence)
             statement = next(iter(result.values()))
             self.assertEqual(['operation-a7d8675103bc'], statement['scopes'])
             self.assertIn('Activation conditional.', statement['text'])
@@ -160,7 +170,8 @@ class WeatherQualificationTests(unittest.TestCase):
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
             inventory = {'requirements': [requirement]}
             plan = {'mode': 'ISOLATED_PAGES', 'slots': [slot]}
-            _, result = Q['collect'](run, inventory, plan)
+            _, result, counterevidence = Q['collect'](run, inventory, plan, SKILL)
+            self.assertEqual({}, counterevidence)
             fact = next(iter(result.values()))
             self.assertEqual(['m123:c (lines 2)'], fact['anchors'])
             self.assertIn('operationPacket', fact)
@@ -170,11 +181,110 @@ class WeatherQualificationTests(unittest.TestCase):
             packet['facts'][requirement['id']]['facts'][0] = {
                 'text': 'Local condition', 'contextRefs': ['P1', 'S1', 'L1', 'A1'], 'conditionTail': ' and `valid`'}
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
-            self.assertEqual(Q['collect'](run, inventory, plan)[1], result)
+            self.assertEqual(Q['collect'](run, inventory, plan, SKILL)[1], result)
             packet['page'] = 'foreign-page.md'
             path.write_text('Prepare one page.\n\n' + json.dumps(packet))
             with self.assertRaisesRegex(ValueError, 'differs from its frozen slot'):
-                Q['collect'](run, inventory, plan)
+                Q['collect'](run, inventory, plan, SKILL)
+
+    def opposing_packets(self, condition=None):
+        with TemporaryDirectory() as directory:
+            run = Path(directory)
+            (run / 'inputs').mkdir()
+            requirement = {'id': 'entry', 'kind': 'ENTRY', 'service': 'dashboard',
+                           'method': 'POST', 'path': '/api/places', 'page': 'operation.md'}
+            slots = [{'key': 'operation', 'kind': 'OPERATION', 'page': requirement['page'], 'requirement': 'entry',
+                      'prompt': 'operation.txt', 'citations': {'S0': 'm1:writer'}}]
+            source = {'service': 'writer', 'file': 'writer.txt', 'startLine': 1, 'endLine': 3,
+                      'text': 'open\nwrite\nclose'}
+            matching_operation = {'slot': 'operation', 'type': 'OPERATION', 'page': requirement['page'],
+                                  'requirement': requirement, 'facts': {'entry': {'facts': [{
+                                      'text': 'When writes are enabled, delivery reaches the write.',
+                                      'sources': ['S0'], 'lines': {'S0': ['2']}}]}},
+                                  'citations': {'S0': {'region': 'V1', 'authority': 'EXACT_SNAPSHOT_TEXT'}},
+                                  'sourceRanges': {'V1': source}}
+            (run / 'inputs/operation.txt').write_text('Frozen prompt\n\n' + json.dumps(matching_operation))
+            text = 'Delivery cannot reach the write.'
+            for category, kind, key, alias in (
+                    ('facts', 'GUIDE', 'guide', 'S1'),
+                    ('boundaries', 'PROCESS_MAP', 'map', 'S2')):
+                slot = {'key': key, 'kind': kind, 'page': key + '.md', 'requirement': None,
+                        'prompt': key + '.txt', 'citations': {alias: 'm1:writer'},
+                        'citationSpans': {alias: [['V1', 2, 2]]}}
+                slots.append(slot)
+                context = {'T1': {'status': 'INCOMPATIBLE_IN_RETAINED_PATHS'}, 'S1': {'sources': [alias]}}
+                visible = {'text': text, 'kind': 'effect-boundary', 'contextRefs': ['S1', 'T1'],
+                           'alsoFor': ['another-owner']}
+                if condition:
+                    context['P1'] = {'condition': condition}
+                    visible['contextRefs'].append('P1')
+                packet = {'slot': key, 'type': kind, 'page': slot['page'],
+                          'facts': {'outside-positive-rubric': {category: [visible, {
+                              'text': 'A separate selected path persists the record.',
+                              'status': 'SUPPORTED', 'sources': [alias]}]}},
+                          'factContext': context,
+                          'citations': {alias: {'region': 'V1', 'authority': 'EXACT_SNAPSHOT_TEXT'}},
+                          'sourceRanges': {'V1': source}}
+                (run / 'inputs' / slot['prompt']).write_text('Frozen prompt\n\n' + json.dumps(packet))
+            _, statements, counterevidence = Q['collect'](
+                run, {'requirements': [requirement]}, {'mode': 'ISOLATED_PAGES', 'slots': slots}, SKILL)
+            self.assertEqual(1, len(statements))
+            self.statements.update(statements)
+            self.review['criteria']['route-add-place.html/core/2']['witnesses']['1'] = list(statements)
+            self.bind_counterevidence(counterevidence)
+            self.assertEqual(1, len(counterevidence))
+            identity, row = next(iter(counterevidence.items()))
+            self.assertEqual(('INCOMPATIBLE_IN_RETAINED_PATHS', text),
+                             (row['assertion']['status'], row['assertion']['text']))
+            self.assertEqual(['GUIDE', 'PROCESS_MAP'], [item['slot']['kind'] for item in row['occurrences']])
+            for occurrence in row['occurrences']:
+                self.assertEqual(['another-owner', 'outside-positive-rubric'], occurrence['owners'])
+                self.assertEqual([[2, 2]], occurrence['sources'][0]['lines'])
+            return identity
+
+    def disposition(self, identity, status, reason):
+        self.review['counterevidenceDigest'] = self.report['counterevidenceDigest']
+        self.review['counterevidence'] = {identity: {
+            'status': status, 'reason': reason,
+            'sourceLinks': [{'file': 'writer.txt', 'startLine': 2, 'endLine': 2}]}}
+
+    def test_full_positive_rubric_cannot_outvote_unqualified_negative_in_other_slots(self):
+        identity = self.opposing_packets()
+        self.assertEqual(96, sum(len(row['components']) for row in self.criteria.values()))
+        self.assertEqual((45, {'m123:a', 'm1:writer (lines 2)'}), Q['coverage'](self.report, self.review))
+        with self.assertRaisesRegex(ValueError, 'lacks its digest'):
+            self.decision()
+        self.review['counterevidenceDigest'] = self.report['counterevidenceDigest']
+        with self.assertRaisesRegex(ValueError, 'Missing independent counterevidence dispositions'):
+            self.decision()
+        self.disposition(identity, 'MATERIAL_FALSE', 'Line 2 writes on the enabled path. The packet excludes it unconditionally.')
+        decision = self.decision()
+        self.assertEqual(('FAIL', 45, 1), (decision['status'], decision['full'], decision['counterevidence']['materialFalse']))
+
+    def test_source_grounded_exclusion_and_stale_catalog(self):
+        identity = self.opposing_packets(condition='Only in read-only mode, before starting the writer.')
+        self.disposition(identity, 'SCOPED_EXCLUSION', 'The exclusion is confined to read-only mode. Line 2 is the enabled write.')
+        self.assertEqual('PASS', self.decision()['status'])
+        link = self.review['counterevidence'][identity]['sourceLinks'][0]
+        link['endLine'] = 80
+        with self.assertRaisesRegex(ValueError, 'Invalid counterevidence source range'):
+            self.decision()
+        link.update(startLine=3, endLine=3)
+        with self.assertRaisesRegex(ValueError, 'must ground the delivered assertion'):
+            self.decision()
+        link.update(startLine=2, endLine=2)
+        self.assertNotEqual(identity, self.opposing_packets(condition='Only after the first write completes.'))
+        with self.assertRaisesRegex(ValueError, 'changed counterevidence catalog'):
+            self.decision()
+
+    def test_empty_counterevidence_needs_no_dispositions(self):
+        decision = self.decision()
+        self.assertEqual('PASS', decision['status'])
+        self.assertEqual({'required': 0, 'reviewed': 0, 'materialFalse': 0, 'verifiedSourceLinks': 0},
+                         decision['counterevidence'])
+        self.disposition('undelivered assertion', 'SCOPED_EXCLUSION', 'A scoped exclusion.')
+        with self.assertRaisesRegex(ValueError, 'Unknown counterevidence disposition'):
+            self.decision()
 
 
 class WeatherRetainedSourceTests(unittest.TestCase):
@@ -197,7 +307,7 @@ class WeatherRetainedSourceTests(unittest.TestCase):
         self.packet_alias = self.handle
         self.anchor = f'{self.handle} (lines 2)'
 
-    def verify(self, extra=None):
+    def verify(self, extra=None, negative_lines=None, review_links=()):
         (self.author_source / 'citations.json').write_text(json.dumps(self.manifest))
         plan = {'slots': [{'prompt': 'prompt.txt', 'citations': {'S1': self.packet_alias}}]}
         (self.run_dir / 'inputs/author-plan.json').write_text(json.dumps(plan))
@@ -215,11 +325,21 @@ class WeatherRetainedSourceTests(unittest.TestCase):
         entry = {'source': self.row, 'manifestId': self.manifest['id'],
                  'scope': {'snapshot': 'saved', 'service': 'dashboard'}}
         loader = { 'load': lambda path: (self.manifest, raw, None, {self.handle: entry}) }
+        negative = [] if negative_lines is None else [{'occurrences': [
+            {'location': fact['location'], 'sources': [{**visible, 'handle': self.handle, 'lines': negative_lines}]}]}]
         with patch('runpy.run_path', return_value=loader), patch('subprocess.check_output', return_value=self.blob):
-            return Q['check_sources'](self.run_dir, self.run_dir, self.run_dir, 'saved', {self.anchor}, [fact])
+            return Q['check_sources'](self.run_dir, self.run_dir, self.run_dir, 'saved', {self.anchor}, [fact],
+                                      negative, review_links)
 
     def test_declared_openapi_retains_exact_delivered_subrange(self):
         self.assertEqual(1, self.verify())
+
+    def test_counterevidence_replays_packet_ranges_and_independent_source_links(self):
+        self.assertEqual(1, self.verify(negative_lines=[[2, 2]], review_links=[(self.row['file'], 2, 3)]))
+        with self.assertRaisesRegex(ValueError, 'Witness lines absent from its isolated packet'):
+            self.verify(negative_lines=[[3, 3]])
+        with self.assertRaisesRegex(ValueError, 'review source range unavailable'):
+            self.verify(negative_lines=[[2, 2]], review_links=[(self.row['file'], 2, 4)])
 
     def test_exact_snapshot_can_deliver_an_anchor_in_a_secondary_region(self):
         self.row['authority'] = self.authority = 'EXACT_SNAPSHOT_TEXT'
@@ -316,18 +436,33 @@ class WeatherReleaseEvidenceTests(unittest.TestCase):
             report_file = base / 'report.json'
             payload = {'archiveSha256': 'first archive'}
             inventory = {'snapshot': 'snapshot'}
-            witness = {'mode': 'ISOLATED_PAGES'}
-            decision = {'status': 'PASS', 'full': 45, 'required': 45, 'materialFalseClaims': 0, 'verifiedAnchors': 30}
-            computed = Q['release_report'](payload, base, inventory, witness, review, decision)
+            witness = {'mode': 'ISOLATED_PAGES', 'counterevidenceDigest': 'negative digest'}
+            decision = {'status': 'PASS', 'full': 45, 'required': 45, 'materialFalseClaims': 0, 'verifiedAnchors': 30,
+                        'counterevidence': {'required': 1, 'reviewed': 1, 'materialFalse': 0, 'verifiedSourceLinks': 1}}
+            original_review = Q['sha'](review.read_bytes())
+            computed = Q['release_report'](payload, base, inventory, witness, original_review, decision)
             report_file.write_text(json.dumps(computed))
             Q['validate_release_report'](report_file, computed)
-            changed = Q['release_report']({'archiveSha256': 'another archive'}, base, inventory, witness, review, decision)
+            report_file.write_text(json.dumps(computed).replace('{', '{"status":"FAIL",', 1))
+            with self.assertRaisesRegex(ValueError, 'Duplicate JSON key'):
+                Q['validate_release_report'](report_file, computed)
+            report_file.write_text(json.dumps(computed))
+            changed = Q['release_report']({'archiveSha256': 'another archive'}, base, inventory, witness,
+                                          original_review, decision)
             with self.assertRaisesRegex(ValueError, 'differs from exact archive'):
                 Q['validate_release_report'](report_file, changed)
             review.write_text('{"criteria":{"test":"edited"}}')
-            changed = Q['release_report'](payload, base, inventory, witness, review, decision)
+            changed = Q['release_report'](payload, base, inventory, witness, Q['sha'](review.read_bytes()), decision)
             with self.assertRaisesRegex(ValueError, 'differs from exact archive'):
                 Q['validate_release_report'](report_file, changed)
+            changed = Q['release_report'](payload, base, inventory, {**witness, 'counterevidenceDigest': 'changed'},
+                                          original_review, decision)
+            with self.assertRaisesRegex(ValueError, 'differs from exact archive'):
+                Q['validate_release_report'](report_file, changed)
+            computed['counterevidence']['materialFalse'] = 1
+            with self.assertRaisesRegex(ValueError, 'zero material false claims'):
+                Q['validate_release_report'](report_file, computed)
+            computed['counterevidence']['materialFalse'] = 0
             computed['full'] = 44
             with self.assertRaisesRegex(ValueError, '45/45'):
                 Q['validate_release_report'](report_file, computed)

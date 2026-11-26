@@ -15,6 +15,7 @@ import tarfile
 HERE = Path(__file__).resolve().parent
 REVISION = 'c9a4283cb5bbe2409b95561aca4e751a71255ff9'
 RUBRIC_SHA = 'sha256:3d9f22966411dde050d16819e1d173a5b8cff570654a2f77bf84675c0a00b059'
+RELEASE_REPORT_SCHEMA = 'codeclew-installed-weather-release-qualification/2.0'
 # Historical operation IDs identify rubric rows. Installed native IDs and page names can vary.
 SELECTORS = {
     'operation-a7d8675103bc': ('dashboard', 'POST', '/api/places'),
@@ -31,6 +32,7 @@ SECTION = re.compile(r'^## (?:Prepared|Additional prepared) source evidence$')
 FACT_GROUP = re.compile(r'^(?:Facts|Boundaries) for (.+?)(?: \[[^\]]+\])?$')
 ANCHOR = re.compile(r'[\w:-]+(?: \(lines \d+(?:-\d+)?(?:, \d+(?:-\d+)?)*\))?')
 FENCE = re.compile(r'^[ ]{0,3}(`{3,}|~{3,})')
+NEGATIVE_STATUS = re.compile(r'(?:INCOMPATIBLE|CONTRADICTED|CONTRADICTORY)(?:_[A-Z0-9]+)*')
 
 
 def require(ok, message):
@@ -44,6 +46,12 @@ def sha(raw):
 
 def load(path):
     return json.loads(path.read_bytes())
+
+
+def unique_object(pairs):
+    obj = dict(pairs)
+    require(len(obj) == len(pairs), 'Duplicate JSON key in qualification evidence')
+    return obj
 
 
 def rows_by(rows, key):
@@ -153,7 +161,38 @@ def prompt_packet(path):
     return json.loads(path.read_text().strip().rsplit('\n\n', 1)[1])
 
 
-def structured_records(result, path, targets, alias_map, citations, refs, files, source_ranges=None, operation_packet=None):
+def line_interval(interval):
+    require(re.fullmatch(r'[1-9]\d*(?:-[1-9]\d*)?', interval), 'Invalid source line interval')
+    first, _, last = interval.partition('-')
+    return int(first), int(last or first)
+
+
+def counterevidence_record(result, path, slot, identity, category, index, owners, fact, visible, anchors, locations):
+    """Keep one semantic assertion and every frozen occurrence of its evidence."""
+    require(anchors, f'Explicit negative assertion lacks delivered source at {path}')
+    bounded = {}
+    for alias in fact['sources']:
+        handle = slot['citations'][alias]
+        spans = {(first, last) for _, first, last in slot['citationSpans'][alias]}
+        require(spans and all(0 < first <= last for first, last in spans),
+                f'Explicit negative assertion lacks bounded citation at {path}')
+        intervals = {line_interval(lines) for lines in fact.get('lines', {}).get(alias, ())} or spans
+        require(all(any(start <= first <= last <= end for start, end in spans) for first, last in intervals),
+                f'Explicit negative assertion exceeds its delivered citation at {path}')
+        bounded[handle] = sorted(intervals)
+    key = sha(canonical({'assertion': visible, 'anchors': sorted(set(anchors))}))
+    row = result.setdefault(key, {'assertion': visible, 'occurrences': []})
+    row['occurrences'].append({
+        'slot': {field: slot[field] for field in ('key', 'kind', 'page', 'requirement')},
+        'owners': sorted(owners), 'location': f'{path}#{identity}/{category}/{index}',
+        'sources': [{**locations[handle], 'handle': handle,
+                     'lines': [[first, last] for first, last in intervals]}
+                    for handle, intervals in sorted(bounded.items())],
+    })
+
+
+def structured_records(result, path, targets, alias_map, citations, refs, files, source_ranges=None,
+                       operation_packet=None, *, counterevidence=None, slot=None):
     for identity, target in targets.items():
         for category in ('facts', 'boundaries'):
             for i, fact in enumerate(target.get(category, [])):
@@ -172,19 +211,23 @@ def structured_records(result, path, targets, alias_map, citations, refs, files,
                         locations[handle]['bodySha256'] = sha(location['text'].encode())
                         locations[handle]['authority'] = cite['authority']
                 visible = {key: value for key, value in fact.items() if key not in {'sources', 'lines', 'alsoFor'}}
+                status = visible.get('status')
+                if counterevidence is not None and isinstance(status, str) and NEGATIVE_STATUS.fullmatch(status):
+                    counterevidence_record(counterevidence, path, slot, identity, category, i, owners,
+                                           fact, visible, anchors, locations)
                 record(result, relevant, f'{path}#{identity}/{category}/{i}',
                        json.dumps(visible, ensure_ascii=False, sort_keys=True), anchors, local_files, locations,
                        operation_packet)
 
 
 @cache
-def fact_context_decoder():
-    script = HERE.parent.parent / 'skills/codeclew/scripts/docs_run_fact_context.py'
+def fact_context_decoder(skill):
+    script = skill / 'scripts/docs_run_fact_context.py'
     return runpy.run_path(str(script))['expand_fact_context']
 
 
-def collect(run, inventory, plan):
-    statement_rows = {}
+def collect(run, inventory, plan, skill):
+    statement_rows, counterevidence = {}, {}
     scopes = select_scopes(inventory)
     refs = {row['id']: op for op, row in scopes.items()}
     files = {row['id']: row['service'] + ':' + row['file'] for row in inventory['requirements']
@@ -205,9 +248,10 @@ def collect(run, inventory, plan):
                     'Isolated author packet identity differs from its frozen slot')
             operation_packet = refs.get(slot['requirement']) if slot['kind'] == 'OPERATION' else None
             if 'factContext' in packet:
-                packet = fact_context_decoder()(packet)
+                packet = fact_context_decoder(skill)(packet)
             structured_records(statement_rows, path.relative_to(run), packet['facts'], slot['citations'],
-                               packet['citations'], refs, files, packet['sourceRanges'], operation_packet)
+                               packet['citations'], refs, files, packet['sourceRanges'], operation_packet,
+                               counterevidence=counterevidence, slot=slot)
     elif plan['mode'] == 'WORKSPACE':
         source = run / 'inputs/author-source'
         for service in inventory['services']:
@@ -227,7 +271,7 @@ def collect(run, inventory, plan):
                     record(statement_rows, relevant, f'{path.relative_to(run)}:{line}', text, anchors, matching_files)
     else:
         raise ValueError('Unknown installed author delivery mode')
-    return scopes, statement_rows
+    return scopes, statement_rows, counterevidence
 
 
 def linked_scope(key, answer, evidence, facts, eligible):
@@ -290,7 +334,48 @@ def coverage(report, review):
     return full, anchors
 
 
-def check_sources(run, skill, repository, snapshot, anchors, statements=()):
+def counterevidence_review(report, review):
+    assertions = report['counterevidence']
+    dispositions = review.get('counterevidence', {})
+    if assertions or 'counterevidenceDigest' in review:
+        require(review.get('counterevidenceDigest') == report['counterevidenceDigest'],
+                'Review targets a changed counterevidence catalog or lacks its digest')
+    require(isinstance(dispositions, dict), 'Expected keyed counterevidence dispositions')
+    missing = assertions.keys() - dispositions.keys()
+    require(not missing, f'Missing independent counterevidence dispositions: {", ".join(sorted(missing))}')
+    require(dispositions.keys() <= assertions.keys(), 'Unknown counterevidence disposition')
+    links, false_count = set(), 0
+    for identity, disposition in dispositions.items():
+        require(isinstance(disposition, dict) and disposition.keys() == {'status', 'reason', 'sourceLinks'},
+                f'Invalid counterevidence disposition for {identity}')
+        status, reason, sources = (disposition[key] for key in ('status', 'reason', 'sourceLinks'))
+        require(status in ('SCOPED_EXCLUSION', 'MATERIAL_FALSE'), f'Invalid counterevidence status for {identity}')
+        require(isinstance(reason, str) and 0 < len(reason.strip()) <= 1024,
+                f'Explain the counterevidence disposition for {identity}')
+        require(isinstance(sources, list) and 1 <= len(sources) <= 8,
+                f'Counterevidence requires one to eight bounded source links for {identity}')
+        cited = {(source['file'], first, last) for occurrence in assertions[identity]['occurrences']
+                 for source in occurrence['sources'] for first, last in source['lines']}
+        linked = set()
+        for source in sources:
+            require(isinstance(source, dict) and source.keys() == {'file', 'startLine', 'endLine'},
+                    f'Invalid counterevidence source link for {identity}')
+            file, first, last = (source[key] for key in ('file', 'startLine', 'endLine'))
+            require(isinstance(file, str) and all(part not in ('', '.', '..') for part in file.split('/'))
+                    and '\\' not in file and '\x00' not in file
+                    and type(first) is int and type(last) is int and 0 < first <= last < first + 64,
+                    f'Invalid counterevidence source range for {identity}')
+            linked.add((file, first, last))
+        require(len(linked) == len(sources), f'Duplicate counterevidence source link for {identity}')
+        require(any(file == cited_file and start <= last and first <= end for file, first, last in linked
+                    for cited_file, start, end in cited),
+                f'Counterevidence source links must ground the delivered assertion for {identity}')
+        links.update(linked)
+        false_count += status == 'MATERIAL_FALSE'
+    return {'required': len(assertions), 'reviewed': len(dispositions), 'materialFalse': false_count}, links
+
+
+def check_sources(run, skill, repository, snapshot, anchors, statements=(), counterevidence=(), review_links=()):
     loader = cache(runpy.run_path(str(skill / 'scripts/author_citations.py'))['load'])
     manifests = {}
     for path in sorted((run / 'inputs/author-source').rglob('citations.json')):
@@ -376,13 +461,16 @@ def check_sources(run, skill, repository, snapshot, anchors, statements=()):
         require(bool(ANCHOR.fullmatch(anchor)), 'Invalid retained witness anchor')
         handle, _, lines = anchor.partition(' (lines ')
         row, _, _ = source(handle)
-        intervals = []
-        for interval in lines.removesuffix(')').split(', ') if lines else ():
-            first, _, last = interval.partition('-')
-            intervals.append((int(first), int(last or first)))
+        intervals = [line_interval(interval) for interval in lines.removesuffix(')').split(', ')] if lines else []
         require(all(row['startLine'] <= first <= last <= row['endLine'] for first, last in intervals),
                 f'Witness outside retained source for {handle}')
         return handle, row, intervals
+
+    def verify_delivered(path, handle, intervals, location):
+        ranges, primary = delivered(path.partition('#')[0], handle)
+        require(location == primary, f'Isolated packet citation digest differs for {handle}')
+        require(all(any(start <= first <= last <= end for start, end in ranges)
+                    for first, last in intervals), f'Witness lines absent from its isolated packet for {handle}')
 
     for anchor in sorted(anchors):
         anchor_source(anchor)
@@ -393,14 +481,19 @@ def check_sources(run, skill, repository, snapshot, anchors, statements=()):
             handle, row, intervals = anchor_source(anchor)
             authorities.add(row['authority'])
             if locations:
-                path = statement['location'].partition('#')[0]
-                ranges, primary = delivered(path, handle)
-                require(locations.get(handle) == primary, f'Isolated packet citation digest differs for {handle}')
-                require(all(any(start <= first <= last <= end for start, end in ranges)
-                            for first, last in intervals), f'Witness lines absent from its isolated packet for {handle}')
+                verify_delivered(statement['location'], handle, intervals, locations.get(handle))
         if authorities == {'DECLARED_OPENAPI'}:
             require(openapi_declaration(statement['text']),
                     'Declared OpenAPI without implementation evidence cannot support an implementation statement')
+    for assertion in counterevidence:
+        for occurrence in assertion['occurrences']:
+            for link in occurrence['sources']:
+                location = {key: value for key, value in link.items() if key not in ('handle', 'lines')}
+                verify_delivered(occurrence['location'], link['handle'], link['lines'], location)
+    for file, first, last in sorted(review_links):
+        lines = blob(file).splitlines(keepends=True)
+        require(last <= len(lines) and sum(map(len, lines[first - 1:last])) <= 16 * 1024,
+                f'Counterevidence review source range unavailable or oversized: {file}:{first}-{last}')
     return len(anchors)
 
 
@@ -451,27 +544,47 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
 
 
-def release_report(payload, run, inventory, witness_catalog, review_path, decision):
+def evaluate(run, skill, repository, inventory, report, review):
+    full, anchors = coverage(report, review)
+    counterevidence, links = counterevidence_review(report, review)
+    count = check_sources(run, skill, repository, inventory['snapshot'], anchors,
+                          report['statements'].values(), report['counterevidence'].values(), links)
+    counterevidence['verifiedSourceLinks'] = len(links)
+    false_count = len(review['materialFalseClaims'])
+    required = len(report['criteria'])
+    passed = full == required and not (false_count or counterevidence['materialFalse'])
+    return {'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': required,
+            'materialFalseClaims': false_count, 'verifiedAnchors': count, 'counterevidence': counterevidence,
+            'runDigest': report['runDigest'], 'rubricSha256': RUBRIC_SHA}
+
+
+def release_report(payload, run, inventory, witness_catalog, review_digest, decision):
     pins = load(run / 'pins.json')
     verifier = {file: sha((HERE / file).read_bytes()) for file in (
         'weather-preauthor.py', 'weather-release-payload.py', 'weather-preauthor-rubric.json',
         'weather-preauthor-components.tsv')}
-    return {'schema': 'codeclew-installed-weather-release-qualification/1.0', **decision,
+    return {'schema': RELEASE_REPORT_SCHEMA, **decision,
             'payload': payload, 'weatherRevision': REVISION, 'snapshot': inventory['snapshot'],
             'authorMode': witness_catalog['mode'],
             'evidence': {'frozenInputFilesDigest': sha(canonical(pins['inputFiles'])),
                          'inventoryDigest': pins['inventoryDigest'], 'promptDigest': pins['promptDigest'],
-                         'reviewDigest': sha(review_path.read_bytes()), 'witnessCatalogDigest': sha(canonical(witness_catalog)),
+                         'reviewDigest': review_digest, 'witnessCatalogDigest': sha(canonical(witness_catalog)),
+                         'counterevidenceDigest': witness_catalog['counterevidenceDigest'],
                          'validatorFilesDigest': sha(canonical(verifier))}}
 
 
 def validate_release_report(path, computed):
     require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024,
             'Qualification report is unavailable or oversized')
+    require(computed['schema'] == RELEASE_REPORT_SCHEMA and computed['authorMode'] == 'ISOLATED_PAGES',
+            'Expected the current isolated Weather release qualification')
+    counterevidence = computed['counterevidence']
     require(computed['status'] == 'PASS' and computed['full'] == computed['required'] == 45
-            and computed['materialFalseClaims'] == 0 and computed['verifiedAnchors'] > 0,
-            'Installed Weather qualification requires 45/45 full atoms and zero material false claims')
-    require(canonical(load(path)) == canonical(computed), 'Qualification report differs from exact archive or frozen evidence')
+            and computed['materialFalseClaims'] == 0 and computed['verifiedAnchors'] > 0
+            and counterevidence['reviewed'] == counterevidence['required'] and counterevidence['materialFalse'] == 0,
+            'Installed Weather qualification requires 45/45 full atoms, complete counterevidence review and zero material false claims')
+    reported = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+    require(canonical(reported) == canonical(computed), 'Qualification report differs from exact archive or frozen evidence')
 
 
 def main():
@@ -491,14 +604,14 @@ def main():
             'Release verification requires the target archive, frozen run, and independent review')
     need_git = args.review is not None
     require(not need_git or args.source_repo is not None, '--source-repo is required with --review')
-    payload_module, payload = None, None
+    payload_module, payload, expected_review_digest = None, None, None
     if args.release_archive:
         payload_module = runpy.run_path(str(HERE / 'weather-release-payload.py'))
         payload, skill = payload_module['read_archive'](args.release_archive, args.release_commit)
         payload_module['check_install'](payload, skill, load(args.job or args.run_dir / 'inputs/job.json'), args.skill)
         require(args.runtime_key == payload['runtimeKey'], 'Requested runtime differs from the target release archive')
         if args.review:
-            payload_module['digest_file'](args.review, 2 * 1024 * 1024)
+            expected_review_digest = payload_module['digest_file'](args.review, 2 * 1024 * 1024)
     if args.job:
         subprocess.run([sys.executable, '-I', '-S', str(args.skill / 'scripts/docs_run.py'), 'prepare',
                         '--job', str(args.job), '--run-dir', str(args.run_dir)], check=True, stdout=sys.stderr)
@@ -506,30 +619,30 @@ def main():
     if payload_module:
         payload_module['check_pins'](payload, load(args.run_dir / 'pins.json'))
     plan = load(args.run_dir / 'inputs/author-plan.json')
-    scopes, statements = collect(args.run_dir, inventory, plan)
+    require(not payload or plan['mode'] == 'ISOLATED_PAGES', 'Release qualification requires isolated page authoring')
+    scopes, statements, counterevidence = collect(args.run_dir, inventory, plan, args.skill)
     report = {'rubricSha256': RUBRIC_SHA, 'runDigest': sha((args.run_dir / 'pins.json').read_bytes()),
               'mode': plan['mode'], 'criteria': rubric(),
               'scopes': {op: {key: row[key] for key in ('id', 'page', 'service')} for op, row in scopes.items()},
-              'statements': statements}
+              'statements': statements, 'counterevidence': counterevidence,
+              'counterevidenceDigest': sha(canonical(counterevidence))}
     if not need_git:
         if payload:
             report['targetPayload'] = payload
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    review = load(args.review)
-    full, anchors = coverage(report, review)
-    count = check_sources(args.run_dir, args.skill, args.source_repo, inventory['snapshot'], anchors, statements.values())
-    false_count = len(review['materialFalseClaims'])
-    passed = full == len(report['criteria']) and not false_count
-    decision = {'status': 'PASS' if passed else 'FAIL', 'full': full, 'required': len(report['criteria']),
-                'materialFalseClaims': false_count, 'verifiedAnchors': count,
-                'runDigest': report['runDigest'], 'rubricSha256': RUBRIC_SHA}
+    raw_review = args.review.read_bytes()
+    review_digest = sha(raw_review)
+    require(not expected_review_digest or review_digest == expected_review_digest,
+            'Independent review changed while verifying qualification')
+    review = json.loads(raw_review, object_pairs_hook=unique_object)
+    decision = evaluate(args.run_dir, args.skill, args.source_repo, inventory, report, review)
     if payload:
-        decision = release_report(payload, args.run_dir, inventory, report, args.review, decision)
+        decision = release_report(payload, args.run_dir, inventory, report, review_digest, decision)
     if args.verify_release_report:
         validate_release_report(args.verify_release_report, decision)
     print(json.dumps(decision, indent=2))
-    return 0 if passed else 1
+    return 0 if decision['status'] == 'PASS' else 1
 
 
 if __name__ == '__main__':

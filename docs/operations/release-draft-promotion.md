@@ -44,10 +44,11 @@ Run the [Weather checkpoint](../../scripts/qualification/weather-preauthor.md)
 before making a draft public whenever the release changes installed documentation
 preparation, how it selects retained evidence, or what goes into the author packet.
 Verify and install one official core archive produced for that draft, then use
-a run prepared by that authenticated installation. The independent semantic
-review requires 45/45 full atoms and zero material false claims. Keep the frozen
-run, independent review and release-bound report outside the installed package
-and release assets.
+an isolated page run prepared by that authenticated installation. The independent
+semantic review requires 45/45 full atoms, a source-grounded disposition for
+every explicitly incompatible or contradictory assertion in the delivered
+packets, and zero material false claims. Keep the frozen run, independent review
+and release-bound report outside the installed package and release assets.
 
 Verify the report against the same downloaded archive, the peeled release
 commit, the authenticated installation and the original frozen evidence:
@@ -63,10 +64,10 @@ python3 -I -S scripts/qualification/weather-preauthor.py \
 ```
 
 A nonzero result blocks this qualification. Verification checks the archive,
-seed, bundled skill and frozen inputs, then checks the independent grades and
-retained source proof again. It starts no author and performs no capture. A
-different archive, a stock release run or a standalone PASS summary cannot
-substitute for the matching frozen evidence.
+seed, bundled skill and frozen inputs, then checks the independent grades,
+counterevidence dispositions and retained source proof again. It starts no
+author and performs no capture. A different archive, a stock release run or a
+standalone PASS summary cannot substitute for the matching frozen evidence.
 
 When every applicable qualification passes, promote the existing draft without rebuilding or
 uploading replacement assets:

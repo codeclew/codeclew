@@ -31,10 +31,10 @@ python3 -I -S scripts/qualification/weather-preauthor.py \
 ```
 
 Keep the rubric, component list, witness catalog and critic output outside the
-installed skill and the author's workspace. The witness catalog includes only
-cited statements in the required author-facing workspace views, inline prompt,
-or actual frozen isolated page prompts. An isolated page witness retains its
-prompt location, source alias, coordinates and exact visible source digest.
+installed skill and the author's workspace. The witness catalog includes cited
+statements from the required author-facing workspace views, inline prompt, or
+actual frozen isolated page prompts. An isolated page witness retains its
+prompt location, citation handle, coordinates and exact visible source digest.
 Sidecars and raw code help verify sources and yield no semantic credit.
 
 Give an independent reviewer the frozen witness catalog and exact pinned sources.
@@ -81,6 +81,47 @@ For isolated authoring, every graded component must use facts and source bytes
 visible in its target operation's own packet. Facts available solely to another
 operation, discovery, guide or process-map author do not qualify that component.
 
+### Explicit negative assertions in isolated packets
+
+Read the catalog's `counterevidence` alongside the original rubric. It covers
+every prepared fact or boundary whose delivered status explicitly marks it as
+incompatible or contradictory, including status inherited through
+`factContext`. It covers all frozen isolated author slots, including discovery,
+contracts, guides and the process map. Assertions with the same wording,
+qualifiers and retained citation anchors share an ID. Each occurrence retains
+the slot, owning requirements, packet location, and delivered source links.
+`occurrences[].sources[].lines` gives the exact inclusive line intervals
+available for the assertion, bounded to the delivered citation.
+
+For every assertion, inspect its wording, conditions, limits and source.
+Use `SCOPED_EXCLUSION` when the stated conditions and cited source justify the
+exclusion. Use `MATERIAL_FALSE` for a false or materially overgeneralized
+exclusion, even if the owning operation has full positive support elsewhere.
+Explain the decisive path or premise in `reason`. Provide one to eight
+`sourceLinks` with repository-relative files and inclusive lines from the
+pinned Weather revision. Keep each range within 64 lines and 16 KiB. At least
+one link must overlap a delivered citation for the assertion. Add another
+range when it establishes a premise, alternative path or contradiction.
+Keep the general `materialFalseClaims` scan for other false assertions.
+
+Merge the following two fields into the review above, with one entry for each
+ID in the current catalog. If the catalog is empty, both fields can be omitted.
+
+```json
+{
+  "counterevidenceDigest": "from witnesses.json",
+  "counterevidence": {
+    "sha256:assertion ID from witnesses.json": {
+      "status": "SCOPED_EXCLUSION",
+      "reason": "The selected branch exits before the write. The write remains reachable on the other branch.",
+      "sourceLinks": [
+        {"file": "path/to/source", "startLine": 20, "endLine": 29}
+      ]
+    }
+  }
+}
+```
+
 ```sh
 python3 -I -S scripts/qualification/weather-preauthor.py \
   --skill "$INSTALLED_SKILL" --runtime-key "$INSTALLED_RUNTIME_KEY" \
@@ -93,9 +134,10 @@ inputs. It checks the current fact and operation scope, retaining each source
 anchor only when its installed citation manifest matches the saved snapshot and
 the exact source bytes match the pinned Git line and byte range. An accepted
 result requires full independent coverage of all 45 atoms and zero material
-false claims. The validator verifies the reviewer’s evidence and accounting.
-Interpretation of prose and the absence of contradictions require independent
-semantic judgment.
+false claims, including the explicit negative assertions. The validator
+verifies complete dispositions, link bounds, and exact retained and delivered
+source bytes. Interpretation of the assertions and their sources requires
+independent semantic judgment.
 
 ## Release-bound evidence report
 
@@ -104,10 +146,11 @@ Ordinary CI runs the hermetic validator tests through
 rejection without installing a release, contacting a network or starting an
 author. Apply the [draft promotion trigger](../../docs/operations/release-draft-promotion.md#installed-documentation-author-inputs)
 to qualify changes to installed documentation on the exact official archive
-from the draft and the corresponding authenticated installation. Add the archive
-and peeled tag commit to the witness collection command. The resulting catalog
-carries the target payload identity. After the independent review, generate the
-release report:
+from the draft and the corresponding authenticated installation. Prepare the
+job in `ISOLATED_PAGES` author mode. Add the archive and peeled tag commit to
+the witness collection command. The resulting catalog carries the target
+payload identity. Review the assertion catalog for that frozen delivery before
+generating the release report:
 
 ```sh
 python3 -I -S scripts/qualification/weather-preauthor.py \
@@ -119,8 +162,10 @@ python3 -I -S scripts/qualification/weather-preauthor.py \
 ```
 
 The report records the archive, source tree, runtime seed, bundled skill, frozen
-run, independent grade and witness catalog digests. Keep it with the original
-frozen inputs and review. A promotion verifier uses the same command with
+run, independent review, witness catalog and counterevidence catalog digests.
+It records the number of required and reviewed assertions, material false
+dispositions, and distinct verified review source links. Keep it with the
+original frozen inputs and review. A promotion verifier uses the same command with
 `--verify-release-report "$EVALUATION/release-report.json"`, without `--job`.
 This reruns only the mechanical validation against the original reviewed
 evidence. A stock-release result applies only to its original archive and
