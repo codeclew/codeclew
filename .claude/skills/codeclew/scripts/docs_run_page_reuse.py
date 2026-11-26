@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 
 LEDGER = 'page-reuse.json'
 PENDING = '.page-reuse-pending.json'
@@ -19,6 +20,9 @@ MAX_ORIGINS = 4
 LOG_LIMIT = 2 * 1024 * 1024
 RESPONSE_LIMIT = 128 * 1024
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
+COMMIT = re.compile(r'[0-9a-f]{40}')
+OFFICIAL = 'codeclew-release/2.0'
+LOCAL = 'codeclew-local-release-candidate/1.0'
 SLOT_KEY = re.compile(r'[a-z][a-z0-9_-]{0,127}')
 SLOT_FIELDS = ('key', 'kind', 'page', 'service', 'requirement', 'citations', 'citationSpans', 'sourceRegions', 'returns')
 SCOPE_FIELDS = ('revision', 'contextDigest', 'inputDigest', 'coverage', 'sourceInventory')
@@ -68,6 +72,82 @@ def skill_digest(root, names):
     return 'sha256:' + result.hexdigest()
 
 
+def canonical(value):
+    # Release seed, source and runtime seals use compact JSON.
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':'), sort_keys=True).encode()
+
+
+def sealed_json(package, relative, *, maximum=LOG_LIMIT):
+    file = exact_file(package, relative, maximum)
+    metadata = file.stat()
+    raw = file.read_bytes()
+    value = decode(raw)
+    need(isinstance(value, dict) and metadata.st_uid == os.geteuid()
+         and stat.S_IMODE(metadata.st_mode) == 0o400 and raw == canonical(value) + b'\n',
+         'REUSE_RELEASE_KIT_CHANGED')
+    return value
+
+
+def official_release_proof(package, release, caps, kit, pinned_files):
+    revision, source_tree = release['sourceRevision'], release['sourceTree']
+    need(release['status'] == 'PILOT_READY' and release['profile'] == 'core'
+         and COMMIT.fullmatch(revision) and COMMIT.fullmatch(source_tree), 'REUSE_RELEASE_KIT_CHANGED')
+    epoch = f'seed/release-N-{revision}'
+    seed_path = epoch + '/seed.json'
+    seeds = [path.relative_to(package).as_posix() for path in (package / 'seed').glob('release-N-*/seed.json')]
+    need(seeds == [seed_path], 'REUSE_RELEASE_KIT_CHANGED')
+    seed = sealed_json(package, seed_path)
+    key = caps['runtimeKey']
+    seed_digest = seed.get('seedDigest')
+    unsigned = {name: value for name, value in seed.items() if name != 'seedDigest'}
+    need(seed['schema'] == 'codeclew-trusted-release-seed/2.0' and seed['mode'] == 'RELEASE'
+         and seed['sourceRevision'] == revision and seed['sourceTree'] == source_tree
+         and seed['runtimeKey'] == key and seed['manifestDigest'] == caps['runtimeManifestDigest']
+         and seed['stateEpoch'] == sha((key + '\0' + revision).encode())
+         and seed_digest == sha(canonical(unsigned)), 'REUSE_RELEASE_KIT_CHANGED')
+
+    source = sealed_json(package, 'source/release-source.json', maximum=32 * 1024 * 1024)
+    source_digest = seed['sourcePayloadDigest']
+    need(source['schema'] == 'codeclew-release-source/1.0'
+         and source['sourceRevision'] == revision and source['sourceTree'] == source_tree
+         and source['manifestDigest'] == source_digest == sha(canonical({**source, 'manifestDigest': ''})),
+         'REUSE_RELEASE_KIT_CHANGED')
+    prefix = 'skills/codeclew/'
+    rows = [row for row in source['files'] if row['path'].startswith(prefix)]
+    sealed = {row['path'].removeprefix(prefix): (row['sha256'], row['size'], row['mode']) for row in rows}
+    observed = {name: (digest, (kit / name).stat().st_size, 0o111 if (kit / name).stat().st_mode & 0o111 else 0)
+                for name, digest in pinned_files.items()}
+    need(len(sealed) == len(rows) and sealed == observed, 'REUSE_RELEASE_KIT_CHANGED')
+
+    capsule = epoch + '/parallel-state/v2/runtimes/' + key.removeprefix('sha256:')
+    runtime = sealed_json(package, capsule + '/runtime.json')
+    need(runtime['schema'] == 'codeclew-runtime-capsule/4.0' and runtime['mode'] == 'RELEASE'
+         and runtime['runtimeKey'] == key
+         and runtime['manifestDigest'] == seed['manifestDigest'] == sha(canonical({**runtime, 'manifestDigest': ''}))
+         and seed['artifactHashes'] == {name: row['sha256'] for name, row in runtime['artifacts'].items()}
+         and seed['workerTreeHashes'] == {name: row['treeHash'] for name, row in runtime['workers'].items()}
+         and exact_file(package, capsule + '/READY', LOG_LIMIT).read_text() == key + '\n', 'REUSE_RELEASE_KIT_CHANGED')
+    return {'packageSchema': OFFICIAL, 'seedDigest': seed_digest, 'sourcePayloadDigest': source_digest}
+
+
+def release_proof(launcher, pins):
+    caps = pins['clewCapabilities']
+    package = launcher.resolve(strict=True).parents[1]
+    release = load(exact_file(package, 'release.json', LOG_LIMIT))
+    kit = package / 'source/skills/codeclew'
+    pinned_files = pins['skillFiles']
+    need(caps['runtimeMode'] == 'RELEASE' and DIGEST.fullmatch(caps['runtimeKey'])
+         and DIGEST.fullmatch(caps['runtimeManifestDigest'])
+         and not (package / 'source').is_symlink() and not kit.parent.is_symlink()
+         and tree(kit, skill=True) == pinned_files
+         and skill_digest(kit, pinned_files) == caps['agentContract']['skillDigest'], 'REUSE_RELEASE_KIT_CHANGED')
+    if release.get('schema') == OFFICIAL:
+        return official_release_proof(package, release, caps, kit, pinned_files)
+    need(release.get('schema') == LOCAL and release['runtimeKey'] == caps['runtimeKey']
+         and release['runtimeManifestDigest'] == caps['runtimeManifestDigest'], 'REUSE_RELEASE_KIT_CHANGED')
+    return {'packageSchema': LOCAL}
+
+
 def run_scope(job, inventory):
     return {
         'snapshot': job['snapshot'], 'sourceSnapshot': inventory['snapshot'], 'services': job['services'],
@@ -91,16 +171,7 @@ def history(run, target_job, target_inventory, target_pins):
          'REUSE_SOURCE_INPUTS_CHANGED')
     need(pins['authorExecutableDigest'] == target_pins['authorExecutableDigest'], 'REUSE_AUTHOR_CHANGED')
     caps = pins['clewCapabilities']
-    launcher = Path(job['clew']).resolve(strict=True)
-    package = launcher.parents[1]
-    retained = load(exact_file(package, 'release.json', LOG_LIMIT))
-    kit = package / 'source/skills/codeclew'
-    need(caps['runtimeMode'] == 'RELEASE' and DIGEST.fullmatch(caps['runtimeKey'])
-         and DIGEST.fullmatch(caps['runtimeManifestDigest'])
-         and retained['runtimeKey'] == caps['runtimeKey'] and retained['runtimeManifestDigest'] == caps['runtimeManifestDigest']
-         and not (package / 'source').is_symlink() and not kit.parent.is_symlink()
-         and tree(kit, skill=True) == pins['skillFiles']
-         and skill_digest(kit, pins['skillFiles']) == caps['agentContract']['skillDigest'], 'REUSE_RELEASE_KIT_CHANGED')
+    package_proof = release_proof(Path(job['clew']), pins)
     state_file = exact_file(run, 'state.json', 32 * 1024 * 1024)
     seal = sha(state_file.read_bytes())
     state = load(state_file)
@@ -120,6 +191,7 @@ def history(run, target_job, target_inventory, target_pins):
     receipt = {
         'run': str(run), 'pinsDigest': digest(pins), 'stateDigest': seal, 'runtimeKey': caps['runtimeKey'],
         'skillDigest': caps['agentContract']['skillDigest'], 'author': run_scope(job, inventory)['author'],
+        'releaseKit': package_proof,
         'recordedAttempts': len(state['attempts']),
         'reportedUsage': {key: historical[key] for key in ('status', 'counterScope', 'budgetTokens',
                                                           'knownBudgetTokensLowerBound', 'monetaryCost')},

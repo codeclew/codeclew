@@ -581,14 +581,18 @@ else:
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
 
-    def isolated_reuse_fixture(self):
+    def isolated_reuse_fixture(self, *, official=False):
         package = self.root / 'release'
         source = package / 'source/skills/codeclew'
         shutil.copytree(ROOT / 'skills/codeclew', source)
         kit_digest = D['PR']['skill_digest'](source, D['tree'](source, skill=True))
         caps = {'runtimeMode': 'RELEASE', 'runtimeKey': 'sha256:' + 'a' * 64,
                 'runtimeManifestDigest': 'sha256:' + 'b' * 64, 'agentContract': {'skillDigest': kit_digest}}
-        D['save'](package / 'release.json', {key: caps[key] for key in ('runtimeKey', 'runtimeManifestDigest')})
+        if official:
+            self.seal_official_reuse_fixture(package, source, caps)
+        else:
+            D['save'](package / 'release.json', {'schema': 'codeclew-local-release-candidate/1.0',
+                    **{key: caps[key] for key in ('runtimeKey', 'runtimeManifestDigest')}})
         launcher = package / 'bin/clew'
         launcher.parent.mkdir()
         launcher.write_text(self.clew.read_text().replace(
@@ -615,6 +619,89 @@ for row in (
         (old / '.runner.lock').touch()
         target, _, _, _ = self.isolated_fixture(run_name='new-run')
         return old, target, plan
+
+    def seal_official_reuse_fixture(self, package, kit, caps):
+        canonical = D['PR']['canonical']
+        revision, tree_hash = 'e' * 40, 'f' * 40
+        key = caps['runtimeKey']
+        base = {'sourceRevision': revision, 'sourceTree': tree_hash}
+        D['save'](package / 'release.json',
+                  dict(base, schema='codeclew-release/2.0', status='PILOT_READY', version='v0.15.20',
+                       architecture='arm64', operatingSystem='macos', profile='core'))
+
+        def write(file, record):
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(canonical(record) + b'\n')
+            file.chmod(0o400)
+
+        files = [{'path': 'skills/codeclew/' + name, 'sha256': digest, 'size': (kit / name).stat().st_size,
+                  'mode': 0o111 if (kit / name).stat().st_mode & 0o111 else 0}
+                 for name, digest in D['tree'](kit, skill=True).items()]
+        source = dict(base, schema='codeclew-release-source/1.0', manifestDigest='', files=files)
+        source['manifestDigest'] = D['sha'](canonical(source))
+        write(package / 'source/release-source.json', source)
+        epoch = package / 'seed' / ('release-N-' + revision)
+        capsule = epoch / 'parallel-state/v2/runtimes' / key.removeprefix('sha256:')
+        runtime = dict(schema='codeclew-runtime-capsule/4.0', mode='RELEASE', runtimeKey=key, manifestDigest='',
+                       artifacts={'clew': {'sha256': 'sha256:' + '1' * 64}},
+                       workers={'java': {'treeHash': 'sha256:' + '2' * 64}})
+        runtime['manifestDigest'] = D['sha'](canonical(runtime))
+        write(capsule / 'runtime.json', runtime)
+        (capsule / 'READY').write_text(key + '\n')
+        caps['runtimeManifestDigest'] = runtime['manifestDigest']
+        seed = dict(base, schema='codeclew-trusted-release-seed/2.0', mode='RELEASE', runtimeKey=key,
+                    manifestDigest=runtime['manifestDigest'], sourcePayloadDigest=source['manifestDigest'],
+                    stateEpoch=D['sha']((key + '\0' + revision).encode()),
+                    artifactHashes={'clew': runtime['artifacts']['clew']['sha256']},
+                    workerTreeHashes={'java': runtime['workers']['java']['treeHash']},
+                    buildEvidenceDigests=['sha256:' + '3' * 64])
+        seed['seedDigest'] = D['sha'](canonical(seed))
+        write(epoch / 'seed.json', seed)
+
+    def test_official_isolated_donor_uses_sealed_seed_and_rejects_tampering(self):
+        old, target, plan = self.isolated_reuse_fixture(official=True)
+        job, inventory, pins = D['frozen_inputs'](target)
+        owner = D['PR']
+        package = Path(job['clew']).parents[1]
+        seed, = (package / 'seed').glob('release-N-*/seed.json')
+        capsule, = seed.parent.glob('parallel-state/v2/runtimes/*/runtime.json')
+        metadata = package / 'release.json'
+        manifest = package / 'source/release-source.json'
+        originals = {path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                     for path in (seed, capsule, manifest, metadata)}
+
+        def import_pages():
+            return owner['import_pages'](target, [old], job, inventory, pins, plan, D['load'](target / 'state.json'),
+                                         D['inline_cli_flags'], D['P']['validate_response'])
+
+        mutations = (
+            (seed, lambda row: {**row, 'sourceTree': 'b' * 40}),
+            (seed, lambda row: {**row, 'seedDigest': 'sha256:' + '0' * 64}),
+            (capsule, lambda row: {**row, 'runtimeKey': 'sha256:' + '0' * 64}),
+            (manifest, lambda row: {**row, 'manifestDigest': 'sha256:' + '0' * 64}),
+            (metadata, lambda row: {**row, 'schema': 'unknown-release-layout'}),
+        )
+        for path, change in mutations:
+            with self.subTest(path=path.name):
+                original, mode = originals[path]
+                path.chmod(0o600)
+                path.write_bytes(owner['canonical'](change(json.loads(original))) + b'\n')
+                path.chmod(mode)
+                with self.assertRaises(D['Stop']) as rejected:
+                    import_pages()
+                self.assertEqual(rejected.exception.code, 'NO_ELIGIBLE_REUSED_PAGES')
+                self.assertEqual(rejected.exception.details['sources'][0]['code'], 'REUSE_RELEASE_KIT_CHANGED')
+                self.assertFalse((target / 'page-reuse.json').exists())
+                path.chmod(0o600)
+                path.write_bytes(original)
+                path.chmod(mode)
+
+        adopted = import_pages()
+        self.assertEqual(adopted['reusedPages'], len(plan['slots']))
+        proof = adopted['historicalRuns'][0]['releaseKit']
+        self.assertEqual(proof['packageSchema'], 'codeclew-release/2.0')
+        self.assertEqual(proof['seedDigest'], D['load'](seed)['seedDigest'])
+        self.assertEqual(D['execute'](target)['status'], 'READY_PROMOTED')
 
     def test_reused_isolated_pages_mix_with_fresh_pages_and_reach_normal_reader(self):
         old, target, plan = self.isolated_reuse_fixture()
