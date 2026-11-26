@@ -20,6 +20,7 @@ MAX_ISSUES = 28
 HEADING_LENGTH = 160
 STEP_TEXT_LENGTH = 240
 CLAIM_TEXT_LENGTH = 20000
+ROUTE_PROSE_LENGTH = 512
 CONTENT_ISSUES = {
     'PAGE_CLAIMS_REQUIRED', 'PAGE_CLAIM_INVALID', 'PAGE_RETURN_CLAIM_SUPPORT_REQUIRED',
     'PAGE_CONTRACT_FIELDS_REQUIRED', 'PAGE_DISCOVERY_RESULT_REQUIRED',
@@ -291,7 +292,7 @@ class Review:
             return
         self.line(row['title'], path + '/title', 160)
         for key in ('summary', 'condition', 'outcome', 'recipient'):
-            self.line(row[key], path + '/' + key, 512)
+            self.line(row[key], path + '/' + key, ROUTE_PROSE_LENGTH)
         self.choices(row['result'], path + '/result', ('normal', 'error', 'handoff', 'unknown'),
                      'PAGE_ROUTE_OUTCOME_INVALID', 'Use the evidenced outcome kind.')
         self.choices(row['boundary'], path + '/boundary', ('return', 'publish', 'handoff', 'stop', 'other', None),

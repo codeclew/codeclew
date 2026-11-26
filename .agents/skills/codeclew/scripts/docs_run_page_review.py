@@ -7,8 +7,9 @@ SCHEMA = 'codeclew-docs-page-review-findings/1.0'
 CONTRACT = 2
 MAX_FINDINGS_BYTES = 32 * 1024
 MAX_FINDINGS = 16
-FIELDS = {'title': 'title', 'claim': 'claims', 'step': 'steps', 'routeStep': 'steps', 'startStep': 'steps'}
-NESTED_IDS = {'routeStep': 'routeId', 'startStep': 'startId'}
+FIELDS = {'title': 'title', 'claim': 'claims', 'step': 'steps', 'routeStep': 'steps', 'startStep': 'steps',
+          'routeOutcome': 'outcome'}
+NESTED_IDS = {'routeStep': 'routeId', 'startStep': 'startId', 'routeOutcome': 'routeId'}
 
 
 def findings(value):
@@ -28,12 +29,14 @@ def findings(value):
         need(isinstance(selector, dict) and isinstance(selector.get('field'), str), 'PAGE_REVIEW_SELECTOR_INVALID')
         field = selector['field']
         identity = NESTED_IDS.get(field)
-        selector_keys = {'field', 'index', 'action'} | ({identity} if identity else set())
-        need((field == 'title' and selector.keys() == {'field'})
-             or (field in FIELDS and field != 'title' and selector.keys() == selector_keys
-                 and type(selector['index']) is int and selector['index'] >= 0
-                 and selector['action'] in ('replace', 'insert')
-                 and (identity is None or isinstance(selector[identity], str) and 0 < len(selector[identity]) <= 64)),
+        indexed = field not in ('title', 'routeOutcome')
+        selector_keys = {'field', 'index', 'action'} if indexed else {'field'}
+        if identity:
+            selector_keys.add(identity)
+        need(field in FIELDS and selector.keys() == selector_keys
+             and (not indexed or type(selector['index']) is int and selector['index'] >= 0
+                  and selector['action'] in ('replace', 'insert'))
+             and (identity is None or isinstance(selector[identity], str) and 0 < len(selector[identity]) <= 64),
              'PAGE_REVIEW_SELECTOR_INVALID')
         rows[slot] = row
     return rows
@@ -42,7 +45,7 @@ def findings(value):
 def selected_value(plan, slot, response, selector):
     kind = selector['field']
     field = FIELDS[kind]
-    if kind == 'routeStep':
+    if kind in ('routeStep', 'routeOutcome'):
         need(slot['kind'] == 'PROCESS_MAP', 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=slot['key'])
         trace = next((route for route in response['routes'] if route_id(route) == selector['routeId']), None)
         parent = 'route'
@@ -83,6 +86,8 @@ def replacement_contract(field):
         return {'heading': heading + ' Use an empty string when there is no heading.',
                 'text': f'Nonempty reader Markdown, at most {response_contract["CLAIM_TEXT_LENGTH"]} characters. '
                         'Keep sequence steps in their trace.'}
+    if field == 'outcome':
+        return {'outcome': f'One nonempty line, at most {response_contract["ROUTE_PROSE_LENGTH"]} characters.'}
     return {'title': heading + ' Supply a nonempty title.'}
 
 
@@ -103,6 +108,8 @@ def author_input(run, plan, slot, proof, response, row, *, contract):
     packet = decode((run / 'inputs' / slot['prompt']).read_bytes().rsplit(b'\n\n', 1)[-1])
     need(all(alias in slot['citations'] and alias in packet['citations'] for alias in aliases),
          'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT', slot=key)
+    if field == 'outcome':
+        need(set(aliases) <= set(target['cites']), 'PAGE_REVIEW_SOURCE_OUTSIDE_ROUTE', slot=key)
     citations = {alias: packet['citations'][alias] for alias in aliases}
     ranges = {region for citation in citations.values() for region in citation.get('regions', [citation['region']])}
     need(ranges <= packet['sourceRanges'].keys(), 'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT', slot=key)
@@ -128,8 +135,8 @@ def author_input(run, plan, slot, proof, response, row, *, contract):
     if contract == CONTRACT:
         limits = replacement_contract(field)
         context['replacementContract'] = limits
-        if field == 'title':
-            result_schema['properties']['replacement']['anyOf'][0] = {**property_schema, 'description': limits['title']}
+        if 'index' not in selector:
+            result_schema['properties']['replacement']['anyOf'][0] = {**property_schema, 'description': limits[field]}
         else:
             replacement = next(iter(result_schema['$defs'].values()))['properties']
             for name, description in limits.items():
@@ -155,7 +162,7 @@ def apply(plan, slot, original, row, answer, validate):
         need(isinstance(revision, dict) and isinstance(revision.get('cites'), list)
              and all(alias in row['sourceAliases'] for alias in revision['cites']),
              'PAGE_REVIEW_CORRECTION_OUTSIDE_SOURCE', slot=key)
-    if field == 'title':
+    if 'index' not in selector:
         target[field] = revision
     elif selector['action'] == 'insert':
         target[field].insert(selector['index'], revision)

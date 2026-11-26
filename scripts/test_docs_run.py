@@ -1235,7 +1235,9 @@ for row in (
         main, = map_response['routes']
         route_step = main['steps'][0]
         route_step['condition'] = 'count > 0'
+        main['outcome'] = 'Every count changes the accepted list.'
         map_response['routes'].append({**main, 'title': 'Reject a negative count', 'condition': 'count < 0',
+                                        'outcome': 'The handler returns zero without adding to the list.',
                                         'steps': [{**route_step, 'label': '0', 'condition': 'count < 0'}]})
         D['save'](process_path, map_response)
         discovery_alias = next(iter(discovery['citations']))
@@ -1343,10 +1345,17 @@ for row in (
 
         next_run, _, _, _ = self.isolated_fixture(run_name='format-successor', body=body)
         revised_digest = reviewed['reuse']['reviewedSlots'][process['key']]['responseDigest']
-        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [
-            {**route_finding, 'responseDigest': revised_digest, 'issue': 'Name the returned list size.'},
-        ]})
+        outcome_finding = {**route_finding, 'responseDigest': revised_digest,
+                           'selector': {'field': 'routeOutcome', 'routeId': route['id']},
+                           'issue': 'The outcome attributes the successful effect to every count.'}
         reuse = ['--reuse-from', str(target), '--review-findings', str(findings)]
+        for invalid, expected in (
+                ({'selector': {'field': 'routeOutcome', 'routeId': 'route-foreign'}}, 'PAGE_REVIEW_TRACE_OUTSIDE_SLOT'),
+                ({'sourceAliases': ['Sforeign']}, 'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT')):
+            D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [{**outcome_finding, **invalid}]})
+            self.assertEqual(call('reuse-pages', next_run, *reuse, status=2)['code'], expected)
+            self.assertEqual(D['load'](next_run / 'state.json')['attempts'], [])
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [outcome_finding]})
         prompt = retry_path / 'prompt.txt'
         original = prompt.read_bytes()
         prompt.write_bytes(original + b'\n')
@@ -1359,12 +1368,31 @@ for row in (
         self.assertEqual(proof['responseDigest'], first['responseDigest'])
         self.assertEqual(recovery['usage']['budgetTokens'], 40)
         (self.seed / (process['key'] + '-review-first.json')).unlink()
-        D['save'](self.seed / (process['key'] + '-review.json'),
-                  {'replacement': {**route_step, 'label': 'List size', 'condition': 'count >= 0'}})
+        outcome = 'When the count is nonnegative, the handler returns the updated list size.'
+        D['save'](self.seed / (process['key'] + '-review.json'), {'replacement': outcome})
         next_result = call('run', next_run)
         self.assertEqual(next_result['reuse']['newAuthorInvocations'], 1)
         next_html = Path(next_result['ready']) / 'html'
-        self.assertIn('List size', diagram(next_html, route['narrative']['page']))
+        route_page = route['narrative']['page']
+        outcome_section = (next_html / route_page).read_text().split('id="outcome"', 1)[1]
+        self.assertIn(outcome, outcome_section)
+        self.assertNotIn(main['outcome'], outcome_section)
+        self.assertEqual(diagram(next_html, route_page), diagram(new_html, route_page))
+        attempt, = D['load'](next_run / 'state.json')['attempts']
+        schema = D['load'](D['PX']['attempt_dir'](next_run, attempt) / schema_file)
+        value, unset = schema['properties']['replacement']['anyOf']
+        self.assertEqual((value['type'], unset['type']), ('string', 'null'))
+        self.assertIn('512 characters', value['description'])
+        before_draft, after_draft = [run / 'workspace/draft' for run in (target, next_run)]
+        before = D['load'](before_draft / 'original.json')
+        for page in before['pages']:
+            if page['page'] == route['id'] + '.md':
+                fragment, = [part for part in page['fragments'] if part['text'] == main['outcome'] + '\n\n']
+                fragment['text'] = outcome + '\n\n'
+        self.assertDictEqual(D['load'](after_draft / 'original.json'), before)
+        catalog = D['load'](before_draft / 'routes.json')
+        catalog['routes'][0]['outcomes'][0]['title'] = outcome
+        self.assertDictEqual(D['load'](after_draft / 'routes.json'), catalog)
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'

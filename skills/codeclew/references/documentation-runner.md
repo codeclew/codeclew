@@ -152,6 +152,11 @@ correct one discovered start. Both selectors also take `action` and the
 zero-based `index` in the author’s steps array. This index starts after the
 automatic first message in the reader diagram.
 
+Use `{"field": "routeOutcome", "routeId": "route-…"}` to replace the prose at
+that route's `#outcome` anchor. Supply one nonempty line of at most 512
+characters and name aliases already cited by that route. This selector keeps
+the route's existing citations, branch, participants, and steps.
+
 The selected source excerpts and current value go to a fresh isolated author
 session for each finding. A formatting error can use the job's repair budget
 in that same session with the same replacement schema. Keep each step label
