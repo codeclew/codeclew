@@ -403,7 +403,7 @@ else:
                 self.assertRegex(html, r' —\s+--reserve &amp; fulfil</title>')
                 self.assertNotIn(REQUEST_MARKER, html)
 
-    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False, project=None):
+    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False, project=None, run_name="inline-run"):
         text = body or ('fun reserve(count: Int): Int {\n'
                         '    if (count < 0) return 0\n'
                         '    accepted.add(count)\n'
@@ -418,7 +418,8 @@ else:
             self.job['evidenceMode'] = 'PREPARED_FACTS'
             source['authority'] = 'EXACT_SNAPSHOT_TEXT'
             self.native_entry['sourceReferences'] = ['s9']
-        shutil.rmtree(self.manifest.parent)
+        if self.manifest.parent.exists():
+            shutil.rmtree(self.manifest.parent)
         self.manifest, _, _ = F['fixture'](self.seed / 'reads', service=self.service, work='owned-work',
                                            record=source, authority=source['authority'])
         scope = self.inventory['services'][self.service]
@@ -468,7 +469,7 @@ else:
 
         self.job['budget']['maxRepairs'] = repairs
         D['save'](self.job_path, self.job)
-        run = self.root / 'inline-run'
+        run = self.root / run_name
         self.enterContext(patch.dict(D['T'], {'collect': collect}))
         actual_run_path = runpy.run_path
 
@@ -506,10 +507,11 @@ else:
                 'unresolved': ['Wire response and registration remain unknown.'],
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
 
-    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30, body=None):
+    def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30,
+                         body=None, run_name="inline-run"):
         self.job.update(authorMode='ISOLATED_PAGES', language=language)
         self.job['budget']['wallSeconds'] = wall_seconds
-        run, receipt, _, source = self.prepare_inline_fixture(body=body, repairs=repairs, project=project)
+        run, receipt, _, source = self.prepare_inline_fixture(body=body, repairs=repairs, project=project, run_name=run_name)
         self.assertEqual(receipt['authorMode'], 'ISOLATED_PAGES')
         plan = D['load'](run / 'inputs/author-plan.json')
         packets = {row['kind']: json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
@@ -578,6 +580,123 @@ else:
         route, = html.glob('route-*.html')
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
+
+    def isolated_reuse_fixture(self):
+        package = self.root / 'release'
+        source = package / 'source/skills/codeclew'
+        shutil.copytree(ROOT / 'skills/codeclew', source)
+        kit_digest = D['PR']['skill_digest'](source, D['tree'](source, skill=True))
+        caps = {'runtimeMode': 'RELEASE', 'runtimeKey': 'sha256:' + 'a' * 64,
+                'runtimeManifestDigest': 'sha256:' + 'b' * 64, 'agentContract': {'skillDigest': kit_digest}}
+        D['save'](package / 'release.json', {key: caps[key] for key in ('runtimeKey', 'runtimeManifestDigest')})
+        launcher = package / 'bin/clew'
+        launcher.parent.mkdir()
+        launcher.write_text(self.clew.read_text().replace(
+            "{'runtimeMode':'RELEASE','runtimeKey':'owned-test-only'}", repr(caps)))
+        launcher.chmod(0o700)
+        self.job['clew'] = str(launcher)
+        self.backend.write_text('#!' + sys.executable + '\n' + f"""
+import hashlib,json,sys
+from pathlib import Path
+out=Path(sys.argv[sys.argv.index('-o')+1])
+packet=json.loads(sys.stdin.read().split('\\n\\n')[-1])
+thread='fixture-'+hashlib.sha256(str(Path.cwd()).encode()).hexdigest()
+raw=(Path({str(self.seed)!r})/(packet['slot']+'-response.json')).read_text()
+out.write_text(raw)
+for row in (
+    {{'type':'thread.started','thread_id':thread}},
+    {{'type':'turn.started'}},
+    {{'type':'item.completed','item':{{'type':'agent_message','text':raw.removesuffix('\\n')}}}},
+    {{'type':'turn.completed','usage':{{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10}}}},
+): print(json.dumps(row))
+""")
+        old, plan, _, _ = self.isolated_fixture(run_name='historical-run')
+        self.assertEqual(D['execute'](old)['status'], 'READY_PROMOTED')
+        (old / '.runner.lock').touch()
+        target, _, _, _ = self.isolated_fixture(run_name='new-run')
+        return old, target, plan
+
+    def test_reused_isolated_pages_mix_with_fresh_pages_and_reach_normal_reader(self):
+        old, target, plan = self.isolated_reuse_fixture()
+        source_files = D['tree'](old)
+        changed = next(row for row in plan['slots'] if row['kind'] == 'OPERATION')
+        schema = target / 'inputs' / changed['schema']
+        D['save'](schema, {**D['load'](schema), 'title': 'Changed operation response schema'})
+        pins = D['load'](target / 'pins.json')
+        D['save'](target / 'pins.json', {**pins, 'inputFiles': D['tree'](target / 'inputs')})
+        args = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'), 'reuse-pages',
+                '--run-dir', str(target), '--reuse-from', str(old)]
+        completed = subprocess.run(args, capture_output=True, text=True, check=True)
+        adopted = json.loads(completed.stdout)
+        self.assertEqual((adopted['reusedPages'], adopted['remainingPages']), (len(plan['slots'])-1, 1))
+        self.assertEqual(adopted['rejected'], {'REUSE_PROMPT_OR_SCHEMA_CHANGED': 1})
+        self.assertEqual(D['load'](target / 'state.json')['attempts'], [])
+        result = D['execute'](target)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        self.assertEqual((result['reuse']['reusedPages'], result['reuse']['newAuthorInvocations']),
+                         (len(plan['slots'])-1, 1))
+        report = D['load'](target / 'report.json')
+        self.assertEqual(report['checks']['author']['reportedModelTokens'], 20)
+        self.assertEqual(report['checks']['author']['reuse']['historicalRuns'][0]['reportedUsage']['budgetTokens'],
+                         20 * len(plan['slots']))
+        state = D['load'](target / 'state.json')
+        self.assertEqual([row['slot'] for row in state['attempts']], [changed['key']])
+        self.assertIn('POST /reservations', (Path(result['ready']) / 'html' / changed['page'].replace('.md', '.html')).read_text())
+        self.assertEqual(source_files, D['tree'](old))
+
+    def test_reuse_refuses_modified_seals_scope_and_stream_access(self):
+        from collections import Counter
+        old, target, plan = self.isolated_reuse_fixture()
+        owner = D['PR']
+        job, inventory, pins = D['frozen_inputs'](target)
+        state = D['load'](old / 'state.json')
+        attempt = state['attempts'][0]
+        folder = D['PX']['attempt_dir'](old, attempt)
+        key = attempt['slot']
+
+        def selected(target_job=job, target_plan=plan):
+            rejected = Counter()
+            rows, _ = owner['candidates'](old, target, target_plan, target_job, inventory, pins,
+                                         D['inline_cli_flags'], D['P']['validate_response'], {}, rejected)
+            return rows, rejected
+
+        for fields in ({'snapshot': 'another-snapshot'}, {'author': {**job['author'], 'model': 'another-author'}},
+                       {'author': {**job['author'], 'reasoningEffort': 'low'}}):
+            with self.subTest(fields=fields), self.assertRaises(D['Stop']) as caught:
+                selected({**job, **fields})
+            self.assertEqual(caught.exception.code, 'REUSE_RUN_SCOPE_MISMATCH')
+        shifted = {**plan, 'slots': [{**row, 'sourceRegions': {}} if row['key'] == key else row for row in plan['slots']]}
+        rows, rejected = selected(target_plan=shifted)
+        self.assertNotIn(key, rows)
+        self.assertEqual(rejected['REUSE_SLOT_SCOPE_CHANGED'], 1)
+        response = folder / 'last-message.txt'
+        raw = response.read_bytes()
+        response.write_bytes(raw + b' ')
+        rows, rejected = selected()
+        self.assertNotIn(key, rows)
+        self.assertEqual(rejected['REUSE_RESPONSE_CHANGED'], 1)
+        response.write_bytes(raw)
+        stream = folder / 'stdout.jsonl'
+        events = stream.read_bytes().splitlines(keepends=True)
+        stream.write_bytes(b''.join([*events[:2], b'{"type":"item.completed","item":{"type":"command_execution"}}\n', *events[2:]]))
+        rows, rejected = selected()
+        self.assertNotIn(key, rows)
+        self.assertEqual(rejected['REUSE_AUTHOR_ACCESS_CHANGED'], 1)
+        stream.write_bytes(b''.join(events))
+        owner['import_pages'](target, [old], job, inventory, pins, plan, D['load'](target / 'state.json'),
+                              D['inline_cli_flags'], D['P']['validate_response'])
+        ledger = target / 'page-reuse.json'
+        sealed = ledger.read_bytes()
+        ledger.write_bytes(sealed + b' ')
+        with self.assertRaises(D['Stop']) as caught:
+            D['execute'](target)
+        self.assertEqual(caught.exception.code, 'REUSE_LEDGER_CHANGED')
+        self.assertEqual(D['load'](target / 'state.json')['attempts'], [])
+        ledger.write_bytes(sealed)
+        result = D['execute'](target)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        self.assertEqual((result['reuse']['reusedPages'], result['reuse']['newAuthorInvocations']), (len(plan['slots']), 0))
+        self.assertEqual(D['load'](target / 'report.json')['checks']['author']['reportedModelTokens'], 0)
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'

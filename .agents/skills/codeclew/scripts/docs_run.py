@@ -845,6 +845,13 @@ PX = runpy.run_path(str(HERE / 'docs_run_page_execution.py'), init_globals={
 })
 
 
+PR = runpy.run_path(str(HERE / 'docs_run_page_reuse.py'), init_globals={
+    'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
+    'digest': digest, 'tree': tree, 'token_accounting': token_accounting,
+    'decode': lambda raw: json.loads(raw, object_pairs_hook=T['unique_object'], parse_constant=T['reject_constant']),
+})
+
+
 def prepare(job_path, run):
     job = validate_job(load(job_path)); run = Path(run).absolute()
     need(not run.exists(), 'RUN_ALREADY_EXISTS')
@@ -1346,8 +1353,9 @@ def verify(run, *, debug=False):
         stage = 'author'; draft = run / 'workspace/draft'
         isolated = job.get('authorMode') == P['MODE']
         last = accounting.get('attempts', [])[-1:]
+        reuse = None
         if isolated:
-            tokens = isolated_authorship(run, accounting, draft)
+            tokens, reuse = isolated_authorship(run, accounting, draft)
         else:
             tokens = token_accounting(accounting.get('attempts', []))
             need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
@@ -1355,9 +1363,10 @@ def verify(run, *, debug=False):
             need(accounting.get('status') == 'AUTHOR_COMPLETED' and last and last[0].get('status') == 'COMPLETED'
                  and last[0].get('exitCode') == 0 and last[0].get('draftFiles') == tree(draft), 'AUTHOR_COMPLETION_REQUIRED')
         checks[stage] = {'status': 'PASS', 'usageAvailable': tokens['status'] == 'MEASURED',
-                         'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens}
+                         'reportedModelTokens': tokens['budgetTokens'], 'tokenAccounting': tokens,
+                         **({'reuse': reuse} if reuse is not None else {})}
         stage = 'output'; before = tree(draft)
-        if failure := last[0].get('assemblyFailure'):
+        if last and (failure := last[0].get('assemblyFailure')):
             raise Stop(failure['code'], **failure.get('details', {}))
         need(before and 'original.json' in before, 'MISSING_REQUIRED_OUTPUT')
         original = load(draft / 'original.json')
@@ -1482,7 +1491,9 @@ def promote(run, destination=None):
         shutil.copytree(output, stage)
         need(tree(stage) == accepted['outputFiles'], 'PROMOTION_COPY_CHANGED')
         os.replace(stage, destination)
-    return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output), 'publicationPerformed': False}
+    reuse = current['checks']['author'].get('reuse')
+    return {'status': 'READY_PROMOTED', 'outputDigest': accepted['outputDigest'], 'ready': str(output),
+            'publicationPerformed': False, **({'reuse': reuse} if reuse is not None else {})}
 
 
 def materialize_inline(run, inventory, selected, response):
@@ -1623,17 +1634,29 @@ def author(run):
 def isolated_authorship(run, state, draft):
     tokens = PX['check_author_state'](state)
     plan = load(run / 'inputs/author-plan.json')
+    retained, ledger = PR['read_pages'](run, state, plan, P['validate_response'])
     completed = {}
     for row in state['attempts']:
-        completed[row['slot']] = row
+        if not row.get('notLaunched'):
+            completed[row['slot']] = row
+    expected = {slot['key'] for slot in plan['slots']}
     need(state.get('status') == 'AUTHOR_COMPLETED' and state.get('pageDraftFiles') == tree(draft)
-         and completed.keys() == {slot['key'] for slot in plan['slots']}, 'PAGE_AUTHOR_COMPLETION_REQUIRED')
+         and completed.keys() | retained.keys() == expected, 'PAGE_AUTHOR_COMPLETION_REQUIRED')
     for key, row in completed.items():
         path = PX['response_path'](run, row)
         need(row['status'] == 'COMPLETED' and row['exitCode'] == 0 and path.is_file() and not path.is_symlink()
              and path.stat().st_size <= P['MAX_RESPONSE_BYTES'] and sha(path.read_bytes()) == row.get('responseDigest'),
              'PAGE_AUTHOR_RESPONSE_CHANGED', slot=key)
-    return tokens
+    if ledger is not None:
+        historical_threads = {row['threadId'] for row in ledger['pages'].values()}
+        need(not any(row.get('threadId') in historical_threads for row in state['attempts']),
+             'REUSE_THREAD_USED_FOR_FRESH_AUTHOR')
+    reuse = None if ledger is None else {
+        'reusedPages': len(retained.keys() - completed.keys()), 'freshPages': len(completed),
+        'newAuthorInvocations': sum(not row.get('notLaunched') for row in state['attempts']),
+        'historicalRuns': ledger['origins'], 'measurement': 'RECOVERED', 'historicalUsageIncludedInNewSpend': False,
+    }
+    return tokens, reuse
 
 
 def author_isolated(run, job, inventory, repairs=None):
@@ -1641,9 +1664,16 @@ def author_isolated(run, job, inventory, repairs=None):
     need(plan['mode'] == P['MODE'], 'PAGE_AUTHOR_PLAN_REQUIRED')
     starter = run / 'inputs/starter'
     while True:
+        prior = load(run / 'state.json')
+        retained, _ = PR['read_pages'](run, prior, plan, P['validate_response'])
+        fresh = {row['slot'] for row in prior['attempts']} | (repairs or {}).keys() | prior.get('pageRepairs', {}).keys()
+        reused = {key: value for key, value in retained.items() if key not in fresh}
+        work = {**plan, 'slots': [slot for slot in plan['slots'] if slot['key'] not in reused]}
         state, values = PX['execute_authors'](
-            run, job, plan, PAGE_SCHEMA, inline_cli_flags, P['validate_response'],
+            run, job, work, PAGE_SCHEMA, inline_cli_flags, P['validate_response'],
             lambda path: load(path, maximum=P['MAX_RESPONSE_BYTES']), repairs=repairs)
+        available = reused | values
+        values = {slot['key']: available[slot['key']] for slot in plan['slots']}
         inputs_unchanged(run)
         try:
             artifacts = P['assemble_pages'](job, inventory, plan, values, load(starter / 'original.json'),
@@ -1734,14 +1764,16 @@ def execute(run, *, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'run', 'verify', 'promote', 'review-template'))
+    parser.add_argument('command', choices=('prepare', 'reuse-pages', 'run', 'verify', 'promote', 'review-template'))
     parser.add_argument('--job', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--reuse-from', type=Path, action='append', default=[])
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
     lock = None
     try:
+        need(bool(args.reuse_from) == (args.command == 'reuse-pages'), 'REUSE_FROM_REQUIRES_REUSE_PAGES')
         if args.command not in ('prepare', 'review-template'):
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / '.runner.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -1755,6 +1787,11 @@ def main():
             return 0
         elif args.command == 'prepare':
             need(args.job is not None, 'JOB_REQUIRED'); result = prepare(args.job, args.run_dir)
+        elif args.command == 'reuse-pages':
+            run = args.run_dir.absolute()
+            job, inventory, pins = frozen_inputs(run)
+            result = PR['import_pages'](run, args.reuse_from, job, inventory, pins, load(run / 'inputs/author-plan.json'),
+                                        load(run / 'state.json'), inline_cli_flags, P['validate_response'])
         elif args.command == 'run': result = execute(args.run_dir, debug=args.debug)
         elif args.command == 'verify': result = verify(args.run_dir, debug=args.debug)
         else: result = promote(args.run_dir, args.output_dir)

@@ -81,6 +81,31 @@ whole-file helper support; an existing full-file SOURCE is sufficient. Preserve
 all handles and authority. A gap, unavailable occurrence or unmatched file object
 blocks discovery; never pad gaps, read source privately or recapture as a shortcut.
 
+### Recover completed isolated pages
+
+Prepare a fresh `ISOLATED_PAGES` run against the intended snapshot. To carry
+completed packet responses forward, pass trusted local run directories in the
+order you want them considered.
+
+```sh
+python3 -I -S "$skill/scripts/docs_run.py" reuse-pages --run-dir "$new_run" \
+  --reuse-from "$preferred_run" --reuse-from "$other_run"
+python3 -I -S "$skill/scripts/docs_run.py" run --run-dir "$new_run"
+```
+
+The import requires the original installed release kit and its frozen inputs.
+Each accepted slot has the same prompt, response schema, source aliases and
+roles, snapshot, service scope, model and reasoning effort. Completed
+read-only attempts supply the response, thread and usage evidence. A slot
+with changed assignments or incomplete evidence goes through the usual author
+path. The first matching source directory supplies each slot.
+
+The new run records adopted responses and their provenance in a separate
+sealed ledger. The standard reader gates verify the combined document.
+Reported token counts cover the new run's recorded author invocations.
+Historical runs and their available usage are shown separately. Treat this
+result as recovery when comparing latency or spend.
+
 ## Prepared evidence propositions
 
 The standard full documentation job selects `"evidenceMode": "PREPARED_FACTS"`
