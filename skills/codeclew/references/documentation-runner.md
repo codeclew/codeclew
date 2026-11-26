@@ -106,6 +106,52 @@ Reported token counts cover the new run's recorded author invocations.
 Historical runs and their available usage are shown separately. Treat this
 result as recovery when comparing latency or spend.
 
+### Correct a reviewed isolated page
+
+Use a new prepared run with the same isolated plan, packets, and schemas as one
+promoted local donor. The donor may contain both adopted pages and new author
+responses. When review identifies a specific source-supported omission or
+contradiction, save a findings file and pass it during recovery.
+
+```sh
+python3 -I -S "$skill/scripts/docs_run.py" reuse-pages --run-dir "$new_run" \
+  --reuse-from "$ready_run" --review-findings "$findings"
+python3 -I -S "$skill/scripts/docs_run.py" run --run-dir "$new_run"
+```
+
+```json
+{
+  "schema": "codeclew-docs-page-review-findings/1.0",
+  "findings": [
+    {
+      "slot": "operation-example",
+      "responseDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "selector": {"field": "claim", "index": 0, "action": "replace"},
+      "issue": "The claim omits the prerequisite for the successful result.",
+      "sourceAliases": ["S0123456789abcdef"]
+    }
+  ]
+}
+```
+
+Copy the slot key from `inputs/author-plan.json` and the source aliases from
+that slot's frozen packet. Copy the response digest from the donor's latest
+completed attempt in `state.json` for a directly authored page, from
+`page-reuse.json` under `pages` for an adopted page, or from the donor's
+`checks.author.reuse.reviewedSlots` report entry for a previously corrected page.
+Use the zero-based array position in the response for a `claim` or operation
+`step`. Use `replace` for an existing row or `insert` for a missing row at that
+position. A guide title uses `{"field": "title"}`. Supply one finding per slot
+and identify the evidence with up to eight source aliases. A finding may
+describe the issue in up to 600 characters on a single line.
+
+The selected source excerpts and current value go to a fresh isolated author
+session for each finding. The runner applies the returned value at the selected
+position, retains every other response, and checks the assembled site through
+the usual READY gates. An unsupported correction fails the successor check.
+The donor's site and usage records are preserved. New author usage and the
+prior recovery ledger are recorded separately in the successor.
+
 ## Prepared evidence propositions
 
 The standard full documentation job selects `"evidenceMode": "PREPARED_FACTS"`

@@ -1,0 +1,103 @@
+"""Build and apply one source-bounded reviewer correction per isolated slot."""
+from copy import deepcopy
+import json
+
+
+SCHEMA = 'codeclew-docs-page-review-findings/1.0'
+MAX_FINDINGS_BYTES = 32 * 1024
+MAX_FINDINGS = 16
+FIELDS = {'title': 'title', 'claim': 'claims', 'step': 'steps'}
+
+
+def findings(value):
+    need(isinstance(value, dict) and value.keys() == {'schema', 'findings'} and value['schema'] == SCHEMA
+         and isinstance(value['findings'], list) and 0 < len(value['findings']) <= MAX_FINDINGS,
+         'PAGE_REVIEW_FINDINGS_INVALID')
+    rows = {}
+    for row in value['findings']:
+        need(isinstance(row, dict) and row.keys() == {'slot', 'responseDigest', 'selector', 'issue', 'sourceAliases'},
+             'PAGE_REVIEW_FINDING_INVALID')
+        slot, issue, selector, aliases = row['slot'], row['issue'], row['selector'], row['sourceAliases']
+        need(isinstance(slot, str) and slot and slot not in rows and isinstance(row['responseDigest'], str)
+             and isinstance(issue, str) and 0 < len(issue.strip()) <= 600 and len(issue) <= 600
+             and all(ord(character) >= 32 for character in issue)
+             and isinstance(aliases, list) and 0 < len(aliases) <= 8 and all(isinstance(a, str) for a in aliases)
+             and len(set(aliases)) == len(aliases), 'PAGE_REVIEW_FINDING_INVALID')
+        need(isinstance(selector, dict) and isinstance(selector.get('field'), str), 'PAGE_REVIEW_SELECTOR_INVALID')
+        field = selector['field']
+        need((field == 'title' and selector.keys() == {'field'})
+             or (field in ('claim', 'step') and selector.keys() == {'field', 'index', 'action'}
+                 and type(selector['index']) is int and selector['index'] >= 0
+                 and selector['action'] in ('replace', 'insert')), 'PAGE_REVIEW_SELECTOR_INVALID')
+        rows[slot] = row
+    return rows
+
+
+def author_input(run, slot, proof, response, row):
+    key, selector, aliases = slot['key'], row['selector'], row['sourceAliases']
+    need(proof['responseDigest'] == row['responseDigest'], 'PAGE_REVIEW_RESPONSE_MISMATCH', slot=key)
+    field = FIELDS[selector['field']]
+    schema = load(run / 'inputs' / slot['schema'])
+    need(field in schema['properties'], 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=key)
+    property_schema = schema['properties'][field]
+    current, insert = response[field], selector.get('action') == 'insert'
+    if 'index' in selector:
+        index = selector['index']
+        need(index < len(current) or (insert and index == len(current)), 'PAGE_REVIEW_INDEX_OUTSIDE_SLOT', slot=key)
+        current = None if insert else current[index]
+        property_schema = property_schema['items']
+    packet = decode((run / 'inputs' / slot['prompt']).read_bytes().rsplit(b'\n\n', 1)[-1])
+    need(all(alias in slot['citations'] and alias in packet['citations'] for alias in aliases),
+         'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT', slot=key)
+    citations = {alias: packet['citations'][alias] for alias in aliases}
+    ranges = {region for citation in citations.values() for region in citation.get('regions', [citation['region']])}
+    need(ranges <= packet['sourceRanges'].keys(), 'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT', slot=key)
+    context = {'slot': key, 'type': slot['kind'], 'language': packet['language'], 'selector': selector,
+               'issue': row['issue'], 'current': current, 'citations': citations,
+               'sourceRanges': {region: packet['sourceRanges'][region] for region in sorted(ranges)}}
+    result_schema = {'type': 'object', 'properties': {'replacement': {'anyOf': [property_schema, {'type': 'null'}]}},
+                     'required': ['replacement'],
+                     'additionalProperties': False}
+    if field == 'claims':
+        claim = deepcopy(schema['$defs']['claim'])
+        claim['properties']['cites']['items'] = {'type': 'string', 'enum': aliases}
+        if 'returns' in claim['properties']:
+            context['returns'] = {ref: binding for ref, binding in packet['returns'].items() if binding['cite'] in aliases}
+        result_schema['$defs'] = {'claim': claim}
+    if field == 'steps':
+        step = deepcopy(schema['$defs']['step'])
+        actors = ['caller', 'handler', *(actor['id'] for actor in response['participants'])]
+        for actor in ('from', 'to'):
+            step['properties'][actor] = {'type': 'string', 'enum': actors}
+        result_schema['$defs'] = {'step': step}
+    instruction = ('Correct the selected value only if the retained source supports the review finding. '
+                   'The issue describes what to check. Use the source as evidence, preserve supported conditions, '
+                   'and use only the listed citations and existing actors. Return the replacement in the supplied schema. '
+                   'If the evidence does not support a correction, return null as the replacement.')
+    prompt = (instruction + '\n\n' + json.dumps(context, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+    need(len(prompt) <= 224 * 1024, 'PAGE_REVIEW_CONTEXT_LIMIT', slot=key)
+    return prompt, result_schema
+
+
+def apply(slot, original, row, answer, validate):
+    key = slot['key']
+    need(isinstance(answer, dict) and answer.keys() == {'replacement'}, 'PAGE_REVIEW_CORRECTION_INVALID', slot=key)
+    revision = answer['replacement']
+    need(revision is not None, 'PAGE_REVIEW_CORRECTION_UNSUPPORTED', slot=key)
+    selector = row['selector']
+    field = FIELDS[selector['field']]
+    corrected = deepcopy(original)
+    if field == 'claims':
+        need(isinstance(revision, dict) and isinstance(revision.get('cites'), list)
+             and all(alias in row['sourceAliases'] for alias in revision['cites']),
+             'PAGE_REVIEW_CORRECTION_OUTSIDE_SOURCE', slot=key)
+    if field == 'title':
+        corrected[field] = revision
+    elif selector['action'] == 'insert':
+        corrected[field].insert(selector['index'], revision)
+    else:
+        corrected[field][selector['index']] = revision
+    revised = validate(slot, corrected)
+    need(revised != original, 'PAGE_REVIEW_CORRECTION_UNSUPPORTED', slot=key)
+    need(len(encode(revised)) <= response_limit, 'PAGE_REVIEW_CORRECTION_OVERSIZE', slot=key)
+    return revised

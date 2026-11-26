@@ -595,8 +595,11 @@ else:
                     **{key: caps[key] for key in ('runtimeKey', 'runtimeManifestDigest')}})
         launcher = package / 'bin/clew'
         launcher.parent.mkdir()
+        navigation = self.root / 'source-navigation.json'
         launcher.write_text(self.clew.read_text().replace(
-            "{'runtimeMode':'RELEASE','runtimeKey':'owned-test-only'}", repr(caps)))
+            "{'runtimeMode':'RELEASE','runtimeKey':'owned-test-only'}", repr(caps)).replace(
+            "else:\n identity=", "elif args[:3]==['docs','work','read']:\n"
+            f" from pathlib import Path\n print(Path({str(navigation)!r}).read_text())\nelse:\n identity="))
         launcher.chmod(0o700)
         self.job['clew'] = str(launcher)
         self.backend.write_text('#!' + sys.executable + '\n' + f"""
@@ -611,7 +614,7 @@ if 'resume' in sys.argv:
 print(json.dumps({{'type':'thread.started','thread_id':thread}}))
 print(json.dumps({{'type':'turn.started'}}))
 routing=seed/'routing-slot.txt'
-if routing.exists() and routing.read_text()==packet['slot'] and 'resume' not in sys.argv:
+if routing.exists() and routing.read_text()==packet['slot'] and 'resume' not in sys.argv and 'selector' not in packet:
     message='workspace routing discovery failed'
     out.touch()
     for start in (2, 1):
@@ -624,7 +627,8 @@ if routing.exists() and routing.read_text()==packet['slot'] and 'resume' not in 
     print(json.dumps({{'type':'turn.failed','error':{{'message':message}}}}))
     sys.exit(1)
 repair='formatRepair' in packet
-raw=(seed/(packet['slot']+('-repair.json' if repair else '-response.json'))).read_text()
+suffix='-review.json' if 'selector' in packet else ('-repair.json' if repair else '-response.json')
+raw=(seed/(packet['slot']+suffix)).read_text()
 out.write_text(raw)
 multiplier=2 if repair else 1
 for row in (
@@ -633,7 +637,17 @@ for row in (
                                       'output_tokens':10*multiplier}}}},
 ): print(json.dumps(row))
 """)
-        old, plan, _, _ = self.isolated_fixture(run_name='historical-run', repairs=int(routing == 'format-repair'))
+        old, plan, _, record = self.isolated_fixture(run_name='historical-run', repairs=int(routing == 'format-repair'))
+        D['save'](navigation, {'schema': 'codeclew-documentation-work-page/1.0', 'work': 'owned-work',
+                              'snapshot': F['SNAPSHOT'], 'subject': 'service:' + self.service,
+                              'contextDigest': 'owned-context', 'inputDigest': 'owned-input',
+                              'membershipDigest': 'owned-membership', 'receiptDigest': 'owned-receipt',
+                              'influenceCoverage': 'RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED',
+                              'status': 'READY_WITH_LIMITATIONS', 'total': 1, 'nextCursor': None, 'omitted': [],
+                              'items': [{'id': record['id'], 'kind': 'SOURCE_NAVIGATION', 'record': {
+                                  'authority': 'NAVIGATION_ONLY', 'textDelivered': False,
+                                  'recordDigest': F['digest'](record),
+                                  'source': {key: value for key, value in record.items() if key != 'text'}}}]})
         if routing:
             slot = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
             key = slot['key']
@@ -912,6 +926,151 @@ for row in (
                 finally:
                     for file, raw in originals.items():
                         file.write_bytes(raw)
+
+    def test_source_bounded_review_after_mixed_recovery_and_routing_resume(self):
+        historical, donor, plan = self.isolated_reuse_fixture()
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        key = operation['key']
+        prior = next(row for row in D['load'](historical / 'state.json')['attempts'] if row['slot'] == key)
+        stale_response = D['PX']['response_path'](historical, prior)
+        raw = stale_response.read_bytes()
+        stale_response.write_bytes(raw + b' ')
+        prefix = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py')]
+
+        def call(command, run, *arguments, status=0):
+            completed = subprocess.run([*prefix, command, '--run-dir', str(run), *arguments], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, status, completed.stdout + completed.stderr)
+            return json.loads(completed.stdout)
+
+        reused = call('reuse-pages', donor, '--reuse-from', str(historical))
+        self.assertEqual(reused['reusedPages'], len(plan['slots']) - 1)
+        stale_response.write_bytes(raw)
+        (self.seed / 'routing-slot.txt').write_text(key)
+        self.assertEqual(call('run', donor, status=2)['code'], 'PAGE_AUTHOR_SERVICE_UNAVAILABLE')
+        pending = D['load'](donor / 'state.json')
+        pending['serviceRetryPending']['retryNotBefore'] = time.time() - 1
+        D['save'](donor / 'state.json', pending)
+        prior_site = call('run', donor)
+        failure, success = D['load'](donor / 'state.json')['attempts']
+        self.assertEqual(success['resumeThread'], failure['threadId'])
+        self.assertTrue(success['serviceRetry'])
+        sealed_donor = D['tree'](donor)
+        target, _, packets, _ = self.isolated_fixture(run_name='successor')
+        packet = packets['OPERATION']
+        alias = next(iter(packet['citations']))
+        old_response = D['load'](D['PX']['response_path'](donor, success))
+        finding = {'slot': key, 'responseDigest': success['responseDigest'],
+                   'selector': {'field': 'claim', 'index': 0, 'action': 'replace'},
+                   'issue': 'The statement omits the successful return value.', 'sourceAliases': [alias]}
+        findings = self.root / 'findings.json'
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [finding]})
+        outage_stream = D['PX']['attempt_dir'](donor, failure) / 'stdout.jsonl'
+        original_stream = outage_stream.read_bytes()
+        outage_stream.write_bytes(original_stream.replace(b'3/5', b'1/5', 1))
+        rejected = call('reuse-pages', target, '--reuse-from', str(donor), '--review-findings', str(findings), status=2)
+        self.assertEqual(rejected['code'], 'REUSE_AUTHOR_STREAM_CHANGED')
+        outage_stream.write_bytes(original_stream)
+        adopted = call('reuse-pages', target, '--reuse-from', str(donor), '--review-findings', str(findings))
+        self.assertEqual((adopted['reviewSlots'], adopted['reusedPages']), ([key], len(plan['slots']) - 1))
+        origin, = adopted['historicalRuns']
+        self.assertEqual(origin['priorReuse']['ledgerDigest'], pending['pageReuseDigest'])
+        self.assertEqual(origin['reportedUsage']['knownBudgetTokensLowerBound'], 20)
+        proof = D['load'](target / 'page-reuse.json')['pages'][key]
+        self.assertEqual(proof['routingRecovery']['priorAttempts'][0]['threadId'], success['threadId'])
+        sentence = 'On success, the handler returns the size of the accepted list.'
+        authored = {**old_response['claims'][0], 'text': sentence, 'cites': [alias]}
+        D['save'](self.seed / (key + '-review.json'), {'replacement': authored})
+        result = call('run', target)
+        self.assertEqual(result['status'], 'READY_PROMOTED')
+        self.assertEqual(result['reuse']['newAuthorInvocations'], 1)
+        self.assertEqual(result['reuse']['reviewedSlots'][key]['previousResponseDigest'], success['responseDigest'])
+        state = D['load'](target / 'state.json')
+        self.assertEqual(state['modelTokens'], 20)
+        attempt, = state['attempts']
+        self.assertEqual((attempt['slot'], attempt['resumeThread']), (key, None))
+        self.assertNotEqual(attempt['threadId'], success['threadId'])
+        folder = D['PX']['attempt_dir'](target, attempt)
+        supplied = json.loads((folder / 'prompt.txt').read_text().split('\n\n')[-1])
+        self.assertEqual(supplied['current'], old_response['claims'][0])
+        self.assertEqual(supplied['citations'], {alias: packet['citations'][alias]})
+        locations = packet['citations'][alias].get('regions', [packet['citations'][alias]['region']])
+        self.assertEqual(supplied['sourceRanges'], {region: packet['sourceRanges'][region] for region in locations})
+        self.assertEqual(D['tree'](donor), sealed_donor)
+        old_html, new_html = [Path(r['ready']) / 'html' for r in (prior_site, result)]
+        revised_page = operation['page'].replace('.md', '.html')
+        self.assertIn(sentence, (new_html / revised_page).read_text())
+        self.assertNotIn(sentence, (old_html / revised_page).read_text())
+        self.assertEqual((new_html / 'process-map.html').read_bytes(), (old_html / 'process-map.html').read_bytes())
+        old_pages, new_pages = [D['load'](run / 'workspace/draft/original.json')['pages'] for run in (donor, target)]
+        self.assertEqual([page for page in new_pages if page['page'] != operation['page']],
+                         [page for page in old_pages if page['page'] != operation['page']])
+
+        next_run, _, _, _ = self.isolated_fixture(run_name='sequence-successor')
+        revised_digest = result['reuse']['reviewedSlots'][key]['responseDigest']
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [{
+            **finding, 'responseDigest': revised_digest,
+            'selector': {'field': 'step', 'index': len(old_response['steps']), 'action': 'insert'},
+            'issue': 'On the successful branch the trace omits the final return.',
+        }]})
+        next_adoption = call('reuse-pages', next_run, '--reuse-from', str(target), '--review-findings', str(findings))
+        self.assertIn('priorReuse', next_adoption['historicalRuns'][0]['priorReuse']['origins'][0])
+        D['save'](self.seed / (key + '-review.json'), {'replacement': {
+            'from': 'handler', 'to': 'caller', 'kind': 'return', 'label': 'List size', 'condition': 'count >= 0',
+        }})
+        next_result = call('run', next_run)
+        self.assertEqual(next_result['reuse']['reviewedSlots'][key]['previousResponseDigest'], revised_digest)
+        revised = (Path(next_result['ready']) / 'html' / revised_page).read_text()
+        self.assertIn(sentence, revised)
+        self.assertIn('List size', revised)
+
+    def test_source_bounded_review_refuses_unbound_selector_digest_alias_and_source(self):
+        donor, target, plan = self.isolated_reuse_fixture()
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        key = operation['key']
+        current = next(row for row in D['load'](donor / 'state.json')['attempts'] if row['slot'] == key)
+        finding = {'slot': key, 'responseDigest': current['responseDigest'],
+                   'selector': {'field': 'claim', 'index': 0, 'action': 'replace'},
+                   'issue': 'Describe the condition for the returned value.',
+                   'sourceAliases': [next(iter(operation['citations']))]}
+        path = self.root / 'findings.json'
+        args = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'), 'reuse-pages',
+                '--run-dir', str(target), '--reuse-from', str(donor), '--review-findings', str(path)]
+
+        def rejected(row, code):
+            D['save'](path, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [row]})
+            completed = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+            self.assertEqual(json.loads(completed.stdout)['code'], code)
+            self.assertFalse((target / 'page-reuse.json').exists())
+            self.assertEqual(D['load'](target / 'state.json')['attempts'], [])
+
+        for changes, code in (
+                ({'slot': 'unassigned-slot'}, 'PAGE_REVIEW_SLOT_OUTSIDE_RUN'),
+                ({'responseDigest': 'sha256:' + '0' * 64}, 'PAGE_REVIEW_RESPONSE_MISMATCH'),
+                ({'selector': {'field': 'title'}}, 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT'),
+                ({'selector': {**finding['selector'], 'index': 99}}, 'PAGE_REVIEW_INDEX_OUTSIDE_SLOT'),
+                ({'sourceAliases': ['Soutside']}, 'PAGE_REVIEW_SOURCE_OUTSIDE_SLOT')):
+            with self.subTest(code=code):
+                rejected({**finding, **changes}, code)
+        packet = donor / 'inputs' / operation['prompt']
+        text = packet.read_text()
+        changed = text.replace('accepted.add(count)', 'accepted.remove(count)')
+        self.assertNotEqual(changed, text)
+        packet.write_text(changed)
+        rejected(finding, 'REUSE_SOURCE_INPUTS_CHANGED')
+        packet.write_text(text)
+
+        D['save'](path, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [finding]})
+        subprocess.run(args, capture_output=True, text=True, check=True)
+        D['save'](self.seed / (key + '-review.json'), {'replacement': {
+            'heading': '', 'text': 'A replacement with an unreviewed citation.',
+            'cites': ['Soutside'], 'assessment': 'SUPPORTED', 'returns': [],
+        }})
+        completed = subprocess.run([*args[:4], 'run', '--run-dir', str(target)], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)['details']['failure']['code'], 'PAGE_REVIEW_CORRECTION_OUTSIDE_SOURCE')
+        self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [key])
+        self.assertFalse((target / 'ready').exists())
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'

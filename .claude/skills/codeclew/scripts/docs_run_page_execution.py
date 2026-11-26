@@ -163,7 +163,7 @@ def reconcile(run, state):
         raise failure
 
 
-def launch_attempt(run, schema, backend, slot, previous, failure, flags):
+def launch_attempt(run, schema, backend, slot, previous, failure, flags, review=None):
     number = len(previous)
     resume = next((row['threadId'] for row in reversed(previous) if row.get('threadId')), None)
     attempt = {'slot': slot['key'], 'number': number, 'authorMode': 'ISOLATED_PAGES', 'resumeThread': resume,
@@ -180,6 +180,8 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags):
         need(sha(prompt) == interrupted.get('promptDigest'),
              'PAGE_AUTHOR_SERVICE_RETRY_EVIDENCE_CHANGED', slot=slot['key'])
         attempt['serviceRetry'] = True
+    elif review is not None:
+        prompt = review[0]
     elif failure:
         details = failure.get('details', {})
         original_attempt = attempt_dir(run, previous[0]) / 'prompt.txt' if previous else None
@@ -197,7 +199,10 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags):
     (folder / 'context').mkdir(mode=0o700, parents=True)
     (folder / 'prompt.txt').write_bytes(prompt)
     attempt['promptDigest'] = sha(prompt)
-    if 'schema' in slot:
+    if review is not None:
+        schema = folder / 'docs-run-page-author.schema.json'
+        save(schema, review[1])
+    elif 'schema' in slot:
         schema = run / 'inputs' / slot['schema']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
@@ -264,7 +269,8 @@ def next_action(run, slot, history, scheduled, max_repairs, responses, validate,
     return slot, failure
 
 
-def execute_authors(run, job, plan, schema, flags, validate, read_response, repairs=None):
+def execute_authors(run, job, plan, schema, flags, validate, read_response, repairs=None, reviews=None,
+                    forbidden_threads=()):
     """Validate each settled slot and refill up to three independent author sessions."""
     state = load(run / 'state.json')
     reconcile(run, state)
@@ -272,7 +278,14 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
         raise Stop(failure['code'], blocked=failure['blocked'], **failure['details'])
     if state.get('status') == 'AUTHOR_REPAIRS_EXHAUSTED':
         raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **state['terminalFailure'])
-    check_author_state(state)
+    reviews = reviews or {}
+
+    def check_threads(*, settled_only=False):
+        check_author_state(state, settled_only=settled_only)
+        need(not any(row.get('threadId') in forbidden_threads for row in state['attempts']),
+             'REUSE_THREAD_USED_FOR_FRESH_AUTHOR')
+
+    check_threads()
     fresh = state['authorStartedAt'] is None and not state['attempts']
     now = time.time()
     paused = state.get('serviceRetryPending')
@@ -297,7 +310,8 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
     cancelled = threading.Event()
 
     def assess(slot):
-        action = next_action(run, slot, histories[slot['key']], scheduled, job['budget']['maxRepairs'],
+        max_repairs = 0 if slot['key'] in reviews else job['budget']['maxRepairs']
+        action = next_action(run, slot, histories[slot['key']], scheduled, max_repairs,
                              responses, validate, read_response)
         if action:
             pending.append(action)
@@ -330,7 +344,8 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                         need(service_retries < MAX_SERVICE_RETRIES, 'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED',
                              slot=slot['key'], failure=failure)
                         service_retries += 1
-                    attempt = launch_attempt(run, schema, job['author'], slot, history, failure, flags)
+                    attempt = launch_attempt(run, schema, job['author'], slot, history, failure, flags,
+                                             review=reviews.get(slot['key']))
                     history.append(attempt)
                     index = len(state['attempts'])
                     state['attempts'].append(attempt)
@@ -347,7 +362,7 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                         for slot in settled), 'AUTHOR_BUDGET_EXHAUSTED')
                 # Check the settled subset before sending any more work. Active
                 # siblings have not reported their final counters yet.
-                check_author_state(state, settled_only=True)
+                check_threads(settled_only=True)
                 for slot in settled:
                     result = histories[slot['key']][-1]
                     if service_failure(result):

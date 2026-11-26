@@ -209,12 +209,13 @@ def history(run, target_job, target_inventory, target_pins):
     return job, {slot['key']: slot for slot in old_plan['slots']}, rows, owners, receipt, (usage_matches, account_indexes)
 
 
-def expected_argv(run, slot, number, backend, resume, flags):
+def expected_argv(run, slot, number, backend, resume, flags, *, reviewed=False):
     folder = run / 'page-attempts' / slot['key'] / str(number)
+    schema = folder / 'docs-run-page-author.schema.json' if reviewed else run / 'inputs' / slot['schema']
     return [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
             '-m', backend['model'], '-c', 'model_reasoning_effort=' + json.dumps(backend['reasoningEffort']),
             '-c', 'approval_policy="never"', '-C', str(folder / 'context'), '--disable', 'multi_agent',
-            '-o', str(folder / 'last-message.txt'), '-s', 'read-only', *flags(run / 'inputs' / slot['schema']),
+            '-o', str(folder / 'last-message.txt'), '-s', 'read-only', *flags(schema),
             *(['resume', resume] if resume is not None else []), '-']
 
 
@@ -235,8 +236,9 @@ def expected_prompt(slot, original, previous):
     return b'Repair for the packet below:\n' + details + b'\n' + original
 
 
-def checked_attempt_evidence(run, slot, attempt, previous, backend, flags):
+def checked_attempt_evidence(run, slot, attempt, previous, backend, flags, *, reviewed=False):
     key, number = slot['key'], attempt['number']
+    need(type(number) is int and number >= 0, 'REUSE_ATTEMPT_NOT_ADMITTED')
     relative = f'page-attempts/{key}/{number}'
     thread = attempt.get('threadId')
     resume = previous['threadId'] if previous is not None else None
@@ -246,7 +248,8 @@ def checked_attempt_evidence(run, slot, attempt, previous, backend, flags):
          and (resume is None or thread == resume) and attempt['resumeThread'] == resume
          and started <= attempt.get('launchedAt', started) <= attempt['completedAt']
          and (previous is None or previous['completedAt'] <= started)
-         and attempt['argv'] == expected_argv(run, slot, number, backend, resume, flags), 'REUSE_ATTEMPT_NOT_ADMITTED')
+         and attempt['argv'] == expected_argv(run, slot, number, backend, resume, flags, reviewed=reviewed),
+         'REUSE_ATTEMPT_NOT_ADMITTED')
     result = exact_file(run, relative + '/result.json', LOG_LIMIT)
     context = result.parent / 'context'
     need(context.is_dir() and not context.is_symlink() and next(context.iterdir(), None) is None,
@@ -309,6 +312,14 @@ def check_routing_outage(attempt, result, events):
     ], 'REUSE_AUTHOR_STREAM_CHANGED')
 
 
+def attempt_proof(attempt, result, prompt, stdout):
+    return {
+        'attempt': attempt['number'], 'threadId': attempt['threadId'], 'receiptDigest': sha(result.read_bytes()),
+        'streamDigest': sha(stdout), 'attemptPromptDigest': sha(prompt),
+        'historicalCumulativeUsage': attempt['usage'],
+    }
+
+
 def checked_attempt(run, slot, original, attempt, previous, backend, flags, *, recovering=False):
     retry = previous is not None and previous.get('failure') == ROUTING_FAILURE
     outage = previous is None and attempt.get('failure') == ROUTING_FAILURE
@@ -324,11 +335,7 @@ def checked_attempt(run, slot, original, attempt, previous, backend, flags, *, r
         need(decode(prompt) == decode(expected), 'REUSE_ATTEMPT_PROMPT_CHANGED')
     else:
         need(prompt == expected, 'REUSE_ATTEMPT_PROMPT_CHANGED')
-    proof = {
-        'attempt': attempt['number'], 'threadId': attempt['threadId'], 'receiptDigest': sha(result.read_bytes()),
-        'streamDigest': sha(stdout), 'attemptPromptDigest': sha(prompt),
-        'historicalCumulativeUsage': attempt['usage'],
-    }
+    proof = attempt_proof(attempt, result, prompt, stdout)
     if outage:
         check_routing_outage(attempt, result, events)
         return None, proof
@@ -347,6 +354,35 @@ def check_routing_repair(slot, previous, raw, validate):
     raise Stop('REUSE_UNPROVEN_REPAIR')
 
 
+def checked_history(run, slot, original, history, owners, backend, flags, validate, usage_matches, account_indexes):
+    recovery, completed = [], []
+    key, previous, previous_raw = slot['key'], None, None
+    for number, attempt in enumerate(history):
+        need(type(attempt['number']) is int and attempt['number'] == number
+             and owners[attempt['threadId']] == {key}, 'REUSE_THREAD_SCOPE_CHANGED')
+        if recovery and previous_raw is not None:
+            check_routing_repair(slot, previous, previous_raw, validate)
+        raw, proof = checked_attempt(run, slot, original, attempt, previous, backend, flags, recovering=bool(recovery))
+        routed = bool(recovery) or raw is None
+        if routed:
+            need(usage_matches, 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+            proof['reportedUsageIndex'] = account_indexes[number]
+        if raw is not None:
+            completed.append(attempt)
+            need(token_accounting(completed)['status'] == 'MEASURED', 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+            candidate = proof
+            if recovery:
+                chain_usage = token_accounting(history[:number + 1])
+                need(chain_usage['status'] == 'UNAVAILABLE'
+                     and all(row['attempt'] == 0 for row in chain_usage['missing']), 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+                candidate = dict(proof, routingRecovery={
+                    'priorAttempts': recovery.copy(), 'usage': usage_summary(chain_usage)})
+            yield raw, candidate
+        if routed:
+            recovery.append(proof)
+        previous, previous_raw = attempt, raw
+
+
 def candidates(run, target, plan, job, inventory, pins, flags, validate, reserved, rejected):
     source_job, old, histories, owners, receipt, (usage_matches, account_indexes) = history(run, job, inventory, pins)
     values = {}
@@ -362,38 +398,13 @@ def candidates(run, target, plan, job, inventory, pins, flags, validate, reserve
         except (Stop, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
             rejected[getattr(error, 'code', 'REUSE_SLOT_INVALID')] += 1
             continue
-        validated, recovery, completed = [], [], []
-        previous = None
-        for number, attempt in enumerate(histories[key]):
-            try:
-                need(type(attempt['number']) is int and attempt['number'] == number
-                     and owners[attempt['threadId']] == {key}, 'REUSE_THREAD_SCOPE_CHANGED')
-                if recovery and validated:
-                    check_routing_repair(old[key], previous, validated[-1][0], validate)
-                raw, proof = checked_attempt(run, old[key], pinned['prompt'], attempt, previous, source_job['author'],
-                                             flags, recovering=bool(recovery))
-                routed = bool(recovery) or raw is None
-                if routed:
-                    need(usage_matches, 'REUSE_HISTORICAL_COUNTERS_CHANGED')
-                    proof['reportedUsageIndex'] = account_indexes[key][number]
-                if raw is not None:
-                    completed.append(attempt)
-                    need(token_accounting(completed)['status'] == 'MEASURED', 'REUSE_HISTORICAL_COUNTERS_CHANGED')
-                    candidate = proof
-                    if recovery:
-                        chain_usage = token_accounting(histories[key][:number + 1])
-                        need(chain_usage['status'] == 'UNAVAILABLE'
-                             and all(row['attempt'] == 0 for row in chain_usage['missing']),
-                             'REUSE_HISTORICAL_COUNTERS_CHANGED')
-                        candidate = dict(proof, routingRecovery={
-                            'priorAttempts': recovery.copy(), 'usage': usage_summary(chain_usage)})
-                    validated.append((raw, candidate))
-                if routed:
-                    recovery.append(proof)
-                previous = attempt
-            except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
-                rejected[getattr(error, 'code', 'REUSE_ATTEMPT_INVALID')] += 1
-                break
+        validated = []
+        try:
+            validated.extend(checked_history(run, old[key], pinned['prompt'], histories[key], owners,
+                                              source_job['author'], flags, validate, usage_matches,
+                                              account_indexes[key]))
+        except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
+            rejected[getattr(error, 'code', 'REUSE_ATTEMPT_INVALID')] += 1
         for raw, proof in reversed(validated):
             try:
                 validate(slot, decode(raw))
@@ -407,7 +418,118 @@ def candidates(run, target, plan, job, inventory, pins, flags, validate, reserve
     return values, receipt
 
 
-def import_pages(run, sources, job, inventory, pins, plan, state, flags, validate):
+def ready_proof(run, state, pins):
+    report = load(exact_file(run, 'report.json', LOG_LIMIT))
+    pointer = load(exact_file(run, 'ready/current.json', LOG_LIMIT))
+    usage = token_accounting([row for row in state['attempts'] if not row.get('notLaunched')])
+    need(report['status'] == 'READY' and report['inputDigest'] == digest(pins)
+         and DIGEST.fullmatch(pointer['reportDigest']) and pointer['publicationPerformed'] is False
+         and state['status'] == 'AUTHOR_COMPLETED'
+         and set(report['checks']) == set(checks) and all(row['status'] == 'PASS' for row in report['checks'].values())
+         and report['checks']['author']['tokenAccounting'] == usage
+         and state['pageDraftFiles'] == report['draftFiles'] == tree(run / 'workspace/draft')
+         and report['draftDigest'] == digest(report['draftFiles']) and DIGEST.fullmatch(pointer['outputDigest'])
+         and pointer['output'] == pointer['outputDigest'].removeprefix('sha256:'), 'PAGE_REVIEW_DONOR_NOT_READY')
+    promoted = run / 'ready' / pointer['output']
+    need(digest(tree(promoted)) == pointer['outputDigest'] and tree(promoted / 'html') == report['deliverableFiles'],
+         'PAGE_REVIEW_DONOR_OUTPUT_CHANGED')
+    return {'reportDigest': digest(report), 'promotedReportDigest': pointer['reportDigest'], 'outputDigest': pointer['outputDigest'],
+            'draftFiles': report['draftFiles']}
+
+
+def review_work(run, plan, retained, ledger):
+    if ledger is None or 'review' not in ledger:
+        return {}, {}
+    rows = review_api['findings'](ledger['review'])
+    slots = {slot['key']: slot for slot in plan['slots']}
+    need(rows.keys() <= retained.keys() == slots.keys(), 'PAGE_REVIEW_SLOT_OUTSIDE_RUN')
+    work = {key: review_api['author_input'](run, slots[key], ledger['pages'][key], retained[key], row)
+            for key, row in rows.items()}
+    return rows, work
+
+
+def reviewed_attempt_evidence(run, backend, slot, attempt, previous, flags, review):
+    result, prompt, stdout, events = checked_attempt_evidence(run, slot, attempt, previous, backend, flags, reviewed=True)
+    schema = exact_file(result.parent, 'docs-run-page-author.schema.json', LOG_LIMIT)
+    need(load(schema) == review[1] and prompt == review[0] and 'promptDigest' in attempt and 'launchedAt' in attempt,
+         'PAGE_REVIEW_AUTHOR_INPUT_CHANGED', slot=slot['key'])
+    return result, events, attempt_proof(attempt, result, prompt, stdout)
+
+
+def admitted_completed(run, job, slot, histories, flags, *, review=None):
+    last = histories[-1]
+    previous = histories[-2] if len(histories) > 1 else None
+    backend = job['author']
+    if review is None:
+        result, prompt, stdout, events = checked_attempt_evidence(run, slot, last, previous, backend, flags)
+        # A promoted donor also proves these responses reproduce its accepted
+        # draft. Settled repair prompts can include scheduler diagnostics.
+        need(prompt == slot_files(run, slot)['prompt'] if previous is None
+             else not last.get('serviceRetry') and 'promptDigest' in last
+             and token_accounting(histories)['status'] == 'MEASURED', 'REUSE_ATTEMPT_PROMPT_CHANGED')
+        proof = attempt_proof(last, result, prompt, stdout)
+    else:
+        result, events, proof = reviewed_attempt_evidence(run, backend, slot, last, previous, flags, review)
+        if previous is not None:
+            need(len(histories) == 2 and last['number'] == 1 and last.get('serviceRetry') is True,
+                 'REUSE_ATTEMPT_NOT_ADMITTED')
+            failed, failed_events, outage = reviewed_attempt_evidence(run, backend, slot, previous, None, flags, review)
+            check_routing_outage(previous, failed, failed_events)
+            proof['routingRecovery'] = {'priorAttempts': [outage], 'usage': usage_summary(token_accounting(histories))}
+        else:
+            need('serviceRetry' not in last, 'REUSE_ATTEMPT_NOT_ADMITTED')
+    raw = checked_completed_stream(last, result, events)
+    return raw, dict(proof, responseDigest=sha(raw))
+
+
+def review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble):
+    source_job, old, histories, owners, receipt, (usage_matches, account_indexes) = history(run, job, inventory, pins)
+    source_pins = load(run / 'pins.json')
+    state = load(run / 'state.json')
+    old_plan = load(run / 'inputs/author-plan.json')
+    acceptance = ready_proof(run, state, source_pins)
+    retained, ledger = read_pages(run, state, old_plan, validate)
+    rows, work = review_work(run, old_plan, retained, ledger)
+    need(old_plan == plan and all(slot_files(target, slot) == slot_files(run, old[slot['key']]) for slot in plan['slots']),
+         'PAGE_REVIEW_DONOR_SCOPE_CHANGED')
+    need(histories.keys() | retained.keys() == old.keys() and set(rows) <= histories.keys()
+         and all(len(keys) == 1 for keys in owners.values()), 'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
+    proofs, responses = {}, {}
+    if ledger is not None:
+        receipt['priorReuse'] = {'ledgerDigest': state['pageReuseDigest'], 'origins': ledger['origins']}
+    for key, slot in old.items():
+        pinned = slot_files(run, slot)
+        prior = ledger['pages'].get(key) if ledger else None
+        if key in histories:
+            attempts = histories[key]
+            if key not in rows and any(row.get('failure') == ROUTING_FAILURE or row.get('serviceRetry') for row in attempts):
+                completed = list(checked_history(run, slot, pinned['prompt'], attempts, owners, source_job['author'],
+                                                 flags, validate, usage_matches, account_indexes[key]))
+                need(completed and completed[-1][1]['attempt'] == attempts[-1]['number'], 'REUSE_ATTEMPT_NOT_ADMITTED')
+                raw, proof = completed[-1]
+            else:
+                raw, proof = admitted_completed(run, source_job, slot, attempts, flags, review=work.get(key))
+            if key in rows:
+                response = review_api['apply'](slot, retained[key], rows[key], decode(raw), validate)
+                raw = encode(response)
+                proof = {**proof, 'correctionDigest': proof['responseDigest'], 'responseDigest': sha(raw),
+                         'priorResponseDigest': prior['responseDigest'], 'priorOrigin': prior['origin']}
+            else:
+                response = validate(slot, decode(raw))
+        else:
+            proof = dict(prior, priorOrigin=prior['origin'])
+            raw, response = base64.b64decode(prior['raw'], validate=True), retained[key]
+        responses[key] = response
+        proofs[key] = dict(proof, raw=base64.b64encode(raw).decode(), scopeDigest=digest(slot_scope(slot)),
+                           promptDigest=sha(pinned['prompt']), schemaDigest=sha(pinned['schema']))
+    threads = [proof['threadId'] for proof in proofs.values()]
+    need(len(set(threads)) == len(threads) and assemble(run, source_job, old_plan, responses) == acceptance.pop('draftFiles')
+         and sha((run / 'state.json').read_bytes()) == receipt['stateDigest'], 'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
+    receipt['ready'] = acceptance
+    return proofs, receipt
+
+
+def import_pages(run, sources, job, inventory, pins, plan, state, flags, validate, *, review=None, assemble=None):
     need(1 <= len(sources) <= MAX_ORIGINS and len({path.resolve() for path in sources}) == len(sources),
          'REUSE_SOURCE_LIMIT')
     path = run / LEDGER
@@ -416,12 +538,20 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
          and not path.exists() and not path.is_symlink(),
          'REUSE_REQUIRES_FRESH_ISOLATED_RUN')
     pages, origins, errors, rejected, threads = {}, [], [], Counter(), {}
+    if review is not None:
+        need(len(sources) == 1, 'PAGE_REVIEW_REQUIRES_ONE_DONOR')
+        review_api['findings'](review)
     for source in sources:
         need(source.resolve() != run.resolve(), 'REUSE_SOURCE_IS_TARGET')
         try:
             with read_only_run(source) as historical:
-                local, origin = candidates(historical, run, plan, job, inventory, pins, flags, validate, pages, rejected)
+                if review is None:
+                    local, origin = candidates(historical, run, plan, job, inventory, pins, flags, validate, pages, rejected)
+                else:
+                    local, origin = review_candidates(historical, run, plan, job, inventory, pins, flags, validate, assemble)
         except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
+            if review is not None:
+                raise Stop(getattr(error, 'code', 'PAGE_REVIEW_DONOR_INVALID'), source=str(source)) from None
             errors.append({'source': str(source), 'code': getattr(error, 'code', 'REUSE_SOURCE_INVALID')})
             continue
         origins.append(origin)
@@ -433,13 +563,22 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
     need(pages, 'NO_ELIGIBLE_REUSED_PAGES', sources=errors, rejected=dict(rejected))
     receipt = {'schema': SCHEMA, 'targetPinsDigest': digest(pins), 'pages': pages, 'origins': origins,
                'sourceErrors': errors, 'rejected': dict(rejected)}
+    review_count = 0
+    if review is not None:
+        receipt['review'] = review
+        values = {key: validate(slot, decode(base64.b64decode(pages[key]['raw'])))
+                  for slot in plan['slots'] if (key := slot['key']) in pages}
+        rows, _ = review_work(run, plan, values, receipt)
+        review_count = len(rows)
     pending = run / PENDING
     save(pending, receipt)
     state['pageReuseDigest'] = sha(pending.read_bytes())
     save(run / 'state.json', state)
     os.replace(pending, path)
-    return {'status': 'PREPARED', 'run': str(run), 'reusedPages': len(pages), 'remainingPages': len(plan['slots'])-len(pages),
-            'historicalRuns': origins, 'sourceErrors': errors, 'rejected': dict(rejected)}
+    reused = len(pages) - review_count
+    return {'status': 'PREPARED', 'run': str(run), 'reusedPages': reused, 'remainingPages': len(plan['slots']) - reused,
+            'historicalRuns': origins, 'sourceErrors': errors, 'rejected': dict(rejected),
+            **({'reviewSlots': list(rows)} if review is not None else {})}
 
 
 def read_pages(run, state, plan, validate):
