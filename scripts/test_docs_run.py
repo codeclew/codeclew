@@ -2547,7 +2547,8 @@ class Intake(private val transaction: TransactionTemplate, private val db: JdbcT
             if (false) throw IllegalStateException()
             collected += outcome.size
         } while (outcome.status == ScanResult.Again)
-        parser.finish(collected)
+        parser.finish(collected) { completionCallback() }
+        laterContinuation()
     }
 
     private fun validate(value: Message) {
@@ -2724,6 +2725,13 @@ class Unrelated {
             loop, = (fact for fact in facts if fact['kind'] == 'RESULT_CONTROLLED_LOOP')
             self.assertIn('outcome.status == ScanResult.Again', loop['text'])
             self.assertIn('exits normally', loop['text'])
+            self.assertIn('`parser.finish(collected)` with a trailing lambda argument', loop['text'])
+            self.assertIn('Whether the lambda runs depends on the callee.', loop['text'])
+            self.assertNotIn('completionCallback()', loop['text'])
+            self.assertNotIn('laterContinuation()', loop['text'])
+            regions = [recount['sourceRanges'][region]['text'] for alias in loop['sources']
+                       for region in recount['citations'][alias].get('regions', [recount['citations'][alias]['region']])]
+            self.assertTrue(any('parser.finish(collected) {' in text for text in regions), regions)
             self.assertTrue({'LOOP_RESULT_SOURCE', 'LOOP_LOCAL_ACCUMULATION'} <= {fact['kind'] for fact in facts})
             self.assertFalse({'LOOP_ENTRY_VALIDATION', 'LOOP_FAILURE_PATH'} & {fact['kind'] for fact in facts})
             sidecar = D['load'](run / 'inputs/author-source/intake/prepared-facts.json')
@@ -2731,7 +2739,7 @@ class Unrelated {
             for packet, literals in ((checkpoint, ('prefix.isNotEmpty()', 'size > 0', 'outcome != ScanResult.Again', 'continue',
                                                    'parser.next(prefix, size)', 'parser.collect()', 'parser.remember()', 'parser.finish(prefix)')),
                                      (recount, ('var collected = 0', 'parser.next()', 'collected += outcome.size',
-                                                'outcome.status == ScanResult.Again', 'parser.finish(collected)'))):
+                                                'outcome.status == ScanResult.Again', 'parser.finish(collected) {'))):
                 checked = sidecar['entries'][packet['requirement']['id']]['propositions']
                 anchors = {(proof['startByte'], proof['endByte'], proof['textDigest'])
                            for fact in checked if fact['kind'] == 'RESULT_CONTROLLED_LOOP' or fact['kind'].startswith('LOOP_')

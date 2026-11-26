@@ -1011,6 +1011,66 @@ class ArchiveJob(private val pages: PageSource, private val archive: Archive) {
                 anchors = {witnesses[ref]['text'] for ref in accumulator['sources'] if ref in witnesses}
                 self.assertTrue({'var collected = 0', 'collected += result.size', predicate} <= anchors, anchors)
 
+    def test_kotlin_normal_loop_exit_cites_trailing_lambda_as_an_argument(self):
+        template = """class Scanner(private val source: Feeder, private val archive: Archive) {
+    fun run() {
+        LOOP
+        SUFFIX
+    }
+}
+"""
+        tail = 'do { val result = source.next() } while (result.status == Progress.More)'
+        break_loop = 'while (true) { val result = source.next(); if (result.status != Progress.More) break }'
+        direct = 'archive.finish { callbackBody() }'
+        cases = (
+            ('bare trailing lambda', tail, direct, 'archive.finish', 'archive.finish {', False),
+            ('parenthesized and ordered', tail, 'prepare()\narchive.finish(batch) { callbackBody() }',
+             'archive.finish(batch)', 'archive.finish(batch) {', False),
+            ('qualified', tail, 'packageName.Archive.finish { callbackBody() }',
+             'packageName.Archive.finish', 'packageName.Archive.finish {', False),
+            ('receiver and safe navigation', tail, 'findArchive()?.finish(batch) { callbackBody() }',
+             'findArchive()?.finish(batch)', 'findArchive()?.finish(batch) {', True),
+            ('safe access on an earlier receiver', tail, 'findArchive()?.pipeline.finish(batch) { callbackBody() }',
+             'findArchive()?.pipeline.finish(batch)', 'findArchive()?.pipeline.finish(batch) {', False),
+            ('trailing lambda in return operand', tail, 'return archive.finish(batch) { callbackBody() }',
+             'return archive.finish(batch)', 'return archive.finish(batch) {', False),
+            ('safe access in ordinary argument', tail, 'archive.finish(input?.value) { callbackBody() }',
+             'archive.finish(input?.value)', 'archive.finish(input?.value) {', False),
+            ('normal break', break_loop, direct, 'archive.finish', 'archive.finish {', False),
+            ('return in lambda', tail, 'archive.finish { return }\nnextAction()', 'archive.finish', 'archive.finish {', False),
+            ('throw in lambda', tail, 'archive.finish { throw CallbackFailure() }\nnextAction()',
+             'archive.finish', 'archive.finish {', False),
+            ('return before invocation', tail, 'return\n' + direct, None, None, False),
+            ('throw before invocation', tail, 'throw CallbackFailure()\n' + direct, None, None, False),
+            ('guard before invocation', tail, 'if (enabled) { ' + direct + ' }', None, None, False),
+            ('catch changes continuation', tail, 'try { ' + direct + ' } catch (error: Exception) { recover() }', None, None, False),
+            ('opaque next path', tail, 'val token = opaque { callbackBody() }\n' + direct, None, None, False),
+            ('exception interrupts iteration', 'do { val result = source.next(); if (result.bad) throw CallbackFailure() } '
+             'while (result.status == Progress.More)', direct, 'archive.finish', 'archive.finish {', False),
+        )
+        for title, loop, suffix, expression, header, guarded in cases:
+            with self.subTest(title=title):
+                source = template.replace('LOOP', loop).replace('SUFFIX', suffix.replace('\n', '\n        '))
+                root = source[source.index('fun run'):source.rindex('\n}')]
+                rows, witnesses = self.kotlin_callback_facts(source, root, 'HTTP_ENDPOINT', 'run')
+                fact, = (row for row in rows if row['kind'] == 'RESULT_CONTROLLED_LOOP')
+                if expression is None:
+                    self.assertNotIn('archive.finish', fact['text'])
+                    continue
+                self.assertIn(f'`{expression}` with a trailing lambda argument', fact['text'])
+                self.assertIn('Whether the lambda runs depends on the callee.', fact['text'])
+                self.assertEqual('when the safe-call receiver checks pass' in fact['text'], guarded)
+                self.assertNotIn('callbackBody', fact['text'])
+                self.assertNotIn('nextAction', fact['text'])
+                self.assertNotIn('CallbackFailure()', fact['text'])
+                spans = [witnesses[ref]['text'] for ref in fact['sources'] if ref in witnesses]
+                self.assertIn(header, spans)
+                if title == 'parenthesized and ordered':
+                    self.assertLess(fact['text'].index('prepare()'), fact['text'].index(expression))
+                if title == 'exception interrupts iteration':
+                    failure, = (row for row in rows if row['kind'] == 'LOOP_FAILURE_PATH')
+                    self.assertIn('skips the remaining iteration and the normal after-loop continuation', failure['text'])
+
     def test_kotlin_result_source_uses_only_the_external_call_selected_by_the_comparison(self):
         text = """fun archive() {
     while (client.read() == Status.More) {

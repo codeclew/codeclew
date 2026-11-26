@@ -19,6 +19,13 @@ class Step:
 
 
 @dataclass(frozen=True)
+class Continuation:
+    site: object
+    text: str
+    passes_lambda: bool = False
+
+
+@dataclass(frozen=True)
 class Local:
     site: object
     initializer: tuple = ()
@@ -111,6 +118,35 @@ class Projection:
                 and not any(token.text in {"{", "->", "?.", "return", "throw", "break", "continue", "::"} for token in tokens)):
             return Step(parts[-1].site)
         return None
+
+    def trailing_lambda(self, tokens, start):
+        """Keep the call header and its lambda boundary without replaying the argument body."""
+        if not tokens or tokens[-1].text != "}":
+            return None
+        first = self.unit.token_indices[tokens[0].start]
+        stop = first + len(tokens)
+        parts = self.body.invocation_stages(first, stop)
+        if (not parts or parts[-1].site != self.span(tokens) or len(parts[-1].callbacks) != 1
+                or any(not part.member or part.callbacks for part in parts[:-1]) or not parts[-1].member):
+            return None
+        callback, = parts[-1].callbacks
+        if callback.end != parts[-1].site.end:
+            return None
+        opening = self.unit.token_indices[callback.start]
+        prefix = self.unit.tokens[first:opening]
+        if not prefix or any(token.text in {"{", "->", "return", "throw", "break", "continue", "::"} for token in prefix):
+            return None
+        start_ = self.unit.token_indices[start]
+        if not (label := self.literal(self.unit.site(start_, opening))):
+            return None
+        selector = self.unit.token_indices[parts[-1].selector.start]
+        safe = selector > first and self.words[selector - 1] == "?."
+        if self.words[opening] != "{":
+            opening += 2  # The parser already verified a trailing lambda label.
+        header = self.unit.site(start_, opening + 1)
+        condition = ("when the safe-call receiver checks pass and call arguments evaluate normally" if safe
+                     else "when the receiver and arguments evaluate normally")
+        return Continuation(header, f"{label} with a trailing lambda argument {condition}", passes_lambda=True)
 
     def action(self, statement, *, binding=False, locals_=None):
         if statement.kind == "expression":
@@ -323,7 +359,7 @@ class Projection:
             return None
         phases = [self.literal(step.site) for step in loop.actions]
         before = [self.literal(step.site) for step in loop.prefix]
-        after = [self.literal(site) for site in suffix]
+        after = [step.text for step in suffix if not step.passes_lambda]
         stop = self.literal(loop.stop) if loop.stop else None
         if not all([*phases, *before, *after]) or loop.stop and not stop:
             return None
@@ -346,7 +382,12 @@ class Projection:
             parts.append(f"If {comparison} evaluates false, the loop exits normally.")
         if after:
             parts.append("The normal after-loop continuation reaches " + " then ".join(after) + ".")
-        sites = [loop.supplier.site, loop.comparison, loop.stop, loop.binding, *(step.site for step in (*loop.prefix, *loop.actions)), *suffix]
+        if suffix and suffix[-1].passes_lambda:
+            opening = ("If that sequence completes normally, source then reaches " if after
+                       else "The normal after-loop continuation reaches ")
+            parts.extend((opening + suffix[-1].text + ".", "Whether the lambda runs depends on the callee."))
+        sites = [loop.supplier.site, loop.comparison, loop.stop, loop.binding,
+                 *(step.site for step in (*loop.prefix, *loop.actions, *suffix))]
         return self.fact("RESULT_CONTROLLED_LOOP", " ".join(parts), sites)
 
     def source(self, loop, locals_):
@@ -420,7 +461,7 @@ class Projection:
                     tail = " and the normal after-loop continuation" if after else ""
                     yield self.fact("LOOP_FAILURE_PATH", f"If this decision is reached and {condition}, {exit_} skips the remaining iteration{tail} "
                                     "once the thrown value evaluates and the exception escapes.",
-                                    (*branch, loop.comparison, *suffix), condition)
+                                    (*branch, loop.comparison, *(step.site for step in suffix)), condition)
 
     def validations(self, checks, loop):
         for check in checks:
@@ -431,15 +472,24 @@ class Projection:
                             (*check.sites, loop.comparison), passes)
 
     def scope_tail(self, statements):
-        sites = []
+        steps = []
         for statement in statements[:MAX_STEPS]:
             if statement.kind == "return" and (not statement.expression or statement.expression[0].text != "@"):
-                sites.append(statement.site)
+                if callback_call := self.trailing_lambda(statement.expression, statement.site.start):
+                    steps.append(callback_call)
+                elif text := self.literal(statement.site):
+                    steps.append(Continuation(statement.site, text))
                 break
-            if not (operation := self.call(statement.expression)) or statement.kind != "expression":
+            if statement.kind != "expression":
                 break
-            sites.append(operation.site)
-        return tuple(sites)
+            if callback_call := self.trailing_lambda(statement.expression, statement.site.start):
+                steps.append(callback_call)
+                # A callback contract is needed to reason about continuation past the call.
+                break
+            if not (operation := self.call(statement.expression)) or not (text := self.literal(operation.site)):
+                break
+            steps.append(Continuation(operation.site, text))
+        return tuple(steps)
 
     def project(self):
         function = self.body.function
