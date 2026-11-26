@@ -149,6 +149,7 @@ ci_run checks python3 -I -S scripts/test_page_citations.py
 ci_run checks python3 -I -S scripts/test_page_compose.py
 ci_run checks python3 -I -S scripts/test_reader_export_check.py
 ci_run checks python3 -I -S scripts/test_docs_run.py
+ci_run checks python3 -I -S scripts/qualification/test_weather_preauthor.py
 ci_run checks python3 -I -S scripts/qualify_prepared_projectors.py
 ci_run checks python3 -I -S scripts/test_reader_sources.py
 ci_run checks python3 -I -S scripts/test_prepared_source.py

@@ -40,13 +40,14 @@ checksums match the independently accepted archives.
 
 ## Installed documentation author inputs
 
-For a release with installed documentation author-input qualification in scope,
-require the [Weather checkpoint](../../scripts/qualification/weather-preauthor.md)
-before making the draft public. Run the checkpoint against one produced official
-core archive from this draft after the archive checksum and installation checks.
-The independent semantic review requires 45/45 full atoms and zero material
-false claims. Keep the frozen run, independent review and release-bound report
-outside the installed package and release assets.
+Run the [Weather checkpoint](../../scripts/qualification/weather-preauthor.md)
+before making a draft public whenever the release changes installed documentation
+preparation, how it selects retained evidence, or what goes into the author packet.
+Verify and install one official core archive produced for that draft, then use
+a run prepared by that authenticated installation. The independent semantic
+review requires 45/45 full atoms and zero material false claims. Keep the frozen
+run, independent review and release-bound report outside the installed package
+and release assets.
 
 Verify the report against the same downloaded archive, the peeled release
 commit, the authenticated installation and the original frozen evidence:

@@ -146,6 +146,13 @@ class CiDispatchTests(unittest.TestCase):
         self.assertIn(task, commands)
         self.assertNotIn('"status":"PASSED"', result.stdout)
 
+    def test_weather_preauthor_controls_are_required_in_checks(self):
+        task = ["python3", "-I", "-S", "scripts/qualification/test_weather_preauthor.py"]
+        result, commands = self.run_ci("--suite", "checks", failure=" ".join(task))
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(commands.count(task), 1)
+        self.assertNotIn('"status":"PASSED"', result.stdout)
+
     def test_csharp_function_failure_cannot_be_masked(self):
         result, commands = self.run_ci("--suite", "checks", failure="dotnet publish")
         self.assertEqual(result.returncode, 23)

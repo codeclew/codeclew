@@ -99,11 +99,15 @@ semantic judgment.
 
 ## Release-bound evidence report
 
-For the [draft promotion checkpoint](../../docs/operations/release-draft-promotion.md),
-use the exact official archive from the draft and the corresponding authenticated
-installation. Add the archive and peeled tag commit to the witness collection
-command. The resulting catalog carries the target payload identity. After the
-independent review, generate the release report:
+Ordinary CI runs the hermetic validator tests through
+`./scripts/ci-verify.sh --suite checks`. Those fixtures check acceptance and
+rejection without installing a release, contacting a network or starting an
+author. Apply the [draft promotion trigger](../../docs/operations/release-draft-promotion.md#installed-documentation-author-inputs)
+to qualify changes to installed documentation on the exact official archive
+from the draft and the corresponding authenticated installation. Add the archive
+and peeled tag commit to the witness collection command. The resulting catalog
+carries the target payload identity. After the independent review, generate the
+release report:
 
 ```sh
 python3 -I -S scripts/qualification/weather-preauthor.py \
