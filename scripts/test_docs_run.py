@@ -2911,11 +2911,11 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
 
         assembly = ["assembly", *(f"alias-{index}" for index in range(10))]
 
-        def listener(name, configuration, *, registered=True, declaration=True, callback=True, complete=True):
+        def listener(name, configuration, *, registered=True, callback=True, complete=True,
+                     authority="RETAINED_JAVA_DISPATCHER_WIRING"):
             references = [f"{name}-{piece}" for piece in assembly]
             return self.retained(name, entry_kind="JAVA_TYPED_DISPATCH", proof=registered,
-                                 trigger={"kind": "JAVA_TYPED_DISPATCH",
-                                          "authority": "RETAINED_JAVA_DISPATCHER_WIRING" if declaration else "INFERRED",
+                                 trigger={"kind": "JAVA_TYPED_DISPATCH", "authority": authority,
                                           "configuration": configuration, "registration": name + "-registration",
                                           "callback": name + ("-body" if callback else "-absent"),
                                           "assemblySources": references if complete else [*references, name + "-missing"]},
@@ -2931,7 +2931,7 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                  listener("unregistered", config, registered=False),
                  listener("missing-callback-source", config, callback=False),
                  listener("missing-assembly-source", config, complete=False),
-                 listener("compatible-function", config, declaration=False)]
+                 listener("compatible-function", config, authority="INFERRED")]
         result = self.project(owner, eligible, *peers)
         row, = result[owner[0]["id"]]
         self.assertEqual(row["kind"], "typed-message-peer")
@@ -2943,6 +2943,28 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                                 facts=[{**qualified, "authority": "RETAINED_JAVA_PUBLICATION_CANDIDATE"}])
         local, = self.project(nominal, eligible)[nominal[0]["id"]]
         self.assertIn("receiver and operands corroborate", local["text"])
+        declared = "RETAINED_JAVA_HANDLER_BEAN_DECLARATION"
+        possible = listener("declared", config, authority=declared)
+        missing = listener("missing-declaration-source", config, authority=declared, complete=False)
+        partial = self.project(owner, possible, missing, *peers)
+        self.assertNotIn(missing[0]["id"], partial)
+        for entry in (owner, possible):
+            edge, = partial[entry[0]["id"]]
+            self.assertEqual((edge["kind"], edge["status"]), ("typed-message-peer", "POSSIBLE"))
+            self.assertEqual(edge["condition"], "If the external Eventuate registrar is activated and the message is delivered.")
+            self.assertIn("registrar and its activation unresolved", edge["uncertainty"])
+            self.assertIn("acknowledgement", edge["uncertainty"])
+            self.assertEqual(edge["sources"], ["origin-body", "declared-registration",
+                                               *(f"declared-{piece}" for piece in assembly), "declared-body"])
+        also_possible = listener("another-declaration", config, authority=declared)
+        ambiguous = self.project(owner, possible, also_possible)
+        self.assertEqual(set(ambiguous), {owner[0]["id"]})
+        unresolved, = ambiguous[owner[0]["id"]]
+        self.assertEqual((unresolved["kind"], unresolved["status"]), ("typed-message-peer-boundary", "AMBIGUOUS"))
+        stronger = self.project(owner, possible, eligible)
+        self.assertNotIn(possible[0]["id"], stronger)
+        self.assertEqual(stronger[owner[0]["id"]][0]["status"], "SOURCE_QUALIFIED_CANDIDATE")
+
         open_call = {**qualified, "_edge": {**qualified["_edge"], "channel": None}}
         owner = self.retained("orders", name="origin", facts=[open_call])
         row, = self.project(owner, eligible)[owner[0]["id"]]

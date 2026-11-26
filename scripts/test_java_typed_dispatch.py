@@ -21,6 +21,10 @@ HANDLER = PACKAGE + "ReceiptHandler.java"
 WIRING = PACKAGE + "DispatchWiring.java"
 METHOD = "this::accept"
 MAKE = 'factory.make("receipts-reader", handler.handlers())'
+NO_REGISTRAR = [
+    (ANNOTATED_WIRING, "import io.eventuate.tram.spring.events.subscriber.TramEventSubscriberConfiguration;\n", ""),
+    (ANNOTATED_WIRING, "@Import(TramEventSubscriberConfiguration.class)\n", ""),
+]
 
 
 def java_files(root):
@@ -143,7 +147,32 @@ class JavaTypedDispatchTests(unittest.TestCase):
         self.assertTrue(any("import static neutral.receiver.Routes.SELECTED" in excerpt for excerpt in excerpts))
         self.assertTrue(any('String PREFIX = "neutral."' in excerpt for excerpt in excerpts))
 
-    def test_annotated_registration_requires_proven_spring_wiring(self):
+    def test_exact_bean_declaration_survives_an_unseen_registrar(self):
+        wired, _ = self.prepared(fixture=self.annotated)
+        declared, files = self.prepared(NO_REGISTRAR, fixture=self.annotated)
+        self.assertEqual([row["name"] for row in wired], [row["name"] for row in declared])
+        self.assertTrue(all(not row["registrarOpen"] for row in wired))
+        self.assertTrue(all(row["registrarOpen"] for row in declared))
+        row = next(row for row in declared if row["name"].endswith(".accept"))
+        excerpts = [files[span["file"]]["text"].encode()[span["start"]:span["end"]].decode()
+                    for span in row["assemblySources"]]
+        self.assertIn("@Bean", excerpts)
+        self.assertIn("return handler;", excerpts)
+        self.assertFalse(any("TramEventSubscriberConfiguration" in excerpt for excerpt in excerpts))
+
+    def test_partial_registration_requires_a_retained_unconditional_spring_bean(self):
+        cases = {
+            "foreign bean": [(ANNOTATED_WIRING, "org.springframework.context.annotation.Bean", "neutral.foreign.Bean")],
+            "configuration has an unresolved gate": [(ANNOTATED_WIRING, "@Configuration", "@Configuration\n@EnvironmentGate")],
+            "bean has an unresolved gate": [(ANNOTATED_WIRING, "    @Bean", "    @EnvironmentGate\n    @Bean")],
+        }
+        for label, changes in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.prepared([*NO_REGISTRAR, *changes], fixture=self.annotated)[0], [])
+        without_handler = {file: row for file, row in self.annotated.items() if file != ANNOTATED_HANDLER}
+        self.assertEqual(self.prepared(NO_REGISTRAR, fixture=without_handler)[0], [])
+
+    def test_annotated_registration_requires_exact_annotations_and_known_operands(self):
         cases = {
             "foreign framework configuration": [(ANNOTATED_WIRING,
                 "io.eventuate.tram.spring.events.subscriber.TramEventSubscriberConfiguration",
@@ -167,8 +196,9 @@ class JavaTypedDispatchTests(unittest.TestCase):
 
     def test_duplicate_annotation_registration_does_not_select_first_match(self):
         changes = [(ANNOTATED_HANDLER, 'channel = "neutral.backup"', 'channel = "neutral.signal"')]
-        rows, _ = self.prepared(changes, fixture=self.annotated)
-        self.assertEqual([row["name"] for row in rows], ["neutral.receiver.Sink.acceptOtherType"])
+        for activation in ([], NO_REGISTRAR):
+            rows, _ = self.prepared([*activation, *changes], fixture=self.annotated)
+            self.assertEqual([row["name"] for row in rows], ["neutral.receiver.Sink.acceptOtherType"])
 
 
 if __name__ == "__main__":

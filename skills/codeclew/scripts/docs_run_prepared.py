@@ -657,6 +657,9 @@ def background_operation(service, found, files, exact):
     """Build a source-only root and rebind every range to retained Work."""
     sources, handles = {}, {}
     kind, authority = BACKGROUND_KINDS[found['kind']]
+    registrar_open = kind == 'JAVA_TYPED_DISPATCH' and found.get('registrarOpen')
+    if registrar_open:
+        authority = 'RETAINED_JAVA_HANDLER_BEAN_DECLARATION'
 
     def bind(place):
         file = place['file']
@@ -732,6 +735,8 @@ def background_operation(service, found, files, exact):
                    'rootDeclarations': [callback], 'handlerId': 'entry-' + identity,
                    'method': None, 'path': None, 'authority': authority,
                    'trigger': trigger, 'boundaries': ['RUNTIME_ACTIVATION_NOT_ESTABLISHED']}
+    if registrar_open:
+        requirement['boundaries'].append('EXTERNAL_REGISTRAR_NOT_ESTABLISHED')
     helpers = [ref for row in found.get('helpers', ()) if (ref := bind(row))]
     bodies = list(dict.fromkeys([callback, *helpers]))
     calls, offsets, publications = [], [], []
@@ -760,8 +765,14 @@ def background_operation(service, found, files, exact):
                    if kind == 'JAVA_TYPED_DISPATCH' else
                    'Source selects this callback. Activation, execution timing and delivery depend on runtime bindings.'
                    + (' Framework SDK imports are assumed.' if found.get('sdkImports') else ''))
-    facts = [dict(kind='background-registration', authority=authority, sources=refs,
-                  text=background_registration(found, trigger), uncertainty=uncertainty)]
+    registration_fact = dict(kind='background-registration', authority=authority, sources=refs,
+                             text=background_registration(found, trigger), uncertainty=uncertainty)
+    if registrar_open:
+        registration_fact.update(status='DECLARED',
+                                 uncertainty='Retained source leaves the external Eventuate registrar and its '
+                                 'activation unresolved. Transport and wire bindings, delivery, acknowledgement '
+                                 'and runtime execution order remain open.')
+    facts = [registration_fact]
     if trigger.get('topicCoverageOpen'):
         facts.append(dict(kind='background-topic-boundary', authority=authority, sources=[registration],
                           text='Additional subscription topics and activation remain open.'))
@@ -779,6 +790,9 @@ def background_registration(found, trigger):
     if found['kind'] == 'INTERVAL':
         return f'`setInterval` selects the cited callback and supplies `{found["interval"]}` milliseconds as its repeat interval.'
     if found['kind'] == 'JAVA_TYPED_DISPATCH':
+        if found.get('registrarOpen'):
+            return (f'The retained Spring `@Bean` declares the bean with `@EventuateDomainEventHandler` '
+                    f'method `{name}` for `{found["eventType"]}` on channel `{found["channel"]}`.')
         if 'subscriberId' in found:
             return (f'The retained Spring bean wiring and `@EventuateDomainEventHandler` select `{name}` '
                     f'for `{found["eventType"]}` on channel `{found["channel"]}`.')

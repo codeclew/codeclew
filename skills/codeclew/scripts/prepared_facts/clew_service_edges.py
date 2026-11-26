@@ -22,6 +22,9 @@ JAVA_CHANNEL = re.compile(r"[A-Za-z0-9._$-]{1,249}", re.ASCII)
 JAVA_EVENT_CLASS = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+", re.ASCII)
 JAVA_TYPED_ADAPTER = "EVENTUATE_TRAM_DOMAIN_EVENT"
 JAVA_DISPATCH_AUTHORITY = "RETAINED_JAVA_DISPATCHER_WIRING"
+JAVA_DISPATCH_DECLARATION = "RETAINED_JAVA_HANDLER_BEAN_DECLARATION"
+JAVA_DECLARED_PEER_CONDITION = "If the external Eventuate registrar is activated and the message is delivered."
+JAVA_REGISTRAR_OPEN = "Retained source leaves the external Eventuate registrar and its activation unresolved."
 TABLE = re.compile(r'[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*){0,2}', re.ASCII)
 PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
@@ -231,7 +234,7 @@ def record(requirement, process, context, facts, exact):
     callbacks = cite_refs(sources, [trigger.get("callback")])
     typed_registration = None
     if (requirement.get("entryKind") == trigger.get("kind") == "JAVA_TYPED_DISPATCH"
-            and trigger.get("authority") == JAVA_DISPATCH_AUTHORITY
+            and trigger.get("authority") in {JAVA_DISPATCH_AUTHORITY, JAVA_DISPATCH_DECLARATION}
             and trigger.get("registration") in sources and callbacks
             and all(ref in sources for ref in assembly) and len(registration) <= registration_limit):
         typed_registration = typed_route(trigger.get("configuration") or {})
@@ -319,6 +322,7 @@ def record(requirement, process, context, facts, exact):
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
             "typedPublishes": list(typed_publishes.values()), "typedRegistration": typed_registration,
+            "typedRegistrarOpen": trigger.get("authority") == JAVA_DISPATCH_DECLARATION,
             "reads": list(reads.values()), "writes": [
                 {**write, "focus": write_focus.get(write["occurrence"], {}),
                  "uniqueWrite": len(write_shapes[write["occurrence"]]) == 1 and len(write_sites[write["occurrence"]]) <= 1}
@@ -706,7 +710,9 @@ def project(requirements, records, *, contracts=None, isolated=False):
             boundary = " ".join(filter(None, (JAVA_DISPATCH_OPEN, publication.get("uncertainty"))))
             route = publication["route"]
             candidates = [peer for peer in typed_dispatchers.get(route, ()) if peer != owner]
-            if not candidates or len(candidates) > MAX_MATCHES:
+            wired = [peer for peer in candidates if not records[peer]["typedRegistrarOpen"]]
+            candidates = wired or candidates
+            if not candidates or len(candidates) > (MAX_MATCHES if wired else 1):
                 text = ("Multiple retained Java dispatcher candidates match this protocol, channel and event class."
                         if candidates else "A source-qualified Java dispatcher for this publication remains open.")
                 emit(owner, "typed-message-peer-boundary", publication["text"] + " " + text, boundary, publication,
@@ -720,6 +726,16 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 target = receiver["requirement"]
                 title = f"`{target['service']}` (`{target['page']}`)"
                 evidence = (publication, registration(receiver), callback(receiver))
+                if receiver["typedRegistrarOpen"]:
+                    condition = {"sources": (), "condition": JAVA_DECLARED_PEER_CONDITION}
+                    unresolved = JAVA_REGISTRAR_OPEN + " " + boundary
+                    emit(owner, "typed-message-peer", basis + f" Possible peer in {title} has a retained bean and "
+                         f"handler declaration for channel `{channel}` and qualified event `{event}`.",
+                         unresolved, *evidence, condition, status="POSSIBLE")
+                    emit(peer, "typed-message-peer", f"Possible publication peer `{service}` has a retained submission "
+                         f"for channel `{channel}` and qualified event `{event}`. " + basis,
+                         unresolved, *evidence, condition, status="POSSIBLE")
+                    continue
                 emit(owner, "typed-message-peer", basis + f" Channel `{channel}` and qualified event `{event}` "
                      f"match the retained dispatcher registration in {title}.",
                      boundary, *evidence)

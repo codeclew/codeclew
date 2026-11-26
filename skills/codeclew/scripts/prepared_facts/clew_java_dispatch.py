@@ -29,6 +29,7 @@ SUBSCRIBER_CONFIGURATIONS = {
     "io.eventuate.tram.spring.events.subscriber.TramEventSubscriberConfiguration",
     "io.eventuate.tram.spring.events.autoconfigure.TramEventsSubscriberAutoConfiguration",
 }
+SUBSCRIBER_CONFIGURATION_NAMES = {qualified.rsplit(".", 1)[-1] for qualified in SUBSCRIBER_CONFIGURATIONS}
 STEREOTYPES = (COMPONENT, CONFIGURATION, *("org.springframework.stereotype." + name
                                           for name in ("Service", "Repository", "Controller")))
 ADAPTER = "EVENTUATE_TRAM_DOMAIN_EVENT"
@@ -413,7 +414,7 @@ class Dispatch:
             return value, (site(target, declaration), *binding, *sources)
         return None
 
-    def annotated_methods(self, owner, binding):
+    def annotated_methods(self, owner, binding, bean, *, registrar_open=False):
         if owner.node[4] not in {"CLASS", "RECORD", "ENUM"} or "ABSTRACT" in owner.node[5]:
             return
         for method in owner.methods():
@@ -432,7 +433,8 @@ class Dispatch:
                     or not CHANNEL.fullmatch(channel[0]) or channel[0] in {".", ".."}):
                 continue
             yield {"kind": KIND, "name": f"{owner.qualified}.{method[3]}", "callback": site(owner, method),
-                   "registration": site(owner, declared), "assemblySources": [
+                   "registration": site(owner, declared), "bean": bean, "registrarOpen": registrar_open,
+                   "assemblySources": [
                        *proof(owner, declared, HANDLER), *imports(owner, parameter[4], ENVELOPE),
                        *imports(owner, parameter[6][0], event), *binding, *subscriber[1], *channel[1]],
                    "adapter": ADAPTER, "channel": channel[0], "eventType": event, "subscriberId": subscriber[0]}
@@ -443,9 +445,11 @@ class Dispatch:
                 if target := self.class_literal(owner, item):
                     yield target, (*proof(owner, declared, IMPORT), *imports(owner, name(item[3]), target))
 
-    def handler_beans(self, owner):
+    def handler_beans(self, owner, *, unconditional=False):
         for method in owner.methods():
             if not (bean := annotation(self.units, owner, method[7], BEAN)) or not (result := returned(method)):
+                continue
+            if unconditional and len(method[7]) != 1:
                 continue
             value, aliases = resolve_alias(*result)
             if not kind(value, "new") or value[3] is not None or not kind(value[4], "type"):
@@ -455,7 +459,7 @@ class Dispatch:
                 target = self.units.lookup(owner, selected)
                 flow = (*aliases, method[8][3][-1]) if aliases else ()
                 yield target, (*proof(owner, bean, BEAN), site(owner, value),
-                               *imports(owner, value[4][3], selected), *(site(owner, node) for node in flow))
+                               *imports(owner, value[4][3], selected), *(site(owner, node) for node in flow)), site(owner, bean)
 
     def annotation_registrations(self, owner, handler_files):
         configuration = next(((node, qualified) for qualified in (CONFIGURATION, SPRING_BOOT_APPLICATION)
@@ -465,16 +469,28 @@ class Dispatch:
         configured, configuration_type = configuration
         imported = list(self.imported_classes(owner))
         framework = [sources for qualified, sources in imported if qualified in SUBSCRIBER_CONFIGURATIONS]
+        configuration_proof = proof(owner, configured, configuration_type)
         if not framework:
+            # A plain bean declaration survives when a starter or other external
+            # registrar would have to supply activation. Unknown annotations can
+            # gate the configuration, and a foreign lookalike import is contrary evidence.
+            if any(self.units.qualify(owner, node[3]) not in {configuration_type, IMPORT, COMPONENT_SCAN}
+                   for node in owner.node[6]):
+                return
+            if any(qualified.rsplit(".", 1)[-1] in SUBSCRIBER_CONFIGURATION_NAMES for qualified, _ in imported):
+                return
+            for target, binding, bean in self.handler_beans(owner, unconditional=True):
+                yield from self.annotated_methods(target, (*configuration_proof, *binding), bean, registrar_open=True)
             return
-        activation = (*proof(owner, configured, configuration_type), *framework[0])
 
+        activation = (*configuration_proof, *framework[0])
         beans = list(self.handler_beans(owner))
         for qualified, sources in imported:
             if qualified in SUBSCRIBER_CONFIGURATIONS or not (target := self.units.lookup(owner, qualified)):
                 continue
-            beans.append((target, sources))
-            beans.extend((selected, (*sources, *binding)) for selected, binding in self.handler_beans(target))
+            beans.append((target, sources, sources[0]))
+            beans.extend((selected, (*sources, *binding), bean)
+                         for selected, binding, bean in self.handler_beans(target))
         scan = annotation(self.units, owner, owner.node[6], COMPONENT_SCAN)
         if scan and not scan[4]:
             scan_sources = proof(owner, scan, COMPONENT_SCAN)
@@ -489,17 +505,20 @@ class Dispatch:
                         continue
                     for stereotype in STEREOTYPES:
                         if marker := annotation(self.units, target, target.node[6], stereotype):
-                            beans.append((target, (*scan_sources, *proof(target, marker, stereotype))))
+                            beans.append((target, (*scan_sources, *proof(target, marker, stereotype)), site(target, marker)))
                             break
-        for target, binding in beans:
-            yield from self.annotated_methods(target, (*activation, *binding))
+        for target, binding, bean in beans:
+            yield from self.annotated_methods(target, (*activation, *binding), bean)
 
 
 def discover(files, *, deadline):
     roots = [file for file, row in files.items() if "DomainEventDispatcher" in row["text"] and "@" in row["text"]]
     handler_files = [file for file, row in files.items() if "EventuateDomainEventHandler" in row["text"] and "@" in row["text"]]
-    configuration_names = tuple(name.rsplit(".", 1)[1] for name in sorted(SUBSCRIBER_CONFIGURATIONS))
-    configuration_files = [file for file, row in files.items() if any(name in row["text"] for name in configuration_names)]
+    configuration_files = [file for file, row in files.items()
+                           if any(name in row["text"] for name in SUBSCRIBER_CONFIGURATION_NAMES)]
+    declaration_files = [file for file, row in files.items() if "Bean" in row["text"] and
+                         ("Configuration" in row["text"] or "SpringBootApplication" in row["text"])]
+    configuration_files = tuple(dict.fromkeys([*configuration_files, *declaration_files]))
     if not roots and not (handler_files and configuration_files):
         return []
     found = []
@@ -521,7 +540,7 @@ def discover(files, *, deadline):
                 for owner in units.read(file):
                     for factory in owner.methods():
                         found.extend(scanner.factory(owner, factory))
-            annotated = defaultdict(list)
+            annotated = defaultdict(dict)
             if handler_files and annotation_provider.isdisjoint(shadowed):
                 for file in configuration_files[:MAX_FACTORIES]:
                     if time.monotonic() >= deadline or len(annotated) >= MAX_CALLBACKS:
@@ -529,9 +548,11 @@ def discover(files, *, deadline):
                     for owner in units.read(file):
                         for candidate in scanner.annotation_registrations(owner, handler_files[:MAX_FACTORIES]):
                             key = candidate["subscriberId"], candidate["channel"], candidate["eventType"]
-                            if candidate not in annotated[key]:
-                                annotated[key].append(candidate)
-                found.extend(group[0] for group in annotated.values() if len(group) == 1)
+                            binding = tuple(tuple(candidate[part].values()) for part in ("callback", "bean"))
+                            previous = annotated[key].get(binding)
+                            if previous is None or previous["registrarOpen"] and not candidate["registrarOpen"]:
+                                annotated[key][binding] = candidate
+                found.extend(next(iter(group.values())) for group in annotated.values() if len(group) == 1)
     except (OSError, subprocess.SubprocessError, ValueError):
         return found[:MAX_CALLBACKS]
     return found[:MAX_CALLBACKS]
