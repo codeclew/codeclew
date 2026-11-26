@@ -236,6 +236,7 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
     if state.get('status') == 'AUTHOR_REPAIRS_EXHAUSTED':
         raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **state['terminalFailure'])
     check_author_state(state)
+    fresh = state['authorStartedAt'] is None and not state['attempts']
     if state['authorStartedAt'] is None:
         state['authorStartedAt'] = time.time()
     remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
@@ -266,6 +267,10 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
         try:
             for slot in plan['slots']:
                 assess(slot)
+            if fresh and not scheduled:
+                # Prompt bytes approximate author time. Stable ties keep the plan's order.
+                pending = deque(sorted(pending, key=lambda action: (run / 'inputs' / action[0]['prompt']).stat().st_size,
+                                       reverse=True))
             while pending or active:
                 while pending and len(active) < POOL_SIZE and not any(future.done() for future in active):
                     need(time.monotonic() < deadline, 'AUTHOR_BUDGET_EXHAUSTED')
@@ -313,4 +318,4 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                 # Preserve completed counters even if an unrelated child was interrupted
                 # or a worker failed before it could persist its own result.
                 record_accounting(run, state)
-    return state, responses
+    return state, {key: responses[key] for key in histories if key in responses}

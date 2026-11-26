@@ -22,6 +22,59 @@ REQUEST_MARKER = 'AUTHOR-INSTRUCTIONS-7C5B'
 LARGE_USAGE = {'input_tokens': 600000, 'cached_input_tokens': 200000, 'output_tokens': 33917, 'reasoning_output_tokens': 12000}
 
 
+class PageExecutionOrderTests(unittest.TestCase):
+    def test_fresh_queue_prioritizes_large_packets_and_stably_orders_ties(self):
+        execution = D['PX']
+        specs = [('first', 'GUIDE', 24), ('light', 'OPERATION', 12), ('equal-one', 'OPERATION', 48),
+                 ('equal-two', 'OPERATION', 48), ('map', 'PROCESS_MAP', 120)]
+        slots = [{'key': key, 'kind': kind, 'page': key + '.md', 'prompt': key + '.txt'} for key, kind, _ in specs]
+        plan = {'slots': slots}
+        original = json.dumps(plan)
+        job = {'budget': {'wallSeconds': 20, 'maxRepairs': 1},
+               'author': {'executable': 'unused-fixture-author', 'model': 'fixture', 'reasoningEffort': 'low'}}
+        payloads = {key: str(index).encode() * size for index, (key, _, size) in enumerate(specs)}
+        keys = [slot['key'] for slot in slots]
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            (run / 'inputs').mkdir()
+            for key, payload in payloads.items():
+                (run / 'inputs' / (key + '.txt')).write_bytes(payload)
+            D['save'](run / 'state.json', {'attempts': [], 'authorStartedAt': None})
+
+            def fake_launch(home, deadline, cancelled, attempt):
+                key = attempt['slot']
+                folder = execution['attempt_dir'](home, attempt)
+                supplied = (folder / 'prompt.txt').read_bytes()
+                if attempt['number']:
+                    self.assertTrue(supplied.endswith(payloads[key]))
+                    self.assertEqual(attempt['resumeThread'], 'thread-' + key)
+                else:
+                    self.assertEqual(supplied, payloads[key])
+                output = json.dumps({'slot': key}).encode()
+                execution['response_path'](home, attempt).write_bytes(output)
+                turn = attempt['number'] + 1
+                return {**attempt, 'status': 'COMPLETED', 'threadId': 'thread-' + key, 'exitCode': 0,
+                        'usage': {'input_tokens': 20 * turn, 'cached_input_tokens': 0, 'output_tokens': turn},
+                        'responseDigest': D['sha'](output)}
+
+            def execute(repairs=None):
+                return execution['execute_authors'](run, job, plan, None, lambda _: [], lambda _, value: value,
+                                                    D['load'], repairs=repairs)
+
+            with patch.dict(execution['execute_authors'].__globals__, {'launch': fake_launch}):
+                state, responses = execute()
+                self.assertEqual([turn['slot'] for turn in state['attempts']], ['map', 'equal-one', 'equal-two', 'first', 'light'])
+                self.assertEqual(list(responses), keys)
+                self.assertEqual(json.dumps(plan), original)
+                self.assertEqual(execute()[0]['attempts'], state['attempts'])
+
+                repairs = {key: {'code': 'FIXTURE_REPAIR'} for key in ('map', 'first')}
+                resumed, responses = execute(repairs)
+                self.assertEqual(resumed['attempts'][:len(keys)], state['attempts'])
+                self.assertEqual([turn['slot'] for turn in resumed['attempts'][len(keys):]], ['first', 'map'])
+                self.assertEqual(list(responses), keys)
+
+
 class DocsRunTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
@@ -558,9 +611,14 @@ else:
         self.mode.write_text('controlled-page')
         D['save'](self.seed / 'queue-control.json', rules)
 
+    @staticmethod
+    def first_launch_order(run, plan):
+        return sorted(plan['slots'], key=lambda slot: -(run / 'inputs' / slot['prompt']).stat().st_size)
+
     def test_isolated_queue_refills_while_first_slot_still_waits(self):
         run, plan, _, _ = self.isolated_fixture()
-        slow, other, fast, fourth, fifth = (row['key'] for row in plan['slots'])
+        launch_order = self.first_launch_order(run, plan)
+        slow, other, fast, fourth, fifth = (row['key'] for row in launch_order)
         initial = [f'{slot}.waiting' for slot in (slow, other, fast)]
         self.control_isolated_slots({
             slow: {'until': [f'{fourth}.started']},
@@ -581,14 +639,14 @@ else:
             active += delta
             peak = max(peak, active)
         self.assertEqual(peak, 3)
-        for slot, attempt in zip(plan['slots'], state['attempts']):
+        for slot, attempt in zip(launch_order, state['attempts']):
             self.assertEqual(slot['key'], attempt['slot'])
             self.assertEqual((D['PX']['attempt_dir'](run, attempt) / 'prompt.txt').read_bytes(),
                              (run / 'inputs' / slot['prompt']).read_bytes())
 
     def test_isolated_queue_terminal_cancels_and_accounts_for_already_started_slots(self):
         run, plan, _, _ = self.isolated_fixture()
-        slow, invalid, fast, fourth, fifth = (row['key'] for row in plan['slots'])
+        slow, invalid, fast, fourth, fifth = (row['key'] for row in self.first_launch_order(run, plan))
         path = self.seed / f'{invalid}-response.json'
         response = D['load'](path)
         response['claims'][0]['cites'] = ['Unbound']
@@ -625,7 +683,7 @@ else:
 
     def test_isolated_queue_shared_deadline_and_receipt_recovery(self):
         run, plan, _, _ = self.isolated_fixture(wall_seconds=1)
-        first = [row['key'] for row in plan['slots'][:3]]
+        first = [row['key'] for row in self.first_launch_order(run, plan)[:3]]
         self.control_isolated_slots({slot: {'until': ['never-release']} for slot in first})
         with self.assertRaises(D['Stop']) as raised:
             D['author'](run)
@@ -655,7 +713,7 @@ else:
 
     def test_isolated_queue_interruption_resumes_only_the_measured_owning_threads(self):
         run, plan, _, _ = self.isolated_fixture(repairs=1)
-        first = [row['key'] for row in plan['slots'][:3]]
+        first = [row['key'] for row in self.first_launch_order(run, plan)[:3]]
         self.control_isolated_slots({slot: {'until': ['never-release']} for slot in first})
         argv = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'),
                 'run', '--run-dir', str(run)]
