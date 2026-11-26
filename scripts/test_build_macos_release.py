@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
+import pwd
 import re
+import runpy
 import stat
 import subprocess
 import sys
@@ -227,9 +230,33 @@ class ReleaseVersionTest(unittest.TestCase):
                 version.assert_called_once_with(Path("/smoke/bin/clew"), "v1.2.3", Path("/smoke/state"), Path("/source"))
                 self.assertEqual(qualification.args, (
                     [sys.executable, "-I", "-S", "/source/scripts/qualify_prepared_projectors.py",
-                     "--installed-launcher", "/smoke/bin/clew"], Path("/source"),
+                     "--installed-launcher", "/smoke/bin/clew", "--scratch-parent", "/smoke"], Path("/source"),
                 ))
                 self.assertEqual(qualification.kwargs["environment"], environment)
+
+    def test_installed_admission_workspace_avoids_shared_temp_ancestors(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        qualifier = runpy.run_path(str(root / "scripts/qualify_prepared_projectors.py"))
+        bootstrap = runpy.run_path(str(root / "bootstrap/clew_bootstrap.py"))
+        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
+        with tempfile.TemporaryDirectory(dir=account_home) as value:
+            owned = Path(value)
+            shared = owned / "shared"
+            shared.mkdir()
+            shared.chmod(0o1777)
+            with (mock.patch.dict(os.environ, {"TMPDIR": str(shared)}),
+                  mock.patch.object(tempfile, "tempdir", None)):
+                with qualifier["qualification_workspace"]() as unconfigured:
+                    self.assertEqual(Path(unconfigured).parent, shared)
+                    with self.assertRaisesRegex(bootstrap["BootstrapError"], "group/world writable"):
+                        os.close(bootstrap["_open_private_tree"](Path(unconfigured) / "state"))
+                with qualifier["qualification_workspace"](owned) as configured:
+                    self.assertEqual(Path(configured).parent, owned)
+                    descriptor = bootstrap["_open_private_tree"](Path(configured) / "state")
+                    try:
+                        self.assertEqual(stat.S_IMODE(os.fstat(descriptor).st_mode), 0o700)
+                    finally:
+                        os.close(descriptor)
 
     def test_linux_archives_have_distinct_names_and_matching_checksums(self) -> None:
         with tempfile.TemporaryDirectory() as value:

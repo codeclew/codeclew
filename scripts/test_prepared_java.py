@@ -154,11 +154,12 @@ def witness_texts(fact, sources):
 
 
 class InstalledJava(unittest.TestCase):
-    def __init__(self, launcher, skill, renderer):
+    def __init__(self, launcher, skill, renderer, scratch_parent):
         super().__init__('test_installed_source_admits_cross_file_java_values_into_operation_prompt')
         self.launcher = launcher
         self.skill = skill
         self.renderer = renderer
+        self.scratch_parent = scratch_parent
 
     def test_installed_source_admits_cross_file_java_values_into_operation_prompt(self):
         self.assertTrue(HAS_JDK, 'Installed Java qualification requires JDK 21 or newer.')
@@ -292,7 +293,7 @@ interface Slice<T> {
 }
 '''
         docs = runpy.run_path(str(self.skill / 'scripts/docs_run.py'))
-        with tempfile.TemporaryDirectory(prefix='clew-java-values-') as directory:
+        with tempfile.TemporaryDirectory(prefix='clew-java-values-', dir=self.scratch_parent) as directory:
             base = Path(directory).resolve()
             repo, root, run = (base / name for name in ('catalog', 'docs', 'run'))
             environment = {**os.environ, 'CODECLEW_HOME': str(base / 'state')}

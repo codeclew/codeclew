@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import os
+import pwd
 import runpy
 import shutil
 import subprocess
@@ -50,18 +51,32 @@ def installed_skill(launcher):
     return package / "source/skills/codeclew"
 
 
+def qualification_workspace(parent=None):
+    if parent is not None:
+        # An installed run will create CODECLEW_HOME here. A private leaf
+        # underneath a shared system temp root does not meet bootstrap policy.
+        parent = parent.resolve(strict=True)
+    return tempfile.TemporaryDirectory(prefix="clew-projector-deps-", dir=parent)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installed-launcher", type=Path,
                         help="run the Java admission test using an offline installation")
+    parser.add_argument("--scratch-parent", type=Path,
+                        help="existing private parent for the installed qualification workspace")
     args = parser.parse_args()
     launcher = args.installed_launcher.absolute() if args.installed_launcher else None
+    if args.scratch_parent is not None and launcher is None:
+        parser.error("--scratch-parent requires --installed-launcher")
     try:
         skill = installed_skill(launcher) if launcher else SOURCE_SKILL
+        parent = (args.scratch_parent or Path(pwd.getpwuid(os.geteuid()).pw_dir)) if launcher else None
+        workspace = qualification_workspace(parent)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
-    with tempfile.TemporaryDirectory(prefix="clew-projector-deps-") as directory:
+    with workspace as directory:
         dependencies = Path(directory)
         package = skill / "scripts/prepared_facts"
         for name in ("package.json", "package-lock.json"):
@@ -73,7 +88,7 @@ def main():
             shutil.copytree(skill / "examples/markdown-renderer", renderer)
             install_dependencies(renderer)
             case = runpy.run_path(str(ROOT / "scripts/test_prepared_java.py"))["InstalledJava"]
-            suite = unittest.TestSuite([case(launcher, skill, renderer)])
+            suite = unittest.TestSuite([case(launcher, skill, renderer, dependencies)])
         else:
             suite = source_tests()
         result = unittest.TextTestRunner(verbosity=2).run(suite)

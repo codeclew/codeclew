@@ -411,7 +411,7 @@ def verify_installer(
     verify_cli_version(launcher, version, work / "state", root)
     run(
         [sys.executable, "-I", "-S", str(root / "scripts/qualify_prepared_projectors.py"),
-         "--installed-launcher", str(launcher)],
+         "--installed-launcher", str(launcher), "--scratch-parent", str(work)],
         root, environment=environment,
     )
 

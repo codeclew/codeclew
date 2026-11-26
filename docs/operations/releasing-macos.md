@@ -31,11 +31,12 @@ The workflow verifies `uname -s` and `uname -m` before construction and refuses 
 `DEVELOPMENT` mode or a worker set outside the published support profile.
 Each profile is installed from its produced archive using `install.sh` in offline
 mode with isolated install, bin, and state roots. Installation verifies the CLI
-version, runtime capabilities, and cross-file Java value evidence in isolated
-operation prompts using the installed runner and renderer. Source projector
-and Work transport tests remain required before the platform build.
-The core archive also undergoes extracted
-branch and annotated-tag navigation checks. Publication waits for all three
+version and runtime capabilities. The release builder then checks cross-file
+Java value evidence in isolated operation prompts using the installed runner
+and renderer. That check creates its fixture and state under the same private
+workspace as the offline installation. Source projector and Work transport
+tests remain required before the platform build. The core archive also
+undergoes extracted branch and annotated-tag navigation checks. Publication waits for all three
 platform builds and verifies all six archive checksums.
 
 The workflow filename `release-macos.yml`, builder `build_macos_release.py`, and

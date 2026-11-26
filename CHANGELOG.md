@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.15.22
+## 0.15.23
+
+- Run installed Java evidence qualification under the release builder's private
+  workspace so Linux and macOS use the same state protection.
+
+## 0.15.22 (unreleased)
 
 - Restore the v0.15.6 full-width sequence diagram and Steps disclosure. Each
   independent phase uses the same renderer and continues the numbering. A
