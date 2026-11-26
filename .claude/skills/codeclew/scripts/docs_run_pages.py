@@ -636,7 +636,7 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
     need(values.keys() == slots.keys(), 'PAGE_SLOT_RESPONSE_MISSING')
     original = {'pages': []}
     review = {'schema': COMPACT_REVIEW, 'requirements': {}, 'claims': {}, 'returnClaims': {},
-              'unresolved': list(dict.fromkeys(limit for value in values.values() for limit in value['limitations'])),
+              'unresolved': list(dict.fromkeys(limit for key in slots for limit in values[key]['limitations'])),
               'visual': {'status': 'UNAVAILABLE', 'reason': 'Isolated authors work from retained source packets.'}}
     labels = (LABELS['en'] if job['language'] == 'en' else
               load(Path(job['renderer']) / 'assets/ru.json')['documentationPages'])

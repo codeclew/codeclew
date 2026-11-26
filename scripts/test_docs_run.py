@@ -1124,6 +1124,102 @@ for row in (
         self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [key])
         self.assertFalse((target / 'ready').exists())
 
+    def test_recover_completed_review_replays_plan_order_and_preserves_original_seals(self):
+        _, donor, plan = self.isolated_reuse_fixture()
+        slots = [slot['key'] for slot in plan['slots']]
+        self.assertNotEqual(slots, sorted(slots))
+        for number, key in enumerate(slots):
+            response = self.seed / (key + '-response.json')
+            D['save'](response, {**D['load'](response), 'limitations': [f'Limitation {number}.']})
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        key = operation['key']
+        prefix = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py')]
+
+        def run_command(command, run, *arguments, status=0):
+            completed = subprocess.run([*prefix, command, '--run-dir', str(run), *arguments], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, status, completed.stdout + completed.stderr)
+            return json.loads(completed.stdout)
+
+        self.assertEqual(run_command('run', donor)['status'], 'READY_PROMOTED')
+        attempt = next(row for row in D['load'](donor / 'state.json')['attempts'] if row['slot'] == key)
+        prior = D['load'](D['PX']['response_path'](donor, attempt))
+        finding = {'slot': key, 'responseDigest': attempt['responseDigest'],
+                   'selector': {'field': 'claim', 'index': 0, 'action': 'replace'},
+                   'issue': 'State the successful return value.', 'sourceAliases': [prior['claims'][0]['cites'][0]]}
+        findings = self.root / 'recovery-findings.json'
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [finding]})
+        reviewed, _, _, _ = self.isolated_fixture(run_name='completed-review')
+        recovered, _, _, _ = self.isolated_fixture(run_name='recovered-review')
+        run_command('reuse-pages', reviewed, '--reuse-from', str(donor), '--review-findings', str(findings))
+        sentence = 'On success, the handler returns the size of the accepted list.'
+        D['save'](self.seed / (key + '-review.json'), {'replacement': {**prior['claims'][0], 'text': sentence}})
+        state = D['author'](reviewed)
+        draft = reviewed / 'workspace/draft'
+        job, inventory, _ = D['frozen_inputs'](reviewed)
+        _, review = D['isolated_authorship'](reviewed, job, inventory, state, draft)
+        self.assertEqual(set(review['reviewedSlots']), {key})
+        self.assertEqual(D['load'](draft / 'self-review.json')['unresolved'],
+                         [f'Limitation {number}.' for number in range(len(slots))])
+
+        # Reproduce the older verifier's ledger insertion order and failed report.
+        assemble = D['P']['assemble_pages']
+
+        def old_assemble(job, inventory, plan, values, *args):
+            artifacts = assemble(job, inventory, plan, values, *args)
+            artifacts['self-review.json']['unresolved'] = list(dict.fromkeys(
+                limit for value in values.values() for limit in value['limitations']))
+            return artifacts
+
+        with patch.dict(D['P'], {'assemble_pages': old_assemble}):
+            report = D['verify'](reviewed)
+        self.assertEqual(report['checks']['author']['code'], 'PAGE_REVIEW_DRAFT_CHANGED')
+        self.assertFalse((reviewed / 'ready').exists())
+        source_files = D['tree'](reviewed)
+        args = ('--reuse-from', str(reviewed), '--recover-reviewed')
+        extra = draft / 'unexpected.txt'
+        extra.write_text('Out of scope')
+        self.assertEqual(run_command('reuse-pages', recovered, *args, status=2)['code'], 'PAGE_REVIEW_DRAFT_CHANGED')
+        state_file = reviewed / 'state.json'
+        original_state = state_file.read_bytes()
+        D['save'](state_file, {**state, 'pageDraftFiles': D['tree'](draft)})
+        self.assertEqual(run_command('reuse-pages', recovered, *args, status=2)['code'], 'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
+        state_file.write_bytes(original_state)
+        extra.unlink()
+        saved_attempt, = state['attempts']
+        saved_response = D['PX']['response_path'](reviewed, saved_attempt)
+        raw = saved_response.read_bytes()
+        saved_response.write_bytes(raw + b' ')
+        self.assertEqual(run_command('reuse-pages', recovered, *args, status=2)['code'], 'REUSE_RESPONSE_CHANGED')
+        saved_response.write_bytes(raw)
+        self.assertFalse((recovered / 'page-reuse.json').exists())
+
+        adoption = run_command('reuse-pages', recovered, *args)
+        self.assertEqual((adoption['reusedPages'], adoption['remainingPages']), (len(slots), 0))
+        source, = adoption['historicalRuns']
+        self.assertEqual(source['completedReview']['reviewedSlots'], [key])
+        self.assertEqual(source['reportedUsage']['budgetTokens'], 20)
+        with patch.dict(D['execute_isolated'].__globals__,
+                        {'verify': lambda *args, **kwargs: {'status': 'FAILED', 'checks': {
+                            'output': {'status': 'FAIL', 'code': 'MISSING_REQUIRED_PAGE', 'details': {'page': operation['page']}},
+                        }}}):
+            self.assertEqual(D['execute'](recovered)['status'], 'FAILED')
+        self.assertEqual(D['load'](recovered / 'state.json')['attempts'], [])
+        promotion = run_command('run', recovered)
+        self.assertEqual(promotion['status'], 'READY_PROMOTED')
+        self.assertEqual(promotion['reuse']['newAuthorInvocations'], 0)
+        self.assertEqual(D['load'](recovered / 'state.json')['pageDraftFiles'], state['pageDraftFiles'])
+        self.assertEqual(D['tree'](reviewed), source_files)
+        self.assertIn(sentence, (Path(promotion['ready']) / 'html' / operation['page'].replace('.md', '.html')).read_text())
+
+        successor, _, _, _ = self.isolated_fixture(run_name='review-after-recovery')
+        ledger = D['load'](recovered / 'page-reuse.json')
+        corrected = ledger['pages'][key]
+        self.assertEqual(corrected['correctionDigest'], saved_attempt['responseDigest'])
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [
+            {**finding, 'responseDigest': corrected['responseDigest']}]})
+        next_review = run_command('reuse-pages', successor, '--reuse-from', str(recovered), '--review-findings', str(findings))
+        self.assertEqual(next_review['reviewSlots'], [key])
+
     def test_review_updates_one_route_and_discovery_step_by_published_identity(self):
         body = ('fun reserve(count: Int): Int {\n'
                 '    if (count < 0) return 0\n'

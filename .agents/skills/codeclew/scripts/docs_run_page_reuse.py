@@ -514,14 +514,23 @@ def admitted_completed(run, job, slot, histories, flags, *, review=None, validat
     return raw, dict(proof, responseDigest=sha(raw))
 
 
-def review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble):
+def review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble, *, recover_review=False):
     source_job, old, histories, owners, receipt, (usage_matches, account_indexes) = history(run, job, inventory, pins)
-    source_pins = load(run / 'pins.json')
     state = load(run / 'state.json')
     old_plan = load(run / 'inputs/author-plan.json')
-    acceptance = ready_proof(run, state, source_pins)
+    acceptance = None if recover_review else ready_proof(run, state, load(run / 'pins.json'))
     retained, ledger = read_pages(run, state, old_plan, validate)
     rows, work = review_work(run, old_plan, retained, ledger)
+    if recover_review:
+        prior_threads = {proof['threadId'] for proof in ledger['pages'].values()} if rows else set()
+        need(rows and state['status'] == 'AUTHOR_COMPLETED' and usage_matches and histories.keys() == rows.keys()
+             and not prior_threads.intersection(owners)
+             and all(type(row['number']) is int and row['number'] >= 0 for attempts in histories.values()
+                     for row in attempts),
+             'PAGE_REVIEW_RECOVERY_HISTORY_CHANGED')
+        draft_files = state['pageDraftFiles']
+        need(draft_files == tree(run / 'workspace/draft'), 'PAGE_REVIEW_DRAFT_CHANGED')
+        acceptance = {'draftFiles': draft_files, 'draftDigest': digest(draft_files), 'reviewedSlots': sorted(rows)}
     need(old_plan == plan and all(slot_files(target, slot) == slot_files(run, old[slot['key']]) for slot in plan['slots']),
          'PAGE_REVIEW_DONOR_SCOPE_CHANGED')
     need(histories.keys() | retained.keys() == old.keys() and set(rows) <= histories.keys()
@@ -562,11 +571,16 @@ def review_candidates(run, target, plan, job, inventory, pins, flags, validate, 
     threads = [proof['threadId'] for proof in proofs.values()]
     need(len(set(threads)) == len(threads) and assemble(run, source_job, old_plan, responses) == acceptance.pop('draftFiles')
          and sha((run / 'state.json').read_bytes()) == receipt['stateDigest'], 'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
-    receipt['ready'] = acceptance
+    if recover_review:
+        need(digest(assemble(target, job, plan, responses)) == acceptance['draftDigest'], 'PAGE_REVIEW_DRAFT_CHANGED')
+        receipt['completedReview'] = acceptance
+    else:
+        receipt['ready'] = acceptance
     return proofs, receipt
 
 
-def import_pages(run, sources, job, inventory, pins, plan, state, flags, validate, *, review=None, assemble=None):
+def import_pages(run, sources, job, inventory, pins, plan, state, flags, validate, *,
+                 review=None, assemble=None, recover_review=False):
     need(1 <= len(sources) <= MAX_ORIGINS and len({path.resolve() for path in sources}) == len(sources),
          'REUSE_SOURCE_LIMIT')
     path = run / LEDGER
@@ -575,19 +589,22 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
          and not path.exists() and not path.is_symlink(),
          'REUSE_REQUIRES_FRESH_ISOLATED_RUN')
     pages, origins, errors, rejected, threads = {}, [], [], Counter(), {}
-    if review is not None:
+    if review is not None or recover_review:
         need(len(sources) == 1, 'PAGE_REVIEW_REQUIRES_ONE_DONOR')
+    if review is not None:
+        need(not recover_review, 'PAGE_REVIEW_RECOVERY_CONFLICT')
         review_api['findings'](review)
     for source in sources:
         need(source.resolve() != run.resolve(), 'REUSE_SOURCE_IS_TARGET')
         try:
             with read_only_run(source) as historical:
-                if review is None:
+                if review is None and not recover_review:
                     local, origin = candidates(historical, run, plan, job, inventory, pins, flags, validate, pages, rejected)
                 else:
-                    local, origin = review_candidates(historical, run, plan, job, inventory, pins, flags, validate, assemble)
+                    local, origin = review_candidates(historical, run, plan, job, inventory, pins, flags, validate,
+                                                       assemble, recover_review=recover_review)
         except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
-            if review is not None:
+            if review is not None or recover_review:
                 raise Stop(getattr(error, 'code', 'PAGE_REVIEW_DONOR_INVALID'), source=str(source)) from None
             errors.append({'source': str(source), 'code': getattr(error, 'code', 'REUSE_SOURCE_INVALID')})
             continue
@@ -600,6 +617,9 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
     need(pages, 'NO_ELIGIBLE_REUSED_PAGES', sources=errors, rejected=dict(rejected))
     receipt = {'schema': SCHEMA, 'targetPinsDigest': digest(pins), 'pages': pages, 'origins': origins,
                'sourceErrors': errors, 'rejected': dict(rejected)}
+    if recover_review:
+        need(pages.keys() == {slot['key'] for slot in plan['slots']}, 'PAGE_REVIEW_RECOVERY_HISTORY_CHANGED')
+        receipt['recoveredReview'] = True
     review_count = 0
     if review is not None:
         receipt.update(review=review, reviewContract=review_api['CONTRACT'])

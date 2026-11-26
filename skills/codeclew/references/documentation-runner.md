@@ -162,6 +162,21 @@ through the usual READY gates. An unsupported correction fails the successor che
 The donor's site and usage records are preserved. New author usage and the
 prior recovery ledger are recorded separately in the successor.
 
+If the correction attempts completed and a later check failed, their sealed
+responses can be checked again by a fresh, matching isolated run. The original
+release kit and run must remain available.
+
+```sh
+python3 -I -S "$skill/scripts/docs_run.py" reuse-pages --run-dir "$new_run" \
+  --reuse-from "$completed_review_run" --recover-reviewed
+python3 -I -S "$skill/scripts/docs_run.py" run --run-dir "$new_run"
+```
+
+This imports the entire reconstructed draft from one completed review run. The
+runner verifies the correction receipts and the exact sealed draft, then runs the
+reader checks in the new kit with zero new author calls. The new run can serve as
+a donor for later findings once it is promoted.
+
 ## Prepared evidence propositions
 
 The standard full documentation job selects `"evidenceMode": "PREPARED_FACTS"`

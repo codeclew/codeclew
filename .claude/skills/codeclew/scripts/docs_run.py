@@ -1729,6 +1729,10 @@ def isolated_authorship(run, job, inventory, state, draft):
                              'responseDigest': digest(values[key])}
         need({name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, values).items()}
              == state['pageDraftFiles'], 'PAGE_REVIEW_DRAFT_CHANGED')
+    if ledger is not None and ledger.get('recoveredReview'):
+        origin, = ledger['origins']
+        need(not completed and digest(state['pageDraftFiles']) == origin['completedReview']['draftDigest']
+             and donor_draft_files(run, job, plan, retained) == state['pageDraftFiles'], 'PAGE_REVIEW_DRAFT_CHANGED')
     reuse = None if ledger is None else {
         'reusedPages': len(retained.keys() - completed.keys()), 'freshPages': len(completed),
         'newAuthorInvocations': sum(not row.get('notLaunched') for row in state['attempts']),
@@ -1746,6 +1750,9 @@ def author_isolated(run, job, inventory, repairs=None):
         retained, ledger = PR['read_pages'](run, prior, plan, P['validate_response'])
         review, review_work = PR['review_work'](run, plan, retained, ledger)
         fresh = {row['slot'] for row in prior['attempts']} | (repairs or {}).keys() | prior.get('pageRepairs', {}).keys()
+        if ledger is not None and ledger.get('recoveredReview'):
+            need(not fresh and retained.keys() == {slot['key'] for slot in plan['slots']},
+                 'PAGE_REVIEW_RECOVERY_HISTORY_CHANGED')
         if review:
             need(fresh <= review.keys(), 'PAGE_REVIEW_AUTHOR_SCOPE_CHANGED')
             fresh = review.keys()
@@ -1826,7 +1833,7 @@ def execute_isolated(run, *, debug):
         result = verify(run, debug=debug)
         if result['status'] == 'READY':
             return promote(run)
-        if result['status'] == 'BLOCKED' or (ledger is not None and 'review' in ledger):
+        if result['status'] == 'BLOCKED' or (ledger is not None and ('review' in ledger or ledger.get('recoveredReview'))):
             return result
         failed = [(name, check) for name, check in result['checks'].items() if check['status'] == 'FAIL']
         repairs = {}
@@ -1862,12 +1869,14 @@ def main():
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--reuse-from', type=Path, action='append', default=[])
     parser.add_argument('--review-findings', type=Path)
+    parser.add_argument('--recover-reviewed', action='store_true')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
     lock = None
     try:
         need(bool(args.reuse_from) == (args.command == 'reuse-pages'), 'REUSE_FROM_REQUIRES_REUSE_PAGES')
         need(args.review_findings is None or args.command == 'reuse-pages', 'REVIEW_FINDINGS_REQUIRE_REUSE_PAGES')
+        need(not args.recover_reviewed or args.command == 'reuse-pages', 'RECOVER_REVIEWED_REQUIRES_REUSE_PAGES')
         if args.command not in ('prepare', 'review-template'):
             need(args.run_dir.is_dir() and not args.run_dir.is_symlink(), 'RUN_NOT_FOUND')
             lock = os.open(args.run_dir / '.runner.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -1889,7 +1898,7 @@ def main():
             need(args.review_findings is None or review is not None, 'PAGE_REVIEW_FINDINGS_INVALID')
             result = PR['import_pages'](run, args.reuse_from, job, inventory, pins, load(run / 'inputs/author-plan.json'),
                                         load(run / 'state.json'), inline_cli_flags, P['validate_response'],
-                                        review=review, assemble=donor_draft_files)
+                                        review=review, assemble=donor_draft_files, recover_review=args.recover_reviewed)
         elif args.command == 'run': result = execute(args.run_dir, debug=args.debug)
         elif args.command == 'verify': result = verify(args.run_dir, debug=args.debug)
         else: result = promote(args.run_dir, args.output_dir)
