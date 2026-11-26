@@ -151,6 +151,10 @@ def referenced(rows, expected, field):
     return result
 
 
+def discovered_entry_id(file_ref, number):
+    return file_ref.lower() + '-' + str(number)
+
+
 def assemble(value, selected, inventory, original, navigation):
     """Translate authored content and explicit assessments to the ordinary gates."""
     closed(value, ('status', 'reason', 'reviewed', 'overview', 'entries', 'discovery', 'unresolved', 'visual'))
@@ -257,7 +261,7 @@ def assemble(value, selected, inventory, original, navigation):
             kinds = {'HTTP': 'http', 'KAFKA': 'kafka', 'SCHEDULED': 'scheduled', 'OTHER': 'other'}
             need(kind in kinds and isinstance(title, str) and title.strip() and len(title.splitlines()) == 1,
                  'INVALID_DISCOVERED_ENTRY_ACCOUNT', file=file)
-            local = file.lower() + '-' + str(i)
+            local = discovered_entry_id(file, i)
             name = service + '-discovered-' + local + '.md'
             need(name not in pages, 'INLINE_DISCOVERED_PAGE_COLLISION', page=name)
             target = name + '#handler'

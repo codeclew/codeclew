@@ -6,7 +6,8 @@ import json
 SCHEMA = 'codeclew-docs-page-review-findings/1.0'
 MAX_FINDINGS_BYTES = 32 * 1024
 MAX_FINDINGS = 16
-FIELDS = {'title': 'title', 'claim': 'claims', 'step': 'steps'}
+FIELDS = {'title': 'title', 'claim': 'claims', 'step': 'steps', 'routeStep': 'steps', 'startStep': 'steps'}
+NESTED_IDS = {'routeStep': 'routeId', 'startStep': 'startId'}
 
 
 def findings(value):
@@ -25,22 +26,47 @@ def findings(value):
              and len(set(aliases)) == len(aliases), 'PAGE_REVIEW_FINDING_INVALID')
         need(isinstance(selector, dict) and isinstance(selector.get('field'), str), 'PAGE_REVIEW_SELECTOR_INVALID')
         field = selector['field']
+        identity = NESTED_IDS.get(field)
+        selector_keys = {'field', 'index', 'action'} | ({identity} if identity else set())
         need((field == 'title' and selector.keys() == {'field'})
-             or (field in ('claim', 'step') and selector.keys() == {'field', 'index', 'action'}
+             or (field in FIELDS and field != 'title' and selector.keys() == selector_keys
                  and type(selector['index']) is int and selector['index'] >= 0
-                 and selector['action'] in ('replace', 'insert')), 'PAGE_REVIEW_SELECTOR_INVALID')
+                 and selector['action'] in ('replace', 'insert')
+                 and (identity is None or isinstance(selector[identity], str) and 0 < len(selector[identity]) <= 64)),
+             'PAGE_REVIEW_SELECTOR_INVALID')
         rows[slot] = row
     return rows
 
 
-def author_input(run, slot, proof, response, row):
+def selected_value(plan, slot, response, selector):
+    kind = selector['field']
+    field = FIELDS[kind]
+    if kind == 'routeStep':
+        need(slot['kind'] == 'PROCESS_MAP', 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=slot['key'])
+        trace = next((route for route in response['routes'] if route_id(route) == selector['routeId']), None)
+        parent = 'route'
+    elif kind == 'startStep':
+        need(slot['kind'] == 'DISCOVERY', 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=slot['key'])
+        refs = discovery_slots(plan, slot['service'])
+        file_ref = next(ref for ref, owner in refs.items() if owner['key'] == slot['key'])
+        trace = next((start for number, start in enumerate(response['starts'], 1)
+                      if discovered_entry_id(file_ref, number) == selector['startId']), None)
+        parent = 'start'
+    else:
+        return field, response, None
+    need(trace is not None, 'PAGE_REVIEW_TRACE_OUTSIDE_SLOT', slot=slot['key'])
+    return field, trace, parent
+
+
+def author_input(run, plan, slot, proof, response, row):
     key, selector, aliases = slot['key'], row['selector'], row['sourceAliases']
     need(proof['responseDigest'] == row['responseDigest'], 'PAGE_REVIEW_RESPONSE_MISMATCH', slot=key)
-    field = FIELDS[selector['field']]
+    field, target, parent = selected_value(plan, slot, response, selector)
     schema = load(run / 'inputs' / slot['schema'])
-    need(field in schema['properties'], 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=key)
-    property_schema = schema['properties'][field]
-    current, insert = response[field], selector.get('action') == 'insert'
+    properties = (schema if parent is None else schema['$defs'][parent])['properties']
+    need(field in properties, 'PAGE_REVIEW_SELECTOR_OUTSIDE_SLOT', slot=key)
+    property_schema = properties[field]
+    current, insert = target[field], selector.get('action') == 'insert'
     if 'index' in selector:
         index = selector['index']
         need(index < len(current) or (insert and index == len(current)), 'PAGE_REVIEW_INDEX_OUTSIDE_SLOT', slot=key)
@@ -66,7 +92,8 @@ def author_input(run, slot, proof, response, row):
         result_schema['$defs'] = {'claim': claim}
     if field == 'steps':
         step = deepcopy(schema['$defs']['step'])
-        actors = ['caller', 'handler', *(actor['id'] for actor in response['participants'])]
+        actors = (['caller', target['origin'], *(actor['entry'] for actor in target['participants'])] if parent == 'route'
+                  else ['caller', 'handler', *(actor['id'] for actor in target['participants'])])
         for actor in ('from', 'to'):
             step['properties'][actor] = {'type': 'string', 'enum': actors}
         result_schema['$defs'] = {'step': step}
@@ -79,24 +106,24 @@ def author_input(run, slot, proof, response, row):
     return prompt, result_schema
 
 
-def apply(slot, original, row, answer, validate):
+def apply(plan, slot, original, row, answer, validate):
     key = slot['key']
     need(isinstance(answer, dict) and answer.keys() == {'replacement'}, 'PAGE_REVIEW_CORRECTION_INVALID', slot=key)
     revision = answer['replacement']
     need(revision is not None, 'PAGE_REVIEW_CORRECTION_UNSUPPORTED', slot=key)
     selector = row['selector']
-    field = FIELDS[selector['field']]
     corrected = deepcopy(original)
+    field, target, _ = selected_value(plan, slot, corrected, selector)
     if field == 'claims':
         need(isinstance(revision, dict) and isinstance(revision.get('cites'), list)
              and all(alias in row['sourceAliases'] for alias in revision['cites']),
              'PAGE_REVIEW_CORRECTION_OUTSIDE_SOURCE', slot=key)
     if field == 'title':
-        corrected[field] = revision
+        target[field] = revision
     elif selector['action'] == 'insert':
-        corrected[field].insert(selector['index'], revision)
+        target[field].insert(selector['index'], revision)
     else:
-        corrected[field][selector['index']] = revision
+        target[field][selector['index']] = revision
     revised = validate(slot, corrected)
     need(revised != original, 'PAGE_REVIEW_CORRECTION_UNSUPPORTED', slot=key)
     need(len(encode(revised)) <= response_limit, 'PAGE_REVIEW_CORRECTION_OVERSIZE', slot=key)

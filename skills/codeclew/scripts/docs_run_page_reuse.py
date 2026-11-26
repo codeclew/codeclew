@@ -443,7 +443,7 @@ def review_work(run, plan, retained, ledger):
     rows = review_api['findings'](ledger['review'])
     slots = {slot['key']: slot for slot in plan['slots']}
     need(rows.keys() <= retained.keys() == slots.keys(), 'PAGE_REVIEW_SLOT_OUTSIDE_RUN')
-    work = {key: review_api['author_input'](run, slots[key], ledger['pages'][key], retained[key], row)
+    work = {key: review_api['author_input'](run, plan, slots[key], ledger['pages'][key], retained[key], row)
             for key, row in rows.items()}
     return rows, work
 
@@ -510,7 +510,7 @@ def review_candidates(run, target, plan, job, inventory, pins, flags, validate, 
             else:
                 raw, proof = admitted_completed(run, source_job, slot, attempts, flags, review=work.get(key))
             if key in rows:
-                response = review_api['apply'](slot, retained[key], rows[key], decode(raw), validate)
+                response = review_api['apply'](old_plan, slot, retained[key], rows[key], decode(raw), validate)
                 raw = encode(response)
                 proof = {**proof, 'correctionDigest': proof['responseDigest'], 'responseDigest': sha(raw),
                          'priorResponseDigest': prior['responseDigest'], 'priorOrigin': prior['origin']}

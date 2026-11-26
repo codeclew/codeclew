@@ -851,6 +851,7 @@ def decode(raw):
 
 PAGE_REVIEW = runpy.run_path(str(HERE / 'docs_run_page_review.py'), init_globals={
     'load': load, 'need': need, 'decode': decode, 'encode': encode, 'response_limit': P['MAX_RESPONSE_BYTES'],
+    'route_id': P['route_id'], 'discovery_slots': P['discovery_slots'], 'discovered_entry_id': I['discovered_entry_id'],
 })
 PR = runpy.run_path(str(HERE / 'docs_run_page_reuse.py'), init_globals={
     'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
@@ -1679,7 +1680,7 @@ def isolated_authorship(run, job, inventory, state, draft):
             if (key := slot['key']) not in review:
                 continue
             raw, _ = PR['admitted_completed'](run, job, slot, histories[key], inline_cli_flags, review=work[key])
-            values[key] = PAGE_REVIEW['apply'](slot, retained[key], review[key], decode(raw), P['validate_response'])
+            values[key] = PAGE_REVIEW['apply'](plan, slot, retained[key], review[key], decode(raw), P['validate_response'])
             reviewed[key] = {'previousResponseDigest': review[key]['responseDigest'],
                              'responseDigest': digest(values[key])}
         need({name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, values).items()}
@@ -1710,7 +1711,7 @@ def author_isolated(run, job, inventory, repairs=None):
         def validate(slot, response):
             key = slot['key']
             if key in review:
-                return PAGE_REVIEW['apply'](slot, retained[key], review[key], response, P['validate_response'])
+                return PAGE_REVIEW['apply'](plan, slot, retained[key], review[key], response, P['validate_response'])
             return P['validate_response'](slot, response)
 
         state, values = PX['execute_authors'](

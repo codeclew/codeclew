@@ -33,6 +33,15 @@ def stable_id(text):
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def route_id(route):
+    return 'route-' + stable_id(route['origin'] + '\n' + route['title'])
+
+
+def discovery_slots(plan, service):
+    slots = (slot for slot in plan['slots'] if slot['kind'] == 'DISCOVERY' and slot['service'] == service)
+    return {'F' + str(index): slot for index, slot in enumerate(slots, 1)}
+
+
 def draft_target(page, anchor=None):
     return page.removesuffix('.md') + '.html' + ('#' + anchor if anchor else '')
 
@@ -572,7 +581,7 @@ def add_processes(original, review, navigation, plan, slot, response, job, label
         cited = citation_handles(row['cites'], slot)
         need({operations[ref]['service'] for ref in refs} <= {cite_services[handle] for handle in cited},
              'PAGE_ROUTE_PARTICIPANT_EVIDENCE_REQUIRED', route=row['title'])
-        identity = 'route-' + stable_id(row['origin'] + '\n' + row['title'])
+        identity = route_id(row)
         name = identity + '.md'
         need(name not in taken, 'PAGE_DESTINATION_COLLISION', page=name)
         taken.add(name)
@@ -636,9 +645,9 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
         owned = [slot for slot in slots.values() if slot['service'] == service]
         guide = next(slot for slot in owned if slot['kind'] == 'GUIDE')
         operations = [slot for slot in owned if slot['kind'] == 'OPERATION']
-        discovery = [slot for slot in owned if slot['kind'] == 'DISCOVERY']
+        discovery = discovery_slots(plan, service)
         entries = {slot['key']: slot['requirement'] for slot in operations}
-        files = {'F' + str(i): slot['requirement'] for i, slot in enumerate(discovery, 1)}
+        files = {ref: slot['requirement'] for ref, slot in discovery.items()}
         selected = {'entries': entries, 'files': files,
                     'citations': {ref: handle for slot in owned for ref, handle in slot['citations'].items()},
                     'returns': {}}
@@ -660,7 +669,7 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
                  'entries': responses,
                  'discovery': [{'ref': ref, **{key: values[slot['key']][key]
                                               for key in ('disposition', 'discovery', 'starts')}}
-                               for ref, slot in zip(files, discovery, strict=True)],
+                               for ref, slot in discovery.items()],
                  'unresolved': [], 'visual': review['visual']}
         page_set = {'pages': [
             {**page, 'fragments': page['fragments'][:1]} if page['page'] == nav['overview'] else page

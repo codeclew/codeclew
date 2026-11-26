@@ -145,6 +145,13 @@ position. A guide title uses `{"field": "title"}`. Supply one finding per slot
 and identify the evidence with up to eight source aliases. A finding may
 describe the issue in up to 600 characters on a single line.
 
+Use a `routeStep` selector with `routeId` from the donor’s `routes.json` to
+correct a step on one process route. Use a `startStep` selector with `startId`
+from the discovery requirement’s `discoveredEntries` in `self-review.json` to
+correct one discovered start. Both selectors also take `action` and the
+zero-based `index` in the author’s steps array. This index starts after the
+automatic first message in the reader diagram.
+
 The selected source excerpts and current value go to a fresh isolated author
 session for each finding. The runner applies the returned value at the selected
 position, retains every other response, and checks the assembled site through

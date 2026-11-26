@@ -581,7 +581,7 @@ else:
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
 
-    def isolated_reuse_fixture(self, *, official=False, routing=None):
+    def isolated_reuse_fixture(self, *, official=False, routing=None, body=None):
         package = self.root / 'release'
         source = package / 'source/skills/codeclew'
         shutil.copytree(ROOT / 'skills/codeclew', source)
@@ -637,7 +637,8 @@ for row in (
                                       'output_tokens':10*multiplier}}}},
 ): print(json.dumps(row))
 """)
-        old, plan, _, record = self.isolated_fixture(run_name='historical-run', repairs=int(routing == 'format-repair'))
+        old, plan, _, record = self.isolated_fixture(run_name='historical-run', repairs=int(routing == 'format-repair'),
+                                                      body=body)
         D['save'](navigation, {'schema': 'codeclew-documentation-work-page/1.0', 'work': 'owned-work',
                               'snapshot': F['SNAPSHOT'], 'subject': 'service:' + self.service,
                               'contextDigest': 'owned-context', 'inputDigest': 'owned-input',
@@ -666,7 +667,7 @@ for row in (
         else:
             self.assertEqual(D['execute'](old)['status'], 'READY_PROMOTED')
         (old / '.runner.lock').touch()
-        target, _, _, _ = self.isolated_fixture(run_name='new-run')
+        target, _, _, _ = self.isolated_fixture(run_name='new-run', body=body)
         return old, target, plan
 
     def seal_official_reuse_fixture(self, package, kit, caps):
@@ -1071,6 +1072,105 @@ for row in (
         self.assertEqual(json.loads(completed.stdout)['details']['failure']['code'], 'PAGE_REVIEW_CORRECTION_OUTSIDE_SOURCE')
         self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [key])
         self.assertFalse((target / 'ready').exists())
+
+    def test_review_updates_one_route_and_discovery_step_by_published_identity(self):
+        body = ('fun reserve(count: Int): Int {\n'
+                '    if (count < 0) return 0\n'
+                '    accepted.add(count)\n'
+                '    events.on("note.ready") { if (it.isReady) accept(it) }\n'
+                '    events.on("note.closed") { if (it.isClosed) archive(it) }\n'
+                '    return accepted.size\n}\n')
+        _, donor, plan = self.isolated_reuse_fixture(body=body)
+        slots = {slot['kind']: slot for slot in plan['slots']}
+        process, discovery = [slots[kind] for kind in ('PROCESS_MAP', 'DISCOVERY')]
+        process_path, discovery_path = [self.seed / (slot['key'] + '-response.json') for slot in (process, discovery)]
+        map_response, discovery_response = [D['load'](path) for path in (process_path, discovery_path)]
+        main, = map_response['routes']
+        route_step = main['steps'][0]
+        route_step['condition'] = 'count > 0'
+        map_response['routes'].append({**main, 'title': 'Reject a negative count', 'condition': 'count < 0',
+                                        'steps': [{**route_step, 'label': '0', 'condition': 'count < 0'}]})
+        D['save'](process_path, map_response)
+        discovery_alias = next(iter(discovery['citations']))
+        start_step = {'from': 'handler', 'to': 'handler', 'kind': 'note', 'label': 'Accept the note',
+                      'condition': 'it.isClosed'}
+        def start(title, event, claim, step):
+            return {'kind': 'OTHER', 'title': title, 'initiator': 'Event hub', 'method': None, 'path': None,
+                    'startLabel': event, 'startKind': 'async', 'disposition': 'EXPLAINED',
+                    'claims': [{'heading': '', 'text': claim, 'cites': [discovery_alias], 'assessment': 'SUPPORTED'}],
+                    'participants': [], 'steps': [step]}
+
+        discovery_response.update(discovery='ADDITIONAL_STARTS', starts=[
+            start('Ready note', 'note.ready', 'The ready handler accepts a ready note.', start_step),
+            start('Closed note', 'note.closed', 'The closed handler archives a closed note.',
+                  {**start_step, 'label': 'Archive the note'}),
+        ])
+        D['save'](discovery_path, discovery_response)
+        prefix = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py')]
+
+        def call(command, run, *arguments, status=0):
+            completed = subprocess.run([*prefix, command, '--run-dir', str(run), *arguments], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, status, completed.stdout + completed.stderr)
+            return json.loads(completed.stdout)
+
+        old_site = call('run', donor)
+        old_draft = donor / 'workspace/draft'
+        routes = D['load'](old_draft / 'routes.json')['routes']
+        starts = D['load'](old_draft / 'self-review.json')['requirements'][discovery['requirement']]['discoveredEntries']
+        route, neighbor_route = routes
+        discovered, neighbor_start = starts
+        responses = {row['slot']: row['responseDigest'] for row in D['load'](donor / 'state.json')['attempts']}
+        target, _, _, _ = self.isolated_fixture(run_name='nested-successor', body=body)
+        findings = self.root / 'nested-findings.json'
+        route_finding = {'slot': process['key'], 'responseDigest': responses[process['key']],
+                         'selector': {'field': 'routeStep', 'routeId': route['id'], 'index': 0, 'action': 'replace'},
+                         'issue': 'The route step wrongly excludes zero.', 'sourceAliases': main['cites']}
+        discovery_finding = {'slot': discovery['key'], 'responseDigest': responses[discovery['key']],
+                             'selector': {'field': 'startStep', 'startId': discovered['id'], 'index': 0, 'action': 'replace'},
+                             'issue': 'The ready callback step names the condition from the closed callback.',
+                             'sourceAliases': [discovery_alias]}
+        reuse = ['--reuse-from', str(donor), '--review-findings', str(findings)]
+        for route_id, start_id in (('route-unavailable', discovered['id']), (route['id'], 'f99-1')):
+            D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [
+                {**route_finding, 'selector': {**route_finding['selector'], 'routeId': route_id}},
+                {**discovery_finding, 'selector': {**discovery_finding['selector'], 'startId': start_id}},
+            ]})
+            rejected = call('reuse-pages', target, *reuse, status=2)
+            self.assertEqual(rejected['code'], 'PAGE_REVIEW_TRACE_OUTSIDE_SLOT')
+            self.assertEqual(D['load'](target / 'state.json')['attempts'], [])
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [route_finding, discovery_finding]})
+        call('reuse-pages', target, *reuse)
+        D['save'](self.seed / (process['key'] + '-review.json'),
+                  {'replacement': {**route_step, 'condition': 'count >= 0'}})
+        D['save'](self.seed / (discovery['key'] + '-review.json'),
+                  {'replacement': {**start_step, 'condition': 'it.isReady'}})
+        reviewed = call('run', target)
+        self.assertEqual(reviewed['reuse']['newAuthorInvocations'], 2)
+        self.assertEqual(set(reviewed['reuse']['reviewedSlots']), {process['key'], discovery['key']})
+        state = D['load'](target / 'state.json')
+        for row in state['attempts']:
+            folder = D['PX']['attempt_dir'](target, row)
+            packet = json.loads((folder / 'prompt.txt').read_text().split('\n\n')[-1])
+            if row['slot'] == process['key']:
+                self.assertEqual(packet['current'], route_step)
+                self.assertNotIn('Reject a negative count', json.dumps(packet))
+            else:
+                self.assertEqual(packet['current'], start_step)
+                self.assertNotIn('Archive the note', json.dumps(packet))
+
+        old_html, new_html = [Path(site['ready']) / 'html' for site in (old_site, reviewed)]
+        def diagram(root, page):
+            return (root / page).read_text().split('<figure class="clew-sequence">', 1)[1].split('</figure>', 1)[0]
+
+        for page, old_condition, new_condition in (
+                (route['narrative']['page'], 'count > 0', 'count >= 0'),
+                (Path(discovered['page']).with_suffix('.html').name, 'it.isClosed', 'it.isReady')):
+            self.assertIn('<small>' + old_condition + '</small>', diagram(old_html, page))
+            corrected = diagram(new_html, page)
+            self.assertIn('<small>' + new_condition + '</small>', corrected)
+            self.assertNotIn('<small>' + old_condition + '</small>', corrected)
+        for page in (neighbor_route['narrative']['page'], Path(neighbor_start['page']).with_suffix('.html').name):
+            self.assertEqual((old_html / page).read_bytes(), (new_html / page).read_bytes())
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'
