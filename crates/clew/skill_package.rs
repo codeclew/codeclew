@@ -4,7 +4,7 @@ use std::{fs, io, path::Path};
 use walkdir::WalkDir;
 
 const MAX_FILES: usize = 192;
-const MAX_TOTAL_BYTES: usize = 3 * 1024 * 1024;
+const MAX_TOTAL_BYTES: usize = 3 * 1024 * 1024 + 18 * 1024;
 
 /// Matches scripts/install_agent_skill.py:package_files/digest. Keep the
 /// cross-language parity tests when the installer contract changes.
@@ -143,12 +143,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         fs::write(root.join("SKILL.md"), "Owned bounded fixture\n").unwrap();
-        for index in 1..128 {
+        for index in 1..MAX_FILES {
             fs::write(root.join(format!("part-{index}.md")), "fixture\n").unwrap();
         }
         assert_eq!(digest(root).unwrap(), installer_digest(root));
         fs::write(root.join("one-too-many.md"), "fixture\n").unwrap();
         assert!(digest(root).is_err());
+        assert!(!installer_output(root).status.success());
     }
 
     #[test]

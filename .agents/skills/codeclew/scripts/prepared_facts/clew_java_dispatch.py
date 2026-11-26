@@ -325,7 +325,7 @@ class Dispatch:
             if selected != FACTORY:
                 return []
             provider_proof.extend([site(owner, factory_binding), *imports(owner, factory_binding[4], FACTORY)])
-            operand = call[2][1]
+            dispatcher_id, operand = call[2]
         elif (kind(value, "new") and kind(value[4], "type") and self.units.qualify(owner, value[4][3]) == DISPATCHER
               and len(value[5]) == 4 and any(kind(option, "set") and name(option[3]) == "initMethod" and
                                             literal(option[4]) == "initialize" for option in bean[4])):
@@ -336,7 +336,7 @@ class Dispatch:
                     return []
                 provider_proof.extend([*(site(owner, node) for node in (*bound, declaration)),
                                        *imports(owner, declaration[4], expected)])
-            operand = value[5][1]
+            dispatcher_id, operand = value[5][:2]
         else:
             return []
         operand, operand_proof = resolve_alias(operand, aliases)
@@ -352,8 +352,12 @@ class Dispatch:
             return []
         proof = [*(site(owner, item) for item in (bean, operand, *alias_proof, *operand_proof, *receiver_proof, *table_proof)),
                  *provider_proof, *imports(owner, bean[3], BEAN)]
+        subscriber = self.constant(owner, dispatcher_id)
+        identity = {"subscriberId": subscriber[0]} if subscriber and subscriber[0].strip() else {}
+        if identity:
+            proof.extend(subscriber[1])
         return [{**callback, "registration": site(owner, value),
-                 "assemblySources": [*proof, *activation, *callback["assemblySources"]]}
+                 "assemblySources": [*proof, *activation, *callback["assemblySources"]], **identity}
                 for callback in self.table(target, methods[0])]
 
 

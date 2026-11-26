@@ -134,6 +134,8 @@ def author_input(run, plan, slot, proof, response, row, *, contract):
         result_schema['$defs'] = {'step': step}
     if contract == CONTRACT:
         limits = replacement_contract(field)
+        if parent == 'route' and field == 'steps' and slot.get('transitionRoutes'):
+            limits['label'] += ' Use an empty label for an operation reference.'
         context['replacementContract'] = limits
         if 'index' not in selector:
             result_schema['properties']['replacement']['anyOf'][0] = {**property_schema, 'description': limits[field]}

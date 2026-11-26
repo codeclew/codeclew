@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.21
+
+- Render sequence diagrams by evidenced system. Short numbered exchanges link
+  to the full trace, including conditions, local calls, typed returns and bound
+  source. Independently started work has its own phase.
+- Lead the process map with source-qualified outcomes, early exits and handoffs.
+  Link directly to the owning operation or route and keep technical variants
+  available on demand.
+- Admit bounded condition checks from retained helpers, guarded effects and
+  route selections. Check selected predicates and effects in both the prose
+  and the trace, and report omitted cases during preparation.
+- Improve retained value, response and typed-event tracing across selected
+  source calls and service boundaries.
+
 ## 0.15.20
 
 - Prepare separate operation packets for retained scheduled jobs, hosted

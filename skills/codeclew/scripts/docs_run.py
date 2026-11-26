@@ -713,6 +713,7 @@ def prepare_facts(job, inventory, prepared):
     })
     deadline = time.monotonic() + 180
     summaries, pending, records, sources, contracts = {}, {}, {}, {}, {}
+    route_contexts = {} if job.get('authorMode') == P['MODE'] else None
     remaining = prepared['bounds']['visibleBytes'] - prepared['visibleBytes']
     for service, scope in prepared['services'].items():
         home = Path(scope['sourceIndex']).parent
@@ -727,7 +728,8 @@ def prepare_facts(job, inventory, prepared):
         selected = helper['prepare'](job, service, inventory['services'][service], required, entries,
                                      packet, home, deadline, page_slots=page_slots if remaining >= 32 * 1024 else 0,
                                      view_budget=min(256 * 1024, remaining // 2), edge_records=records,
-                                     base_manifest=scope['manifest'], contract_resources=scope.get('contractResources', ()))
+                                     base_manifest=scope['manifest'], contract_resources=scope.get('contractResources', ()),
+                                     route_contexts=route_contexts)
         sources.update(selected.pop('edgeCitations'))
         contracts.update(selected.pop('contractFacts'))
         discovered = selected.pop('discovered')
@@ -736,14 +738,31 @@ def prepare_facts(job, inventory, prepared):
             inventory['requirements'].extend(row for row in required if row['id'] in discovered)
         pending[service] = home, required, selected
 
+    if route_contexts:
+        # Map-only work happens after every ordinary projection and replay.
+        jdk_http = runpy.run_path(str(HERE / 'prepared_facts/clew_prepared_jdk_http.py'))['project']
+        reached = P['REACHED']
+        units = {}
+        for identity, (process, context) in route_contexts.items():
+            records[identity]['jdkHttpBoundaries'] = jdk_http(process, context, reached, units)
     project_edges = runpy.run_path(str(HERE / 'prepared_facts/clew_service_edges.py'))['project']
+    route_records = [] if route_contexts is not None else None
+    route_boundaries = [] if route_records is not None else None
     edges = project_edges(inventory['requirements'], records, contracts=contracts,
-                          isolated=job.get('authorMode') == P['MODE'])
+                          isolated=route_records is not None, route_records=route_records, route_boundaries=route_boundaries)
+    if route_records is not None:
+        prepared['routeRecords'] = route_records
+        prepared['routeBoundaries'] = route_boundaries
     for service, (home, required, selection) in pending.items():
         scope = prepared['services'][service]
         combined = {identity: [*contracts.get(identity, ()), *edges.get(identity, ())]
                     for identity in selection['entries']}
-        helper['merge_edges'](selection, combined, sources, home)
+        boundary_sources = {cite for row in route_boundaries or () if row['owner'] in selection['entries']
+                            for cite in row['sources']}
+        boundary_sources.update(cite for row in route_records or () if (choice := row['selection'])
+                                and choice['owner'] in selection['entries'] and choice.get('httpStatus')
+                                and choice.get('condition') for cite in choice['sources'])
+        helper['merge_edges'](selection, combined, sources, home, retain=boundary_sources)
         selected = helper['finish'](job, service, home, selection['entries'], selection['citations'])
         citations, rows = selected.pop('citations'), selected.pop('authorEntries')
         witness_catalog = selected.pop('witnessCatalog', ())
@@ -892,7 +911,7 @@ PX = runpy.run_path(str(HERE / 'docs_run_page_execution.py'), init_globals={
 PR = runpy.run_path(str(HERE / 'docs_run_page_reuse.py'), init_globals={
     'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
     'digest': digest, 'tree': tree, 'token_accounting': token_accounting,
-    'decode': decode, 'checks': CHECKS, 'review_api': PAGE_REVIEW,
+    'decode': decode, 'checks': CHECKS, 'review_api': PAGE_REVIEW, 'process_map': P['PROCESS'],
 })
 
 
@@ -994,8 +1013,15 @@ def prepare(job_path, run):
     save(run / 'pins.json', pins)
     save(run / 'state.json', {'schema': 'codeclew-docs-run-state/1.0', 'status': 'PREPARED', 'attempts': [],
                               'modelTokens': 0, 'usageAvailable': True, 'authorStartedAt': None})
+    coverage = [slot['conditionPathCoverage'] for slot in selected.get('slots', ()) if 'conditionPathCoverage' in slot]
     return {'status': 'PREPARED', 'run': str(run), 'requirements': len(expected), 'inputDigest': digest(pins),
             'authorMode': selected['mode'], 'authorModeReason': selected['reason'],
+            **({'routeRecords': len(selected['routeRecords']), 'routeRecordOmissions': selected['routeRecordOmissions']}
+               if 'routeRecords' in selected else {}),
+            **({'conditionPathCoverage': {'operations': len(coverage),
+                                         'operationsWithChecks': sum(bool(row['paths']) for row in coverage),
+                                         'paths': sum(row['paths'] for row in coverage),
+                                         'omissions': sum(sum(row['omissions'].values()) for row in coverage)}} if coverage else {}),
             **({'preparedFacts': fact_summary} if fact_summary is not None else {})}
 
 
@@ -1679,15 +1705,17 @@ def author(run):
     return state
 
 
-def page_artifacts(run, job, inventory, plan, values):
+def page_artifacts(run, job, inventory, plan, values, ledger=None):
     starter = run / 'inputs/starter'
     return P['assemble_pages'](job, inventory, plan, values, load(starter / 'original.json'),
-                               load(starter / 'navigation.json'), I['assemble'], plan['citationOwners'])
+                               load(starter / 'navigation.json'), I['assemble'], plan['citationOwners'],
+                               ledger.get('processRoutes', ()) if ledger else ())
 
 
 def donor_draft_files(run, job, plan, responses):
     inventory = load(run / 'inputs/inventory.json')
-    return {name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, responses).items()}
+    _, ledger = PR['read_pages'](run, load(run / 'state.json'), plan, P['validate_response'])
+    return {name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, responses, ledger).items()}
 
 
 def isolated_authorship(run, job, inventory, state, draft):
@@ -1727,7 +1755,7 @@ def isolated_authorship(run, job, inventory, state, draft):
             values[key] = PAGE_REVIEW['apply'](plan, slot, retained[key], review[key], decode(raw), P['validate_response'])
             reviewed[key] = {'previousResponseDigest': review[key]['responseDigest'],
                              'responseDigest': digest(values[key])}
-        need({name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, values).items()}
+        need({name: digest(value) for name, value in page_artifacts(run, job, inventory, plan, values, ledger).items()}
              == state['pageDraftFiles'], 'PAGE_REVIEW_DRAFT_CHANGED')
     if ledger is not None and ledger.get('recoveredReview'):
         origin, = ledger['origins']
@@ -1773,7 +1801,7 @@ def author_isolated(run, job, inventory, repairs=None):
         values = {slot['key']: available[slot['key']] for slot in plan['slots']}
         inputs_unchanged(run)
         try:
-            artifacts = page_artifacts(run, job, inventory, plan, values)
+            artifacts = page_artifacts(run, job, inventory, plan, values, ledger)
         except Stop as error:
             if review:
                 raise

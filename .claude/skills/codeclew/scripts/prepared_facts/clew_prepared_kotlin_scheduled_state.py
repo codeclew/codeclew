@@ -61,6 +61,7 @@ class ScheduledState:
         self.unit, self.bind, self.native_calls = unit, bind, native_calls
         self.owner, self.selected_call = owner, selected_call
         self.listener = entry_kind == "KAFKA_LISTENER"
+        self.record_state = self.listener or entry_kind == "SCHEDULED_JOB"
         self.functions, self.fields = unit.members(owner)
         self.maps = frozenset(field.name for field in self.fields.values() if field.storage == "MAP")
         self.name, self.literal, self.site, self.words = (
@@ -79,7 +80,7 @@ class ScheduledState:
         return " ".join(self.unit.excerpt(site).split())[:160].replace('`', "")
 
     def add(self, kind, text, flow, *sites, uncertainty=None):
-        if len(self.rows) >= MAX_FACTS:
+        if not self.record_state or len(self.rows) >= MAX_FACTS:
             return
         proof = tuple(dict.fromkeys((*flow.evidence, *sites)))
         if not all(refs := [self.bind(site) for site in proof]):

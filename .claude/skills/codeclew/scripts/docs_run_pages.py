@@ -13,18 +13,97 @@ MODE = 'ISOLATED_PAGES'
 MAX_PACKET_BYTES = 192 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
 MAX_OVERVIEW_FACTS = 64
+MAX_GUIDE_RANGES = 8
+MAX_ROUTE_FACTS = 24
+MAX_ROUTE_EVIDENCE_BYTES = 48 * 1024
+ROUTE_BRIDGES = frozenset((
+    'http-peer', 'message-peer', 'typed-message-peer', 'storage-reader', 'message-storage-reader',
+    'storage-poll-activation', 'storage-message-continuation', 'local-response-independent-poll',
+    'further-outbox-poll-activation', 'further-subscriber-outbox', 'further-subscriber-readback',
+))
 REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
 FACT_CONTEXT = runpy.run_path(str(Path(__file__).with_name('docs_run_fact_context.py')))
 RESPONSE = runpy.run_path(str(Path(__file__).with_name('docs_run_page_response.py')))
 OUTCOMES = runpy.run_path(str(Path(__file__).with_name('docs_run_page_outcomes.py')))
+PROCESS = runpy.run_path(str(Path(__file__).with_name('docs_run_process_map.py')),
+                         init_globals={'need': need, 'encode': encode})
 expand_fact_context = FACT_CONTEXT['expand_fact_context']
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
            'type': 'Type',
            'caller': 'Initiator', 'field': 'Field', 'meaning': 'Meaning', 'local': 'Service contracts',
            'external': 'External contracts', 'unsupported': 'The retained source does not establish the complete route.',
+           'operations': 'Documented operations', 'relatedOperations': 'Related operations',
+           'entryKinds': {'http': 'HTTP', 'kafka': 'Kafka', 'scheduled': 'Scheduled', 'background': 'Background',
+                          'manual': 'Manual', 'other': 'Other entry points'},
+           'noOperations': 'This documentation has no retained operation starts.',
+           'localSequence': 'See the operation sequence',
+           'routeOutcomes': {'normal': 'Normal outcome', 'error': 'Error outcome', 'handoff': 'Handoff',
+                             'unknown': 'Unclassified outcome'},
            'operationOutcomes': {'title': 'Selected conditions and outcomes', 'condition': 'Path condition',
-                                 'boundary': 'Evidence boundary'}},
+                                 'boundary': 'Evidence boundary'},
+           'processRoutes': {'routes': 'Retained routes',
+                             'readerOutcomes': 'What can happen',
+                             'outcomeIndex': {'success': 'Successful outcomes', 'refusal': 'Refusals and early exits',
+                                              'failure': 'Failures', 'handoff': 'Asynchronous handoffs',
+                                              'outbound': 'Outbound boundaries'},
+                             'routeDetail': 'Route details',
+                             'handoffTo': '{message} → {operation}',
+                             'moreOutcomes': 'More outcomes ({count})',
+                             'intro': 'Open a route to see its evidenced connections and follow the operation that owns each decision.',
+                             'operations': 'Participating operations',
+                             'serviceRoutes': '{service} routes',
+                             'externalBoundary': 'See the originating operation for the retained boundary.',
+                             'externalRequest': 'Retained HTTP request {endpoint}. The destination and deployment are unresolved.',
+                             'externalRequestUnknown': 'An exact outgoing endpoint could not be bound to this checked route.',
+                             'externalRequestLimit': 'Receiving service and deployment are unresolved',
+                             'unresolvedDestination': 'Unresolved destination',
+                             'ownerConditions': 'See the participating operations for the conditions of each local path.',
+                             'operationPath': 'Operation path',
+                             'observedRoutes': 'Observed route variants ({count})',
+                             'routeReference': 'reference {reference}',
+                             'behavior': '{operation} behavior',
+                             'sequence': '{operation} sequence',
+                             'alternatives': 'Conditions and outcomes',
+                             'conditional': 'The connections shown depend on the cited source conditions.',
+                             'disabled': 'Automatic subscription startup is disabled in the retained source.',
+                             'possible': 'The retained declaration gives a possible destination for this connection.',
+                             'omitted': 'Some retained route records could not be matched to their operations or sources ({count}).',
+                             'boundary': 'The complete end-to-end outcome and recipient remain open.',
+                             'retainedPredicate': 'Retained path condition {condition}',
+                             'independentResponse': 'The local response can complete independently of the related polling and delivery.',
+                             'callerError': 'The caller can fail while decoding the response after the peer takes its commit path.',
+                             'historical': 'This route was checked and promoted for the same retained source. The diagram shows its '
+                                           'recorded connections.',
+                             'historicalSteps': {'call': 'Call {operation}', 'await': 'Wait for {operation}',
+                                                 'async': 'Handoff to {operation}', 'return': 'Return to {operation}'},
+                             'declarations': 'Declared interactions',
+                             'declarationScope': 'These relationships were declared in the retained documentation. Their execution is '
+                                                 'unverified.',
+                             'effects': {'unresolved': 'Retained connection',
+                                         'outcome': 'Operation outcome',
+                                         'exit-return': 'Local return',
+                                         'exit-throw': 'Local exception',
+                                         'write': 'Write path',
+                                         'no-write': 'Path without a write',
+                                         'error': 'Caller decoding failure',
+                                         'independent-response': 'Independent local response'},
+                             'protocols': {'http': {'scope': 'The retained HTTP request matches a documented operation. Delivery depends '
+                                                             'on deployment and routing.',
+                                                    'label': 'HTTP request · {qualifier}',
+                                                    'condition': 'If the request reaches the matching operation'},
+                                           'message': {'scope': 'The retained publication and subscription match. Continuation depends on '
+                                                                'activation and delivery.',
+                                                       'label': 'Publication · {qualifier}',
+                                                       'condition': 'If delivered to the active subscription'},
+                                           'storage': {'scope': 'The operations name the same storage relation. The read depends on '
+                                                                'sharing the database and key and seeing the write.',
+                                                       'label': 'Related read · {qualifier}',
+                                                       'condition': 'Independent start, if it reads the same database and key'},
+                                           'poll': {'scope': 'The independently registered poller can select the row if the write becomes '
+                                                             'visible for the same database and key.',
+                                                    'label': 'Independent poll · {qualifier}',
+                                                    'condition': 'Independent trigger, if the poll selects the visible row'}}}},
 
 }
 
@@ -261,6 +340,103 @@ def admit_in_order(candidates, fits):
     return selected
 
 
+def scope_facts(scope, include):
+    return {**scope, **{key: [fact for fact in scope.get(key, ()) if include(fact)]
+                        for key in ('facts', 'boundaries')}}
+
+
+def fact_key(fact):
+    # An equal sentence is insufficient when it came from another occurrence.
+    lines = {handle: sorted(ranges) for handle, ranges in fact.get('lines', {}).items()}
+    witnesses = sorted(tuple(sorted(row.items())) for row in fact.get('_sourceWitnesses', ()))
+    catalog_ids = sorted(fact.get('_sourceWitnessIds', ()))
+    if not (lines or witnesses or catalog_ids):
+        return None
+    return (fact['kind'], fact['text'], fact.get('condition'), fact.get('uncertainty'),
+            fact.get('status'), fact.get('authority'), tuple(sorted(fact['sources'])),
+            json.dumps([lines, witnesses, catalog_ids], sort_keys=True))
+
+
+def operation_evidence(requirements, indexes):
+    by_source, behavior = defaultdict(set), defaultdict(set)
+    for row in requirements:
+        if row['kind'] != 'ENTRY':
+            continue
+        index = indexes[row['service']]
+        for handle in index['ready'].get(row['id'], {}).get('evidenceCandidates', ()):
+            by_source[handle].add(row['handlerId'])
+        scope = index['facts'].get(row['id'], {})
+        for key in ('facts', 'boundaries'):
+            behavior[row['service']].update(identity for fact in scope.get(key, ()) if (identity := fact_key(fact)))
+    return by_source, behavior
+
+
+def guide_sources(owned, index, service):
+    """Select service evidence outside the source owned by operations and discovery."""
+    available = index['sources']
+    local = [row for row in owned if row['kind'] != 'SERVICE']
+    owned_handles = {handle for row in local
+                     for handle in index['ready'].get(row['id'], {}).get('evidenceCandidates', ())}
+    for row in local:
+        scope = index['facts'].get(row['id'], {})
+        for fact in chain(scope.get('facts', ()), scope.get('boundaries', ())):
+            owned_handles.update(fact['sources'])
+    owned_ranges = defaultdict(list)
+    for handle in owned_handles & available.keys():
+        source = available[handle]
+        owned_ranges[REACHED['key'](source)].append(source)
+    distinct = [handle for handle, source in available.items()
+                if source['service'] == service and handle not in owned_handles and not any(
+                    REACHED['relative_slice'](outer, source) is not None
+                    for outer in owned_ranges.get(REACHED['key'](source), ()))]
+    return sorted(distinct, key=lambda handle: (len(available[handle]['text'].encode()), handle))[:MAX_GUIDE_RANGES]
+
+
+def route_evidence(requirements, indexes, all_sources, by_source, declarations, *, prepared):
+    """Keep evidence of relationships between operations, including same-service relationships."""
+    operations = [row for row in requirements if row['kind'] == 'ENTRY']
+    if len(operations) < 2:
+        return {}, {}, {}
+    scopes, ranges, linked, covered = {}, defaultdict(list), defaultdict(set), set()
+    for row in operations:
+        service, identity = row['service'], row['id']
+        index = indexes[service]
+        if scope := index['facts'].get(identity):
+            structural, fallback = {}, {}
+            for fact in chain(scope.get('facts', ()), scope.get('boundaries', ())):
+                if fact.get('authority') != 'RETAINED_SOURCE_EDGE':
+                    continue
+                handles = fact['sources']
+                peers = {ref for handle in handles for ref in by_source.get(handle, ())} - {row['handlerId']}
+                services = {all_sources[handle]['service'] for handle in handles} - {service}
+                if not peers and not services:
+                    continue
+                linked[identity].update(peers)
+                signature = frozenset(peers), frozenset(services)
+                kind = fact['kind']
+                bridge = kind in ROUTE_BRIDGES or kind.removeprefix('http-') in ROUTE_BRIDGES
+                if bridge:
+                    structural.setdefault(signature, []).append(fact)
+                else:
+                    # A projector can qualify a relationship without a separate bridge proposition.
+                    size = sum(len((fact.get(field) or '').encode()) for field in ('text', 'condition', 'uncertainty'))
+                    if signature not in fallback or size < fallback[signature][0]:
+                        fallback[signature] = size, fact
+            selected = {id(fact) for group in structural.values() for fact in group}
+            selected.update(id(fact) for signature, (_, fact) in fallback.items() if signature not in structural)
+            if selected:
+                scopes[identity] = scope_facts(scope, lambda fact: id(fact) in selected)
+                covered.update(frozenset((row['handlerId'], peer)) for peer in linked[identity])
+    declared = {ref for row in declarations if row['origin'] and row['peer'] and row['origin'] != row['peer']
+                and frozenset((row['origin'], row['peer'])) not in covered for ref in (row['origin'], row['peer'])}
+    for row in operations:
+        if not prepared or row['handlerId'] in declared:
+            service = row['service']
+            ready = indexes[service]['ready'].get(row['id'], {}).get('evidenceCandidates', ())
+            ranges[service].extend(ready)
+    return scopes, ranges, linked
+
+
 def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
     need(prepared is not None, 'ISOLATED_PAGE_SOURCE_UNAVAILABLE', blocked=True)
     directory.mkdir(mode=0o700)
@@ -268,9 +444,12 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                for service, scope in prepared['services'].items()}
     entries = entry_index(inventory)
     peer_links = peer_declarations(inventory, entries)
-    by_handler = {row['handlerId']: row for row in inventory['requirements'] if row['kind'] == 'ENTRY'}
     requirements = inventory['requirements']
     all_sources = {handle: source for row in indexes.values() for handle, source in row['sources'].items()}
+    by_source, owned_behavior = operation_evidence(requirements, indexes)
+    route_facts, route_ranges, route_links = route_evidence(requirements, indexes, all_sources, by_source, peer_links,
+                                                            prepared=job.get('evidenceMode') == 'PREPARED_FACTS'
+                                                            or any(index['facts'] for index in indexes.values()))
     routed = len(job['services']) > 1
     required_pages = [row['page'] for row in requirements if row['kind'] != 'DISCOVERY']
     taken = set(required_pages)
@@ -290,44 +469,68 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
     slots = []
     base_schema = load(Path(__file__).resolve().parent.parent / 'schemas/docs-run-page-author.schema.json')
 
+    route_outcomes = defaultdict(list)
+    for row in prepared.get('routeRecords', ()):
+        choice = row['selection']
+        if (row['status'] == 'SOURCE_QUALIFIED_CANDIDATE' and choice and choice.get('httpStatus')
+                and choice.get('condition') and len(route_outcomes[choice['owner']]) < 4):
+            route_outcomes[choice['owner']].append({**choice, 'kind': 'http-outcome', 'text': '',
+                                              '_httpStatus': choice['httpStatus']})
+
     def add(kind, page, service, required, available, context):
         slot_instructions = RESPONSE['instructions_for_slot'](instructions, kind)
         key = kind.lower() + '-' + stable_id(page + ':' + (required['id'] if required else ''))
         mandatory, supplemental, scoped_facts, returns, witness_catalogs = [], [], {}, {}, {}
-        selected_peers = {}
-        if kind == 'OPERATION':
-            for link in context['declaredInteractions']:
-                if link['peer'] in by_handler and link['peer'] != required['handlerId']:
-                    peer = by_handler[link['peer']]
-                    selected_peers.setdefault(peer['service'], []).append(peer)
-                    if peer['service'] not in available:
-                        available = [*available, peer['service']]
         for owner in available:
             index = indexes[owner]
             owned = [row for row in requirements if row['service'] == owner]
-            if required and kind in ('OPERATION', 'DISCOVERY'):
-                evidence_requirements = ([required] if owner == service else []) + selected_peers.get(owner, [])
-            else:
-                evidence_requirements = owned
-            for row in sorted(evidence_requirements, key=lambda row: row['kind'] != 'ENTRY'):
+            evidence_requirements = [required] if required else owned
+            if kind == 'GUIDE':
+                supplemental.extend(guide_sources(owned, index, owner))
+                evidence_requirements = [row for row in owned if row['kind'] == 'SERVICE']
+            if kind == 'PROCESS_MAP':
+                supplemental.extend(route_ranges.get(owner, ()))
+            for row in evidence_requirements:
                 ready = index['ready'].get(row['id'], {})
-                group = mandatory if required and row['id'] == required['id'] else supplemental
-                group.extend(ready.get('evidenceCandidates', []))
-                if facts := index['facts'].get(row['id']):
+                if kind not in ('GUIDE', 'PROCESS_MAP'):
+                    group = mandatory if required else supplemental
+                    group.extend(ready.get('evidenceCandidates', []))
+                facts = (route_facts if kind == 'PROCESS_MAP' else index['facts']).get(row['id'])
+                if facts:
+                    if kind == 'GUIDE':
+                        positive = [fact for fact in facts.get('facts', ())
+                                    if fact.get('status') in (None, 'SUPPORTED', 'SOURCE_QUALIFIED_CANDIDATE')
+                                    and all(all_sources[handle]['service'] == owner for handle in fact['sources'])
+                                    and fact_key(fact) not in owned_behavior[owner]]
+                        facts = {'facts': positive} if positive else {}
+                    if kind == 'DISCOVERY':
+                        facts = scope_facts(facts, lambda fact: fact_key(fact) not in owned_behavior[owner])
+                    if kind == 'CONTRACTS':
+                        facts = scope_facts(facts, lambda fact: fact.get('authority', '').startswith('DECLARED_'))
                     scoped_facts[row['id']] = facts
                     witness_catalogs[row['id']] = index.get('witnessCatalog', ())
             if kind == 'OPERATION':
                 returns.update({'R' + str(i): value for i, value in enumerate(
                     (value for value in index['returns'] if value['page'] == page), 1)})
                 mandatory.extend(row['cite'] for row in returns.values())
-            if kind in ('GUIDE', 'CONTRACTS'):
+            if kind == 'CONTRACTS':
                 supplemental.extend(handle for handle, source in index['sources'].items() if source['service'] == owner)
 
-        overview_limit = MAX_OVERVIEW_FACTS if kind not in ('OPERATION', 'DISCOVERY') else None
+        overview_limit = MAX_ROUTE_FACTS if kind == 'PROCESS_MAP' else (
+            MAX_OVERVIEW_FACTS if kind in ('GUIDE', 'CONTRACTS') else None)
         scoped_facts, omitted_overview = limit_facts(scoped_facts, overview_limit)
         fact_groups = [fact['sources'] for scoped in scoped_facts.values() for category in ('facts', 'boundaries')
                        for fact in scoped.get(category, ())]
-        optional = set(supplemental) | {handle for group in fact_groups for handle in group}
+        fact_handles = {handle for group in fact_groups for handle in group}
+        boundary_facts = [row for row in prepared.get('routeBoundaries', ())
+                          if required and kind == 'OPERATION' and row['owner'] == required['id']
+                          and row.get('_conditionCases')]
+        local_checks = scoped_facts.get(required['id'], {}).get('facts', ()) if required and kind == 'OPERATION' else ()
+        route_checks = route_outcomes.get(required['id'], ()) if required and kind == 'OPERATION' else ()
+        supplemental.extend(handle for row in chain(boundary_facts[:4], route_checks) for handle in row['sources']
+                            if handle in all_sources and len(all_sources[handle]['text'].encode()) <= 8192)
+
+        optional = set(supplemental) | fact_handles
         mandatory = list(dict.fromkeys(mandatory))
         supplemental = list(dict.fromkeys(supplemental))
 
@@ -356,6 +559,27 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
             if required:
                 packet['requirement'] = {key: required[key] for key in (
                     'id', 'kind', 'file', 'entryKind', 'entrySymbol', 'method', 'path', 'authority', 'boundaries') if key in required}
+            if kind == 'OPERATION' and (job.get('evidenceMode') == 'PREPARED_FACTS' or local_checks or boundary_facts):
+                visible = {id(fact) for fact in chain(boundary_facts[:4], route_checks,
+                                                     active.get(required['id'], {}).get('facts', ()))}
+
+                def compact_proof(handles):
+                    refs = [reverse[handle] for handle in handles]
+                    for host in handles:
+                        outer = spans[reverse[host]]
+                        if all(handle == host or (
+                                REACHED['relative_slice'](all_sources[host], all_sources[handle]) is not None
+                                and all(any(loc == view and low <= first <= last <= high for loc, low, high in outer)
+                                        for view, first, last in spans[reverse[handle]])) for handle in handles):
+                            return [reverse[host]]
+                    return refs
+
+                paths, coverage = RESPONSE['CONDITION_PATHS']['select'](
+                    chain(boundary_facts, local_checks, route_checks), reverse, visible=visible, compact=compact_proof,
+                    language=job['language'] if job.get('evidenceMode') == 'PREPARED_FACTS' else None)
+                packet['conditionPathCoverage'] = coverage
+                if paths:
+                    packet['conditionPaths'] = paths
             prompt = FACT_CONTEXT['author_prompt'](slot_instructions, packet)
             return prompt, aliases, spans, {ref: (row['startLine'], row['endLine']) for ref, row in sources.items()}
 
@@ -390,8 +614,12 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
             views = source_views(scoped_facts, all_sources, set(mandatory) | set(supplemental), witness_catalogs)
             handles = mandatory.copy()
             remaining = MAX_PACKET_BYTES - len(slot_instructions.encode()) - 16 * 1024
-            included = {range_key(all_sources[handle]) for handle in handles}
-            bytes_used = sum(len(all_sources[handle]['text'].encode()) for handle in handles)
+            if kind == 'PROCESS_MAP':
+                remaining = min(remaining, MAX_ROUTE_EVIDENCE_BYTES)
+            ranges = {key: row for handle in handles for key, row in
+                      views.get(handle, {range_key(all_sources[handle]): all_sources[handle]}).items()}
+            included = set(ranges)
+            bytes_used = sum(len(row['text'].encode()) for row in ranges.values())
             selected_handles = set(handles)
             supplemental_groups = ((handle,) for handle in supplemental)
             for group in chain(fact_groups, supplemental_groups):
@@ -404,6 +632,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                     selected_handles.update(new_handles)
                     included.update(excerpts)
                     bytes_used += size
+            if kind in ('GUIDE', 'PROCESS_MAP') and not handles:
+                return
             need(handles, 'PAGE_SLOT_SOURCE_UNAVAILABLE', page=page, kind=kind, blocked=True)
 
             def render(selected, maximum_facts=None):
@@ -437,13 +667,44 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 'prompt': str(path.relative_to(directory.parent)), 'schema': str(schema.relative_to(directory.parent)),
                 'requirement': required['id'] if required else None, 'citations': aliases, 'citationSpans': spans,
                 'sourceRegions': regions, 'returns': {ref: {'id': row['id'], 'page': row['page']} for ref, row in returns.items()}}
-        if kind == 'OPERATION' and job['language'] == 'en':
-            packet = expand_fact_context(json.loads(prompt.rsplit('\n\n', 1)[-1]))
-            source_bytes = {ref: len(all_sources[handle]['text'].encode()) for ref, handle in aliases.items()}
-            if outcomes := OUTCOMES['select'](packet, required['id'], source_bytes):
-                slot['sourceOutcomes'] = outcomes
+        if kind == 'OPERATION':
+            related = {link['peer'] for link in context['declaredInteractions']}
+            related.update(route_links.get(required['id'], ()))
+            admitted = set(aliases.values())
+            start_handles = indexes[service]['ready'].get(required['id'], {}).get('evidenceCandidates', ())
+            registrations = set(required.get('registrationSourceIds', ()))
+            start_handles = [handle for handle in start_handles if handle in admitted]
+            if start_handles:
+                slot['startCitation'] = next((handle for handle in start_handles if all_sources[handle].get('id') in registrations),
+                                             start_handles[0])
+            refs = [entry['id'] for entry in entries if entry['id'] in related and entry['id'] != required['handlerId']]
+            if refs:
+                slot['relatedOperations'] = refs
+            packet = json.loads(prompt.rsplit('\n\n', 1)[-1])
+            if paths := packet.get('conditionPaths'):
+                slot['conditionPaths'] = paths
+            if coverage := packet.get('conditionPathCoverage'):
+                slot['conditionPathCoverage'] = coverage
+            local_status = {}
+            for fact in scoped_facts.get(required['id'], {}).get('facts', ()):
+                status = fact.get('_httpStatus')
+                if (type(status) is int and 200 <= status < 600 and set(fact['sources']) <= admitted
+                        and fact.get('status') in (None, 'SUPPORTED', 'SOURCE_QUALIFIED_CANDIDATE')):
+                    condition = fact.get('condition')
+                    local_status.setdefault((status, condition), {
+                        'httpStatus': status, 'condition': condition, 'sources': fact['sources'], 'effect': 'outcome'})
+            if local_status:
+                slot['mapOutcomes'] = list(local_status.values())[:16]
+            if job['language'] == 'en':
+                packet = expand_fact_context(packet)
+                source_bytes = {ref: len(all_sources[handle]['text'].encode()) for ref, handle in aliases.items()}
+                if outcomes := OUTCOMES['select'](packet, required['id'], source_bytes):
+                    slot['sourceOutcomes'] = outcomes
         if kind == 'PROCESS_MAP':
             slot['operationIds'] = [entry['id'] for entry in context['operations']]
+            slot['transitionRoutes'] = True
+        if kind in ('GUIDE', 'PROCESS_MAP'):
+            slot['ownedContentOnly'] = True
         schema.parent.mkdir(mode=0o700, parents=True)
         schema.write_bytes(encode(RESPONSE['schema_for_slot'](base_schema, slot)))
         slots.append(slot)
@@ -452,10 +713,8 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
         overview = service + '.md'
         local = [entry for entry in entries if entry['service'] == service]
         relations = [row for row in peer_links if service in (row['fromService'], row['toService'])]
-        guide_context = {'operations': local, 'contractsPage': contracts_pages[service], 'processPage': process_page,
-                         'declaredInteractions': relations}
         owner = [service]
-        add('GUIDE', overview, service, None, owner, guide_context)
+        add('GUIDE', overview, service, None, owner, {})
         add('CONTRACTS', contracts_pages[service], service, None, owner,
             {'operations': local, 'declaredInteractions': relations})
         for row in requirements:
@@ -467,10 +726,20 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                         'declaredInteractions': [link for link in relations if link['origin'] == row.get('handlerId')]}
                        if kind == 'OPERATION' else {'knownStarts': local})
             add(kind, row['page'], service, row, owner, context)
-    add('PROCESS_MAP', process_page, None, None, job['services'],
-        {'operations': entries, 'multiService': routed, 'declaredInteractions': peer_links})
+    if 'routeRecords' not in prepared and (route_facts or any(route_ranges.values())):
+        add('PROCESS_MAP', process_page, None, None, job['services'],
+            {'operations': entries, 'multiService': routed, 'declaredInteractions': peer_links})
     used_handles = {handle for slot in slots for handle in slot['citations'].values()}
-    return {'mode': MODE, 'reason': 'EXPLICIT_ISOLATED_PAGE_AUTHORING', 'slots': slots,
+    processes = {}
+    if 'routeRecords' in prepared:
+        records, omitted = PROCESS['select_records'](prepared['routeRecords'], requirements, entries, all_sources)
+        processes = {'routeRecords': records, 'routeRecordOmissions': omitted, 'routeNarrativeLayout': 'anchored',
+                     'routePresentation': 'owner-scoped-v2', 'processOutcomes': True,
+                     'routeBoundaries': PROCESS['select_boundaries'](prepared.get('routeBoundaries', ()), requirements, all_sources),
+                     'routeDeclarations': [row for row in peer_links if row['origin'] and row['peer']]}
+        used_handles.update(all_sources)
+    return {**processes, 'mode': MODE, 'reason': 'EXPLICIT_ISOLATED_PAGE_AUTHORING', 'slots': slots, 'operationOwnership': True,
+            'navigationOverview': True,
             'contracts': contracts_pages, 'processPage': process_page, 'entries': entries, 'maximumPages': maximum_pages,
             'routed': routed, 'citationOwners': {handle: source['service'] for handle, source in all_sources.items()
                                                if handle in used_handles}}
@@ -544,16 +813,49 @@ def add_contracts(original, review, nav, slot, response, labels):
                          citation_handles(row['cites'], slot))
 
 
-def add_processes(original, review, navigation, plan, slot, response, job, labels, cite_services):
+def start_titles(navigation):
+    return {row['target'].partition('#')[0]: row['title']
+            for service in navigation['services'] for row in service['starts']}
+
+
+def append_service_starts(page, nav, labels, kinds):
+    by_kind = defaultdict(list)
+    for start in nav['starts']:
+        name = start['target'].partition('#')[0]
+        by_kind[start['kind']].append('- ' + page_link(start['title'], name, 'behavior'))
+    if by_kind:
+        groups = ['### ' + title + '\n\n' + '\n'.join(by_kind[kind])
+                  for kind, title in kinds.items() if kind in by_kind]
+        page['fragments'].append({'text': '\n## ' + labels['operations'] + '\n\n' + '\n\n'.join(groups) + '\n\n'})
+
+
+def add_processes(original, review, navigation, plan, slot, response, job, labels, cite_services,
+                  operation_steps=None, start_sources=None, operation_values=None, historical_routes=()):
     """Own the map and canonical non-service route destinations from one fixed slot."""
-    page = heading(slot['page'], labels['process'])
+    ownership = plan.get('operationOwnership')
+    process_page = plan['processPage']
+    page = heading(process_page, labels['process'])
     original['pages'].append(page)
-    append_claims(page, review, response['claims'], slot)
-    operations = {entry['id']: entry for entry in plan['entries']}
-    operation_links = [page_link(start['title'], *start['target'].split('#', 1))
-                       for service in navigation['services'] for start in service['starts']]
+    claims = [] if slot and slot.get('ownedContentOnly') else response['claims']
+    append_claims(page, review, claims, slot)
+    titles = start_titles(navigation) if ownership else {}
+    operations = {entry['id']: {**entry, 'title': titles.get(entry['page'], entry['title'])}
+                  for entry in plan['entries']}
+    starts = [start for service in navigation['services'] for start in service['starts']]
+    start_fragment = len(page['fragments'])
+    operation_links = [page_link(start['title'], start['target'].partition('#')[0], 'behavior') if ownership
+                       else page_link(start['title'], *start['target'].split('#', 1)) for start in starts]
     if operation_links:
-        page['fragments'].append({'text': '\n'.join('- ' + link for link in operation_links) + '\n\n'})
+        title = '## ' + labels['operations'] + '\n\n' if ownership else ''
+        body = '\n'.join('- ' + link for link in operation_links)
+        if start_sources and not claims:
+            page['fragments'].append({'text': title})
+            evidence = list(dict.fromkeys(start_sources[start['target'].partition('#')[0]] for start in starts))
+            append_claim(page, review, body, evidence)
+        else:
+            page['fragments'].append({'text': title + body + '\n\n'})
+    elif start_sources and not claims:
+        append_claim(page, review, labels['noOperations'], [next(iter(start_sources.values()))], 'EXPLICIT_UNKNOWN')
     docset = 'retained'
     version = 'r-' + stable_id(job['snapshot'])
 
@@ -564,12 +866,21 @@ def add_processes(original, review, navigation, plan, slot, response, job, label
         return result
 
     catalog = {'schema': 'codeclew-cross-docset-routes/1.1', 'revision': version,
-               'catalog': target(slot['page']), 'externalActors': [], 'routes': [],
+               'catalog': target(process_page), 'externalActors': [], 'routes': [],
                'docsets': [{'id': docset, 'title': navigation['home']['title'], 'version': version,
                             'baseURL': 'https://retained-docs.invalid/',
                             'services': [{'id': s['id'], 'title': s['title'], 'overview': target(s['overview'])}
                                          for s in navigation['services']]}]}
     routes = catalog['routes']
+    if 'routeRecords' in plan:
+        later = []
+        if plan.get('routePresentation') == 'owner-scoped-v2':
+            later = page['fragments'][start_fragment:]
+            del page['fragments'][start_fragment:]
+        PROCESS['render'](original, review, page, catalog, target, operations, operation_values, plan,
+                          historical_routes, labels, heading, page_link, append_claim)
+        page['fragments'].extend(later)
+        return catalog
     taken = {row['page'] for row in original['pages']}
     for row in response['routes']:
         origin = operations.get(row['origin'])
@@ -590,15 +901,18 @@ def add_processes(original, review, navigation, plan, slot, response, job, label
         page['fragments'].append({'text': '- ' + page_link(row['title'], name) + '\n\n'})
         append_claim(narrative, review, row['summary'], cited)
         narrative['fragments'].append({'text': '<a id="branch"></a>\n\n'})
-        numbered = '\n'.join(['1. ' + page_link(origin['title'], origin['page'], 'handler'),
-                               *(f"{i}. {step['label']}" + (f" ({step['condition']})" if step['condition'] else '')
-                                 for i, step in enumerate(row['steps'], 2))])
-        append_claim(narrative, review, row['condition'] + '\n\n' + numbered, cited)
+        steps = route_steps(row, operations, operation_steps or {}, labels) if ownership else row['steps']
+        numbered = ['1. ' + page_link(origin['title'], origin['page'], 'behavior' if ownership else 'handler')]
+        for index, step in enumerate(steps, 2):
+            label = page_link(step['label'], *step['target'].split('#', 1)) if 'target' in step else step['label']
+            numbered.append(f"{index}. {label}" + (f" ({step['condition']})" if step['condition'] else ''))
+        append_claim(narrative, review, row['condition'] + '\n\n' + '\n'.join(numbered), cited)
         narrative['fragments'].append({'text': '<a id="outcome"></a>\n\n'})
         append_claim(narrative, review, row['outcome'], cited,
                      'EXPLICIT_UNKNOWN' if row['result'] == 'unknown' else 'SUPPORTED')
-        narrative['fragments'].append({'text': '- ' + page_link(labels['process'], slot['page']) + '\n' + ''.join(
-            '- ' + page_link(operations[ref]['title'], operations[ref]['page'], 'handler') + '\n' for ref in refs)})
+        narrative['fragments'].append({'text': '- ' + page_link(labels['process'], process_page) + '\n' + ''.join(
+            '- ' + page_link(operations[ref]['title'], operations[ref]['page'], 'behavior' if ownership else 'handler') + '\n'
+            for ref in refs)})
         roles = {row['origin']: origin['title'], **{peer['entry']: peer['role'] for peer in row['participants']}}
         occurrences = [{'id': ref, 'actor': {'kind': 'service', 'docset': docset, 'service': operations[ref]['service']},
                         'role': roles[ref], 'target': target(operations[ref]['page'], 'handler')} for ref in refs]
@@ -608,29 +922,59 @@ def add_processes(original, review, navigation, plan, slot, response, job, label
                                        'target': operations[ref]['page'] + '#handler'} for ref in refs)],
                    'steps': [{'from': 'caller', 'to': row['origin'], 'label': origin['title'],
                               'kind': 'call' if origin['kind'] == 'http' else 'async'},
-                             *({key: item for key, item in step.items() if item is not None} for step in row['steps'])]}
+                             *({key: item for key, item in step.items() if item is not None} for step in steps)]}
         narrative['fragments'].append({'text': '\n\n```clew-sequence\n' + encode(diagram).decode() + '```\n'})
         terminal = row['terminal']
         end = ({'status': 'known', 'ownerOccurrence': terminal, 'boundary': row['boundary'],
                 'recipient': {'kind': 'unknown', 'reason': row['recipient']}} if terminal else
                {'status': 'unknown', 'reason': row['recipient']})
+        outcome_title = row['outcome']
+        if not ownership:
+            outcome_title = outcome_title[:160]
+        elif len(outcome_title.encode('utf-16-le')) > 320:
+            outcome_title = labels['routeOutcomes'][row['result']]
         routes.append({'id': identity, 'version': version, 'title': row['title'], 'narrative': target(name),
                        'origin': {'status': 'known', 'occurrence': row['origin'], 'kind': origin['kind'],
                                   'title': origin['title'], 'summary': row['summary']},
                        'occurrences': occurrences,
                        'branches': [{'id': 'branch', 'title': row['title'], 'condition': row['condition'],
                                      'target': target(name, 'branch')}],
-                       'outcomes': [{'id': 'outcome', 'branch': 'branch', 'kind': row['result'], 'title': row['outcome'][:160],
+                       'outcomes': [{'id': 'outcome', 'branch': 'branch', 'kind': row['result'], 'title': outcome_title,
                                      'target': target(name, 'outcome'), 'end': end,
                                      'internal': {'coverage': 'partial', 'occurrences': [ref for ref in refs
                                                   if ref not in (row['origin'], terminal)]}}],
                        'coverage': {'outcomeInventory': 'partial', 'scope': row['summary'], 'reference': target(name, 'scope')}})
-    if not routes:
+    if not routes and not plan.get('navigationOverview') and (not ownership or len(operations) > 1):
         page['fragments'].append({'text': labels['unsupported'] + '\n\n'})
     return catalog
 
 
-def assemble_pages(job, inventory, plan, values, starter, navigation, inline_assemble, cite_services):
+def route_steps(row, operations, operation_steps, labels):
+    """Replace repeated local notes with links while retaining transitions and unique context."""
+    steps = []
+    for step in row['steps']:
+        actor = step['from']
+        repeats = actor == step['to'] and step['kind'] == 'note' and any(
+                local['from'] == local['to'] == 'handler' and local['kind'] == 'note'
+                and local['label'] == step['label'] and local['condition'] == step['condition']
+                for local in operation_steps.get(actor, ()))
+        if repeats or step['kind'] == 'reference':
+            step = {**step, 'kind': 'note', 'label': labels['localSequence'],
+                    'condition': None if repeats else step['condition'], 'target': operations[actor]['page'] + '#sequence'}
+            if steps and steps[-1] == step:
+                continue
+        steps.append(step)
+    return steps
+
+
+def operation_anchors(page):
+    page['fragments'].insert(1, {'text': '<a id="behavior"></a>\n\n'})
+    sequence = next(index for index, part in enumerate(page['fragments']) if part['text'].startswith('```clew-sequence\n'))
+    page['fragments'].insert(sequence, {'text': '<a id="sequence"></a>\n\n'})
+
+
+def assemble_pages(job, inventory, plan, values, starter, navigation, inline_assemble, cite_services,
+                   historical_routes=()):
     """Compose accepted outputs in the starter order, regardless of author completion order."""
     slots = {slot['key']: slot for slot in plan['slots']}
     need(values.keys() == slots.keys(), 'PAGE_SLOT_RESPONSE_MISSING')
@@ -638,12 +982,34 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
     review = {'schema': COMPACT_REVIEW, 'requirements': {}, 'claims': {}, 'returnClaims': {},
               'unresolved': list(dict.fromkeys(limit for key in slots for limit in values[key]['limitations'])),
               'visual': {'status': 'UNAVAILABLE', 'reason': 'Isolated authors work from retained source packets.'}}
-    labels = (LABELS['en'] if job['language'] == 'en' else
-              load(Path(job['renderer']) / 'assets/ru.json')['documentationPages'])
+    labels, kinds = LABELS['en'], LABELS['en']['entryKinds']
+    if job['language'] == 'ru':
+        locale = load(Path(job['renderer']) / 'assets/ru.json')
+        labels = locale['documentationPages']
+        kinds = {kind: locale['kind_' + kind] for kind in kinds}
+    navigation_overview = plan.get('navigationOverview')
+    entries_by_id = {row['id']: row for row in plan['entries']}
+    titles = start_titles(navigation)
+    start_sources = {}
     for nav in navigation['services']:
         service = nav['id']
         owned = [slot for slot in slots.values() if slot['service'] == service]
-        guide = next(slot for slot in owned if slot['kind'] == 'GUIDE')
+        guide = next((slot for slot in owned if slot['kind'] == 'GUIDE'), None)
+        contracts = next(slot for slot in owned if slot['kind'] == 'CONTRACTS')
+        contract_response = values[contracts['key']]
+        guides_links = '- ' + page_link(labels['contracts'], contracts['page']) + '\n- ' + page_link(
+            labels['process'], plan['processPage'])
+        authored = values[guide['key']] if guide else None
+        uses_cited_links = navigation_overview and (not authored or not authored['claims'])
+        if navigation_overview:
+            guide_claims = authored['claims'] if authored else []
+            if uses_cited_links:
+                alias = contract_response['claims'][0]['cites'][0]
+                guide_claims = [{'heading': '', 'text': guides_links, 'cites': [alias],
+                                 'assessment': 'SUPPORTED', 'returns': []}]
+            overview_value = {'title': nav['title'], 'claims': guide_claims, 'disposition': 'EXPLAINED'}
+        else:
+            overview_value = {key: authored[key] for key in ('title', 'claims', 'disposition')}
         operations = [slot for slot in owned if slot['kind'] == 'OPERATION']
         discovery = discovery_slots(plan, service)
         entries = {slot['key']: slot['requirement'] for slot in operations}
@@ -665,7 +1031,7 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
         scope = {'services': {service: inventory['services'][service]},
                  'requirements': [row for row in inventory['requirements'] if row['service'] == service]}
         value = {'status': 'DOCUMENTED', 'reason': '', 'reviewed': True,
-                 'overview': {key: values[guide['key']][key] for key in ('title', 'claims', 'disposition')},
+                 'overview': overview_value,
                  'entries': responses,
                  'discovery': [{'ref': ref, **{key: values[slot['key']][key]
                                               for key in ('disposition', 'discovery', 'starts')}}
@@ -681,21 +1047,46 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
         for group in ('requirements', 'claims', 'returnClaims'):
             review[group].update(local[group])
         overview = next(page for page in original['pages'] if page['page'] == nav['overview'])
-        contracts = next(slot for slot in owned if slot['kind'] == 'CONTRACTS')
-        add_contracts(original, review, nav, contracts, values[contracts['key']], labels)
-        links = {'text': '\n- ' + page_link(labels['contracts'], contracts['page']) + '\n- '
-                 + page_link(labels['process'], plan['processPage']) + '\n\n'}
-        overview['fragments'].append(links)
+        add_contracts(original, review, nav, contracts, contract_response, labels)
+        links = {'text': '\n' + guides_links + '\n\n'}
+        if not uses_cited_links:
+            overview['fragments'].append(links)
+        if navigation_overview:
+            append_service_starts(overview, nav, labels, kinds)
         by_page = {slot['page']: slot for slot in operations}
+        starts = {start['target'].partition('#')[0] for start in nav['starts']}
         for page in artifacts['original.json']['pages']:
             if slot := by_page.get(page['page']):
                 if job['language'] == 'en':
                     OUTCOMES['append'](page, review, slot, values[slot['key']]['claims'],
                                        labels['operationOutcomes'], citation_handles)
+                if related := slot.get('relatedOperations'):
+                    refs = [entries_by_id[ref] for ref in related]
+                    page['fragments'].append({'text': '\n## ' + labels['relatedOperations'] + '\n\n' + '\n'.join(
+                        '- ' + page_link(titles.get(ref['page'], ref['title']), ref['page'], 'behavior')
+                        for ref in refs) + '\n\n'})
                 page['fragments'].append(links)
+            if plan.get('operationOwnership') and page['page'] in starts:
+                operation_anchors(page)
+                if slot:
+                    source = slot.get('startCitation') or next(iter(slot['citations'].values()))
+                else:
+                    source = next(part['evidence'][0] for part in page['fragments'] if 'evidence' in part)
+                start_sources[page['page']] = source
     navigation['home']['title'] = navigation['services'][0]['title']
-    process = next(slot for slot in slots.values() if slot['kind'] == 'PROCESS_MAP')
-    catalog = add_processes(original, review, navigation, plan, process, values[process['key']], job, labels, cite_services)
-    need(len(original['pages']) <= plan['maximumPages'], 'PAGE_LIMIT_AFTER_DISCOVERY', page=process['page'],
+    process = next((slot for slot in slots.values() if slot['kind'] == 'PROCESS_MAP'), None)
+    response = values[process['key']] if process else {'claims': [], 'routes': []}
+    if plan.get('operationOwnership') and not start_sources:
+        kind = 'CONTRACTS' if navigation_overview else 'GUIDE'
+        guide = next(slot for slot in slots.values() if slot['kind'] == kind)
+        start_sources[guide['page']] = next(iter(guide['citations'].values()))
+    by_page = {slot['page']: values[slot['key']]['steps'] for slot in slots.values() if slot['kind'] == 'OPERATION'}
+    operation_steps = {row['id']: by_page[row['page']] for row in plan['entries'] if row['page'] in by_page}
+    slots_by_page = {slot['page']: slot for slot in slots.values() if slot['kind'] == 'OPERATION'}
+    operation_values = {entry['id']: values[slot['key']] for entry in plan['entries']
+                        if (slot := slots_by_page.get(entry['page']))}
+    catalog = add_processes(original, review, navigation, plan, process, response, job, labels, cite_services,
+                            operation_steps, start_sources, operation_values, historical_routes)
+    need(len(original['pages']) <= plan['maximumPages'], 'PAGE_LIMIT_AFTER_DISCOVERY', page=plan['processPage'],
          count=len(original['pages']), limit=plan['maximumPages'])
     return {'original.json': original, 'navigation.json': navigation, 'self-review.json': review, 'routes.json': catalog}

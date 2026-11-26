@@ -18,7 +18,7 @@ SCHEMA = "codeclew-skill-install/1.0"
 SKILL_NAME = "codeclew"
 MAX_FILES = 192
 # Budget for the bounded source package, including the portable reader/navigation.
-MAX_TOTAL_BYTES = 3 * 1024 * 1024
+MAX_TOTAL_BYTES = 3 * 1024 * 1024 + 18 * 1024
 
 
 class InstallError(RuntimeError):

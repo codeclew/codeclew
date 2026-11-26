@@ -100,6 +100,12 @@ read-only attempts supply the response, thread and usage evidence. A slot
 with changed assignments or incomplete evidence goes through the usual author
 path. The first matching source directory supplies each slot.
 
+A promoted donor with source-reviewed corrections can also supply unchanged
+slots to a different plan. The runner reconstructs the donor's verified
+draft from its sealed responses and checks each matching slot against the
+new plan. Removed slots are ignored. Slots with changed assignments, prompts,
+or schemas use the usual author path.
+
 The new run records adopted responses and their provenance in a separate
 sealed ledger. The standard reader gates verify the combined document.
 Reported token counts cover the new run's recorded author invocations.
@@ -308,12 +314,18 @@ the same cumulative token accounting.
 
 The standard profile selects `ISOLATED_PAGES` and `PREPARED_FACTS` using the
 installed `prepare` and `run` commands above. The configured model and reasoning
-effort apply to every page. A job with no author mode, or with
+effort apply to every author slot. A job with no author mode, or with
 `"authorMode": "AUTO"`, uses inline or workspace authoring.
 
 Prepare freezes a service guide and data and contracts page per service, the
-operation pages and canonical handler targets, and one process map. A source
-discovery slot reviews each required executable file for additional starts.
+operation pages and canonical handler targets, and one process map. Each
+operation page owns its conditions, local sequence and results. The runner
+builds the service overview from the documented entry types and links to
+operations, contracts and processes. The guide gets an author slot when
+independent service-wide source evidence can add to that overview. The
+contracts page concentrates on declarations and data shapes. A source
+discovery slot reviews each required executable file for additional starts
+and describes their distinct behavior.
 Each slot's input is listed in `inputs/author-plan.json`. The named packet
 contains verbatim source ranges, citation aliases, the slot's navigation and
 coverage, and any in-scope prepared propositions. Reached declaration facts
@@ -323,6 +335,22 @@ Declaration, source evidence and runtime evidence retain their distinct authorit
 The packet reports deferred resources, preparation omissions and omitted optional
 evidence. Preparation reports the named slot and limit if essential source exceeds
 its 192 KiB packet budget.
+
+With prepared facts, the runner builds the process map from documented starts
+and the retained HTTP, publication, and storage connections. Distinct call sites and alternative conditions retain separate links. Related
+paths share service route pages, with stable sections for each route and its
+outcomes. The overview leads with evidenced results, early exits, handoffs
+and outbound boundaries, with links to the owning sequences and route
+sections. Expand the observed variants or the route inventory for technical
+alternatives. Independently triggered reads and polling
+keep their own applicability requirements. The map links to each operation's
+behavior and sequence diagram. An exact match in the accepted operation
+response supplies the wording for a local decision or result. Conditions from
+different evidence records stay separate. When a shared premise is unbound,
+the route links to the operation pages for the local decisions.
+Preparation reports route records it could not match to documented operations
+or retained citations. Isolated jobs without prepared facts can still use a
+route author when sufficient route evidence is available.
 
 Run starts an independent tool-free Codex session for each slot, with up to
 three sessions active. The [page response contract](../schemas/docs-run-page-author.schema.json)
@@ -335,10 +363,28 @@ reader pages deterministically, keeps the fixed start edges, and renders the
 authored typed trace, field/type/meaning tables, and source-supported routes
 with ordinary Codeclew navigation and styling. Shapes with named fields use
 tables. Cited prose describes shapes without named fields and states their
-known constraints. Dedicated narrative pages
-belong to the process catalog. When no complete route is supported, the map
-preserves the documented starts and the evidence boundary. A source-supported
-partial route may explicitly leave its terminal outcome or recipient open.
+known constraints. Dedicated narrative pages belong to the process catalog.
+They link directly to the participating operation pages and show the retained
+connections for the joint route. The map always links to the documented
+starts. A source-supported partial route may explicitly leave its terminal
+outcome or recipient open.
+
+To regenerate a prepared-facts map, run `prepare` in a fresh run directory.
+Use `reuse-pages --run-dir NEW --reuse-from CURRENT` before running `run`.
+Place the current response donor first. Additional `--reuse-from` directories
+may contribute route records from promoted isolated maps with the same
+retained scope and language. The runner rechecks each donor's promoted draft
+and route response and links to the current operations for local behavior.
+A checked route with one documented operation can retain its navigation and
+source boundary when the originating operation still owns its evidence.
+A uniquely bound outgoing HTTP request can show its method and path.
+A retained JDK builder and send can also establish a literal origin. Query
+values are excluded. Deployment and the recipient stay open when unresolved. When routes move onto a shared page, their IDs remain as anchors.
+The checked export delivers the new narrative destinations.
+The reuse receipt reports the count of historical route records admitted.
+Unchanged operation and contract answers remain eligible for ordinary exact
+response reuse. If every author slot is reused, the regenerated map launches
+no author.
 
 A repair resumes only the identified slot. Response format diagnostics give
 JSON paths and cite, return or actor choices for the errors. A format repair
@@ -462,6 +508,14 @@ automatically resumes.
 
 READY means the fixed finite mechanical profile and recorded self-review passed.
 It does not mean semantic truth, complete runtime behavior or universal coverage.
+On isolated operation pages, a bounded `conditionPaths` set can check
+selected Kotlin null and value paths and early guards around retained Java
+or Kotlin JDK HTTP requests. Each checked path binds a predicate and concrete
+effects to a cited paragraph and the sequence. A mismatch can be repaired
+in the owning slot. Prepare counts operations with checks. Each packet
+records its omissions in `conditionPathCoverage`. Zero checked paths leaves
+the behavior to source review.
+
 For the initial direct statements of a self-contained retained Kotlin entry
 function, prepare can check a unique single-line guard of the form
 `if (identifier comparison INTEGER) return INTEGER` (also with inline braces).

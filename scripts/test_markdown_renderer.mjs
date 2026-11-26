@@ -126,7 +126,8 @@ test('authored sequences render every step with explicit timing, conditions and 
    assert.match(html,/class="sequence-message await"/);assert.match(html,/class="sequence-message return reverse"/);
    assert.match(html,/class="sequence-text" open/);assert.match(html,/href="stock.html"/);assert.match(html,/href="post.html#check"/);
    assert.match(html,/<div class="sequence-actors"><span>Client<\/span><span><a href="post.html#handler">Controller.post<\/a>/);
-   assert.match(html,/<span>2\. <a href="post.html#check">Start a check<\/a>/);
+   assert.match(html,/<a href="#clew-sequence-1-step-2">2\. Hand off<\/a>/);
+   assert.match(html,/<li id="clew-sequence-1-step-2">[\s\S]*?<a href="post.html#check">Start a check<\/a>/);
    assert.match(html,/class="sequence-diagram" role="group" aria-label="Two entry branches"/);
    assert.doesNotMatch(html,/class="sequence-diagram" aria-hidden/);
    for(const step of sequence().steps){assert.ok(html.includes(step.label));if(step.condition)assert.ok(html.includes(step.condition))}

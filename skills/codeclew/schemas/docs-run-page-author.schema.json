@@ -35,8 +35,8 @@
     },
     "participant": {
       "type": "object",
-      "properties": {"id": {"type": "string"}, "title": {"type": "string"}},
-      "required": ["id", "title"],
+      "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "local": {"type": "boolean"}},
+      "required": ["id", "title", "local"],
       "additionalProperties": false
     },
     "step": {

@@ -60,6 +60,37 @@ test('duplicate IDs, dangling references and conflicting occurrence roles are re
   const v=clone();change(v);assert.throws(()=>validateDocsetRoutes(v,nav('portal'),'portal',version('portal')));
  }
 });
+test('anchored narratives share a local page with isolated route, branch and outcome anchors',()=>{
+ const v=clone(),local=nav('journeys'),shared='stock-query.html';
+ v.narrativeLayout='anchored';
+ const anchors=[];
+ for(const route of v.routes){
+  const target=anchor=>{anchors.push(anchor);return {docset:'journeys',page:shared,anchor}};
+  route.narrative=target(route.id);
+  route.coverage.reference={...route.narrative};
+  for(const branch of route.branches){
+   const id=route.id+'-branch-'+branch.id;
+   for(const outcome of route.outcomes.filter(o=>o.branch===branch.id))outcome.branch=id;
+   branch.id=id;branch.target=target(id);
+  }
+  for(const outcome of route.outcomes){
+   outcome.id=route.id+'-outcome-'+outcome.id;outcome.target=target(outcome.id);
+  }
+ }
+ local.byFile.get('stock-query.md').html+=anchors.map(id=>`<a id="${id}"></a>`).join('');
+ const model=validateDocsetRoutes(v,local,'journeys',version('journeys'));
+ assert.equal(model.routes.length,2);
+ assert.equal(model.canonical.size,1);
+ const legacy=structuredClone(v);
+ delete legacy.narrativeLayout;
+ assert.throws(()=>validateDocsetRoutes(legacy,local,'journeys',version('journeys')),/duplicate canonical narrative page/);
+ const adjacent=structuredClone(v);
+ adjacent.routes[0].branches[0].target=adjacent.routes[1].branches[0].target;
+ assert.throws(()=>validateDocsetRoutes(adjacent,local,'journeys',version('journeys')),/within its declared narrative/);
+ const missing=structuredClone(v);
+ missing.routes[0].narrative.anchor='unjournaled';
+ assert.throws(()=>validateDocsetRoutes(missing,local,'journeys',version('journeys')));
+});
 test('reported remote problems retain routes; no remote request establishes availability',()=>{
  const v=clone();v.routes[0].narrative.problem={kind:'reported-version-drift',note:'Owner reported an older target',reportedBy:'Fixture owner',observedVersion:'old'};
  const model=validateDocsetRoutes(v,nav('portal'),'portal',version('portal'));assert.equal(model.routes.length,2);assert.equal(model.routes[0].to.problem.kind,'reported-version-drift');

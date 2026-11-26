@@ -697,8 +697,9 @@ class Body:
                  if controls.statement_shape(suite[index], "TRY_BODY").resumes else [])
         return earlier, (wait_site,) if wait_site else (), after
 
-    def control(self, suite, scope, proof=(), region="CALLABLE", callback=None, caught=False, throw_future=()):
-        controls = Controls(self, scope, proof, throw_future)
+    def control(self, suite, scope, proof=(), region="CALLABLE", callback=None, caught=False, throw_future=(),
+                *, check_paths=False):
+        controls = Controls(self, scope, proof, throw_future, check_paths=check_paths)
         controls.visit(suite, region, callback=callback, catches=caught)
         if controls.flow_budget <= 0:
             self.projector.limits.setdefault("STRUCTURAL_SCAN", tuple(proof))
@@ -1190,7 +1191,7 @@ class Projector:
                 continue
             if ref == root:
                 self.entry(body)
-            body.control(suite, scope, proof)
+            body.control(suite, scope, proof, check_paths=ref == root)
             self.paths(body, body.continuation(suite, PathState(), scope), scope, proof)
             body.deferred(declaration)
             PROTOCOLS(body, suite, scope, declaration).derive()
@@ -1491,9 +1492,19 @@ class FocusedWrite(Projector):
                                           *([normal_prefix] if normal_prefix else ()), *extra]))
             proof = [*(guard for guard, _ in guards), *(guard for _, guard in value.conditions),
                      *(piece for _, links in value.steps for piece in links)]
+            checks = []
+            if value.alternative and not normal_prefix:
+                tests = [FLOW["condition_code"](text) for text, _ in value.conditions]
+                origin_code = FLOW["action_code"](value.steps[0][1][0])
+                update = FLOW["action_code"](note)
+                if all(tests) and tests and origin_code and update:
+                    checks.append(FLOW["path_case"](
+                        body, note.site, " && ".join(tests), [origin_code, update],
+                        "this value reaches the shared write when the callback reaches this decision", stepKind="note"))
             origin = value.steps[0][1][0].site
             self.record("write_lineage", f"{statements} at {note.text}.", trail, [note, transaction, *proof],
                         condition=join(premises), _writeOrigin=(origin.file, origin.start, origin.end),
+                        _conditionCases=checks,
                         uncertainty="The cited path applies if its calls and evaluations complete normally and the database write joins this transaction.")
 
     def local_value_lineage(self, body, suite, trail, guards, transaction):

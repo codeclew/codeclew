@@ -222,7 +222,8 @@ def assemble(value, selected, inventory, original, navigation):
             if key in ids:
                 continue  # Keep the participant and target already supplied by the entry.
             ids[key] = 'actor-' + key
-            diagram['participants'].append({'id': ids[key], 'title': participant['title']})
+            diagram['participants'].append({'id': ids[key], 'title': participant['title'],
+                                            **({'local': True} if participant.get('local') is True else {})})
         for step in trace['steps']:
             need(step['from'] in ids and step['to'] in ids, 'INVALID_INLINE_STEP_PARTICIPANT', page=page['page'])
             diagram['steps'].append({'from': ids[step['from']], 'to': ids[step['to']], 'label': step['label'],

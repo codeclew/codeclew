@@ -1,9 +1,12 @@
 """Project bounded Java call witnesses from the operation's pinned source."""
 
 from base64 import b64encode
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from itertools import islice, zip_longest
 import json
+import operator
 from pathlib import Path, PurePosixPath
 import re
 import runpy
@@ -19,9 +22,14 @@ MAX_FILE_BYTES = 96 * 1024
 MAX_STATES = 12
 MAX_STEPS = 1800
 MAX_DEPTH = 4
+MAX_PATH_EVENTS = 64
 MAX_FACTS = 16
 MAX_FACT_BYTES = 6500
 MAX_LOOKUP_FACTS = 2
+MAX_VALUE_FACTS = 8
+MAX_VALUE_FACT_BYTES = 3600
+VALUE_EVENT_KINDS = {"return-lineage", "iteration-result", "iteration-skip", "iteration-alternatives",
+                     "value-decision", "value-boundary"}
 FILTERED_LOOKUP = runpy.run_path(str(Path(__file__).with_name("clew_prepared_java_control.py")))["filtered_lookup"]
 PUBLICATIONS = runpy.run_path(str(Path(__file__).with_name("clew_prepared_java_publication.py")))
 
@@ -31,6 +39,10 @@ class Site:
     path: str
     start: int
     end: int
+
+
+def proof_sites(*sites):
+    return tuple(dict.fromkeys(site for site in sites if site))
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,11 @@ class Value:
     arguments: tuple = ()
     type_sources: tuple[Site, ...] = ()
     publication_operand: object = None
+    number: int | None = None
+    string: str | None = None
+    flow: tuple[Site, ...] = ()
+    loop_element: tuple[Site, ...] = ()
+    transferred_result: bool = False
 
 
 UNKNOWN = Value()
@@ -111,7 +128,18 @@ COMPATIBLE_REPOSITORY_BASES = {
     "org.springframework.data.repository.ListPagingAndSortingRepository",
 }
 DESCRIPTORS = dict(boolean="Z", byte="B", char="C", short="S", int="I", long="J", float="F", double="D", void="V")
+INTEGRAL_TYPES = {"byte", "char", "short", "int", "long"}
+COMPARISONS = {"eq": operator.eq, "neq": operator.ne, "LESS_THAN": operator.lt,
+               "LESS_THAN_EQUAL": operator.le, "GREATER_THAN": operator.gt, "GREATER_THAN_EQUAL": operator.ge}
 JAVA_LANG = {"String", "Object", "Boolean", "Byte", "Character", "Short", "Integer", "Long", "Float", "Double", "Void"}
+
+
+@dataclass(frozen=True)
+class Decision:
+    expression: str
+    method: str
+    site: Site
+    parents: tuple[Site, ...]
 
 
 @dataclass(frozen=True)
@@ -119,6 +147,18 @@ class Condition:
     text: str
     cites: tuple[Site, ...]
     lookup_scope: bool = False
+    value_flow: Site | None = None
+    dispatch_candidate: bool = False
+    decision: Decision | None = None
+    transferred_result: bool = False
+    brief: str | None = None
+    truth: bool | None = None
+
+
+@dataclass(frozen=True)
+class IterationScope:
+    binding: tuple[Site, ...]
+    premises: int
 
 
 @dataclass(frozen=True)
@@ -130,6 +170,16 @@ class Event:
     parents: tuple[Site, ...]
     conditions: tuple[Condition, ...]
     bypass: Site | None = None
+    transferred_result: bool = False
+    opaque_calls: bool = False
+    iteration: IterationScope | None = None
+
+
+@dataclass(frozen=True)
+class IterationPair:
+    returned: Event
+    skipped: Event
+    fork: int
 
 
 @dataclass(frozen=True)
@@ -139,8 +189,12 @@ class State:
     conditions: tuple[Condition, ...] = ()
     optionals: dict = field(default_factory=dict)
     initialized: dict = field(default_factory=dict)
+    typed_submissions: tuple = ()
     exit: str | None = None
     result: Value = UNKNOWN
+    return_site: Site | None = None
+    value_events: tuple[Event, ...] = ()
+    normal_receivers: dict[tuple[Site, ...], Site] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -149,6 +203,7 @@ class Frame:
     method: list
     this: Value
     parents: tuple[Site, ...] = ()
+    value_flow: bool = True
 
     def site(self, node):
         return self.owner.site(node)
@@ -159,15 +214,19 @@ class Units:
         self.snapshot = snapshot
         self.parser = parser
         self.units = {}
-        self.reads = 0
+        self.reads = {False: 0, True: 0}
+        self.lookups = {False: 0, True: 0}
         self.searches = {}
 
-    def read(self, path):
+    def read(self, path, *, protocol=False):
         if path not in self.units:
+            if self.lookups[protocol] >= MAX_LOOKUPS or self.reads[protocol] >= MAX_FILES:
+                return ()
+            self.lookups[protocol] += 1
+            data = self.snapshot.read(path, protocol=True) if protocol else self.snapshot.read(path)
             self.units[path] = ()
-            if (len(self.units) <= MAX_LOOKUPS and self.reads < MAX_FILES
-                    and (data := self.snapshot.read(path)) and len(data) <= MAX_FILE_BYTES):
-                self.reads += 1
+            if data and len(data) <= MAX_FILE_BYTES:
+                self.reads[protocol] += 1
                 pipe = self.parser
                 pipe.stdin.write(b64encode(data) + b"\n")
                 pipe.stdin.flush()
@@ -189,6 +248,9 @@ class Units:
         return PurePosixPath(*dirs[:len(dirs) - len(package)])
 
     def qualify(self, owner, name, type_parameters=()):
+        if name.endswith("[]"):
+            element = self.qualify(owner, name[:-2], type_parameters)
+            return element + "[]" if element else ""
         if name in DESCRIPTORS:
             return name
         if name in type_parameters or name in owner.node[9] or name in owner.node[10]:
@@ -201,10 +263,10 @@ class Units:
         local = ".".join(part for part in (owner.package, name) if part)
         return local
 
-    def lookup(self, owner, name):
+    def lookup(self, owner, name, *, protocol=False):
         if not name or name == OPTIONAL or name in DESCRIPTORS or not all(part.isidentifier() for part in name.split(".")):
             return None
-        key = owner.path, name
+        key = owner.path, name, protocol
         if key not in self.searches:
             suffix = name.replace(".", "/") + ".java"
             leaf = PurePosixPath(suffix).name
@@ -220,7 +282,7 @@ class Units:
             if hasattr(self.snapshot, "existing_paths"):
                 candidates = self.snapshot.existing_paths(candidates)
             matches = {(entry.path, entry.qualified): entry for path in candidates
-                       for entry in self.read(path) if entry.qualified == name}
+                       for entry in self.read(path, protocol=protocol) if entry.qualified == name}
             self.searches[key] = next(iter(matches.values())) if len(matches) == 1 else None
         return self.searches[key]
 
@@ -265,6 +327,8 @@ class Units:
         return (owner, methods[0]) if len(methods) == 1 else (None, None)
 
     def comparable_type(self, owner, name):
+        if name.endswith("[]"):
+            return self.comparable_type(owner, name[:-2]) + "[]"
         short = name.rpartition(".")[2]
         local = ".".join(part for part in (owner.package, short) if part)
         if (name == local and short in JAVA_LANG and not any(entry.endswith(".*") for entry in owner.imports)
@@ -273,6 +337,9 @@ class Units:
                 and getattr(self.snapshot, "complete_tree", True)):
             return "java.lang." + short
         return name
+
+    def nominal_type(self, owner, name, type_parameters=()):
+        return self.comparable_type(owner, self.qualify(owner, name, type_parameters))
 
     def inherited_lookup(self, receiver, owner, seen=()):
         """Resolve every base before using a published Spring Data Optional signature."""
@@ -294,31 +361,80 @@ class Units:
             anchors.extend((owner.site(parent), *owner.import_proof(parent[3], name), *branch[1]))
         return inherited, tuple(anchors)
 
+    def inherited_declarations(self, owner, name, caller, seen=()):
+        """Find visible inherited declarations in a complete, bounded source walk."""
+        if owner.qualified in seen or len(seen) >= MAX_DEPTH or len(owner.node[11]) > 3:
+            return None
+        local = [method for method in owner.methods(name) if "PRIVATE" not in method[5]
+                 and (owner.package == caller.package or {"PUBLIC", "PROTECTED"}.intersection(method[5])
+                      or owner.node[4] == "INTERFACE")]
+        if local:
+            return ((owner, ()),)
+        declarations = []
+        for parent in owner.node[11]:
+            expected = self.qualify(owner, parent[3])
+            actual = self.lookup(owner, expected)
+            if actual is None:
+                return None
+            inherited = self.inherited_declarations(actual, name, caller, (*seen, owner.qualified))
+            if inherited is None:
+                return None
+            anchors = (owner.site(parent), *owner.import_proof(parent[3], expected))
+            declarations.extend((declaring, (*anchors, *path)) for declaring, path in inherited)
+        return tuple(declarations)
+
 
 class Projection:
-    def __init__(self, units, selected, compiler_targets, *, lookup_only=False, publications=None):
+    def __init__(self, units, selected, compiler_targets, *, lookup_only=False, publications=None,
+                 value_flow=True):
         self.units = units
         self.selected = selected
         self.compiler_targets = compiler_targets
         self.lookup_only = lookup_only
         self.publications = publications
+        self.value_flow = value_flow and not lookup_only
         self.steps = MAX_STEPS
 
     def code(self, frame, node):
         return self.units.code(frame.site(node)) or "the cited expression"
+
+    @staticmethod
+    def scalar(value):
+        if value.truth is not None:
+            return "`true`" if value.truth else "`false`"
+        if value.number is not None and value.type == "char":
+            return value.label if value.label and value.label.startswith("`'") else None
+        if value.number is not None and value.type in INTEGRAL_TYPES:
+            return f"`{value.number}`"
+        if value.nullable is True:
+            return "`null`"
+        if value.string is not None and value.label and value.label.startswith("`"):
+            return value.label
+        return None
 
     def qualify(self, frame, name):
         return self.units.qualify(frame.owner, name, frame.method[12])
 
     def bind(self, state, name, value, declared_type="", type_sources=()):
         if declared_type:
-            value = replace(value, type=declared_type, type_sources=type_sources)
+            value = replace(value, type=declared_type, type_sources=proof_sites(*type_sources, *value.type_sources))
         return replace(state, bindings={**state.bindings, name: value})
 
-    def event(self, frame, state, kind, text, *sites):
-        if len(state.events) >= 24:
-            return replace(state, exit="open")
+    def event(self, frame, state, kind, text, *sites, transferred_result=False, opaque_calls=False, iteration=None):
         event = Event(kind, text, tuple(site for site in sites if site), len(frame.parents), frame.parents, state.conditions)
+        if kind in VALUE_EVENT_KINDS:
+            event = replace(event, transferred_result=transferred_result, opaque_calls=opaque_calls, iteration=iteration)
+            if len(state.value_events) >= MAX_VALUE_FACTS:
+                if kind not in {"return-lineage", "iteration-result", "iteration-skip"}:
+                    return state
+                for index in range(len(state.value_events) - 1, -1, -1):
+                    if state.value_events[index].kind in {"value-decision", "value-boundary"}:
+                        return replace(state, value_events=(*state.value_events[:index],
+                                                            *state.value_events[index + 1:], event))
+                return state
+            return replace(state, value_events=(*state.value_events, event))
+        if len(state.events) >= MAX_PATH_EVENTS:
+            return replace(state, exit="open")
         return replace(state, events=(*state.events, event))
 
     def tick(self):
@@ -357,6 +473,12 @@ class Projection:
         if kind == "if":
             return [result for branch, truth in self.branch(frame, state, data[0])
                     for result in self.statement(frame, branch, data[1] if truth else data[2])]
+        if kind == "pre-test-loop" and self.value_flow and frame.value_flow:
+            return self.pre_test_loop(frame, state, node)
+        if kind == "foreach" and self.value_flow and frame.value_flow:
+            return self.each_loop(frame, state, node)
+        if kind in {"break", "continue"} and self.value_flow and frame.value_flow and data[0] is None:
+            return [replace(state, exit=kind, return_site=frame.site(node))]
         if kind == "try" and self.lookup_only:
             body, _, _, resources = data
             if not resources:
@@ -364,6 +486,10 @@ class Projection:
                 premise = Condition("control enters the cited try body", (entry,), lookup_scope=True)
                 entered = replace(state, conditions=(*state.conditions, premise))
                 return [replace(row, exit="open") for row in self.statement(frame, entered, body)]
+        if kind == "try" and self.publications:
+            body, catches, final, resources = data
+            if not final and not resources:
+                return self.try_catches(frame, state, node, body, catches)
         if kind == "assert" and self.lookup_only:
             premise = Condition("the cited assertion allows evaluation to continue", (frame.site(node),), lookup_scope=True)
             return [replace(state, conditions=(*state.conditions, premise))]
@@ -382,6 +508,10 @@ class Projection:
         if kind in {"return", "throw"}:
             rows = []
             for row, value in self.evaluate(frame, state, data[0]):
+                if self.publications and kind == "return" and not row.exit:
+                    self.publications.reply(frame, row, node)
+                    proof = self.publications.returned_operand(frame, row, node, value.publication_operand)
+                    value = replace(value, publication_operand=proof)
                 if kind == "throw" and frame.parents and not row.exit:
                     row = self.event(frame, row, "throw", f"Executes {self.code(frame, node)} in `{frame.owner.name}.{frame.method[3]}`.",
                                      frame.site(node), value.site)
@@ -389,7 +519,10 @@ class Projection:
                     name = f"`{frame.owner.name}.{frame.method[3]}`"
                     row = self.event(frame, row, "constructed-result", f"{name} returns the value constructed by {value.label}.",
                                      frame.site(node), value.site)
-                rows.append(row if row.exit else replace(row, exit=kind, result=value))
+                if kind == "return" and self.value_flow and not frame.parents and not row.exit:
+                    row = self.return_lineage(frame, row, node, data[0], value)
+                rows.append(row if row.exit else replace(row, exit=kind, result=value,
+                                                         return_site=frame.site(node)))
             return rows
         if kind == "expr":
             return [row for row, _ in self.evaluate(frame, state, data[0])]
@@ -397,26 +530,163 @@ class Projection:
             return [state]
         return [replace(state, exit="open")]
 
-    def branch(self, frame, state, node):
+    def try_catches(self, frame, state, node, body, catches):
+        entry = Site(frame.owner.path, node[1], node[1] + len(b"try"))
+        entered = replace(state, conditions=(*state.conditions, Condition("execution enters the cited try body", (entry,))))
+        paths = [self.statement(frame, entered, body)]
+        try_nodes = tuple(syntax_nodes(body))
+        if not any(part[0] in {"throw", "call", "new", "open", "boundary"} for part in try_nodes):
+            return paths[0]
+
+        # The selected handler may follow any throwing evaluation. Carry only
+        # locals whose values did not change in the protected body.
+        opaque = any(part[0] in {"open", "boundary"} for part in try_nodes)
+        written = {part[3][3] for part in try_nodes if part[0] in {"set", "mutate"} and part[3][0] == "id"}
+        stable = {name: Value(label=f"`{name}`", type=value.type, type_sources=value.type_sources)
+                  if opaque or name in written else value for name, value in state.bindings.items()}
+        for catch in catches[:MAX_STATES]:
+            parameter, handler = catch[3:]
+            name, declared = parameter[3:]
+            caught = frame.site(parameter)
+            label = self.units.code(caught) or "the cited exception parameter"
+            condition = Condition(f"the catch for {label} handles an exception from the cited try body", (entry, caught))
+            value = Value(f"`{name}`", caught, self.qualify(frame, declared), nullable=False)
+            scoped = replace(state, conditions=(*state.conditions, condition), bindings={**stable, name: value})
+            outputs = []
+            for row in self.statement(frame, scoped, handler):
+                bindings = row.bindings.copy()
+                bindings.pop(name, None)
+                if name in stable:
+                    bindings[name] = stable[name]
+                outputs.append(replace(row, bindings=bindings))
+            paths.append(outputs)
+        return list(islice((row for batch in zip_longest(*paths) for row in batch if row is not None), MAX_STATES))
+
+    def pre_test_loop(self, frame, state, node):
+        initializers, test, body = node[3:]
+        entered = [state]
+        for initializer in initializers:
+            entered = [out for row in entered for out in self.statement(frame, row, initializer)][:MAX_STATES]
+        results = []
+        for initial in entered:
+            # An unbounded loop contributes only its entry test and one body execution.
+            checks = self.branch(frame, initial, test, loop=True) if test else [(initial, True)]
+            for row, truth in checks:
+                if row.exit or not truth:
+                    results.append(row)
+                    continue
+                results.extend(self.first_iteration(frame, row, body))
+        declared = {item[3] for item in initializers if item[0] == "let"}
+        return [replace(row, bindings={**{key: value for key, value in row.bindings.items() if key not in declared},
+                                       **{key: state.bindings[key] for key in declared & state.bindings.keys()}})
+                for row in results[:MAX_STATES]]
+
+    def each_loop(self, frame, state, node):
+        parameter, iterable, body = node[3:]
+        name, declared = parameter[3:]
+        identity = frame.site(parameter)
+        loop_element = (*frame.parents, identity)
+        element = Value(f"`{name}`", identity, self.qualify(frame, declared),
+                        identity=identity, loop_element=loop_element)
+        label = self.code(frame, iterable)
+        empty = Condition(f"the loop over {label} has no elements on entry", (frame.site(iterable), frame.site(parameter)))
+        iteration = Condition(f"the loop over {label} binds its first element to `{name}`",
+                              (frame.site(iterable), frame.site(parameter)))
+        results = []
+        for row, sequence in self.evaluate(frame, state, iterable):
+            if row.exit or sequence.nullable is True:
+                results.append(replace(row, exit=row.exit or "open"))
+                continue
+            receivers = {current: proof for current, proof in row.normal_receivers.items() if current != loop_element}
+            entered = self.bind(replace(row, conditions=(*row.conditions, iteration), normal_receivers=receivers),
+                                name, element)
+            for outcome in self.first_iteration(frame, entered, body, loop_element):
+                bindings = {key: value for key, value in outcome.bindings.items() if key != name}
+                receivers = {current: proof for current, proof in outcome.normal_receivers.items() if current != loop_element}
+                results.append(replace(outcome, bindings=bindings, normal_receivers=receivers))
+            results.append(replace(row, conditions=(*row.conditions, empty)))
+        return results[:MAX_STATES]
+
+    def first_iteration(self, frame, state, body, loop_element=()):
+        for outcome in self.statement(frame, state, body):
+            outcome = self.iteration_outcome(frame, state, body, outcome, loop_element)
+            exit_kind = None if outcome.exit == "break" else (
+                outcome.exit if outcome.exit in {"return", "throw"} else "open")
+            yield replace(outcome, exit=exit_kind)
+
+    def iteration_outcome(self, frame, entered, body, outcome, loop_element):
+        if not frame.parents:
+            return outcome
+        scope = IterationScope(loop_element, len(entered.conditions)) if loop_element else None
+        if loop_element and outcome.exit == "return" and outcome.result.loop_element == loop_element:
+            result = outcome.result
+            return self.event(frame, outcome, "iteration-result",
+                              f"The current iteration returns its element {result.label}.",
+                              outcome.return_site, result.site, *result.flow, iteration=scope)
+        if outcome.exit not in {None, "continue"}:
+            return outcome
+        decisions = [condition for condition in outcome.conditions[len(entered.conditions):] if condition.decision]
+        if outcome.exit == "continue":
+            return self.event(frame, outcome, "iteration-skip",
+                              "The cited continue skips the rest of the current iteration.", outcome.return_site,
+                              iteration=scope)
+        if decisions and any(condition.value_flow for condition in decisions):
+            last = body[3][-1] if body[0] == "block" and body[3] else body
+            return self.event(frame, outcome, "iteration-skip",
+                              "The current iteration reaches the loop body end without returning an element.",
+                              decisions[-1].decision.site, frame.site(last), iteration=scope)
+        return outcome
+
+    def return_lineage(self, frame, state, node, expression, value):
+        return_type = self.qualify(frame, frame.method[4])
+        if not expression or not (scalar := self.scalar(replace(value, type=return_type or value.type))):
+            return state
+        local_decisions = tuple(item for item in state.conditions if item.value_flow == frame.site(frame.method))
+        if not value.flow and not local_decisions:
+            return state
+        code = self.code(frame, expression)
+        text = f"On this normal source path, the operation returns {scalar}"
+        if code != scalar:
+            text += f" through {code}"
+        transferred = bool(value.flow) or any(item.transferred_result for item in local_decisions)
+        opaque_calls = any(event.kind == "attempt" for event in state.events)
+        return self.event(frame, state, "return-lineage", text + ".", frame.site(node), value.site, *value.flow,
+                          transferred_result=transferred, opaque_calls=opaque_calls)
+
+    def branch(self, frame, state, node, *, loop=False, enclosing_tests=()):
         kind, data = node[0], node[3:]
         if kind == "not":
-            return [(row, not truth) for row, truth in self.branch(frame, state, data[0])]
+            results = self.branch(frame, state, data[0], loop=loop, enclosing_tests=(*enclosing_tests, frame.site(node)))
+            return [(row, not truth) for row, truth in results]
         if kind in {"and", "or"}:
-            return [(branch, truth) for row, left in self.branch(frame, state, data[0])
-                    for branch, truth in (self.branch(frame, row, data[1])
+            tests = (*enclosing_tests, frame.site(node))
+            return [(branch, truth) for row, left in self.branch(frame, state, data[0], loop=loop, enclosing_tests=tests)
+                    for branch, truth in (self.branch(frame, row, data[1], loop=loop, enclosing_tests=tests)
                                           if left == (kind == "and") else [(row, left)])][:MAX_STATES]
         result = []
+        expression = self.code(frame, node)
+        method = f"{frame.owner.name}.{frame.method[3]}"
+        decision = Decision(expression, method, frame.site(node), frame.parents)
         for row, value in self.evaluate(frame, state, node):
             if row.exit:
                 result.append((row, True))
                 continue
             possible = (value.truth,) if value.truth is not None else (True, False)
             for truth in possible:
-                condition = Condition(f"{self.code(frame, node)} is {'true' if truth else 'false'}", (frame.site(node),))
+                evidence = value.flow if frame.value_flow else ()
+                condition = Condition(f"{expression} is {'true' if truth else 'false'}",
+                                      proof_sites(decision.site, *enclosing_tests, *evidence),
+                                      value_flow=frame.site(frame.method) if evidence else None, decision=decision,
+                                      transferred_result=value.transferred_result, truth=truth)
                 optionals = row.optionals
                 if value.test and value.truth is None:
                     address, present_when = value.test
                     optionals = {**optionals, address: "present" if truth == (present_when == "present") else "empty"}
+                if evidence and self.value_flow:
+                    role = "At the loop entry test, " if loop else "At the cited decision, "
+                    text = (f"{role}{condition.text}." if value.truth is not None else
+                            f"{role}{expression} uses the cited input and its result remains open.")
+                    row = self.event(frame, row, "value-decision", text, *condition.cites)
                 result.append((replace(row, conditions=(*row.conditions, condition), optionals=optionals), truth))
         return result[:MAX_STATES]
 
@@ -440,27 +710,50 @@ class Projection:
             if name == "this":
                 return [(state, frame.this)]
             if name in state.bindings:
-                return [(state, state.bindings[name])]
+                value = state.bindings[name]
+                if value.loop_element and (proof := state.normal_receivers.get(value.loop_element)):
+                    value = replace(value, nullable=False, flow=proof_sites(*value.flow, proof))
+                return [(state, value)]
             return [(state, self.field_value(frame, frame.this, name, literal))]
         if kind == "literal":
-            tag = data[0]
+            tag, *payload = data
             proof = self.publications.literal(frame.owner, node) if self.publications else None
+            if tag == "INTEGRAL":
+                type_name, number = payload
+                return [(state, replace(literal, type=type_name, number=int(number),
+                                        publication_operand=proof))]
             value = replace(literal, publication_operand=proof, truth=(tag == "TRUE") if tag in {"TRUE", "FALSE"} else None,
-                            nullable=(tag == "NULL"), type={"TRUE": "boolean", "FALSE": "boolean",
-                                                           "EMPTY_STRING": "java.lang.String", "NONEMPTY_STRING": "java.lang.String"}.get(tag, ""))
+                            nullable=(tag == "NULL"),
+                            string=payload[0] if payload and tag in {"EMPTY_STRING", "NONEMPTY_STRING"} else None,
+                            type={"TRUE": "boolean", "FALSE": "boolean", "EMPTY_STRING": "java.lang.String",
+                                  "NONEMPTY_STRING": "java.lang.String"}.get(tag, ""))
             return [(state, value)]
         if kind == "member":
             if self.publications and (proof := self.publications.class_operand(frame.owner, node, frame.method[12])):
                 return [(state, replace(literal, publication_operand=proof))]
             return [(row, self.field_value(frame, receiver, data[1], literal))
                     for row, receiver in self.evaluate(frame, state, data[0])]
+        if kind == "functional-reference":
+            # Evaluating a bound qualifier can fail. The reference itself
+            # carries no callback result or evidence that the method ran.
+            formed = Condition(f"{literal.label} is formed normally", (site,))
+            return [(replace(row, exit=row.exit or "open"), UNKNOWN) if row.exit or receiver.nullable is True else
+                    (replace(row, conditions=(*row.conditions, formed)), replace(literal, nullable=False))
+                    for row, receiver in self.evaluate(frame, state, data[0])]
         if kind == "choose":
             return [(row, value) for branch, truth in self.branch(frame, state, data[0])
                     for row, value in self.evaluate(frame, branch, data[1] if truth else data[2])][:MAX_STATES]
         if kind in {"eq", "neq", "ordered", "array"}:
             return [(row, self.comparison(kind, literal, args)) for row, args in self.arguments(frame, state, data)]
+        if kind == "relation":
+            return [(row, self.comparison(data[0], literal, args)) for row, args in self.arguments(frame, state, data[1:])]
+        if kind == "signed":
+            return [(row, self.signed(data[0], literal, value)) for row, value in self.evaluate(frame, state, data[1])]
         if kind in {"and", "or", "not"}:
-            return [(row, replace(literal, truth=truth)) for row, truth in self.branch(frame, state, node)]
+            return [(row, replace(literal, type="boolean", truth=truth,
+                                  flow=proof_sites(*(site for condition in row.conditions[len(state.conditions):]
+                                                     if condition.value_flow for site in condition.cites))))
+                    for row, truth in self.branch(frame, state, node)]
         if kind == "call":
             target, args = data
             receivers = self.receiver(frame, state, target)
@@ -479,14 +772,32 @@ class Projection:
 
     @staticmethod
     def comparison(kind, literal, values):
+        if kind not in COMPARISONS:
+            return literal
+        left, right = values
+        flow = proof_sites(*left.flow, *right.flow)
+        logical = replace(literal, type="boolean", flow=flow,
+                          transferred_result=left.transferred_result or right.transferred_result)
+        if all(value.number is not None and value.type in INTEGRAL_TYPES for value in values):
+            return replace(logical, truth=COMPARISONS[kind](left.number, right.number))
         if kind in {"eq", "neq"}:
-            left, right = values
             if True in (left.nullable, right.nullable) and None not in (left.nullable, right.nullable):
                 equal = left.nullable == right.nullable
-                return replace(literal, truth=equal == (kind == "eq"))
-            if None not in (left.truth, right.truth):
-                return replace(literal, truth=(left.truth == right.truth) == (kind == "eq"))
-        return literal
+                return replace(logical, truth=equal == (kind == "eq"))
+            if None not in (left.truth, right.truth) and "boolean" in {left.type, right.type}:
+                return replace(logical, truth=(left.truth == right.truth) == (kind == "eq"))
+        return logical
+
+    @staticmethod
+    def signed(operator_name, literal, value):
+        if value.number is None or value.type not in INTEGRAL_TYPES:
+            return literal
+        type_name = "long" if value.type == "long" else "int"
+        bits = 64 if type_name == "long" else 32
+        number = value.number if operator_name == "UNARY_PLUS" else -value.number
+        # Java evaluates integral negation in the promoted signed type.
+        limit = 1 << (bits - 1)
+        return replace(literal, type=type_name, number=(number + limit) % (limit * 2) - limit, flow=value.flow)
 
     def field_value(self, frame, receiver, name, literal):
         owner = self.units.lookup(frame.owner, receiver.type)
@@ -506,7 +817,9 @@ class Projection:
             if candidate == declared:
                 exact = candidate
         proof = owner.import_proof(field[4], declared)
-        return replace(literal, type=declared, exact=exact, site=address, provenance=proof)
+        payload = (self.publications.payload_field(receiver.publication_operand, address, literal.label, literal.site)
+                   if self.publications else None)
+        return replace(literal, type=declared, exact=exact, site=address, provenance=proof, publication_operand=payload)
 
     def assign(self, frame, state, node, literal):
         kind, lhs, *remaining = (node[0], *node[3:])
@@ -531,6 +844,8 @@ class Projection:
                     previous = state.bindings[lhs[3]]
                     row = self.bind(row, lhs[3], value, previous.type, previous.type_sources)
                 elif lhs[0] in {"array", "member"} or frame.owner.fields(lhs[3] if lhs[0] == "id" else ""):
+                    if self.publications and kind == "set":
+                        self.publications.handler_effect(frame, row, node, (value,), assignment=True)
                     definition = self.code(frame, node)
                     member = (f"the `{frame.owner.name}` constructor" if frame.method[3] == "<init>"
                               else f"`{frame.owner.name}.{frame.method[3]}`")
@@ -579,9 +894,16 @@ class Projection:
         if state.exit:
             return [(self.mark_bypass(frame, state, node), UNKNOWN)]
         site = frame.site(node)
-        local = Value(self.code(frame, node), site)
+        input_flow = proof_sites(*receiver.flow, *(proof for value in values for proof in value.flow))
+        local = Value(self.code(frame, node), site, flow=input_flow)
         if receiver.nullable is True:
             return [(replace(state, exit="open"), UNKNOWN)]
+        if not is_static and receiver.string is not None:
+            if name == "isEmpty" and not values:
+                return [(state, replace(local, type="boolean", truth=not receiver.string, flow=receiver.flow))]
+            if name == "equals" and len(values) == 1 and (values[0].string is not None or values[0].nullable is True):
+                return [(state, replace(local, type="boolean", truth=receiver.string == values[0].string,
+                                        flow=input_flow))]
         if receiver.type == OPTIONAL:
             known = self.optional(frame, state, node, receiver, name, is_static, values, local)
             if known is not None:
@@ -589,28 +911,61 @@ class Projection:
         compiler_target = self.compiler_targets.get(site)
         if self.publications:
             operands = tuple(value.publication_operand for value in values)
-            if name in {"publish", "publishById"}:
-                self.publications.submit(frame, state, node, receiver, name, operands, compiler_target)
+            if name == "getResult" and not values and (
+                    result := self.publications.bundle_result(frame, node, receiver.publication_operand, compiler_target)):
+                return [(state, result)]
+            if bound := self.publications.envelope_call(frame, node, receiver, name, values, compiler_target, local.label):
+                operand, result_type = bound
+                return [(state, replace(local, type=result_type, publication_operand=operand))]
+            self.publications.handler_effect(frame, state, node, values)
+            if name in {"publish", "publishById"} and (
+                    submitted := self.publications.submit(frame, state, node, receiver, name, values, compiler_target)):
+                state = replace(state, typed_submissions=(*state.typed_submissions, submitted))
             if name in {"of", "singletonList", "getName", "getEvents"}:
                 projected = self.publications.call_operand(frame, state, node, receiver.publication_operand, name, operands, compiler_target)
                 if projected:
                     local = replace(local, publication_operand=projected)
         compiler_owner, compiler_method = self.units.compiler_method(frame.owner, compiler_target)
-        linked_owner, linked_method, fixed = self.linked_method(site, compiler_target, name)
+        linked_owner, linked_method, link_fixed = self.linked_method(site, compiler_target, name)
         owner = compiler_owner or linked_owner or self.units.lookup(frame.owner, receiver.type)
-        if owner and owner.record and not values and receiver.components and name not in {m[3] for m in owner.methods()}:
+        active = self.value_flow and frame.value_flow
+        if owner and owner.record and not values and not owner.methods(name):
             if (component := dict(receiver.components).get(name)) is not None:
                 return [(state, component)]
+            components = [field for field in owner.fields(name) if "STATIC" not in field[5]]
+            if active and len(components) == 1:
+                field = components[0]
+                declared = self.units.nominal_type(owner, field[4])
+                evidence = proof_sites(site, owner.site(field), *owner.import_proof(field[4], declared))
+                return [(state, replace(local, type=declared, type_sources=evidence))]
+        inherited = ()
+        receiver_owner = owner
+        if active and owner and not is_static and not compiler_target and not linked_method and not owner.methods(name):
+            declarations = self.units.inherited_declarations(owner, name, frame.owner)
+            if declarations and len(declarations) == 1:
+                owner, inherited = declarations[0]
         candidate = self.match(owner, name, len(values)) if owner else None
+        if not candidate and owner and self.publications and not compiler_method and not linked_method:
+            candidate = self.publications.generic_factory(owner, name, len(values))
         overload = (self.exact_overload(frame, owner, name, values)
                     if self.lookup_only and owner and not candidate and not compiler_target and not linked_method else None)
+        direct = (self.source_signature(frame, owner, name, values)
+                  if active and owner and not compiler_target else None)
         if compiler_target and owner and not compiler_target.startswith(f"method:class:{owner.qualified}#{name}("):
             candidate = None
-        method = compiler_method or linked_method or candidate or overload
+        method = compiler_method or linked_method or direct or candidate or overload
         if method and is_static and "STATIC" not in method[5]:
+            method = None
+        if method and inherited and ("PRIVATE" in method[5]
+                                     or (owner.node[4] == "INTERFACE" and "STATIC" in method[5])
+                                     or (owner.package != receiver_owner.package and owner.node[4] != "INTERFACE"
+                                         and not {"PUBLIC", "PROTECTED"}.intersection(method[5]))):
             method = None
         if method and len(values) != len(method[6]):
             method = None
+        if active and not method and owner and (choices := owner.methods(name)):
+            anchors = (declaration_anchor(owner, choice) for choice in choices[:3])
+            state = self.open_value(frame, state, local, "The retained source leaves the selected declaration open.", *anchors)
         code = local.label
         mappings = [(self.code(frame, arg), value.label, value.site) for arg, value in zip(args, values)
                     if value.site and value.label and value.label not in {self.code(frame, arg), "the cited expression"}]
@@ -619,22 +974,28 @@ class Projection:
         origins = tuple(origin for _, _, origin in mappings)
         provenance = tuple(anchor for value in values if value.entries for anchor in value.provenance)
         if not method or method[8] is None or len(frame.parents) >= MAX_DEPTH:
-            declared = method is not None and (method is compiler_method or (method is linked_method and fixed))
+            declared = method is not None and (method is compiler_method or (method is linked_method and link_fixed))
             source_contract = method is not None and not declared and self.compatible_contract(frame, owner, method, receiver, values)
             declaration_only = source_contract and bool(owner.node[11])
-            return_type = self.units.qualify(owner, method[4]) if declared or (source_contract and not declaration_only) else ""
+            return_type = (self.units.nominal_type(owner, method[4], method[12])
+                           if declared or (source_contract and not declaration_only) else "")
             contract = None
             if not method and not is_static and name == "findById" and len(values) == 1:
                 if compiler_target in CRUD_SIGNATURES:
                     contract = ()
-                elif not compiler_target and (inherited := self.units.inherited_lookup(receiver.type, owner)) and inherited[0]:
-                    contract = inherited[1]
+                elif not compiler_target and (lookup := self.units.inherited_lookup(receiver.type, owner)) and lookup[0]:
+                    contract = lookup[1]
             if contract is not None:
                 return_type = OPTIONAL
                 assumption = Condition(f"{local.label} returns an Optional under `CrudRepository.findById`",
                                        tuple(anchor for anchor in (site, receiver.site, *receiver.provenance, *contract) if anchor))
                 state = replace(state, conditions=(*state.conditions, assumption))
             state = self.event(frame, state, "attempt", code, site, *origins, *provenance)
+            references = tuple(frame.site(arg) for arg in args if arg[0] == "functional-reference")
+            if references and not state.exit:
+                normal = Condition(f"{local.label} returns normally", (site, *references),
+                                   brief="the opaque call with the cited functional reference returns normally")
+                state = replace(state, conditions=(*state.conditions, normal))
             for value in values:
                 if value.constructed:
                     text = f"Passes the value constructed by {value.label} to {local.label}."
@@ -651,17 +1012,36 @@ class Projection:
                 state = self.contract(frame, state, owner, method, local, declaration_only=declaration_only)
             if declaration_only:
                 state = replace(state, conditions=conditions)
+            if active and method and method[4] and method[4] != "void":
+                reason = ("The retained declaration has no supported body." if not method[8]
+                          else "The bounded call walk ends at this depth.")
+                state = self.open_value(frame, state, local, reason, declaration_anchor(owner, method))
+            types = (proof_sites(site, declaration_anchor(owner, method), *inherited)
+                     if method and return_type and (declared or source_contract) else ())
             return [(state, replace(local, type=return_type, identity=site if return_type == OPTIONAL else None,
-                                    provenance=contract or ()))]
-        selected = method is compiler_method or (method is linked_method and fixed)
+                                    provenance=contract or (), type_sources=types))]
+        selected = method is compiler_method or (method is linked_method and link_fixed)
         dispatch_type = owner.qualified if (owner.record or "FINAL" in owner.node[5]
                       or {"STATIC", "PRIVATE", "FINAL"}.intersection(method[5])) else receiver.exact
+        fixed = dispatch_type == owner.qualified
+        follow = (active and (selected or method is direct) and method[9] == "DIRECT" and method[13] == "FIXED"
+                  and all(self.units.qualify(owner, parameter[4], method[12]) for parameter in method[6]))
+        if active and method[4] and method[4] != "void":
+            if not follow:
+                state = self.open_value(frame, state, local, "The retained source leaves the argument binding open.",
+                                        declaration_anchor(owner, method))
+            elif not fixed:
+                state = self.open_value(frame, state, local, "The retained source leaves runtime dispatch open.",
+                                        declaration_anchor(owner, method))
         premise = None
-        if not (selected and dispatch_type == owner.qualified):
+        if not (selected and fixed):
             premise = Condition(f"{local.label} resolves to `{owner.name}.{method[3]}` and enters its body",
-                                (site, declaration_anchor(owner, method)))
+                                proof_sites(site, declaration_anchor(owner, method), *inherited),
+                                dispatch_candidate=not fixed, brief=f"{local.label} enters `{owner.name}.{method[3]}`")
         if premise:
             state = replace(state, conditions=(*state.conditions, premise))
+        if follow and not is_static and "STATIC" not in method[5] and receiver.loop_element:
+            state = replace(state, normal_receivers={**state.normal_receivers, receiver.loop_element: site})
         state = self.event(frame, state, "selected-call", code, site, declaration_anchor(owner, method), receiver.site, *origins, *provenance)
         if self.lookup_only and (method is overload or (selected and not candidate)):
             state = self.lookup_witness(frame, state, owner, method, local, args, values, receiver)
@@ -669,14 +1049,88 @@ class Projection:
             # premises. It does not choose the actual return value for this call.
             return [(state, replace(local, type=self.units.qualify(owner, method[4])))]
         state = self.annotations(frame, state, owner, method, local, declaration_anchor(owner, method))
-        child = Frame(owner, method, replace(receiver, type=owner.qualified), (*frame.parents, site))
+        child = Frame(owner, method, replace(receiver, type=owner.qualified), (*frame.parents, site), follow)
         bindings = self.bind_arguments(owner, method, values)
         nested = replace(state, bindings=bindings, initialized={})
+        if follow:
+            nested = self.value_arguments(frame, nested, child, site, args, values)
         rows = self.statement(child, nested, method[8])
-        return_type = self.units.qualify(owner, method[4])
-        return [(replace(row, bindings=state.bindings, initialized=state.initialized, exit=None if row.exit == "return" else row.exit),
-                 replace(row.result, type=return_type or row.result.type) if row.exit == "return" else replace(local, type=return_type))
-                for row in rows]
+        return_type = self.units.nominal_type(owner, method[4], method[12])
+        return self.follow_results(frame, state, rows, local, owner, method, return_type, follow, inherited)
+
+    def open_value(self, frame, state, invocation, reason, *sites):
+        return self.event(frame, state, "value-boundary",
+                          f"Value flow stops at {invocation.label}. {reason}", invocation.site, *sites)
+
+    def value_arguments(self, frame, nested, child, call, args, values):
+        bindings = dict(nested.bindings)
+        conditions = list(nested.conditions)
+        for arg, actual, parameter in zip(args, values, child.method[6]):
+            scalar = self.scalar(actual)
+            if not scalar and not actual.type_sources:
+                continue
+            name = parameter[3]
+            argument = self.code(frame, arg)
+            sites = proof_sites(call, child.site(parameter), frame.site(arg), actual.site,
+                                *actual.flow, *actual.type_sources)
+            value = scalar or f"the value of {argument}"
+            mapping = f"`{child.owner.name}.{child.method[3]}` receives {value} for `{name}`"
+            if scalar and argument not in {scalar, f"`{name}`"}:
+                mapping += f" from {argument}"
+            conditions.append(Condition(mapping, sites))
+            bindings[name] = replace(bindings[name], flow=sites)
+        return replace(nested, bindings=bindings, conditions=tuple(conditions))
+
+    def follow_results(self, frame, initial, rows, invocation, owner, method, return_type, follow, inherited):
+        results = []
+        for row in rows:
+            result = replace(invocation, type=return_type)
+            if row.exit == "return":
+                result = replace(row.result, type=return_type or row.result.type)
+                if follow and return_type:
+                    result = replace(result, type_sources=proof_sites(invocation.site, declaration_anchor(owner, method),
+                                                                    row.return_site, *inherited, *result.type_sources))
+                transferred = bool(self.scalar(result) or result.loop_element or return_type == "boolean")
+                if follow and (transferred or result.flow):
+                    evidence = proof_sites(invocation.site, declaration_anchor(owner, method), row.return_site,
+                                           *result.flow, *result.type_sources)
+                    result = replace(result, flow=evidence, transferred_result=transferred)
+                elif self.value_flow and not follow and (self.scalar(result) or result.flow or result.loop_element):
+                    result = replace(result, label=invocation.label, site=invocation.site,
+                                     truth=None, number=None, string=None, flow=(),
+                                     nullable=None if not result.constructed else result.nullable,
+                                     loop_element=(), transferred_result=False)
+            elif (follow and row.exit == "open" and return_type != "void"
+                  and not any(event.kind == "value-boundary" for event in row.value_events[len(initial.value_events):])):
+                row = self.open_value(frame, row, invocation, "The retained path reaches a bounded or unsupported part of the body.",
+                                      declaration_anchor(owner, method))
+            resumed = replace(row, bindings=initial.bindings, initialized=initial.initialized,
+                              exit=None if row.exit == "return" else row.exit)
+            results.append((resumed, result))
+        return results
+
+    def source_signature(self, frame, owner, name, values):
+        # Generic or variable arity overloads require compiler selection.
+        # The conditional source premise covers inherited declarations and runtime dispatch.
+        if owner.node[4] not in {"CLASS", "RECORD", "ENUM", "INTERFACE"}:
+            return None
+        methods = owner.methods(name)
+        if any(method[9] != "DIRECT" or method[13] != "FIXED" for method in methods):
+            return None
+        candidates = [method for method in methods if len(method[6]) == len(values)]
+        if len(candidates) > 1 and any(p[5] != "DIRECT" for method in candidates for p in method[6]):
+            return None
+        actuals = tuple(self.units.comparable_type(frame.owner, value.type) for value in values)
+        matching = []
+        for method in candidates:
+            declared = tuple(self.units.nominal_type(owner, p[4], method[12]) for p in method[6])
+            if not all(declared):
+                return None
+            if all(actual == formal or (len(candidates) == 1 and not actual and value.nullable is True
+                                       and formal not in DESCRIPTORS)
+                   for actual, formal, value in zip(actuals, declared, values)):
+                matching.append(method)
+        return matching[0] if len(matching) == 1 else None
 
     def linked_method(self, call, compiler_target, name):
         if call not in self.selected:
@@ -894,13 +1348,13 @@ class Projection:
         if state.exit:
             return [(state, UNKNOWN)]
         site = frame.site(node)
-        proof = (self.publications.construct(frame, node, type_name, tuple(value.publication_operand for value in values),
+        declared = self.qualify(frame, type_name)
+        owner = self.units.lookup(frame.owner, declared)
+        proof = (self.publications.construct(frame, node, type_name, values,
                                              self.compiler_targets.get(site)) if self.publications else None)
-        type_name = self.qualify(frame, type_name)
-        value = Value(self.code(frame, node), site, type_name, type_name, nullable=False, constructed=True, arguments=values,
+        value = Value(self.code(frame, node), site, declared, declared, nullable=False, constructed=True, arguments=values,
                       publication_operand=proof)
         state = self.shared_construction(frame, state, value, values)
-        owner = self.units.lookup(frame.owner, type_name)
         if not owner:
             return [(self.event(frame, state, "attempt", value.label, site), value)]
         constructors = owner.methods("<init>")
@@ -918,7 +1372,7 @@ class Projection:
             return [(state, value)]
         premise = Condition(f"{value.label} resolves to the cited constructor", (site, declaration_anchor(owner, method)))
         state = replace(state, conditions=(*state.conditions, premise))
-        constructor = Frame(owner, method, value, (*frame.parents, site))
+        constructor = Frame(owner, method, value, (*frame.parents, site), value_flow=False)
         bindings = self.bind_arguments(owner, method, values)
         rows = self.statement(constructor, replace(state, bindings=bindings, initialized={}), method[8])
         result = []
@@ -1084,29 +1538,77 @@ def declaration_anchor(owner, method):
     return Site(owner.path, method[1], boundary)
 
 
-def compact_sites(sites):
+def compact_sites(sites, *, covered):
     combined = []
     for site in sorted(set(sites), key=lambda row: (row.path, row.start, row.end)):
         if combined and combined[-1].path == site.path:
             earlier = combined[-1]
             if site.end <= earlier.end:
                 continue
-            if site.start - earlier.end <= 45 and site.end - earlier.start <= 500:
+            if (site.start - earlier.end <= 45 and site.end - earlier.start <= 500
+                    and covered(site.path, earlier.start, site.end)):
                 combined[-1] = Site(site.path, earlier.start, site.end)
                 continue
         combined.append(site)
     return combined
 
 
-def cite_fact(snapshot, event, root_id, prefix, text, kind, remaining):
-    condition = " and ".join(dict.fromkeys(row.text for row in event.conditions))
-    if len(condition) > 750:
+def source_location(snapshot, site):
+    raw = snapshot.read(site.path)
+    if raw is None:
+        return site.path
+    first = raw.rfind(b"\n", 0, site.start) + 1
+    line = raw.count(b"\n", 0, first) + 1
+    column = len(raw[first:site.start].decode()) + 1
+    return f"{site.path}:{line}:{column}"
+
+
+def displayed_conditions(snapshot, conditions, *, brief, context=()):
+    clauses = dict.fromkeys((row.brief if brief and row.brief else row.text, row.decision) for row in conditions)
+    repeated = defaultdict(dict)
+    for decision in (row.decision for row in (*conditions, *context)):
+        if decision:
+            repeated[decision.expression][decision] = None
+    scopes, call_sites = {}, []
+    displayed = {decision for _, decision in clauses if decision}
+    for group in repeated.values():
+        if len(group) < 2:
+            continue
+        methods = Counter(decision.method for decision in group)
+        sites = Counter((decision.method, decision.site) for decision in group)
+        for decision in group:
+            if decision not in displayed:
+                continue
+            label = f" in `{decision.method}`"
+            if methods[decision.method] > 1:
+                label += f" at {source_location(snapshot, decision.site)}"
+            if sites[decision.method, decision.site] > 1 and decision.parents:
+                label += " via " + " → ".join(source_location(snapshot, site) for site in decision.parents)
+                call_sites.extend(decision.parents)
+            scopes[decision] = label
+    return " and ".join(text + scopes.get(decision, "") for text, decision in clauses), call_sites
+
+
+def cite_fact(snapshot, event, root_id, prefix, text, kind, remaining, *, branch_conditions=()):
+    flow = event.kind in VALUE_EVENT_KINDS
+    condition, scope_sites = displayed_conditions(snapshot, event.conditions, brief=flow, context=branch_conditions)
+    if not flow and len(condition) > 750:
         return None
-    required = [*event.cites, *event.parents, *prefix,
-                *(site for item in event.conditions for site in item.cites)]
+    premises = (*event.conditions, *branch_conditions)
+    required = [*event.cites, *event.parents, *prefix, *scope_sites, *(site for item in premises for site in item.cites)]
     summary = {"authority": "DECLARED_SOURCE_CONTRACT" if event.kind in {"contract", "lookup-contract"} else AUTHORITY,
                "kind": kind, "text": text, **({"condition": condition} if condition else {})}
-    spans = compact_sites(required) if hasattr(snapshot, "cite_many") else list(dict.fromkeys(required))
+    if flow:
+        virtual = any(condition.dispatch_candidate for condition in premises)
+        uncertainty = ("Applies if runtime dispatch enters the cited body and evaluation completes normally."
+                       if virtual else "Applies to normal evaluation along the cited source path.")
+        if event.opaque_calls:
+            uncertainty += " An opaque call can still fail before this return."
+        summary.update(authority="RETAINED_JAVA_VALUE_FLOW",
+                       status="OPEN" if event.kind == "value-boundary" else "CONDITIONAL",
+                       uncertainty="The value at this call remains open." if event.kind == "value-boundary" else uncertainty)
+    spans = (compact_sites(required, covered=snapshot.covered) if hasattr(snapshot, "covered")
+             else list(dict.fromkeys(required)))
     if len(json.dumps(summary, ensure_ascii=False).encode()) + 24 * len(spans) + 35 > remaining:
         return None
     coordinates = [(site.path, site.start, site.end) for site in spans]
@@ -1134,6 +1636,7 @@ def ordered_effects(state):
 def facts(snapshot, projections, root_id):
     ranked = []
     seen = set()
+    response_sites = {state.result.site for state in projections if state.exit == "return" and state.result.components}
     for state in projections:
         for ordered in ordered_effects(state):
             key = ordered.kind, ordered.text, ordered.cites, ordered.conditions
@@ -1168,21 +1671,24 @@ def facts(snapshot, projections, root_id):
                 text = f"On a path that reaches this point, the call order includes {sequence}. {text}"
             rank = {"optional-throw": 0, "mutation": 2, "throw": 2, "shared-construction": 3,
                     "constructed-result": 5, "construction": 6 if event.depth else 1,
-                    "constructed-argument": 7, "contract": 7, "annotation": 4,
+                    "constructed-argument": 7, "contract": 0, "annotation": 4,
                     "constructor-write": 8, "type-annotation": 9}
-            ranked.append((rank[event.kind], event, tuple(site for call in prefix for site in call.cites), text))
-    # Give distinct evidence roles a turn before spending the rest of the
-    # shared source budget on repeated branches or constructor writes.
+            response_component = event.kind == "construction" and not event.depth and event.cites[0] in response_sites
+            ranked.append((-1 if response_component else rank[event.kind], event,
+                           tuple(site for call in prefix for site in call.cites), text))
+    # Give returned record fields independent slots before recurring callee
+    # evidence or variants from the same constructor.
     buckets = {}
     for row in sorted(ranked, key=lambda item: item[0]):
         level, event, _, _ = row
-        buckets.setdefault((level, event.kind), []).append(row)
-    first = [rows[0] for rows in buckets.values()]
-    more = [row for rows in buckets.values() for row in rows[1:]]
+        scope = event.cites[:2] if level == -1 else ()
+        if event.kind in {"ordered-effects", "contract"}:
+            scope = event.parents
+        buckets.setdefault((level, event.kind, scope), []).append(row)
     size = 0
     result = []
     covered = set()
-    for _, event, prefix, text in (*first, *more):
+    for _, event, prefix, text in (row for batch in zip_longest(*buckets.values()) for row in batch if row):
         if len(result) >= MAX_FACTS:
             break
         if event.kind in {"mutation", "constructor-write"} and (event.cites[0], event.conditions) in covered:
@@ -1195,6 +1701,101 @@ def facts(snapshot, projections, root_id):
             if event.kind == "ordered-effects":
                 covered.update((site, event.conditions) for site in event.cites)
     return result
+
+
+def iteration_pairs(snapshot, events):
+    forks = defaultdict(dict)
+    for event in events:
+        if not event.iteration:
+            continue
+        required = (*event.cites, *event.parents, *(site for row in event.conditions for site in row.cites))
+        if hasattr(snapshot, "covered") and not all(snapshot.covered(site.path, site.start, site.end) for site in required):
+            continue
+        start = event.iteration.premises
+        for index, condition in enumerate(event.conditions[start:], start):
+            decision = condition.decision
+            if decision and condition.truth is not None and decision.parents == event.parents:
+                siblings = forks[event.iteration, decision, event.conditions[:index]]
+                role = event.kind, condition.truth
+                if role not in siblings or len(event.conditions) < len(siblings[role].conditions):
+                    siblings[role] = event
+    candidates = []
+    for (_, _, prefix), siblings in forks.items():
+        for truth in (True, False):
+            returned = siblings.get(("iteration-result", truth))
+            skipped = siblings.get(("iteration-skip", not truth))
+            if returned and skipped:
+                candidates.append(IterationPair(returned, skipped, len(prefix)))
+    pairs, paired = [], set()
+    # Prefer the closest witnessed fork for a given outcome. Earlier forks
+    # describe less similar paths and can leave the actual sibling unpaired.
+    for pair in sorted(candidates, key=lambda candidate: -candidate.fork):
+        if pair.returned not in paired and pair.skipped not in paired:
+            pairs.append(pair)
+            paired.update((pair.returned, pair.skipped))
+    return pairs, paired
+
+
+def cite_iteration_pair(snapshot, pair, identifier, remaining):
+    returned, skipped, fork = pair.returned, pair.skipped, pair.fork
+    common = returned.conditions[:fork]
+    branches = (*returned.conditions[fork:], *skipped.conditions[fork:])
+    texts, sites = [], [*returned.cites, *skipped.cites]
+    for branch in (returned, skipped):
+        condition, origins = displayed_conditions(snapshot, branch.conditions[fork:], brief=True,
+                                                   context=(*common, *branches))
+        texts.append(f"When {condition}, {branch.text[0].lower()}{branch.text[1:]}")
+        sites.extend(origins)
+    pair_event = replace(returned, kind="iteration-alternatives", cites=proof_sites(*sites), conditions=common,
+                         opaque_calls=returned.opaque_calls or skipped.opaque_calls)
+    return cite_fact(snapshot, pair_event, identifier, (), " ".join(texts), "java-iteration-alternatives", remaining,
+                     branch_conditions=branches)
+
+
+def value_facts(snapshot, states, identifier):
+    events = dict.fromkeys(event for state in states for event in state.value_events)
+    pairs, paired = iteration_pairs(snapshot, events)
+    groups = {kind: {} for kind in ("iteration-alternatives", "transferred-result", "iteration-result", "iteration-skip",
+                                    "value-decision", "value-boundary", "return-lineage")}
+    for pair in pairs:
+        groups["iteration-alternatives"][pair] = {pair: None}
+    for event in events:
+        if event not in paired:
+            kind = "transferred-result" if event.transferred_result else event.kind
+            groups[kind].setdefault((event.cites[0], event.text), {})[event] = None
+    rows = []
+    remaining = MAX_VALUE_FACT_BYTES
+
+    def admit(choice):
+        nonlocal remaining
+        if isinstance(choice, IterationPair):
+            row = cite_iteration_pair(snapshot, choice, identifier, remaining)
+        else:
+            row = cite_fact(snapshot, choice, identifier, (), choice.text, f"java-{choice.kind}", remaining)
+        if row:
+            rows.append(row)
+            remaining -= len(json.dumps(row, ensure_ascii=False).encode())
+        return bool(row)
+
+    variants = []
+    # Preserve a different result, decision, or scope boundary before spending
+    # the budget on multiple paths through the same source result.
+    for batch in zip_longest(*(group.values() for group in groups.values())):
+        for alternatives in (item for item in batch if item):
+            if len(rows) == MAX_VALUE_FACTS:
+                return rows
+            ordered = list(alternatives)
+            if len(ordered) > 1:
+                ordered.sort(key=lambda item: sum(len(row.text) for row in item.conditions))
+            for index, choice in enumerate(ordered):
+                if admit(choice):
+                    variants.extend(ordered[index + 1:])
+                    break
+    for event in variants:
+        if len(rows) == MAX_VALUE_FACTS:
+            break
+        admit(event)
+    return rows
 
 
 def entry_frame(units, owner, method, parents=()):
@@ -1271,21 +1872,26 @@ def open_units(snapshot, *, dispatch=False):
                 pass
 
 
-def project_frame(units, owner, method, identifier, entry, selected_bodies, compiler_targets, *, publication=True):
-    selected_publication = any(PUBLICATIONS["member_identity"](target)[0] in (
-        PUBLICATIONS["DIRECT"], PUBLICATIONS["AGGREGATE"], PUBLICATIONS["PORT"]) for target in compiler_targets.values())
-    enabled = publication and (selected_publication or re.search(rb"\b(?:publish|publishById)\s*\(",
-                                                                 units.snapshot.read(owner.path) or b""))
-    publications = PUBLICATIONS["Publications"](units) if enabled else None
-    projection = Projection(units, selected_bodies, compiler_targets, publications=publications)
+def project_frame(units, owner, method, identifier, entry, selected_bodies, compiler_targets, *,
+                  publication=True, value_flow=True, entry_kind=None, receiver_event=None):
+    publications = (PUBLICATIONS["Publications"](units, entry_kind=entry_kind, receiver_event=receiver_event)
+                    if publication else None)
+    projection = Projection(units, selected_bodies, compiler_targets, publications=publications, value_flow=value_flow)
     frame, bindings = entry_frame(units, owner, method)
+    if publications and receiver_event and len(method[6]) == 1:
+        parameter = method[6][0]
+        if operand := publications.envelope(owner, parameter):
+            name = parameter[3]
+            bindings[name] = replace(bindings[name], publication_operand=operand)
     initial = State(bindings=bindings)
     states = projection.statement(frame, initial, method[8])
-    submissions = publications.facts(units.snapshot, identifier) if publications else []
+    values = value_facts(units.snapshot, states, identifier) if value_flow else []
     original = facts(units.snapshot, states, identifier)
     lookups = Projection(units, selected_bodies, compiler_targets, lookup_only=True)
     events = lookup_events(lookups, frame, initial, entry)
-    return [*submissions, *original, *lookup_facts(units.snapshot, events, identifier)]
+    lookup = lookup_facts(units.snapshot, events, identifier)
+    submissions = publications.facts(units.snapshot, identifier) if publications else []
+    return [*submissions, *values, *original, *lookup]
 
 
 def derive(process, context, snapshot, *, native=None, native_ranges=None):
@@ -1320,6 +1926,12 @@ def derive(process, context, snapshot, *, native=None, native_ranges=None):
                 if site := pinned_site(snapshot, invocation):
                     compiler_targets.setdefault(site, set()).add(target)
             unique_targets = {site: next(iter(values)) for site, values in compiler_targets.items() if len(values) == 1}
-            return project_frame(units, owner, method, identifier, entry, selected_bodies, unique_targets)
+            entry_kind = process.get("entryKind")
+            trigger = process.get("trigger") or {}
+            config = trigger.get("configuration") or {}
+            receiver_event = (config.get("eventType") if entry_kind == trigger.get("kind") == "JAVA_TYPED_DISPATCH"
+                              and config.get("adapter") == PUBLICATIONS["ADAPTER"] else None)
+            return project_frame(units, owner, method, identifier, entry, selected_bodies, unique_targets,
+                                 entry_kind=entry_kind, receiver_event=receiver_event)
     except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
         return []

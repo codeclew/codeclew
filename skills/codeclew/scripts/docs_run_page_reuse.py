@@ -49,6 +49,14 @@ def slot_scope(slot):
     return {field: slot[field] for field in SLOT_FIELDS}
 
 
+def matching_slot_files(run, source_slot, target, target_slot):
+    need(SLOT_KEY.fullmatch(target_slot['key']) and slot_scope(target_slot) == slot_scope(source_slot),
+         'REUSE_SLOT_SCOPE_CHANGED')
+    pinned = slot_files(target, target_slot)
+    need(pinned == slot_files(run, source_slot), 'REUSE_PROMPT_OR_SCHEMA_CHANGED')
+    return pinned
+
+
 @contextmanager
 def read_only_run(path):
     root = path.absolute()
@@ -392,10 +400,7 @@ def candidates(run, target, plan, job, inventory, pins, flags, validate, reserve
         if key in reserved or key not in old or not histories.get(key):
             continue
         try:
-            need(SLOT_KEY.fullmatch(key) and slot_scope(slot) == slot_scope(old[key]),
-                 'REUSE_SLOT_SCOPE_CHANGED')
-            pinned = slot_files(target, slot)
-            need(pinned == slot_files(run, old[key]), 'REUSE_PROMPT_OR_SCHEMA_CHANGED')
+            pinned = matching_slot_files(run, old[key], target, slot)
         except (Stop, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
             rejected[getattr(error, 'code', 'REUSE_SLOT_INVALID')] += 1
             continue
@@ -514,7 +519,8 @@ def admitted_completed(run, job, slot, histories, flags, *, review=None, validat
     return raw, dict(proof, responseDigest=sha(raw))
 
 
-def review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble, *, recover_review=False):
+def review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble, *, recover_review=False,
+                      match_plan=True):
     source_job, old, histories, owners, receipt, (usage_matches, account_indexes) = history(run, job, inventory, pins)
     state = load(run / 'state.json')
     old_plan = load(run / 'inputs/author-plan.json')
@@ -531,10 +537,15 @@ def review_candidates(run, target, plan, job, inventory, pins, flags, validate, 
         draft_files = state['pageDraftFiles']
         need(draft_files == tree(run / 'workspace/draft'), 'PAGE_REVIEW_DRAFT_CHANGED')
         acceptance = {'draftFiles': draft_files, 'draftDigest': digest(draft_files), 'reviewedSlots': sorted(rows)}
-    need(old_plan == plan and all(slot_files(target, slot) == slot_files(run, old[slot['key']]) for slot in plan['slots']),
-         'PAGE_REVIEW_DONOR_SCOPE_CHANGED')
+    if match_plan or recover_review:
+        need(old_plan == plan and all(slot_files(target, slot) == slot_files(run, old[slot['key']]) for slot in plan['slots']),
+             'PAGE_REVIEW_DONOR_SCOPE_CHANGED')
     need(histories.keys() | retained.keys() == old.keys() and set(rows) <= histories.keys()
          and all(len(keys) == 1 for keys in owners.values()), 'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
+    if ledger is not None:
+        imported_threads = {proof['threadId'] for proof in ledger['pages'].values()}
+        need(not imported_threads.intersection(owners) and (not rows or histories.keys() == rows.keys()),
+             'PAGE_REVIEW_DONOR_HISTORY_CHANGED')
     proofs, responses = {}, {}
     if ledger is not None:
         receipt['priorReuse'] = {'ledgerDigest': state['pageReuseDigest'], 'origins': ledger['origins']}
@@ -579,6 +590,114 @@ def review_candidates(run, target, plan, job, inventory, pins, flags, validate, 
     return proofs, receipt
 
 
+def ordinary_candidates(run, target, plan, job, inventory, pins, flags, validate, reserved, rejected, assemble):
+    state = load(exact_file(run, 'state.json', 32 * 1024 * 1024))
+    if assemble is not None and state.get('pageReuseDigest') is not None:
+        ledger_path = LEDGER if (run / LEDGER).exists() or (run / LEDGER).is_symlink() else PENDING
+        ledger = load(exact_file(run, ledger_path, 32 * 1024 * 1024))
+        # The ledger only selects the replay path. Review output is admitted
+        # through the sealed ledger and the donor's full promoted draft.
+        reviewed = ('review' in ledger or ledger.get('recoveredReview') or any(
+            'correctionDigest' in proof for proof in ledger['pages'].values()))
+        upgraded_map = 'routeRecords' in plan and (run / 'ready/current.json').is_file()
+        if reviewed or upgraded_map:
+            verified, receipt = review_candidates(run, target, plan, job, inventory, pins, flags, validate, assemble,
+                                                  match_plan=False)
+            old_plan = load(run / 'inputs/author-plan.json')
+            old = {slot['key']: slot for slot in old_plan['slots']}
+            matches = {}
+            for slot in plan['slots']:
+                key = slot['key']
+                if key in reserved or key not in verified:
+                    continue
+                try:
+                    matching_slot_files(run, old[key], target, slot)
+                    validate(slot, decode(base64.b64decode(verified[key]['raw'], validate=True)))
+                except (Stop, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                    rejected[getattr(error, 'code', 'REUSE_SLOT_INVALID')] += 1
+                    continue
+                matches[key] = verified[key]
+            return matches, receipt
+    return candidates(run, target, plan, job, inventory, pins, flags, validate, reserved, rejected)
+
+
+def checked_process_routes(run, target, plan, job, inventory, flags, validate, assemble, rejected):
+    """Admit route candidates from a replayed, promoted map for the same source scope."""
+    old_plan = load(exact_file(run, 'inputs/author-plan.json', 32 * 1024 * 1024))
+    slot = next((slot for slot in old_plan['slots'] if slot['kind'] == 'PROCESS_MAP'), None)
+    state = load(exact_file(run, 'state.json', 32 * 1024 * 1024))
+    if slot is None and not old_plan.get('routeRecords') and state.get('pageReuseDigest') is None:
+        return [], None
+    _, ledger = read_pages(run, state, old_plan, validate)
+    inherited = ledger.get('processRoutes', ()) if ledger else ()
+    retained = process_map['retained_records'](old_plan, inherited)
+    present = {process_map['identity'](row) for row in plan['routeRecords']}
+    additional = {process_map['identity'](row): row for row in retained if process_map['identity'](row) not in present}
+    if slot is None and not (inherited or additional):
+        return [], None
+    source_job = load(exact_file(run, 'inputs/job.json', LOG_LIMIT))
+    source_inventory = load(exact_file(run, 'inputs/inventory.json', 32 * 1024 * 1024))
+    pins = load(exact_file(run, 'pins.json', LOG_LIMIT))
+    donor = run_scope(source_job, source_inventory)
+    requested = run_scope(job, inventory)
+    need(all(donor[key] == requested[key] for key in ('snapshot', 'sourceSnapshot', 'services', 'language', 'sourceScopes')),
+         'REUSE_PROCESS_ROUTE_SCOPE_MISMATCH')
+    verified, receipt = review_candidates(run, target, plan, source_job, source_inventory, pins, flags,
+                                          validate, assemble, match_plan=False)
+    draft_routes = load(exact_file(run, 'workspace/draft/routes.json', LOG_LIMIT))
+    checked = {row['id']: row for row in draft_routes['routes']}
+    generated = process_map['group_routes'](retained)
+    candidates = [{'id': key, 'route': row} for key, row in process_map['historical_groups'](
+        inherited, {group['id'] for group in generated})]
+    if slot is not None:
+        proof = verified[slot['key']]
+        response = validate(slot, decode(base64.b64decode(proof['raw'], validate=True)))
+        for row in response['routes']:
+            key = 'route-' + hashlib.sha256((row['origin'] + '\n' + row['title']).encode()).hexdigest()[:16]
+            candidates.append({'id': key, 'route': {**row, 'cites': [slot['citations'][alias] for alias in row['cites']]}})
+    operations = {entry['id']: entry['service'] for entry in plan['entries']}
+    owner_ids = {entry['page']: entry['id'] for entry in plan['entries']}
+    owner_citations = {owner_ids[slot['page']]: set(slot['citations'].values())
+                       for slot in plan['slots'] if slot['kind'] == 'OPERATION'}
+    citations = plan['citationOwners']
+    result = []
+    promoted = receipt['ready']['promotedReportDigest']
+
+    def has_sources(refs, handles):
+        return (set(handles) <= citations.keys()
+                and {operations[ref] for ref in refs} <= {citations[handle] for handle in handles})
+
+    for row in additional.values():
+        path = process_map['route_path'](row)
+        key = process_map['route_key'](path)
+        refs = [path[0]['from'], *(step['to'] for step in path)]
+        if key not in checked or not set(refs) <= operations.keys():
+            rejected['REUSE_PROCESS_ROUTE_OUTSIDE_SCOPE'] += 1
+        elif not has_sources(refs, row['sources']):
+            rejected['REUSE_PROCESS_ROUTE_SOURCE_UNAVAILABLE'] += 1
+        else:
+            result.append({'id': key, 'record': row, 'promotedReportDigest': promoted})
+
+    for item in candidates:
+        row = item['route']
+        refs = [row['origin'], *(peer['entry'] for peer in row['participants'])]
+        connected = any(step['from'] in refs and step['to'] in refs and step['from'] != step['to']
+                        and step['kind'] in ('call', 'return', 'await', 'async') for step in row['steps'])
+        # A checked single-origin path can describe an independent start or a
+        # boundary outside the documented operations. Rebind to its owner;
+        # local text cannot establish a new remote actor or a transfer.
+        own_boundary = len(refs) == 1 and bool(owner_citations.get(refs[0], set()).intersection(row['cites']))
+        if not connected and not own_boundary:
+            rejected['REUSE_PROCESS_ROUTE_HAS_NO_TRANSITION'] += 1
+        elif item['id'] not in checked or not set(refs) <= operations.keys():
+            rejected['REUSE_PROCESS_ROUTE_OUTSIDE_SCOPE'] += 1
+        elif not has_sources(refs, row['cites']):
+            rejected['REUSE_PROCESS_ROUTE_SOURCE_UNAVAILABLE'] += 1
+        else:
+            result.append({'id': item['id'], 'route': row, 'promotedReportDigest': promoted})
+    return result, receipt
+
+
 def import_pages(run, sources, job, inventory, pins, plan, state, flags, validate, *,
                  review=None, assemble=None, recover_review=False):
     need(1 <= len(sources) <= MAX_ORIGINS and len({path.resolve() for path in sources}) == len(sources),
@@ -589,6 +708,7 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
          and not path.exists() and not path.is_symlink(),
          'REUSE_REQUIRES_FRESH_ISOLATED_RUN')
     pages, origins, errors, rejected, threads = {}, [], [], Counter(), {}
+    process_routes = []
     if review is not None or recover_review:
         need(len(sources) == 1, 'PAGE_REVIEW_REQUIRES_ONE_DONOR')
     if review is not None:
@@ -599,10 +719,34 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
         try:
             with read_only_run(source) as historical:
                 if review is None and not recover_review:
-                    local, origin = candidates(historical, run, plan, job, inventory, pins, flags, validate, pages, rejected)
+                    local, origin, ownership_failure = {}, None, None
+                    try:
+                        local, origin = ordinary_candidates(historical, run, plan, job, inventory, pins, flags,
+                                                            validate, pages, rejected, assemble)
+                    except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
+                        ownership_failure = error
+                    if 'routeRecords' in plan and assemble is not None:
+                        try:
+                            retained_routes, route_origin = checked_process_routes(
+                                historical, run, plan, job, inventory, flags, validate, assemble, rejected)
+                        except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
+                            rejected[getattr(error, 'code', 'REUSE_PROCESS_ROUTES_INVALID')] += 1
+                        else:
+                            if retained_routes:
+                                process_routes.extend({**item, 'origin': len(origins)} for item in retained_routes)
+                                if origin is None:
+                                    origin = route_origin
+                    if origin is None:
+                        raise ownership_failure
                 else:
                     local, origin = review_candidates(historical, run, plan, job, inventory, pins, flags, validate,
                                                        assemble, recover_review=recover_review)
+                    if 'routeRecords' in plan:
+                        prior_state = load(exact_file(historical, 'state.json', 32 * 1024 * 1024))
+                        _, prior_ledger = read_pages(historical, prior_state, plan, validate)
+                        if prior_ledger:
+                            process_routes.extend({**item, 'origin': len(origins)} for item in
+                                                  prior_ledger.get('processRoutes', ()))
         except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
             if review is not None or recover_review:
                 raise Stop(getattr(error, 'code', 'PAGE_REVIEW_DONOR_INVALID'), source=str(source)) from None
@@ -617,6 +761,8 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
     need(pages, 'NO_ELIGIBLE_REUSED_PAGES', sources=errors, rejected=dict(rejected))
     receipt = {'schema': SCHEMA, 'targetPinsDigest': digest(pins), 'pages': pages, 'origins': origins,
                'sourceErrors': errors, 'rejected': dict(rejected)}
+    if process_routes:
+        receipt['processRoutes'] = process_routes
     if recover_review:
         need(pages.keys() == {slot['key'] for slot in plan['slots']}, 'PAGE_REVIEW_RECOVERY_HISTORY_CHANGED')
         receipt['recoveredReview'] = True
@@ -635,7 +781,8 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
     reused = len(pages) - review_count
     return {'status': 'PREPARED', 'run': str(run), 'reusedPages': reused, 'remainingPages': len(plan['slots']) - reused,
             'historicalRuns': origins, 'sourceErrors': errors, 'rejected': dict(rejected),
-            **({'reviewSlots': list(rows)} if review is not None else {})}
+            **({'reviewSlots': list(rows)} if review is not None else {}),
+            **({'historicalRouteRecords': len(process_routes)} if 'routeRecords' in plan else {})}
 
 
 def read_pages(run, state, plan, validate):

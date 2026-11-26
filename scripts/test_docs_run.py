@@ -403,7 +403,8 @@ else:
                 self.assertRegex(html, r' —\s+--reserve &amp; fulfil</title>')
                 self.assertNotIn(REQUEST_MARKER, html)
 
-    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False, project=None, run_name="inline-run"):
+    def prepare_inline_fixture(self, body=None, *, repairs=0, extra_resource=False, project=None, run_name="inline-run",
+                               extra_entries=()):
         text = body or ('fun reserve(count: Int): Int {\n'
                         '    if (count < 0) return 0\n'
                         '    accepted.add(count)\n'
@@ -424,7 +425,7 @@ else:
                                            record=source, authority=source['authority'])
         scope = self.inventory['services'][self.service]
         files = [source['file']]
-        inventory_rows = [self.native_entry, {'kind': 'THREAD_SCOPE'},
+        inventory_rows = [self.native_entry, *extra_entries, {'kind': 'THREAD_SCOPE'},
             {'kind': 'THREAD_FILE', 'record': {'path': source['file'], 'input': {'coverage': 'SYNTAX',
               'digest': 'sha256:owned-syntax-fingerprint'}}}]
         if extra_resource:
@@ -508,19 +509,25 @@ else:
                 'visual': {'status': 'UNAVAILABLE', 'reason': 'This author turn has no browser.'}}
 
     def isolated_fixture(self, *, repairs=0, wrong_literal=False, language='en', project=None, wall_seconds=30,
-                         body=None, run_name="inline-run"):
+                         body=None, run_name="inline-run", extra_entries=(), map_routes=None):
         self.job.update(authorMode='ISOLATED_PAGES', language=language)
         self.job['budget']['wallSeconds'] = wall_seconds
-        run, receipt, _, source = self.prepare_inline_fixture(body=body, repairs=repairs, project=project, run_name=run_name)
+        run, receipt, _, source = self.prepare_inline_fixture(body=body, repairs=repairs, project=project, run_name=run_name,
+                                                               extra_entries=extra_entries)
         self.assertEqual(receipt['authorMode'], 'ISOLATED_PAGES')
         plan = D['load'](run / 'inputs/author-plan.json')
         packets = {row['kind']: json.loads((run / 'inputs' / row['prompt']).read_text().split('\n\n')[-1])
                    for row in plan['slots']}
-        self.assertEqual(set(packets), {'GUIDE', 'CONTRACTS', 'OPERATION', 'DISCOVERY', 'PROCESS_MAP'})
+        expected = {'CONTRACTS', 'OPERATION', 'DISCOVERY'}
+        if 'GUIDE' in packets:
+            expected.add('GUIDE')
+        if not plan.get('operationOwnership') or map_routes is not None:
+            expected.add('PROCESS_MAP')
+        self.assertEqual(set(packets), expected)
         localized = language == 'ru'
         for slot in plan['slots']:
             kind = slot['kind']
-            packet = packets[kind]
+            packet = json.loads((run / 'inputs' / slot['prompt']).read_text().split('\n\n')[-1])
             alias = next(iter(packet['citations']))
             text = '\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 \u044d\u043b\u0435\u043c\u0435\u043d\u0442.' if localized else 'The handler adds the accepted reservation.'
             claim = {'heading': '', 'text': text, 'cites': [alias], 'assessment': 'SUPPORTED', 'returns': []}
@@ -528,7 +535,9 @@ else:
                       'claims': [claim], 'participants': [], 'steps': [], 'discovery': None, 'starts': [],
                       'contracts': [], 'routes': [], 'limitations': []}
             if kind == 'GUIDE':
-                answer['title'] = '\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435' if localized else 'Reservations'
+                if not slot.get('ownedContentOnly'):
+                    answer['title'] = '\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435' if localized else 'Reservations'
+                answer['claims'][0]['text'] = '\u0421\u0435\u0440\u0432\u0438\u0441 \u043f\u0440\u0438\u043d\u0438\u043c\u0430\u0435\u0442 \u0437\u0430\u044f\u0432\u043a\u0438.' if localized else 'The service accepts reservations.'
             if kind == 'CONTRACTS':
                 answer['contracts'] = [{'scope': 'LOCAL', 'name': 'Reservation', 'cites': [alias],
                     'fields': [{'name': 'count', 'type': 'Int', 'meaning': '\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e' if localized else 'Item count'}]}]
@@ -547,7 +556,9 @@ else:
                     if wrong_literal:
                         D['save'](self.seed / (slot['key'] + '-repair.json'), answer)
                         answer['claims'][-1]['text'] = literal_text.replace('`0`', '`9`')
-            if kind == 'PROCESS_MAP':
+            if kind == 'PROCESS_MAP' and map_routes is not None:
+                answer.update(claims=[], routes=map_routes(packet))
+            elif kind == 'PROCESS_MAP':
                 operation, = packet['context']['operations']
                 answer['routes'] = [{'origin': operation['id'], 'participants': [], 'result': 'normal',
                     'title': '\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f' if localized else 'Accept a reservation', 'condition': 'count >= 0',
@@ -558,8 +569,45 @@ else:
             D['save'](self.seed / (slot['key'] + '-response.json'), answer)
         return run, plan, packets, source
 
+    @staticmethod
+    def planned_guide_sources(_owned, index, _service):
+        return list(index['sources'])[:1]
+
+    def legacy_local_route_fixture(self, *, local_route=True, once=False):
+        """Freeze the former optional overview and route schema for compatibility tests."""
+        current = D['P']['page_jobs']
+        used = False
+
+        def local_routes(requirements, indexes, *_args, **_kwargs):
+            return {}, {row['service']: indexes[row['service']]['ready'][row['id']]['evidenceCandidates']
+                        for row in requirements if row['kind'] == 'ENTRY'}, {}
+
+        def plan(*args):
+            nonlocal used
+            if once and used:
+                return current(*args)
+            used = True
+            hooks = {'guide_sources': self.planned_guide_sources}
+            if local_route:
+                hooks['route_evidence'] = local_routes
+            with patch.dict(current.__globals__, hooks):
+                result = current(*args)
+            del result['navigationOverview']
+            if local_route:
+                del result['operationOwnership']
+            schema = D['load'](ROOT / 'skills/codeclew/schemas/docs-run-page-author.schema.json')
+            for slot in result['slots']:
+                if slot.pop('ownedContentOnly', None):
+                    if local_route:
+                        slot.pop('transitionRoutes', None)
+                    D['save'](args[3].parent / slot['schema'], D['P']['RESPONSE']['schema_for_slot'](schema, slot))
+            return result
+
+        self.enterContext(patch.dict(D['P'], {'page_jobs': plan}))
+
     def test_isolated_normal_entry_uses_distinct_authors_and_native_reader(self):
         run, plan, packets, source = self.isolated_fixture(language='ru')
+        self.assertNotIn('GUIDE', packets)
         operation = packets['OPERATION']
         ranges = list(operation['sourceRanges'].values())
         self.assertEqual(len(ranges), 1)
@@ -571,15 +619,45 @@ else:
         state = D['load'](run / 'state.json')
         self.assertEqual(len({row['threadId'] for row in state['attempts']}), len(plan['slots']))
         self.assertEqual(state['modelTokens'], 20 * len(plan['slots']))
+        self.assertEqual({row['slot'] for row in state['attempts']}, {slot['key'] for slot in plan['slots']})
         html = Path(result['ready']) / 'html'
         operation_html = (html / self.entry['page'].replace('.md', '.html')).read_text()
         self.assertIn('POST /reservations', operation_html)
         self.assertIn('sequence-message return', operation_html)
-        self.assertIn('\u041a\u0430\u0440\u0442\u0430 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432', (html / 'process-map.html').read_text())
+        process = (html / 'process-map.html').read_text()
+        self.assertIn('\u041a\u0430\u0440\u0442\u0430 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432', process)
+        self.assertIn('href="' + self.entry['page'].replace('.md', '.html') + '#behavior">POST /reservations</a>', process)
+        self.assertIn('id="behavior"', operation_html)
+        self.assertIn('id="sequence"', operation_html)
         self.assertIn('<th>\u041f\u043e\u043b\u0435</th>', (html / 'reservations-contracts.html').read_text())
-        route, = html.glob('route-*.html')
-        self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
-        self.assertIn('sequence-message return', route.read_text())
+        overview = (html / 'reservations.html').read_text()
+        self.assertIn('<h3 id="http">HTTP</h3>', overview)
+        self.assertIn(self.entry['page'].replace('.md', '.html') + '#behavior', overview)
+        self.assertIn('reservations-contracts.html', overview)
+        self.assertIn('process-map.html', overview)
+        self.assertEqual(list(html.glob('route-*.html')), [])
+
+    def test_isolated_reuses_unchanged_slots_from_authored_overview_plan(self):
+        self.legacy_local_route_fixture(local_route=False, once=True)
+        old, target, prior = self.isolated_reuse_fixture()
+        self.assertIn('GUIDE', {slot['kind'] for slot in prior['slots']})
+        previous = {slot['key']: slot for slot in prior['slots']}
+        plan = D['load'](target / 'inputs/author-plan.json')
+        self.assertEqual({slot['kind'] for slot in plan['slots']}, {'CONTRACTS', 'OPERATION', 'DISCOVERY'})
+        for slot in plan['slots']:
+            self.assertEqual(slot, previous[slot['key']])
+            self.assertEqual(D['PR']['slot_files'](old, previous[slot['key']]), D['PR']['slot_files'](target, slot))
+        job, inventory, pins = D['frozen_inputs'](target)
+        adoption = D['PR']['import_pages'](target, [old], job, inventory, pins, plan, D['load'](target / 'state.json'),
+                                           D['inline_cli_flags'], D['P']['validate_response'])
+        self.assertEqual((adoption['reusedPages'], adoption['remainingPages']), (3, 0))
+        result = D['execute'](target)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        self.assertEqual(result['reuse']['newAuthorInvocations'], 0)
+        self.assertEqual(D['load'](target / 'state.json')['modelTokens'], 0)
+        overview = (Path(result['ready']) / 'html/reservations.html').read_text()
+        self.assertIn(self.entry['page'].replace('.md', '.html') + '#behavior', overview)
+        self.assertNotIn('The service accepts reservations.', overview)
 
     def test_isolated_reader_displays_retained_start_name_without_rewriting_draft(self):
         opaque = self.service + '-0123456789abcdefabcd'
@@ -616,10 +694,7 @@ else:
                 self.assertIn('id="handler"', handler)
                 self.assertIn(f'<figcaption>{title}</figcaption>', handler)
                 self.assertIn(f'>{title}</a>', overview)
-                self.assertIn(f'<a href="{dest}">{title}</a>', process)
-                if symbol is None:
-                    route, = html.glob('route-*.html')
-                    self.assertIn(f'<span>1. {title}<small>', route.read_text())
+                self.assertIn(f'<a href="{dest.removesuffix("#handler")}#behavior">{title}</a>', process)
                 self.assertIn('Scheduled' if language == 'en' else '\u041f\u043e \u0440\u0430\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u044e', overview)
                 draft = D['load'](run / 'workspace/draft/navigation.json')
                 self.assertEqual(draft['services'][0]['starts'][0]['title'], opaque)
@@ -831,6 +906,86 @@ for row in (
         self.assertEqual([row['slot'] for row in state['attempts']], [changed['key']])
         self.assertIn('POST /reservations', (Path(result['ready']) / 'html' / changed['page'].replace('.md', '.html')).read_text())
         self.assertEqual(source_files, D['tree'](old))
+
+    def test_reuse_preserves_promoted_reviewed_output_across_a_smaller_plan(self):
+        native_plan = D['P']['page_jobs']
+        self.legacy_local_route_fixture()
+        donor, reviewed, old_plan = self.isolated_reuse_fixture()
+        slots = {slot['kind']: slot for slot in old_plan['slots']}
+        operation = slots['OPERATION']
+        key = operation['key']
+        prior = next(row for row in D['load'](donor / 'state.json')['attempts'] if row['slot'] == key)
+        response = D['load'](D['PX']['response_path'](donor, prior))
+        claim = response['claims'][0]
+        finding = {'slot': key, 'responseDigest': prior['responseDigest'],
+                   'selector': {'field': 'claim', 'index': 0, 'action': 'replace'},
+                   'issue': 'State the return value when the handler accepts a count.',
+                   'sourceAliases': claim['cites']}
+        findings = self.root / 'smaller-plan-findings.json'
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [finding]})
+        prefix = [sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py')]
+
+        def call(command, run, *arguments, status=0):
+            finished = subprocess.run([*prefix, command, '--run-dir', str(run), *arguments], capture_output=True, text=True)
+            self.assertEqual(finished.returncode, status, finished.stdout + finished.stderr)
+            return json.loads(finished.stdout)
+
+        call('reuse-pages', reviewed, '--reuse-from', str(donor), '--review-findings', str(findings))
+        statement = 'For an accepted count, the handler returns the updated list size.'
+        D['save'](self.seed / (key + '-review.json'), {'replacement': {**claim, 'text': statement}})
+        D['author'](reviewed)
+
+        def prepare_smaller(name):
+            with patch.dict(D['P'], {'page_jobs': native_plan}):
+                target, plan, _, _ = self.isolated_fixture(run_name=name)
+            guide = next(slot for slot in plan['slots'] if slot['kind'] == 'GUIDE')
+            schema = target / 'inputs' / guide['schema']
+            D['save'](schema, {**D['load'](schema), 'title': 'Updated overview response schema'})
+            pins = D['load'](target / 'pins.json')
+            D['save'](target / 'pins.json', {**pins, 'inputFiles': D['tree'](target / 'inputs')})
+            return target, plan
+
+        target, plan = prepare_smaller('smaller-plan')
+        self.assertNotIn('PROCESS_MAP', {slot['kind'] for slot in plan['slots']})
+        args = ('--reuse-from', str(reviewed))
+        rejected = call('reuse-pages', target, *args, status=2)
+        self.assertEqual(rejected['code'], 'NO_ELIGIBLE_REUSED_PAGES')
+        self.assertFalse((target / 'page-reuse.json').exists())
+        accepted = call('run', reviewed)
+        page = operation['page'].replace('.md', '.html')
+        ready_page = Path(accepted['ready']) / 'html' / page
+        original_bytes = ready_page.read_bytes()
+        ready_page.write_bytes(original_bytes + b' ')
+        rejected = call('reuse-pages', target, *args, status=2)
+        self.assertEqual(rejected['details']['sources'][0]['code'], 'PAGE_REVIEW_DONOR_OUTPUT_CHANGED')
+        ready_page.write_bytes(original_bytes)
+        sealed = D['tree'](reviewed)
+
+        adopted = call('reuse-pages', target, *args)
+        self.assertEqual(adopted['reusedPages'], len(plan['slots']) - 1)
+        self.assertEqual(adopted['rejected'], {'REUSE_PROMPT_OR_SCHEMA_CHANGED': 1})
+        ledger = D['load'](target / 'page-reuse.json')
+        self.assertNotIn(slots['PROCESS_MAP']['key'], ledger['pages'])
+        proof = ledger['pages'][key]
+        self.assertEqual(proof['responseDigest'], accepted['reuse']['reviewedSlots'][key]['responseDigest'])
+        self.assertEqual(proof['correctionDigest'], D['load'](reviewed / 'state.json')['attempts'][0]['responseDigest'])
+        guide = slots['GUIDE']['key']
+        overview = self.seed / (guide + '-response.json')
+        D['save'](overview, {**D['load'](overview), 'title': 'Reservation guide'})
+        result = call('run', target)
+        self.assertEqual(result['reuse']['newAuthorInvocations'], 1)
+        self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [guide])
+        operation_html = (Path(result['ready']) / 'html' / page).read_text()
+        self.assertIn(statement, operation_html)
+        self.assertIn('id="behavior"', operation_html)
+        self.assertIn('Reservation guide', (Path(result['ready']) / 'html' / 'reservations.html').read_text())
+        self.assertEqual(D['tree'](reviewed), sealed)
+
+        successor, _ = prepare_smaller('reuse-from-mixed-plan')
+        adopted = call('reuse-pages', successor, '--reuse-from', str(target))
+        self.assertEqual(adopted['reusedPages'], len(plan['slots']))
+        self.assertEqual(D['load'](successor / 'page-reuse.json')['pages'][key]['responseDigest'], proof['responseDigest'])
+        self.assertEqual(call('run', successor)['reuse']['newAuthorInvocations'], 0)
 
     def test_reuse_refuses_modified_seals_scope_and_stream_access(self):
         from collections import Counter
@@ -1221,6 +1376,7 @@ for row in (
         self.assertEqual(next_review['reviewSlots'], [key])
 
     def test_review_updates_one_route_and_discovery_step_by_published_identity(self):
+        self.legacy_local_route_fixture()
         body = ('fun reserve(count: Int): Int {\n'
                 '    if (count < 0) return 0\n'
                 '    accepted.add(count)\n'
@@ -1545,9 +1701,10 @@ for row in (
         return sorted(plan['slots'], key=lambda slot: -(run / 'inputs' / slot['prompt']).stat().st_size)
 
     def test_isolated_queue_refills_while_first_slot_still_waits(self):
+        self.enterContext(patch.dict(D['P']['page_jobs'].__globals__, {'guide_sources': self.planned_guide_sources}))
         run, plan, _, _ = self.isolated_fixture()
         launch_order = self.first_launch_order(run, plan)
-        slow, other, fast, fourth, fifth = (row['key'] for row in launch_order)
+        slow, other, fast, fourth = (row['key'] for row in launch_order)
         initial = [f'{slot}.waiting' for slot in (slow, other, fast)]
         self.control_isolated_slots({
             slow: {'until': [f'{fourth}.started']},
@@ -1559,8 +1716,8 @@ for row in (
         started_fourth = float((self.seed / f'{fourth}.started').read_text())
         self.assertLess(started_fourth, float((self.seed / f'{slow}.finished').read_text()))
         self.assertGreater(started_fourth, float((self.seed / f'{fast}.finished').read_text()))
-        self.assertCountEqual([row['slot'] for row in state['attempts']], [slow, other, fast, fourth, fifth])
-        self.assertEqual(state['modelTokens'], 100)
+        self.assertCountEqual([row['slot'] for row in state['attempts']], [slow, other, fast, fourth])
+        self.assertEqual(state['modelTokens'], 80)
         intervals = sorted((at, delta) for row in state['attempts'] for at, delta in
                            ((row['launchedAt'], 1), (row['completedAt'], -1)))
         active = peak = 0
@@ -1574,18 +1731,19 @@ for row in (
                              (run / 'inputs' / slot['prompt']).read_bytes())
 
     def author_service_outage(self, run, plan, message='workspace routing discovery failed'):
-        failed, sibling_a, sibling_b, later, last = (row['key'] for row in self.first_launch_order(run, plan))
+        failed, sibling_a, sibling_b, *later = (row['key'] for row in self.first_launch_order(run, plan))
         terminal = run / 'page-attempts' / failed / '0/result.json'
         self.control_isolated_slots({
             failed: {'terminalFailure': message, 'until': [f'{sibling_a}.waiting', f'{sibling_b}.waiting']},
             sibling_a: {'until': [str(terminal)], 'delay': .15},
             sibling_b: {'until': [str(terminal)], 'delay': .15},
         })
-        return failed, sibling_a, sibling_b, later, last
+        return failed, sibling_a, sibling_b, later
 
     def test_isolated_service_failure_drains_siblings_then_resumes_with_honest_usage(self):
+        self.enterContext(patch.dict(D['P']['page_jobs'].__globals__, {'guide_sources': self.planned_guide_sources}))
         run, plan, _, _ = self.isolated_fixture(wall_seconds=2)
-        failed, sibling_a, sibling_b, later, last = self.author_service_outage(run, plan)
+        failed, sibling_a, sibling_b, later = self.author_service_outage(run, plan)
         execution = D['PX']['execute_authors'].__globals__
         with patch.dict(execution, {'SERVICE_RETRY_DELAY': 2.1}):
             with self.assertRaises(D['Stop']) as raised:
@@ -1615,7 +1773,7 @@ for row in (
         self.assertGreaterEqual(resumed['authorPausedSeconds'], 2)
         self.assertEqual(resumed['attempts'][:3], waiting['attempts'])
         self.assertEqual(resumed['attempts'][3]['slot'], failed)
-        self.assertCountEqual([attempt['slot'] for attempt in resumed['attempts'][3:]], [failed, later, last])
+        self.assertCountEqual([attempt['slot'] for attempt in resumed['attempts'][3:]], [failed, *later])
         retry = resumed['attempts'][3]
         self.assertTrue(retry['serviceRetry'])
         self.assertEqual(retry['resumeThread'], by_slot[failed]['threadId'])
@@ -1624,7 +1782,7 @@ for row in (
         accounting = D['load'](run / 'report.json')['checks']['author']
         self.assertFalse(accounting['usageAvailable'])
         self.assertIsNone(accounting['reportedModelTokens'])
-        self.assertEqual(accounting['tokenAccounting']['knownBudgetTokensLowerBound'], 100)
+        self.assertEqual(accounting['tokenAccounting']['knownBudgetTokensLowerBound'], 80)
         self.assertEqual(accounting['tokenAccounting']['status'], 'UNAVAILABLE')
 
     def test_isolated_service_recovery_refuses_a_second_outage_in_the_same_thread(self):
@@ -1673,6 +1831,7 @@ for row in (
         self.assertTrue(all(row['number'] == 0 for row in state['attempts']))
 
     def test_isolated_queue_terminal_cancels_and_accounts_for_already_started_slots(self):
+        self.legacy_local_route_fixture()
         run, plan, _, _ = self.isolated_fixture()
         slow, invalid, fast, fourth, fifth = (row['key'] for row in self.first_launch_order(run, plan))
         path = self.seed / f'{invalid}-response.json'
@@ -1765,7 +1924,7 @@ for row in (
         resumed = D['author'](run)
         self.assertEqual(resumed['status'], 'AUTHOR_COMPLETED')
         self.assertEqual(resumed['attempts'][:3], interrupted['attempts'])
-        self.assertEqual(resumed['modelTokens'], 160)
+        self.assertEqual(resumed['modelTokens'], 60 + 20 * len(plan['slots']))
         self.assertCountEqual([row['slot'] for row in resumed['attempts'][3:]], [row['key'] for row in plan['slots']])
         for before in interrupted['attempts']:
             repair, = [row for row in resumed['attempts'][3:] if row['slot'] == before['slot']]
@@ -1786,6 +1945,116 @@ for row in (
         self.assertIn('LITERAL_RETURN_VALUE_MISMATCH', repair)
         self.assertNotIn('"expected"', repair)
         self.assertEqual(json.loads(repair.split('\n\n')[-1]), packets['OPERATION'])
+
+    def test_source_paths_repair_only_the_operation_that_disagrees_with_retained_cases(self):
+        body = """fun reserve(count: Int, override: String?): String {
+    val name = override?.trim() ?: "default"
+    val code = if (count > 10) "wide" else "narrow"
+    store.put(code)
+    return name
+}
+"""
+        cases = [
+            ('fallback', '(override?.trim()) != null', ['override?.trim()']),
+            ('fallback', '(override?.trim()) == null', ['"default"']),
+            ('write', 'count > 10', ['"wide"', 'store.put']),
+            ('write', '!(count > 10)', ['"narrow"', 'store.put']),
+        ]
+
+        def project(process, context, *, node):
+            if process['root'] is None:
+                return [], {}
+            return [{'kind': 'VALUE_LINEAGE', 'authority': 'BOUNDED_KOTLIN_SOURCE_SYNTAX',
+                     'text': 'The source branches select a fallback and feed a common write.',
+                     'sources': [context['sourceRanges'][0]['id']],
+                     '_conditionCases': [dict(group=group, condition=condition, actions=actions, stepKind='note')
+                                         for group, condition, actions in cases]}], {}
+
+        run, plan, packets, _ = self.isolated_fixture(body=body, project=project, repairs=1)
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        paths = packets['OPERATION']['conditionPaths']
+        self.assertEqual(paths, operation['conditionPaths'])
+        self.assertEqual({row['condition'] for row in paths}, {condition for _, condition, _ in cases})
+        response_path = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](response_path)
+        response['claims'] = [
+            {**response['claims'][0], 'cites': row['cites'],
+             'text': 'On `' + row['condition'] + '`, use ' + ' and then '.join('`' + term + '`' for term in row['actions']) + '.'}
+            for row in paths]
+        response['steps'] = [
+            {'from': 'handler', 'to': 'handler', 'kind': 'note',
+             'condition': row['condition'], 'label': 'Use ' + ' then '.join(row['actions'])}
+            for row in paths]
+        D['save'](self.seed / (operation['key'] + '-repair.json'), response)
+        response['claims'][1]['text'] = response['claims'][1]['text'].replace('`"default"`', '`override?.trim()`')
+        response['steps'][3]['condition'] = 'count > 10'
+        D['save'](response_path, response)
+
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED')
+        state = D['load'](run / 'state.json')
+        attempt, repair = [row for row in state['attempts'] if row['slot'] == operation['key']]
+        self.assertEqual(repair['resumeThread'], attempt['threadId'])
+        self.assertEqual(len(state['attempts']), len(plan['slots']) + 1)
+        result = D['load'](D['PX']['attempt_dir'](run, repair) / 'result.json')
+        prompt = (D['PX']['attempt_dir'](run, repair) / 'prompt.txt').read_text()
+        self.assertIn('PAGE_SOURCE_PATH_MISSING', prompt)
+        self.assertIn('"path": "/claims"', prompt)
+        self.assertIn('"path": "/steps"', prompt)
+        self.assertEqual(result['status'], 'COMPLETED')
+
+    def test_cold_process_map_features_outcomes_before_the_route_inventory(self):
+        operation = self.native_entry['record']['entrypoint']
+        peer = {'kind': 'THREAD_ENTRY', 'record': {**self.native_entry['record'], 'entrypoint': {
+            **operation, 'id': 'dispatch', 'trigger': {**operation['trigger'],
+                'sourceRoutes': [{'method': 'POST', 'path': '/dispatch'}]}}}}
+        page_jobs = D['P']['page_jobs']
+
+        def planning(job, inventory, prepared, directory, maximum, instructions):
+            entries = {row['path']: row for row in inventory['requirements'] if row['kind'] == 'ENTRY'}
+            sender, receiver = entries['/reservations'], entries['/dispatch']
+            index = D['P']['service_evidence'](prepared['services'][self.service], self.service,
+                                                inventory['services'], inventory['snapshot'])
+            sources = list(dict.fromkeys(handle for entry in (sender, receiver)
+                                         for handle in index['ready'][entry['id']]['evidenceCandidates']))
+            hop = {'from': sender['id'], 'to': receiver['id'], 'protocol': 'message',
+                   'qualifier': 'parcel.prepared', 'site': 'prepare-dispatch', 'condition': None}
+            records = [{'hops': [hop], 'sources': sources, 'status': 'SOURCE_QUALIFIED_CANDIDATE',
+                        'selection': {'owner': receiver['id'], 'site': str(status), 'effect': 'outcome',
+                                      'httpStatus': status, 'condition': condition, 'sources': sources}}
+                       for status, condition in [(201, 'count >= 0'), (422, 'count < 0'), (503, 'serviceOffline')]]
+            boundaries = [{'owner': sender['id'], 'method': 'GET', 'endpoint': '/partner/capacity',
+                           'sources': sources, 'condition': '!useCache'}]
+            return page_jobs(job, inventory, {**prepared, 'routeRecords': records, 'routeBoundaries': boundaries},
+                             directory, maximum, instructions)
+
+        with patch.dict(D['P'], {'page_jobs': planning}):
+            run, plan, _, _ = self.isolated_fixture(extra_entries=[peer])
+        owner = next(entry for entry in plan['entries'] if entry['path'] == '/dispatch')
+        response_path = self.seed / (next(slot['key'] for slot in plan['slots'] if slot['page'] == owner['page']) + '-response.json')
+        response = D['load'](response_path)
+        response['steps'].extend([
+            {'from': 'handler', 'to': 'caller', 'kind': 'return', 'label': 'Issue a collection ticket', 'condition': 'count >= 0'},
+            {'from': 'handler', 'to': 'caller', 'kind': 'return', 'label': 'Report delivery unavailable', 'condition': 'serviceOffline'}])
+        D['save'](response_path, response)
+
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        html = Path(result['ready']) / 'html'
+        process_map = (html / 'process-map.html').read_text()
+        visible = process_map.split('<main', 1)[1].partition('<details>')[0]
+        for text in ('Successful outcomes', 'Refusals and early exits', 'Failures', 'Asynchronous handoffs',
+                     'Outbound boundaries', 'Issue a collection ticket', 'HTTP 422', 'HTTP 503',
+                     'parcel.prepared', 'GET /partner/capacity', '!useCache'):
+            self.assertIn(text, visible)
+        self.assertIn(f'href="{owner["page"].replace(".md", ".html")}#sequence"', visible)
+        catalog = D['load'](run / 'workspace/draft/routes.json')
+        route, = catalog['routes']
+        for outcome in route['outcomes']:
+            self.assertIn(f'href="{outcome["target"]["page"]}#{outcome["target"]["anchor"]}"', visible)
+        self.assertIn('Observed route variants (1)', process_map)
+        for later in ('id="documented-operations"', 'class="route-inventory"'):
+            self.assertLess(process_map.index('Successful outcomes'), process_map.index(later))
 
     def test_isolated_response_schema_and_normalization_keep_owned_reader_content(self):
         run, plan, _, _ = self.isolated_fixture()
@@ -1825,10 +2094,7 @@ for row in (
         prompt = (run / 'inputs' / operation['prompt']).read_text()
         self.assertIn('add the return edge from', prompt)
         self.assertNotIn('CONTRACTS |', prompt)
-        guide = next(slot for slot in plan['slots'] if slot['kind'] == 'GUIDE')
-        guide_schema = D['load'](run / 'inputs' / guide['schema'])
-        self.assertNotIn('returns', guide_schema['$defs']['claim']['properties'])
-        self.assertIn('title', guide_schema['required'])
+        self.assertFalse(any(slot['kind'] == 'GUIDE' for slot in plan['slots']))
 
         # Exercise schema-minimal shape through the assembled native reader.
         for field in ('discovery', 'starts', 'contracts', 'routes', 'title'):
@@ -1966,6 +2232,10 @@ for row in (
                 'facts': [{'text': code + ' fact', 'kind': 'BODY', 'authority': 'SOURCE', 'sources': [cite]}]}
         for index in by_service.values():
             index.update(returns=[], coverage={'coverage': 'SYNTAX'}, deferred=[])
+        configuration = 'reservation.clock = utc'
+        by_service[self.service]['sources']['cite:configuration'] = {
+            'file': 'settings.properties', 'service': self.service, 'startLine': 1, 'endLine': 1, 'revision': 'owned',
+            'textDigest': D['sha'](configuration.encode()), 'text': configuration}
         pages = D['P']
         with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service, *_: by_service[service]}):
             job = dict(self.job, services=[self.service, 'warehouse'])
@@ -1974,8 +2244,9 @@ for row in (
                                       directory, D['M']['MAX_PAGES'], 'Owned instructions.')
         own = next(slot for slot in plan['slots'] if slot['requirement'] == reservation['id'])
         packet = json.loads((self.root / own['prompt']).read_text().split('\n\n')[-1])
-        self.assertEqual({row['text'] for row in packet['sourceRanges'].values()}, {'CALL_SITE', 'PEER_BODY'})
-        self.assertEqual(set(packet['facts']), {reservation['id'], warehouse['id']})
+        self.assertEqual({row['text'] for row in packet['sourceRanges'].values()}, {'CALL_SITE'})
+        self.assertEqual(set(packet['facts']), {reservation['id']})
+        self.assertEqual(own['relatedOperations'], [warehouse['handlerId']])
         interaction, = packet['context']['declaredInteractions']
         self.assertEqual(interaction['peer'], warehouse['handlerId'])
         self.assertEqual(interaction['authority'], 'RETAINED_DECLARATION_NOT_EXECUTED')
@@ -1987,7 +2258,9 @@ for row in (
                        'kind': 'http-failure-after-peer-commit', 'authority': 'RETAINED_SOURCE_EDGE',
                        'status': 'SOURCE_QUALIFIED_CANDIDATE', 'uncertainty': 'Persistence remains unresolved.',
                        'sources': ['cite:' + reservation['handlerId'], 'cite:' + warehouse['handlerId']]}
-        by_service[self.service]['facts'][reservation['id']]['facts'].append(linked_fact)
+        link_basis = {**linked_fact, 'kind': 'http-peer', 'text': 'The retained lookup matches the warehouse entry.'}
+        large_details = {**linked_fact, 'kind': 'http-peer-fields', 'text': 'Independent recipient details. ' * 250}
+        by_service[self.service]['facts'][reservation['id']]['facts'].extend((linked_fact, link_basis, large_details))
         with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service, *_: by_service[service]}):
             qualified = pages['page_jobs'](job, inventory, {'services': {key: key for key in by_service}},
                                            self.root / 'qualified-prompts', D['M']['MAX_PAGES'], 'Owned instructions.')
@@ -1995,6 +2268,16 @@ for row in (
         outcome, = linked['sourceOutcomes']
         self.assertEqual(outcome['text'], linked_fact['text'])
         self.assertEqual([linked['citations'][alias] for alias in outcome['cites']], linked_fact['sources'])
+        linked_packet = json.loads((self.root / linked['prompt']).read_text().split('\n\n')[-1])
+        self.assertEqual({row['text'] for row in linked_packet['sourceRanges'].values()}, {'CALL_SITE', 'PEER_BODY'})
+        self.assertEqual(set(linked_packet['facts']), {reservation['id']})
+        selected_map = next(slot for slot in qualified['slots'] if slot['kind'] == 'PROCESS_MAP')
+        map_prompt = (self.root / selected_map['prompt']).read_text()
+        map_packet = pages['expand_fact_context'](json.loads(map_prompt.rsplit('\n\n', 1)[-1]))
+        self.assertEqual([row['text'] for row in map_packet['facts'][reservation['id']]['facts']], [link_basis['text']])
+        self.assertNotIn(linked_fact['text'], map_prompt)
+        self.assertNotIn(large_details['text'], map_prompt)
+        self.assertLess(len(map_prompt.encode()), (self.root / linked['prompt']).stat().st_size // 2)
         D['starter'](inventory, 'en', self.root / 'starter', all_entries=True)
         original = D['load'](self.root / 'starter/original.json')
         navigation = D['load'](self.root / 'starter/navigation.json')
@@ -2024,6 +2307,388 @@ for row in (
             pages['add_processes']({'pages': []}, {'claims': {}}, navigation, plan, process, response,
                                     job, pages['LABELS']['en'], plan['citationOwners'])
         self.assertEqual(error.exception.code, 'PAGE_ROUTE_PARTICIPANT_EVIDENCE_REQUIRED')
+
+        # The route owns its two transitions and route-specific ordering.
+        # Both local sequence segments point at the accepted operation pages.
+        process = next(slot for slot in qualified['slots'] if slot['kind'] == 'PROCESS_MAP')
+        origin_id, peer_id = reservation['handlerId'], warehouse['handlerId']
+        own_note = {'from': 'handler', 'to': 'handler', 'kind': 'note',
+                    'label': 'Read the item identity.', 'condition': None}
+        repeated_note = {**own_note, 'from': origin_id, 'to': origin_id}
+        crossing = {'from': origin_id, 'to': peer_id, 'kind': 'await', 'label': 'Wait for the stock lookup.',
+                    'condition': 'The reservation names a warehouse.'}
+        linked_local = {'from': peer_id, 'to': peer_id, 'kind': 'reference', 'label': '',
+                        'condition': 'The stock lookup reaches its retained branch.'}
+        unique_note = {'from': origin_id, 'to': origin_id, 'kind': 'note',
+                       'label': 'The stock outcome selects a caller continuation.', 'condition': None}
+        returned = {'from': peer_id, 'to': origin_id, 'kind': 'return', 'label': 'Return the stock lookup result.',
+                    'condition': None}
+        route_response = {**response,
+                          'slot': process['key'], 'reviewed': True, 'disposition': 'EXPLAINED', 'limitations': [],
+                          'claims': [], 'routes': [{**response['routes'][0], 'cites': aliases,
+                              'steps': [repeated_note, crossing, linked_local, returned, unique_note]}]}
+        schema = D['load'](self.root / process['schema'])
+        self.assertNotIn('claims', schema['properties'])
+        self.assertNotIn('limitations', schema['properties'])
+        unrelated_claim = {'heading': '', 'text': 'The service never validates a reservation.',
+                           'cites': aliases, 'assessment': 'EXPLICIT_UNKNOWN'}
+        with self.assertRaises(D['Stop']) as rejected_scope:
+            pages['validate_response'](process, {**route_response, 'claims': [unrelated_claim],
+                                                'limitations': ['The service has no retained validator.']})
+        self.assertEqual({issue['path'] for issue in rejected_scope.exception.details['issues']},
+                         {'/claims', '/limitations'})
+        invalid = {**route_response, 'routes': [{**route_response['routes'][0], 'participants': [],
+                    'terminal': origin_id, 'steps': [repeated_note]}]}
+        with self.assertRaises(D['Stop']) as rejected:
+            pages['validate_response'](process, invalid)
+        self.assertIn('PAGE_ROUTE_TRANSITION_REQUIRED', [row['code'] for row in rejected.exception.details['issues']])
+        values = {}
+        for slot in qualified['slots']:
+            if slot['kind'] == 'PROCESS_MAP':
+                values[slot['key']] = pages['validate_response'](slot, route_response)
+                continue
+            claim = {'heading': '', 'text': 'The operation reads a retained value.', 'assessment': 'SUPPORTED',
+                     'cites': [next(iter(slot['citations']))]}
+            result = {'slot': slot['key'], 'reviewed': True, 'disposition': 'EXPLAINED', 'limitations': [],
+                      'claims': [claim]}
+            if slot['kind'] == 'OPERATION':
+                result.update(participants=[], steps=[own_note])
+            elif slot['kind'] == 'GUIDE':
+                self.assertEqual(list(slot['citations'].values()), ['cite:configuration'])
+                claim['text'] = 'Reservations use UTC in the retained service configuration.'
+            elif slot['kind'] == 'CONTRACTS':
+                result['contracts'] = []
+            values[slot['key']] = pages['validate_response'](slot, result)
+        output = pages['assemble_pages'](job, inventory, qualified, values,
+            D['load'](self.root / 'starter/original.json'), D['load'](self.root / 'starter/navigation.json'),
+            D['I']['assemble'], qualified['citationOwners'])
+        registry = output['routes.json']
+        narrative = registry['routes'][0]['narrative']['page']
+        markdown, _, _ = D['M']['compose_pages'](output['original.json'])
+        self.assertNotIn(own_note['label'].encode(), markdown[narrative.replace('.html', '.md')])
+        inputs = self.root / 'mixed-markdown'
+        inputs.mkdir()
+        for name, data in markdown.items():
+            (inputs / name).write_bytes(data)
+        D['save'](draft / 'navigation.json', output['navigation.json'])
+        D['save'](draft / 'routes.json', registry)
+        rendered = self.root / 'mixed-html'
+        run = subprocess.run([job['node'], str(RENDERER / 'render.mjs'), str(inputs), str(rendered), 'Catalog',
+                              '--navigation', str(draft / 'navigation.json'), '--docset-routes', str(draft / 'routes.json'),
+                              '--docset', 'retained', '--docset-version', registry['revision']],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        html = (rendered / narrative).read_text()
+        for operation in (reservation, warehouse):
+            page = operation['page'].replace('.md', '.html')
+            self.assertIn(f'href="{page}#sequence"', html)
+            self.assertIn('id="sequence"', (rendered / page).read_text())
+            self.assertIn(f'href="{page}#behavior"', (rendered / 'process-map.html').read_text())
+        self.assertNotIn(own_note['label'], html)
+        self.assertIn(linked_local['condition'], html)
+        self.assertIn(unique_note['label'], html)
+        self.assertRegex(html, r'5\. Return the stock lookup result\.')
+        self.assertIn('sequence-message return reverse', html)
+        self.assertIn(f'href="{warehouse["page"].replace(".md", ".html")}#behavior"',
+                      (rendered / reservation['page'].replace('.md', '.html')).read_text())
+        overview = (rendered / (self.service + '.html')).read_text()
+        self.assertIn('Reservations use UTC in the retained service configuration.', overview)
+        self.assertIn(f'href="{reservation["page"].replace(".md", ".html")}#behavior"', overview)
+        self.assertIn(f'href="{self.service}-contracts.html"', overview)
+        self.assertNotIn('The service never validates', (rendered / 'process-map.html').read_text())
+
+    def test_map_upgrade_reuses_owners_and_preserves_distinct_routes_across_promoted_donors(self):
+        operation = self.native_entry['record']['entrypoint']
+        extra = {'kind': 'THREAD_ENTRY', 'record': {**self.native_entry['record'], 'entrypoint': {
+            **operation, 'id': 'stock', 'trigger': {**operation['trigger'],
+                'sourceRoutes': [{'method': 'GET', 'path': '/stock'}]}}}}
+        pages = D['P']
+        plan_jobs = pages['page_jobs']
+        active = ['historical-run']
+        raw_records = []
+
+        def planning(job, inventory, prepared, directory, maximum, instructions):
+            if directory.parent.parent.name in active:
+                def old_routes(requirements, indexes, *_args, **_kwargs):
+                    return {}, {self.service: list(dict.fromkeys(
+                        handle for row in requirements if row['kind'] == 'ENTRY'
+                        for handle in indexes[self.service]['ready'][row['id']]['evidenceCandidates']))}, {}
+
+                with patch.dict(plan_jobs.__globals__, {'route_evidence': old_routes}):
+                    historical = plan_jobs(job, inventory, prepared, directory, maximum, instructions)
+                if directory.parent.parent.name == 'earlier-b':
+                    slot = next(slot for slot in historical['slots'] if slot['kind'] == 'PROCESS_MAP')
+                    slot.pop('transitionRoutes')
+                    schema = D['load'](ROOT / 'skills/codeclew/schemas/docs-run-page-author.schema.json')
+                    D['save'](directory.parent / slot['schema'], pages['RESPONSE']['schema_for_slot'](schema, slot))
+                return historical
+            operations = {row['path']: row for row in inventory['requirements'] if row['kind'] == 'ENTRY'}
+            origin, terminal = operations['/reservations']['id'], operations['/stock']['id']
+            entry = operations['/reservations']
+            index = pages['service_evidence'](prepared['services'][self.service], self.service,
+                                              inventory['services'], inventory['snapshot'])
+            sources = index['ready'][entry['id']]['evidenceCandidates']
+            hop = {'from': origin, 'to': terminal, 'protocol': 'http', 'qualifier': 'GET /stock',
+                   'site': 'request-site', 'condition': None}
+            raw_records[:] = [
+                {'hops': [hop], 'selection': {'owner': terminal, 'site': site, 'effect': kind,
+                                              'condition': condition, 'sources': sources},
+                 'status': 'SOURCE_QUALIFIED_CANDIDATE', 'sources': sources}
+                for site, kind, condition in (('early-return', 'no-write', 'count < 0'),
+                                              ('success-write', 'write', 'count >= 0'))]
+            records = raw_records
+            if directory.parent.parent.name == 'rerun-map':
+                records = records[:1]
+            if directory.parent.parent.name == 'dense-map':
+                records = [{**row, 'hops': [{**hop, 'qualifier': (f'GET /stock/{site % 5}' if site else
+                            'GET /stock/[optional] with `quoted [key](nested)` and ) punctuation ' * 4), 'site': str(site)}]}
+                           for site in range(75) for row in raw_records]
+                edge = records[0]['hops'][0]
+                positive, negative = 'eligible', '!eligible && hasStock'
+                for guard, choice_condition in ((positive, None), (negative, None), (positive, negative)):
+                    selection = ({'owner': origin, 'effect': 'write', 'site': 'independent-choice',
+                                  'condition': choice_condition, 'sources': sources} if choice_condition else None)
+                    records.append({**records[0], 'hops': [{**edge, 'condition': guard}], 'selection': selection})
+            boundaries = [{'owner': origin, 'method': 'GET', 'endpoint': '/partner/availability', 'sources': sources,
+                           'condition': None}]
+            return plan_jobs(job, inventory, {**prepared, 'routeRecords': records, 'routeBoundaries': boundaries},
+                             directory, maximum, instructions)
+
+        original_fixture = self.isolated_fixture
+        answers = {
+            'historical-run': [('Check stock', 'count < 0'), ('Confirm stock', 'count >= 0')],
+            'earlier-a': [('Check stock', 'count < 0'), ('Confirm stock', 'count < 0')],
+            'earlier-b': [('Confirm stock', 'count >= 0'), ('Verify availability', 'count >= 0'),
+                          ('Check outside the reservation service', 'count < 0')],
+        }
+
+        def fixture(*args, **kwargs):
+            pairs = answers.get(kwargs.get('run_name'))
+            kwargs['extra_entries'] = [extra]
+            if pairs is not None:
+                def map_routes(packet):
+                    entries = {entry['path']: entry for entry in packet['context']['operations']}
+                    start, peer = entries['/reservations']['id'], entries['/stock']['id']
+                    routes = [{'title': title, 'summary': 'Reservation looks up stock.', 'origin': start,
+                             'participants': [{'entry': peer, 'role': 'Warehouse'}], 'condition': condition,
+                             'outcome': 'This outdated outcome is replaced.', 'result': 'normal', 'terminal': peer,
+                             'boundary': 'return', 'recipient': 'This outdated recipient is replaced.',
+                             'steps': [{'from': start, 'to': peer, 'kind': 'call',
+                                        'label': 'This outdated step is replaced.', 'condition': None}],
+                             'cites': list(packet['citations'])}
+                            for title, condition in pairs]
+                    if kwargs.get('run_name') == 'earlier-b':
+                        last = routes[-1]
+                        last.update(participants=[], terminal=None, boundary=None, result='unknown',
+                                    steps=[{'from': start, 'to': start, 'kind': 'note',
+                                            'label': 'This outdated external action is replaced.', 'condition': None}])
+                    return routes
+
+                kwargs['map_routes'] = map_routes
+            run, plan, packets, source = original_fixture(*args, **kwargs)
+            for slot in plan['slots']:
+                if slot['kind'] == 'OPERATION':
+                    answer_path = self.seed / (slot['key'] + '-response.json')
+                    answer = D['load'](answer_path)
+                    answer['steps'][-1]['condition'] = 'count >= 0'
+                    D['save'](answer_path, answer)
+            return run, plan, packets, source
+
+        def call(command, run, *arguments):
+            completed = subprocess.run([sys.executable, '-I', '-S', str(ROOT / 'skills/codeclew/scripts/docs_run.py'),
+                                        command, '--run-dir', str(run), *arguments], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            return json.loads(completed.stdout)
+
+        with patch.dict(pages, {'page_jobs': planning}), patch.object(self, 'isolated_fixture', fixture):
+            first, target, old_plan = self.isolated_reuse_fixture()
+            donors = [first]
+            active.extend(('earlier-a', 'earlier-b'))
+            for name in active[1:]:
+                author = self.job['author']
+                if name == 'earlier-b':
+                    self.job['author'] = {**author, 'model': 'earlier-fixture-author'}
+                try:
+                    previous, _, _, _ = self.isolated_fixture(run_name=name)
+                finally:
+                    self.job['author'] = author
+                result = D['execute'](previous)
+                self.assertEqual(result['status'], 'READY_PROMOTED')
+                (previous / '.runner.lock').touch()
+                donors.append(previous)
+        new_plan = D['load'](target / 'inputs/author-plan.json')
+        old_slots = {slot['key']: slot for slot in old_plan['slots'] if slot['kind'] != 'PROCESS_MAP'}
+        self.assertEqual({slot['key']: slot for slot in new_plan['slots']}, old_slots)
+        self.assertEqual(len(new_plan['routeRecords']), 2)
+        for slot in new_plan['slots']:
+            self.assertEqual(D['PR']['slot_files'](target, slot), D['PR']['slot_files'](first, old_slots[slot['key']]))
+        seals = {run: D['tree'](run) for run in donors}
+        adopted = call('reuse-pages', target, *(arg for donor in donors for arg in ('--reuse-from', str(donor))))
+        self.assertEqual((adopted['reusedPages'], adopted['remainingPages']), (len(old_slots), 0), adopted)
+        self.assertEqual(adopted['historicalRouteRecords'], 7, adopted)
+        result = call('run', target)
+        self.assertEqual(result['reuse']['newAuthorInvocations'], 0)
+        self.assertEqual(D['load'](target / 'state.json')['modelTokens'], 0)
+        self.assertEqual({run: D['tree'](run) for run in donors}, seals)
+        route_catalog = D['load'](target / 'workspace/draft/routes.json')
+        projected, *historic = route_catalog['routes']
+        self.assertEqual(len(historic), 5)
+        self.assertEqual(len({row['id'] for row in historic}), 5)
+        self.assertEqual({row['title'].split(' · ')[0] for row in historic}, {
+            'Check stock', 'Confirm stock', 'Verify availability', 'Check outside the reservation service'})
+        self.assertEqual(len({row['title'] for row in historic}), len(historic))
+        self.assertEqual(len({row['narrative']['page'] for row in route_catalog['routes']}), 1)
+        self.assertTrue(all(row['narrative']['anchor'] == row['id'] for row in route_catalog['routes']))
+        external, = [row for row in historic if len(row['occurrences']) == 1]
+        self.assertEqual(external['outcomes'][0]['end']['status'], 'unknown')
+        self.assertFalse(route_catalog['externalActors'])
+        self.assertEqual({row['condition'] for row in projected['branches']}, {'count < 0', 'count >= 0'})
+        self.assertEqual(len(projected['outcomes']), 2)
+        html = Path(result['ready']) / 'html'
+        draft = 'workspace/draft/original.json'
+        unchanged = {slot['page'] for slot in new_plan['slots']} | {self.service + '.md'}
+        self.assertEqual([row for row in D['load'](target / draft)['pages'] if row['page'] in unchanged],
+                         [row for row in D['load'](first / draft)['pages'] if row['page'] in unchanged])
+        ledger = D['load'](target / 'page-reuse.json')
+        old_attempts = {row['slot']: row for row in D['load'](first / 'state.json')['attempts']}
+        self.assertEqual({key: proof['responseDigest'] for key, proof in ledger['pages'].items()},
+                         {key: old_attempts[key]['responseDigest'] for key in old_slots})
+        for entry in new_plan['entries']:
+            file = entry['page'].replace('.md', '.html')
+            owner = (html / file).read_text()
+            for route in route_catalog['routes']:
+                narrative = (html / route['narrative']['page']).read_text()
+                for anchor in ('behavior', 'sequence'):
+                    self.assertIn(f'href="{file}#{anchor}"', narrative)
+                    self.assertIn(f'id="{anchor}"', owner)
+                self.assertNotIn('outdated', narrative)
+        narrative = (html / projected['narrative']['page']).read_text()
+        self.assertIn('count &lt; 0', narrative)
+        self.assertIn('accepted.add(count)', narrative)
+        self.assertIn('The complete end-to-end outcome', narrative)
+        self.assertIn('See the originating operation for the retained boundary.', narrative)
+        self.assertIn('Retained HTTP request GET /partner/availability.', narrative)
+        self.assertIn('Receiving service and deployment are unresolved', narrative)
+        for route in route_catalog['routes']:
+            self.assertIn(f'id="{route["id"]}"', narrative)
+            self.assertIn(f'href="{route["narrative"]["page"]}#{route["id"]}"', (html / 'process-map.html').read_text())
+        exported = {path.name: path.read_bytes() for path in html.glob('*.html')}
+        operation_file = new_plan['entries'][0]['page'].replace('.md', '.html')
+        exported[operation_file] = exported[operation_file].replace(b'id="sequence"', b'id="broken-sequence"', 1)
+        with self.assertRaises(D['E']['Stop']) as missing:
+            D['E']['check_links'](exported, (html / 'favicon.svg').read_bytes())
+        self.assertEqual(missing.exception.status, 'EXPORT_FRAGMENT_MISSING')
+
+        with patch.dict(pages, {'page_jobs': planning}), patch.object(self, 'isolated_fixture', fixture):
+            next_run, _, _, _ = self.isolated_fixture(run_name='rerun-map')
+        carried = call('reuse-pages', next_run, '--reuse-from', str(target))
+        self.assertEqual(carried['historicalRouteRecords'], 6, carried)
+        replayed = call('run', next_run)
+        self.assertEqual(replayed['reuse']['newAuthorInvocations'], 0)
+        self.assertEqual(D['load'](next_run / 'workspace/draft/routes.json'), route_catalog)
+
+        with patch.dict(pages, {'page_jobs': planning}), patch.object(self, 'isolated_fixture', fixture):
+            localized, localized_plan, _, _ = self.isolated_fixture(run_name='localized-map', language='ru')
+        localized_output = D['execute'](localized)
+        self.assertEqual(localized_output['status'], 'READY_PROMOTED')
+        self.assertEqual(len(D['load'](localized / 'state.json')['attempts']), len(localized_plan['slots']))
+        directory = Path(localized_output['ready']) / 'html'
+        narrative, = directory.glob('process-routes-*.html')
+        localized_text = narrative.read_text()
+        self.assertIn('\u0423\u0441\u043b\u043e\u0432\u0438\u044f \u0438 \u0438\u0441\u0445\u043e\u0434\u044b', localized_text)
+        self.assertIn('\u0414\u0438\u0430\u0433\u0440\u0430\u043c\u043c\u0430 \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u0438 GET /stock', localized_text)
+
+        with patch.dict(pages, {'page_jobs': planning}), patch.object(self, 'isolated_fixture', fixture):
+            dense, dense_plan, _, _ = self.isolated_fixture(run_name='dense-map')
+        adopted = call('reuse-pages', dense, '--reuse-from', str(target))
+        self.assertEqual(adopted['remainingPages'], 0, adopted)
+        dense_result = call('run', dense)
+        self.assertEqual(dense_result['reuse']['newAuthorInvocations'], 0)
+        registry = D['load'](dense / 'workspace/draft/routes.json')
+        # Seventy-five structural paths alone exceed the 64-page reader limit.
+        self.assertEqual(len(dense_plan['routeRecords']), 153)
+        self.assertEqual(len(registry['routes']), 81)
+        self.assertEqual(len({row['narrative']['page'] for row in registry['routes']}), 1)
+        self.assertEqual(len({row['narrative']['anchor'] for row in registry['routes']}), 81)
+        self.assertEqual(len({row['title'] for row in registry['routes']}), 81)
+        self.assertEqual(sum(len(row['branches']) for row in registry['routes']), 160)
+        dense_html = Path(dense_result['ready']) / 'html'
+        self.assertLess(len(list(dense_html.glob('*.html'))), 10)
+        alternative, = [route for route in registry['routes'] if len(route['branches']) == 5]
+        conditions = {branch['condition'] for branch in alternative['branches']}
+        self.assertIn('eligible', conditions)
+        self.assertIn('!eligible && hasStock', conditions)
+        self.assertIn('See the participating operations for the conditions of each local path.', conditions)
+        self.assertFalse(any('eligible · !eligible' in condition for condition in conditions))
+        route_html = (dense_html / alternative['narrative']['page']).read_text()
+        self.assertNotIn('eligible · !eligible', route_html)
+        self.assertNotIn('Retained path condition <code>!eligible &amp;&amp; hasStock</code> · Retained path condition', route_html)
+        self.assertNotIn('>Write path<', route_html)
+        map_html = (dense_html / 'process-map.html').read_text()
+        self.assertIn('<details class="route-inventory"><summary>Search all routes (81)</summary>', map_html)
+        disclosure = re.search(r'<details>\s*<summary>Observed route variants \(76\)</summary>(.*?)</details>',
+                               map_html, re.S)
+        self.assertIsNotNone(disclosure)
+        self.assertEqual(len(re.findall(r'<a href="[^"]+#route-[^"]+">', disclosure[1])), 76)
+        self.assertIn('[optional]', disclosure[1])
+        self.assertLess(map_html.index('>Check outside the reservation service</a>'),
+                        map_html.index('<h2 id="documented-operations">'))
+        fixture_markdown = D['load'](dense / 'workspace/draft/original.json')
+        map_page = next(page for page in fixture_markdown['pages'] if page['page'] == 'process-map.md')
+        overview = next(row['text'] for row in map_page['fragments'] if 'Observed route variants' in row['text'])
+        self.assertIn('Check outside the reservation service', overview.partition('<details>')[0])
+        self.assertNotIn('GET /stock/1', overview.partition('<details>')[0])
+
+
+    def test_isolated_guides_and_discovery_share_only_owned_source_occurrences(self):
+        service, operation = self.service, self.entry
+        discovery = next(row for row in self.inventory['requirements'] if row['kind'] == 'DISCOVERY')
+        raw = 'fun submit() {\n' + '    recordRequest()\n' * 300 + '}\n'
+        def source(name, text):
+            return {'id': name, 'service': service, 'revision': 'owned', 'file': name,
+                    'startLine': 1, 'endLine': len(text.splitlines()), 'text': text, 'textDigest': D['sha'](text.encode())}
+
+        code, setting, contained = 'cite:source', 'cite:setting', 'cite:contained'
+        owned = {'kind': 'guard', 'text': 'Skip a missing item.', 'condition': 'The item is missing.',
+                 'authority': 'RETAINED_PATH', 'sources': [code], 'lines': {code: [(4, 4)]}}
+        distinct = {**owned, 'lines': {code: [(224, 224)]}}
+        contract = {'kind': 'shape', 'text': 'The entry type is a local request.', 'authority': 'DECLARED_SOURCE_CONTRACT',
+                    'sources': [code]}
+        config = 'service.enabled = true'
+        index = {'sources': {code: source('Source.kt', raw), setting: source('settings.properties', config),
+                             contained: source('Source.kt', 'fun submit() {\n')},
+                 'ready': {row['id']: {'evidenceCandidates': [code]} for row in (operation, discovery)},
+                 'facts': {operation['id']: {'facts': [owned, contract]}, discovery['id']: {'facts': [owned, distinct]}},
+                 'returns': [], 'coverage': {'coverage': 'SYNTAX'}, 'deferred': []}
+        pages = D['P']
+        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda *_: index}):
+            plan = pages['page_jobs'](self.job, self.inventory, {'services': {service: {}}},
+                                      self.root / 'ownership', D['M']['MAX_PAGES'], 'Owned instructions.')
+        by_kind = {slot['kind']: (self.root / slot['prompt']).read_text() for slot in plan['slots']}
+        self.assertNotIn('PROCESS_MAP', by_kind)
+        packets = {kind: pages['expand_fact_context'](json.loads(prompt.rsplit('\n\n', 1)[-1]))
+                   for kind, prompt in by_kind.items()}
+        self.assertLess(len(by_kind['GUIDE'].encode()), len(by_kind['OPERATION'].encode()) // 2)
+        guide_ranges = [row['text'] for row in packets['GUIDE']['sourceRanges'].values()]
+        self.assertEqual(guide_ranges, [config])
+        self.assertEqual(packets['GUIDE']['facts'], {})
+        guide = next(slot for slot in plan['slots'] if slot['kind'] == 'GUIDE')
+        guide_schema = D['load'](self.root / guide['schema'])
+        self.assertNotIn('title', guide_schema['required'])
+        self.assertNotIn('limitations', guide_schema['required'])
+        self.assertEqual(guide_schema['$defs']['claim']['properties']['assessment']['enum'], ['SUPPORTED'])
+        overview_claim = {'heading': '', 'text': 'The service flag is enabled in the retained configuration.',
+                          'cites': [next(iter(guide['citations']))], 'assessment': 'SUPPORTED'}
+        overview_response = {'slot': guide['key'], 'reviewed': True, 'disposition': 'EXPLAINED', 'claims': [overview_claim]}
+        self.assertEqual(pages['validate_response'](guide, overview_response)['claims'][0]['text'], overview_claim['text'])
+        with self.assertRaises(D['Stop']):
+            pages['validate_response'](guide, {**overview_response, 'claims': [
+                {**overview_claim, 'assessment': 'EXPLICIT_UNKNOWN'}]})
+        self.assertEqual([row['text'] for row in packets['CONTRACTS']['facts'][operation['id']]['facts']],
+                         [contract['text']])
+        discovered, = packets['DISCOVERY']['facts'][discovery['id']]['facts']
+        self.assertEqual(list(discovered['lines'].values()), [[[224, 224]]])
+        self.assertIn(raw, [row['text'] for row in packets['DISCOVERY']['sourceRanges'].values()])
 
     def test_isolated_operation_receives_only_reached_discovery_facts_with_narrow_source(self):
         pages = D['P']
@@ -3577,6 +4242,190 @@ class SourceMembershipTests(unittest.TestCase):
 
 
 class PreparedKotlinSourceTests(unittest.TestCase):
+    def test_installed_prepare_delivers_nested_condition_paths_and_checks_both_reader_views(self):
+        launcher = os.environ.get('CODECLEW_TEST_INSTALLED_SOURCE_LAUNCHER')
+        if not launcher:
+            self.skipTest('An installed release launcher was not configured.')
+        source = """package demo
+
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class ParcelLabels(private val transaction: TransactionTemplate, private val store: JdbcTemplate, private val client: HttpClient) {
+    @PostMapping("/labels")
+    fun submit(raw: String?, query: String, approved: Boolean, enabled: Boolean, usePreset: Boolean): Int {
+        if (raw == "ignored") return 409
+        return planLabel(raw, query, approved, enabled, usePreset)
+    }
+
+    private fun planLabel(raw: String?, query: String, approved: Boolean, enabled: Boolean, usePreset: Boolean): Int {
+        val message = raw?.trim() ?: "untitled"
+        val label = normalize(raw)
+        if (usePreset) storeLabel(label, false) else storeLabel(message, true)
+        return sendLabel(query, approved, enabled)
+    }
+
+    private fun normalize(raw: String?): String {
+        val normalized = raw?.let { raw -> decode(raw) } ?: kotlin.error("unusable")
+        audit(normalized)
+        return normalized
+    }
+
+    private fun storeLabel(label: String, preset: Boolean) {
+        transaction.executeWithoutResult {
+            val value = if (preset) "existing" else label
+            store.update("INSERT INTO journal (label) VALUES (?)", value)
+        }
+    }
+
+    private fun sendLabel(query: String, approved: Boolean, enabled: Boolean): Int {
+        val builder = HttpRequest.newBuilder(URI.create("https://labels.example.invalid/api/labels?k=$query"))
+        if (!approved || !enabled) return 422
+        if (query.isNotBlank()) {
+            builder.header("Accept", "application/json")
+        }
+        return client.send(builder.GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode()
+    }
+
+    @PostMapping("/preview")
+    fun preview(raw: String, enabled: Boolean, decorated: Boolean): String {
+        if (!enabled) return "blocked"
+        return planPreview(raw, decorated)
+    }
+
+    private fun planPreview(raw: String, decorated: Boolean): String {
+        val preview = if (decorated) raw.uppercase() else raw.lowercase()
+        audit(preview)
+        return preview
+    }
+
+    private fun decode(raw: String): String? = raw.trim().ifEmpty { null }
+    private fun audit(raw: String) = Unit
+
+    @PostMapping("/simple")
+    fun simple(name: String?): String {
+        val resolved = name ?: "any"
+        return resolved
+    }
+
+    @PostMapping("/health")
+    fun health(): String = "ready"
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='clew-condition-test-', dir=Path.home()) as temporary:
+            home = Path(temporary)
+            repo, docs, run = (home / name for name in ('src', 'docs', 'run'))
+            repo.mkdir()
+            (repo / 'ParcelLabels.kt').write_text(source)
+            author = home / 'unused-author'
+            author.write_text('#!/bin/sh\nexit 81\n')
+            author.chmod(0o700)
+            for args in (('init', '-q'), ('remote', 'add', 'origin', 'https://example.invalid/labels'),
+                         ('add', '.'), ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                          'commit', '-qm', 'Start fixture')):
+                subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
+
+            def clew(*args):
+                result = subprocess.run([launcher, 'docs', *args, '--root', str(docs)], text=True,
+                                        capture_output=True, timeout=30)
+                self.assertIn(result.returncode, (0, 3) if args[0] == 'check' else (0,), result.stdout + result.stderr)
+                return json.loads(result.stdout)
+
+            with patch.dict(os.environ, {'CODECLEW_HOME': str(home / 'state')}):
+                clew('init', '--title', 'Parcel labels')
+                service = home / 'service.json'
+                D['save'](service, {'schema': 'codeclew-documentation-service/1.0', 'id': 'labels',
+                                   'title': 'Labels', 'repositoryId': 'labels', 'repository': 'https://example.invalid/labels',
+                                   'language': 'kotlin', 'profile': 'source-syntax', 'targetRef': 'HEAD',
+                                   'source': {'roots': ['.'], 'dialect': '1.9'}})
+                clew('service', 'add', '--input', str(service),
+                     '--expected-input-digest', clew('service', 'list')['inputDigest'])
+                clew('bind', '--service', 'labels', '--repo', str(repo))
+                job = home / 'job.json'
+                D['save'](job, {'schema': D['SCHEMA'], 'request': 'Document conditional paths in the label service.',
+                              'clew': str(Path(launcher).absolute()), 'root': str(docs), 'snapshot': clew('check')['snapshot'],
+                              'services': ['labels'], 'language': 'en', 'renderer': str(RENDERER),
+                              'node': str(Path(shutil.which('node')).absolute()), 'evidenceMode': 'PREPARED_FACTS',
+                              'authorMode': 'ISOLATED_PAGES', 'author': {'executable': str(author),
+                                  'model': 'unused-test-author', 'reasoningEffort': 'high'},
+                              'budget': {'wallSeconds': 45, 'maxRepairs': 0}})
+                receipt = D['prepare'](job, run)
+            plan = D['load'](run / 'inputs/author-plan.json')
+            coverage = receipt['conditionPathCoverage']
+            self.assertEqual((coverage['operations'], coverage['operationsWithChecks'], coverage['paths']), (4, 3, 15))
+            self.assertGreater(coverage['omissions'], 0)
+            slots = {slot['page']: slot for slot in plan['slots'] if slot['kind'] == 'OPERATION'}
+            self.assertEqual(slots['labels-post-health.md']['conditionPathCoverage'],
+                             {'decisions': 0, 'paths': 0, 'omissions': {'NO_QUALIFIED_BRANCH': 1}})
+            slot = slots['labels-post-labels.md']
+            packet = json.loads((run / 'inputs' / slot['prompt']).read_text().rsplit('\n\n', 1)[-1])
+            paths = packet['conditionPaths']
+            self.assertEqual(slot['conditionPaths'], paths)
+            by_scope = {}
+            for path in paths:
+                by_scope.setdefault(path['scope'], []).append(path)
+                self.assertEqual(len(path['cites']), 1)
+            self.assertEqual(set(by_scope), {'planLabel', 'normalize', 'storeLabel', 'sendLabel'})
+            self.assertEqual({row['condition'] for row in by_scope['storeLabel']}, {'preset', '!(preset)'})
+            self.assertTrue(all('store.update' in row['actions'] for row in by_scope['storeLabel']))
+            self.assertEqual({row['condition'] for row in by_scope['sendLabel']},
+                             {'!approved', 'approved && !enabled', 'approved && enabled'})
+            self.assertEqual({row['endpoint'] for row in plan['routeBoundaries']},
+                             {'https://labels.example.invalid/api/labels'})
+
+            def make_response(slot):
+                ordered = sorted(slot['conditionPaths'], key=lambda row: (row['decision'], not row.get('skip')))
+                response = {'slot': slot['key'], 'reviewed': True, 'disposition': 'EXPLAINED',
+                            'participants': [{'id': 'remote', 'title': 'Label receiver'}], 'steps': [], 'claims': [], 'limitations': []}
+                for path in ordered:
+                    skip = set(path.get('skip', ()))
+                    scope = path.get('scope')
+                    premise = (f"In `{scope}`, " if scope else '') + f"When `{path['condition']}`,"
+                    actions = ' and '.join(('skip ' if action in skip else '') + f'`{action}`' for action in path['actions'])
+                    response['claims'].append({'heading': '', 'text': f'{premise} {actions}.',
+                                               'assessment': 'SUPPORTED', 'cites': path['cites']})
+                    kind = path.get('stepKind', 'note')
+                    response['steps'].append({'from': 'handler', 'kind': kind, 'label': ' '.join(filter(None, (scope, actions))),
+                                              'to': {'call': 'remote', 'return': 'caller', 'note': 'handler'}[kind],
+                                              'condition': path['condition']})
+                return ordered, response
+
+            ordered, response = make_response(slot)
+            validate = D['P']['validate_response']
+            try:
+                validate(slot, response)
+            except D['Stop'] as error:
+                self.fail(error.details)
+            wrong = next(i for i, path in enumerate(ordered) if path['scope'] == 'normalize' and path.get('skip'))
+            response['claims'][wrong]['text'] = response['claims'][wrong]['text'].replace('skip ', 'still call ')
+            outbound = next(step for step in response['steps'] if step['kind'] == 'call')
+            outbound['condition'] = 'approved || enabled'
+            with self.assertRaisesRegex(D['Stop'], 'PAGE_RESPONSE_INVALID') as refused:
+                validate(slot, response)
+            issues = refused.exception.details['issues']
+            self.assertEqual({i['path'] for i in issues if i['code'] == 'PAGE_SOURCE_PATH_MISSING'}, {'/claims', '/steps'})
+
+            preview = slots['labels-post-preview.md']
+            ordered, response = make_response(preview)
+            self.assertTrue(all(path['partial'] for path in ordered))
+            arms = {path['condition']: path['actions'] for path in ordered if path.get('scope') == 'planPreview'}
+            self.assertEqual(arms['decorated'], ['raw.uppercase()'])
+            self.assertEqual(arms['!(decorated)'], ['raw.lowercase()'])
+            validate(preview, response)
+            index = next(i for i, path in enumerate(ordered) if path['condition'] == '!(decorated)')
+            response['claims'][index]['text'] = response['claims'][index]['text'].replace('raw.lowercase()', 'raw.uppercase()')
+            response['steps'][index]['condition'] = 'decorated'
+            with self.assertRaisesRegex(D['Stop'], 'PAGE_RESPONSE_INVALID') as refused:
+                validate(preview, response)
+            self.assertEqual({row['path'] for row in refused.exception.details['issues']}, {'/claims', '/steps'})
+
     def test_installed_source_prepare_qualifies_local_helpers_and_focused_writes(self):
         launcher = os.environ.get('CODECLEW_TEST_INSTALLED_SOURCE_LAUNCHER')
         if not launcher:
@@ -3902,9 +4751,373 @@ class PreparedServiceEdgeTests(unittest.TestCase):
         row = self.edges["record"](requirement, process, context, accepted, exact)
         return requirement, row, exact
 
-    def project(self, *retained, isolated=False):
+    def project(self, *retained, isolated=False, route_records=None, route_boundaries=None):
         return self.edges["project"]([row[0] for row in retained], {row[0]["id"]: row[1] for row in retained},
-                                     isolated=isolated)
+                                     isolated=isolated, route_records=route_records, route_boundaries=route_boundaries)
+
+    def test_installed_plan_keeps_typed_publication_and_receiver_effect_in_their_scopes(self):
+        launcher = os.environ.get('CODECLEW_TEST_INSTALLED_SOURCE_LAUNCHER')
+        if not launcher:
+            self.skipTest('An installed release launcher was not configured.')
+        controller = '''package neutral.inbound;
+import neutral.domain.Dispatch;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+public final class Intake {
+    private final Dispatch dispatch;
+    public Intake(Dispatch dispatch) { this.dispatch = dispatch; }
+    @PostMapping("/parcels")
+    public Reply accept(@RequestBody Long key) {
+        if (key == null) return new Reply(null);
+        if (key == 0L) return new Reply(0L);
+        if (key == 1L) return new Reply(1L);
+        if (key == 2L) return new Reply(2L);
+        var parcel = dispatch.execute(key);
+        return new Reply(parcel.getId());
+    }
+    @PostMapping("/signals")
+    public Long signal(@RequestBody Long key) {
+        dispatch.signal(key);
+        return key;
+    }
+}
+'''
+        factory = '''package neutral.domain;
+import io.eventuate.tram.events.publisher.ResultWithTypedEvents;
+import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.Map;
+import neutral.contract.Changed;
+import neutral.contract.ParcelEvent;
+public final class Parcel {
+    private final Long id;
+    private final BigDecimal total = BigDecimal.TEN;
+    private final Map<Long, BigDecimal> ledger = new HashMap<>();
+    Parcel(Long id) { this.id = id; }
+    public Long getId() { return id; }
+    public void apply(Long key) {
+        var request = BigDecimal.valueOf(key);
+        if (available().compareTo(request) >= 0) {
+            ledger.put(key, request);
+        } else {
+            throw new LimitExceeded();
+        }
+    }
+    private BigDecimal available() {
+        return total.subtract(ledger.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add));
+    }
+    static ResultWithTypedEvents<Parcel, ParcelEvent> create(Long key) {
+        var parcel = new Parcel(key);
+        var placement = new Placement(new Container(key), new Dock(key), new Shelf(key), new Zone(key));
+        var event = new Changed(key, placement.tag());
+        return new ResultWithTypedEvents<>(parcel, event);
+    }
+}
+'''
+        dispatch = '''package neutral.domain;
+import java.util.Optional;
+import neutral.contract.Approved;
+import neutral.contract.Changed;
+import neutral.contract.Missing;
+import neutral.contract.Refused;
+public final class Dispatch {
+    private final Port publisher;
+    private final Store store;
+    public Dispatch(Port publisher, Store store) {
+        this.publisher = publisher;
+        this.store = store;
+    }
+    public Parcel execute(Long key) {
+        var packet = Parcel.create(key);
+        var parcel = packet.getResult();
+        store.save(parcel);
+        publisher.publish(parcel, packet.getEvents());
+        return parcel;
+    }
+    public void signal(Long key) {
+        Optional<Parcel> found = store.find(key);
+        if (found.isEmpty()) {
+            publisher.publishById(key, new Missing(key));
+            return;
+        }
+        Parcel parcel = found.get();
+        try {
+            parcel.apply(key);
+            Approved event = new Approved(key);
+            publisher.publish(parcel, event);
+        } catch (LimitExceeded failure) {
+            Refused event = new Refused(key);
+            publisher.publish(parcel, event);
+        }
+    }
+}
+interface Store {
+    void save(Parcel parcel);
+    Optional<Parcel> find(Long key);
+}
+'''
+        port = '''package neutral.domain;
+import io.eventuate.tram.events.publisher.DomainEventPublisherForAggregate;
+import neutral.contract.ParcelEvent;
+public interface Port extends SourcePort<ParcelEvent> {}
+interface SourcePort<E extends ParcelEvent> extends DomainEventPublisherForAggregate<Parcel, Long, E> {}
+'''
+        publisher_assembly = '''package neutral.assembly;
+import io.eventuate.tram.events.publisher.AbstractDomainEventPublisherForAggregateImpl;
+import io.eventuate.tram.events.publisher.DomainEventPublisher;
+import neutral.contract.ParcelEvent;
+import neutral.domain.Parcel;
+import neutral.domain.Port;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+@Configuration
+public class PublisherAssembly {
+    @Bean Port port(DomainEventPublisher delegate) {
+        return new Implementation(delegate);
+    }
+}
+final class Implementation extends AbstractDomainEventPublisherForAggregateImpl<Parcel, Long, ParcelEvent> implements Port {
+    Implementation(DomainEventPublisher delegate) {
+        super(Parcel.class, Parcel::getId, delegate, ParcelEvent.class);
+    }
+}
+'''
+        event = '''package neutral.contract;
+public record Changed(Long key, String mode) implements ParcelEvent {}
+'''
+        receiver_event = event.replace(', String mode', '')
+        base_event = '''package neutral.contract;
+import io.eventuate.tram.events.common.DomainEvent;
+public interface ParcelEvent extends DomainEvent {}
+'''
+        receiver = '''package neutral.subscriber;
+import io.eventuate.tram.events.subscriber.DomainEventEnvelope;
+import io.eventuate.tram.events.subscriber.annotations.EventuateDomainEventHandler;
+import neutral.contract.Approved;
+import neutral.contract.Changed;
+import neutral.contract.Missing;
+import neutral.contract.Refused;
+public class Storage {
+    private Long latest;
+    @EventuateDomainEventHandler(subscriberId = "remote-storage", channel = "neutral.domain.Parcel")
+    public void receive(DomainEventEnvelope<Changed> message) {
+        if (message.getAggregateId() != null) latest = message.getEvent().key();
+    }
+    @EventuateDomainEventHandler(subscriberId = "remote-storage", channel = "neutral.domain.Parcel")
+    public void approved(DomainEventEnvelope<Approved> message) { latest = message.getEvent().key(); }
+    @EventuateDomainEventHandler(subscriberId = "remote-storage", channel = "neutral.domain.Parcel")
+    public void refused(DomainEventEnvelope<Refused> message) { latest = message.getEvent().key(); }
+    @EventuateDomainEventHandler(subscriberId = "remote-storage", channel = "neutral.domain.Parcel")
+    public void missing(DomainEventEnvelope<Missing> message) { latest = message.getEvent().key(); }
+    @EventuateDomainEventHandler(subscriberId = "remote-storage", channel = "neutral.other")
+    public void elsewhere(DomainEventEnvelope<Changed> message) { latest = 0L; }
+}
+'''
+        assembly = '''package neutral.subscriber;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+@Configuration
+public class Assembly {
+    @Bean public Storage storage() { return new Storage(); }
+}
+'''
+        alternatives = {f'contract/{event}.java':
+                        f'package neutral.contract; public record {event}(Long key) implements ParcelEvent {{}}\n'
+                        for event in ('Approved', 'Refused', 'Missing')}
+        placement = {f'domain/{part}.java': f'package neutral.domain; record {part}(Long key) {{}}\n'
+                     for part in ('Container', 'Dock', 'Shelf', 'Zone')}
+        placement['domain/Placement.java'] = '''package neutral.domain;
+record Placement(Container container, Dock dock, Shelf shelf, Zone zone) {
+    String tag() { return "new"; }
+}
+'''
+        services = {'sender': {'ingress': {'inbound/Intake.java': controller,
+                                          'inbound/Reply.java': 'package neutral.inbound; record Reply(Long identifier) {}\n'},
+                               'domain': {'domain/Parcel.java': factory, 'domain/Dispatch.java': dispatch, 'domain/Port.java': port,
+                                          'domain/LimitExceeded.java': 'package neutral.domain; class LimitExceeded extends RuntimeException {}\n',
+                                          'contract/Changed.java': event, 'contract/ParcelEvent.java': base_event,
+                                          **alternatives, **placement},
+                               'publisher': {'assembly/PublisherAssembly.java': publisher_assembly}},
+                    'receiver': {'consumer': {'subscriber/Storage.java': receiver, 'subscriber/Assembly.java': assembly,
+                                              'contract/Changed.java': receiver_event, 'contract/ParcelEvent.java': base_event,
+                                              **alternatives}}}
+        with tempfile.TemporaryDirectory(prefix='clew-java-typed-peers-') as raw:
+            base = Path(raw).resolve()
+            docs = base / 'docs'
+            repo = base / 'workspace'
+            environment = {**os.environ, 'CODECLEW_HOME': str(base / 'state')}
+
+            def clew(*args):
+                reply = subprocess.run([launcher, 'docs', *args, '--root', str(docs)], env=environment,
+                                       capture_output=True, text=True, timeout=30)
+                self.assertIn(reply.returncode, (0, 3) if args[0] == 'check' else (0,), reply.stdout + reply.stderr)
+                return json.loads(reply.stdout)
+
+            clew('init', '--title', 'Parcel flow')
+            registered_roots = {}
+            for service, modules in services.items():
+                registered_roots[service] = roots = []
+                for module, files in modules.items():
+                    source = module + '/src/main/java'
+                    roots.append(source)
+                    for name, text in files.items():
+                        path = repo / source / 'neutral' / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(text)
+            remote = 'https://example.invalid/parcel-workspace.git'
+
+            def git(*args):
+                subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
+
+            git('init', '-q', '-b', 'main')
+            git('remote', 'add', 'origin', remote)
+            git('add', '.')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
+            for service, roots in registered_roots.items():
+                spec = base / (service + '.json')
+                D['save'](spec, {'schema': 'codeclew-documentation-service/1.0', 'id': service, 'title': service,
+                                 'repositoryId': 'parcel-workspace', 'repository': remote, 'language': 'java',
+                                 'targetRef': 'main', 'profile': 'source-syntax', 'source': {'roots': roots, 'dialect': '17'}})
+                clew('service', 'add', '--input', str(spec), '--expected-input-digest', clew('service', 'list')['inputDigest'])
+                clew('bind', '--service', service, '--repo', str(repo))
+            snapshot = clew('check')
+            self.assertEqual(snapshot['status'], 'CHECKED')
+            run = base / 'run'
+            job = {'schema': D['SCHEMA'], 'clew': launcher, 'root': str(docs), 'snapshot': snapshot['snapshot'],
+                   'services': list(services), 'request': 'Document parcel processing.', 'language': 'en',
+                   'renderer': str(RENDERER), 'node': str(Path(shutil.which('node')).absolute()),
+                   'evidenceMode': 'PREPARED_FACTS', 'authorMode': 'ISOLATED_PAGES',
+                   'author': {'executable': sys.executable, 'model': 'fixture-author', 'reasoningEffort': 'low'},
+                   'budget': {'wallSeconds': 60, 'maxRepairs': 0}}
+            job_path = base / 'job.json'
+            D['save'](job_path, job)
+            with patch.dict(os.environ, environment):
+                D['prepare'](job_path, run)
+            plan = D['load'](run / 'inputs/author-plan.json')
+            expanded = [D['P']['expand_fact_context'](json.loads((run / 'inputs' / slot['prompt']).read_text()
+                                                                .split('\n\n')[-1]))
+                        for slot in plan['slots'] if slot['kind'] == 'OPERATION']
+            sender, = [packet for packet in expanded if packet['requirement'].get('path') == '/parcels']
+            direct, = [packet for packet in expanded if packet['requirement'].get('path') == '/signals']
+            direct_group = direct['facts'][direct['requirement']['id']]['facts']
+            routes = [row for row in direct_group if row['kind'] == 'typed-message-peer']
+            self.assertEqual(len(routes), 3, [row['text'] for row in direct_group])
+            for event_type, premise in (('Missing', '`found.isEmpty()` is true'),
+                                        ('Approved', 'execution enters the cited try body'),
+                                        ('Refused', 'the catch for `LimitExceeded failure` handles an exception')):
+                edge, = [row for row in routes if f'`neutral.contract.{event_type}`' in row['text']]
+                self.assertIn(premise, edge['condition'])
+                self.assertIn('external Eventuate registrar', edge['condition'])
+                self.assertIn('callback completion and runtime execution order remain open', edge['uncertainty'])
+                effects = [row for row in direct_group if row['kind'] == 'typed-message-peer-effect'
+                           and premise in row['condition']]
+                effect, = effects
+                citations = [direct['citations'][alias] for alias in effect['sources']]
+                views = [direct['sourceRanges'][ref] for cite in citations for ref in cite.get('regions', [cite['region']])]
+                self.assertTrue(any(f'void {event_type.lower()}(' in row['text'] for row in views))
+                if event_type == 'Refused':
+                    self.assertNotIn('parcel.apply(key)', edge['condition'])
+                if event_type == 'Approved':
+                    self.assertIn('`BigDecimal::add` is formed normally', edge['condition'])
+                    self.assertIn('returns normally', edge['condition'])
+                    self.assertIn('`available().compareTo(request) >= 0` is true', edge['condition'])
+                    self.assertTrue(any('BigDecimal::add' in row['text'] for row in views))
+            group = sender['facts'][sender['requirement']['id']]
+            facts = {row['kind']: row for key in ('facts', 'boundaries') for row in group.get(key, ())}
+            self.assertIn('typed-message-peer', facts, facts)
+            joined = facts['typed-message-peer']
+            self.assertIn('neutral.domain.Parcel', joined['text'])
+            self.assertIn('neutral.contract.Changed', joined['text'])
+            self.assertIn('external Eventuate registrar', joined['condition'])
+            self.assertIn('wire payload compatibility', joined['uncertainty'])
+            rows = sender['sourceRanges']
+            def owners(fact):
+                citations = [sender['citations'][alias] for alias in fact['sources']]
+                return {rows[ref]['service'] for cite in citations for ref in cite.get('regions', [cite['region']])}
+
+            self.assertEqual(owners(joined), {'sender', 'receiver'})
+            effect = facts['typed-message-peer-effect']
+            self.assertIn('latest = message.getEvent().key()', effect['text'])
+            self.assertIn('message.getAggregateId() != null', effect['condition'])
+            attachment = facts['java-typed-event-attachment']
+            self.assertIn('new ResultWithTypedEvents<>(parcel, event)', attachment['text'])
+            self.assertIn('new Changed(key, placement.tag())', attachment['text'])
+            self.assertEqual(owners(attachment), {'sender'})
+            refs = [sender['citations'][alias] for alias in attachment['sources']]
+            attested = [rows[ref] for cite in refs for ref in cite.get('regions', [cite['region']])]
+            self.assertTrue(any(row['file'].startswith('domain/') and row['file'].endswith('/Changed.java') for row in attested))
+            effects = [row['text'] for row in group['facts'] if row['kind'] == 'java-ordered-effects']
+            self.assertTrue(any('store.save(parcel)' in text and 'publisher.publish(parcel, packet.getEvents())' in text
+                                and text.index('store.save(parcel)') < text.index('publisher.publish(') for text in effects))
+            reply = facts['java-typed-publication-reply']
+            self.assertIn('return new Reply(parcel.getId());', reply['text'])
+            self.assertIn('no explicit wait', reply['text'])
+            self.assertEqual(owners(reply), {'sender'})
+            self.assertFalse(any('elsewhere' in row['text'] for row in rows.values()))
+            constructions = [row for row in group['facts'] if row['kind'] == 'java-construction']
+            body, = [row for row in constructions if 'new Reply(parcel.getId())' in row['text']]
+            self.assertIn('record component `identifier`', body['text'])
+            self.assertIn('The component receives the value of `key`', body['text'])
+            refs = [sender['citations'][alias] for alias in body['sources']]
+            self.assertTrue(any('Long identifier' in rows[ref]['text'] for cite in refs
+                                for ref in cite.get('regions', [cite['region']])))
+
+    def test_kotlin_source_path_cases_keep_fallback_throw_and_shared_write_distinct(self):
+        source = """package demo
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.scheduling.annotation.Scheduled
+
+class Entry(private val tx: TransactionTemplate, private val db: JdbcTemplate) {
+    @Scheduled(fixedDelay = 200)
+    fun save(raw: String?, exists: Boolean) {
+        val message = raw?.trim() ?: "untitled"
+        val checked = raw ?: kotlin.error("missing")
+        log(checked)
+        tx.executeWithoutResult {
+            val key = if (exists) "existing" else "new"
+            db.update("INSERT INTO journal (name) VALUES (?)", key)
+        }
+    }
+}
+"""
+        name, revision = 'Entry.kt', 'a' * 40
+        declaration = source[source.index('@Scheduled'):source.rindex('}')].rstrip()
+        def retained(ref, content):
+            first = source.index(content)
+            start_line = source[:first].count('\n') + 1
+            raw = content.encode()
+            start = len(source[:first].encode())
+            return {'id': ref, 'file': name, 'service': 'notes', 'revision': revision,
+                    'text': content, 'textDigest': D['sha'](raw), 'authority': 'EXACT_SNAPSHOT_TEXT',
+                    'startLine': start_line, 'endLine': start_line + content.removesuffix('\n').count('\n'),
+                    'startByte': start, 'endByte': start + len(raw), 'references': [ref],
+                    'occurrence': {'snapshot': F['SNAPSHOT'], 'blob': 'b' * 40,
+                                   'startByte': start, 'endByte': start + len(raw)}}
+        exact = {'file': retained('file', source), 'body': retained('body', declaration)}
+        requirement = {'id': 'entry', 'entrySymbol': 'save', 'kind': 'ENTRY', 'entryKind': 'SCHEDULED_JOB',
+                       'rootDeclarations': ['save'], 'sourceReferences': ['body'],
+                       'service': 'notes', 'page': 'notes.md'}
+        body = {'id': 'BODY:save', 'obligationKind': 'BODY', 'sourceReferences': ['body'],
+                'record': {'declaration': 'save', 'sourceIds': ['body']}}
+        process, context = self.prepared['operation'](requirement, [body], exact, {name: exact['file']})
+        context.update(_sourceCallSelections=[], _deferredWriteFocus=[],
+                       _bindWitness=lambda witness: self.prepared['extra_binding'](witness, exact))
+        project = runpy.run_path(str(ROOT / 'skills/codeclew/scripts/prepared_facts/managed_languages.py'))['project']
+        rows, witnesses = project(process, context, node=None)
+        refs = {site['id'] for site in context['sourceRanges']}
+        facts, unbound = self.prepared['bound_facts'](rows, witnesses, exact, refs)
+        self.assertEqual(unbound, 0)
+        paths = {row['condition']: row for fact in facts for row in fact.get('_conditionCases', ())}
+        self.assertEqual(paths['(raw?.trim()) == null']['actions'], ['"untitled"'])
+        self.assertEqual(paths['(raw?.trim()) != null']['actions'], ['raw?.trim()'])
+        self.assertEqual(paths['(raw) == null']['actions'][0], 'IllegalStateException')
+        self.assertEqual(paths['(raw) == null']['skip'], paths['(raw) != null']['actions'])
+        self.assertTrue(any(fact['kind'] == 'write_lineage' for fact in facts), facts)
+        self.assertEqual(paths['exists']['actions'], ['"existing"', 'db.update'])
+        self.assertEqual(paths['!(exists)']['actions'], ['"new"', 'db.update'])
 
     def test_kotlin_replays_direct_and_reached_declaration_write_aliases(self):
         text = """import org.springframework.jdbc.core.JdbcTemplate
@@ -4071,6 +5284,16 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         self.assertNotIn(possible[0]["id"], stronger)
         self.assertEqual(stronger[owner[0]["id"]][0]["status"], "SOURCE_QUALIFIED_CANDIDATE")
 
+        audit = listener("audit", {**config, "subscriberId": "audit-reader"}, authority=declared)
+        refresh = listener("refresh", {**config, "subscriberId": "refresh-reader"}, authority=declared)
+        fanout = self.project(owner, audit, refresh)
+        self.assertEqual([row["status"] for row in fanout[owner[0]["id"]]], ["POSSIBLE", "POSSIBLE"])
+        collision = listener("collision", {**config, "subscriberId": "audit-reader"}, authority=declared)
+        mixed = self.project(owner, audit, refresh, collision)
+        self.assertEqual({row["status"] for row in mixed[owner[0]["id"]]}, {"POSSIBLE", "AMBIGUOUS"})
+        self.assertNotIn(audit[0]["id"], mixed)
+        self.assertNotIn(collision[0]["id"], mixed)
+
         open_call = {**qualified, "_edge": {**qualified["_edge"], "channel": None}}
         owner = self.retained("orders", name="origin", facts=[open_call])
         row, = self.project(owner, eligible)[owner[0]["id"]]
@@ -4114,6 +5337,201 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
             self.assertIn("[depot@", text)
             self.assertIn("Cite front-call, depot-registration, depot-return", text)
             self.assertIn("```java\nsource body\n```\n", text)
+
+    def test_process_evidence_keeps_distinct_calls_returns_and_unrelated_operations(self):
+        call = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
+            "adapter": "SPRING_REST_CLIENT_URI/2.0", "method": "GET", "path": "/units/42"}}
+        origin = self.retained("front", path="/start", events=[
+            ("primary", "primary.get()", call), ("fallback", "fallback.get()", call)])
+        peer = self.retained("depot", path="/units/{key}", events=[
+            ("return", "return available;", {"kind": "RETURN"}), ("throw", "throw missing;", {"kind": "THROW"})])
+        other = self.retained("other", path="/unrelated")
+        records = []
+        plain = self.project(origin, peer, other, isolated=True)
+        self.assertEqual(self.project(origin, peer, other, isolated=True, route_records=records), plain)
+        self.assertEqual(len(records), 6)
+        self.assertEqual({row["hops"][0]["site"] for row in records}, {"front-primary", "front-fallback"})
+        self.assertEqual({(row["hops"][0]["from"], row["hops"][0]["to"]) for row in records},
+                         {(origin[0]["id"], peer[0]["id"])})
+        selected = [row["selection"] for row in records if row["selection"]]
+        self.assertTrue(all(row["owner"] == peer[0]["id"] for row in selected))
+        self.assertEqual({source for row in selected for source in row["sources"]}, {"depot-return", "depot-throw"})
+
+    def test_same_source_call_keeps_alternative_guards_and_qualified_outgoing_boundary(self):
+        def request(condition, path="/units/2", occurrence="request"):
+            return {"kind": "http_request", "authority": "RETAINED_PATH", "text": "Send the request.",
+                    "condition": condition, "sources": ["front-body"], "_edge": {
+                         "kind": "HTTP", "site": "front-body", "occurrence": occurrence, "method": "GET", "uri": path}}
+
+        front = self.retained("front", path="/start", facts=[
+            request("eligible"), request("!eligible && hasStock"),
+            request("ordered", "/partner/availability?token=ignored", "outside")])
+        peer = self.retained("depot", path="/units/{id}")
+        records, boundaries = [], []
+        baseline = self.project(front, peer, isolated=True)
+        self.assertEqual(self.project(front, peer, isolated=True, route_records=records, route_boundaries=boundaries),
+                         baseline)
+        self.assertEqual({row["hops"][0]["condition"] for row in records}, {"eligible", "!eligible && hasStock"})
+        self.assertTrue(all(row["hops"][0]["sources"] == ["front-body"] for row in records))
+        boundary, = boundaries
+        self.assertEqual((boundary["owner"], boundary["method"], boundary["endpoint"], boundary["sources"]),
+                         (front[0]["id"], "GET", "/partner/availability", ["front-body"]))
+
+    def test_jdk_http_builder_boundary_binds_only_settled_reached_requests(self):
+        root = ROOT / 'skills/codeclew/scripts'
+        project = runpy.run_path(str(root / 'prepared_facts/clew_prepared_jdk_http.py'))['project']
+        reached = D['P']['REACHED']
+
+        def records(file, source, root_text, helper=None):
+            def site(text, handle):
+                index = source.index(text)
+                offset = len(source[:index].encode())
+                first = 1 + source.count('\n', 0, index)
+                data = text.encode()
+                return {'file': file, 'service': 'neutral', 'revision': 'kept', 'text': text, 'textDigest': D['sha'](data),
+                        'startByte': offset, 'endByte': offset + len(data), 'startLine': first,
+                        'endLine': first + text.count('\n'), 'handle': handle}
+
+            sources = {'root': site(root_text, 'root-body')}
+            facts = [{'kind': 'BODY', 'declaration': 'entry', 'sources': ['root']}]
+            if helper:
+                sources.update(detail=site(helper, 'helper-body'), selection=site('return sendLater(query)', 'helper-call'))
+                facts.extend([{'kind': 'BODY', 'declaration': 'helper', 'sources': ['detail']},
+                              {'kind': 'CALL', 'declaration': 'entry', 'targetMethodId': 'helper',
+                               'resolution': 'SAME_SCOPE_SELECTED_DECLARATION',
+                               'relationshipAuthority': 'RETAINED_K2_COMPILER_SELECTED_SYMBOL_NOT_RUNTIME_DISPATCH',
+                               'sources': ['selection']}])
+
+            def bind(witness):
+                matched = [row for row in sources.values() if reached['relative_slice'](row, witness) is not None]
+                return min(matched, key=lambda row: len(row['text']))['handle'] if matched else None
+
+            process = {'root': 'entry', 'sources': sources, 'facts': facts}
+            context = {'_bindWitness': bind, '_sourceCallSelections': [],
+                       '_nativeFiles': {file: {'text': source, 'textDigest': D['sha'](source.encode()), 'revision': 'kept'}}}
+            return project(process, context, reached, {})
+
+        imports = "import java.net.URI\nimport java.net.http.HttpRequest\nimport java.net.http.HttpClient\n"
+        method = """fun check(fixture: Boolean, query: String, client: HttpClient): Int {
+    if (fixture) return 200
+    val builder = HttpRequest.newBuilder(URI.create("https://stock.example.invalid/v2/items?q=$query"))
+    return client.send(builder.GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode()
+}"""
+        direct, = records('Offers.kt', imports + method, method)
+        self.assertEqual({key: direct[key] for key in ('method', 'endpoint', 'condition', 'sources')}, {
+            'method': 'GET', 'endpoint': 'https://stock.example.invalid/v2/items', 'condition': '!fixture',
+            'sources': ['root-body']})
+        self.assertGreater(direct['site'][1], 3)
+        self.assertNotIn('query', str(direct))
+        conditional = method.replace('    return client.send',
+            '    if (query.isNotBlank()) builder.header("X-Mode", query)\n'
+            '    return client.send')
+        conditioned, = records('Offers.kt', imports + conditional, conditional)
+        self.assertEqual((conditioned['method'], conditioned['endpoint']), ('GET', direct['endpoint']))
+        with_options = method.replace('    return client.send',
+            '    if (query.isNotBlank()) {\n'
+            '        builder.header("Accept", "application/json").expectContinue(true)\n'
+            '    }\n'
+            '    builder.headers("X-A", "1", "X-B", "2")\n'
+            '    return client.send')
+        compound = conditional.replace('    val builder', '    val result = if (query.isEmpty()) { 204 } else {\n        val builder')
+        compound = compound.replace('    return client.send', '        client.send').removesuffix('}') + '    }\n    return result\n}'
+        nested, = records('Offers.kt', imports + compound, compound)
+        self.assertEqual((nested['method'], nested['endpoint']), ('GET', direct['endpoint']))
+        configured, = records('Offers.kt', imports + with_options, with_options)
+        self.assertEqual({key: configured[key] for key in ('method', 'endpoint', 'condition', 'sources')},
+                         {key: direct[key] for key in ('method', 'endpoint', 'condition', 'sources')})
+        owner, edge_record, _ = self.retained('neutral', path='/inside')
+        baseline = self.project((owner, edge_record))
+        boundaries = []
+        mapped = (owner, {**edge_record, 'jdkHttpBoundaries': [direct]})
+        self.assertEqual(self.project(mapped, isolated=True, route_boundaries=boundaries), baseline)
+        self.assertEqual(boundaries, [{**direct, 'owner': owner['id']}])
+        helper = method.replace('fun check(fixture: Boolean, query: String, client: HttpClient): Int {',
+                                'private fun sendLater(query: String): Int {').replace('    if (fixture) return 200\n', '')
+        caller = 'fun check(query: String): Int { return sendLater(query) }'
+        source = imports + 'class Offers(private val client: HttpClient) {\n' + caller + '\n' + helper + '\n}'
+        reached_request, = records('Offers.kt', source, caller, helper)
+        self.assertEqual(reached_request['endpoint'], direct['endpoint'])
+        self.assertEqual(reached_request['sources'], ['root-body', 'helper-body', 'helper-call'])
+        self.assertEqual(records('Offers.kt', source, caller), [])
+        java = """int check(HttpClient client, String query) {
+    var builder = HttpRequest.newBuilder(URI.create("https://stock.example.invalid/v2/items" + "?q=" + query));
+    return client.send(builder.POST(BodyPublishers.noBody()).build(), BodyHandlers.ofString()).statusCode();
+}"""
+        java_imports = imports.replace('\n', ';\n')
+        java_request, = records('Offers.java', java_imports + 'class Offers { ' + java + ' }', java)
+        self.assertEqual((java_request['method'], java_request['endpoint']), ('POST', direct['endpoint']))
+        for extension, header, compound in (
+            ('kt', imports, method.replace('fixture: Boolean,', 'approved: Boolean, enabled: Boolean,')
+             .replace('if (fixture) return 200', 'if (!approved || !enabled) return 403')),
+            ('java', java_imports, java.replace('HttpClient client,', 'HttpClient client, boolean approved, boolean enabled,')
+             .replace('    var builder', '    if (!approved || !enabled) { return 403; }\n    var builder')),
+        ):
+            declared = compound if extension == 'kt' else 'class Gate { ' + compound + ' }'
+            selected, = records('Gate.' + extension, header + declared, compound)
+            self.assertEqual(selected['condition'], 'approved && enabled')
+            paths = selected['_conditionCases']
+            self.assertEqual([row['condition'] for row in paths], ['approved && enabled', '!approved', 'approved && !enabled'])
+            self.assertEqual([row['stepKind'] for row in paths], ['call', 'return', 'return'])
+            self.assertEqual([row.get('skip') for row in paths], [None, ['send'], ['send']])
+        checks = D['P']['RESPONSE']['CONDITION_PATHS']
+        paths, _ = checks['select']([selected], {'root-body': 'S1'})
+        class Review:
+            slot = {'conditionPaths': paths}
+            def __init__(self):
+                self.issues = []
+
+            def issue(self, code, path, message, **details):
+                self.issues.append((path, message, details['sourcePath']['condition']))
+
+        cases = paths[1:] + paths[:1]
+        accepted = {'claims': [
+            {'assessment': 'SUPPORTED', 'cites': ['S1'], 'text': (
+                f"Under `{row['condition']}`, `return 403` before calling `send`." if row.get('skip') else
+                f"Under `{row['condition']}`, call `send`.")} for row in cases],
+            'steps': [
+                {'condition': row['condition'], 'label': 'return 403 before calling send' if row.get('skip') else 'send',
+                 'kind': row['stepKind']} for row in cases]}
+        review = Review()
+        checks['check'](review, accepted)
+        self.assertEqual(review.issues, [])
+        accepted['claims'][0]['text'] = 'When `!approved`, `return 403` and call `send`.'
+        accepted['steps'].reverse()
+        review = Review()
+        checks['check'](review, accepted)
+        self.assertTrue(any(path == '/claims' and condition == '!approved' for path, _, condition in review.issues))
+        self.assertTrue(any(path == '/steps' and 'before the outbound request' in message
+                            and condition == 'approved && !enabled' for path, message, condition in review.issues))
+        java_options = java.replace('    return client.send',
+            '    if (!query.isEmpty()) { builder.setHeader("X-Mode", "local"); }\n'
+            '    return client.send')
+        configured_java, = records('Offers.java', java_imports + 'class Offers { ' + java_options + ' }', java_options)
+        self.assertEqual((configured_java['method'], configured_java['endpoint']), ('POST', direct['endpoint']))
+        for mutation in (
+            method.replace('val builder', 'var builder').replace('    return client.send',
+                '    builder = HttpRequest.newBuilder(URI.create("https://other.example.invalid"))\n    return client.send'),
+            with_options.replace('    return client.send', '    inspect(builder)\n    return client.send'),
+            with_options.replace('    return client.send', '    val escaped = builder.header("X-Mode", "local")\n    return client.send'),
+            with_options.replace('    return client.send', '    val alias = builder\n    return client.send'),
+            with_options.replace('    return client.send', '    val alias = `builder`\n    return client.send'),
+            with_options.replace('    return client.send', '    builder.DELETE()\n    return client.send'),
+            with_options.replace('    return client.send', '    builder.customize()\n    return client.send'),
+            with_options.replace('"application/json"', '"${inspect(builder)}"'),
+            with_options.replace('    return client.send',
+                '    builder.uri(URI.create("https://other.example.invalid"))\n    return client.send'),
+            method.replace('    return client.send(builder.GET().build(),',
+                '    val second = HttpRequest.newBuilder(URI.create("https://other.example.invalid"))\n'
+                '    return client.send(if (fixture) second.GET().build() else builder.GET().build(),'),
+            method.replace('    return client.send', '    builder.uri(URI.create("https://other.example.invalid"))\n    return client.send'),
+            method.replace('https://stock.example.invalid/v2/items?q=', 'https://stock.example.invalid/$query?q='),
+            method.replace('https://stock.example.invalid/v2/items?q=', 'https://name:secret' '@stock.example.invalid/v2/items?q='),
+        ):
+            self.assertEqual(records('Offers.kt', imports + mutation, mutation), [], mutation)
+        for external_type in ('HttpRequest', 'HttpClient', 'URI'):
+            lookalike = imports.replace(next(line for line in imports.splitlines() if line.endswith('.' + external_type)),
+                                        'import neutral.client.' + external_type)
+            self.assertEqual(records('Offers.kt', lookalike + with_options, with_options), [], external_type)
 
     def test_preparation_preserves_late_operation_and_peer_evidence_under_discovery_pressure(self):
         dispatch = {"kind": "CALL", "resolution": "COMPILER_EXACT", "http": {
@@ -5014,7 +6432,14 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
                     prompt = (home / slot["prompt"]).read_text()
                     packet = pages["expand_fact_context"](json.loads(prompt.rsplit("\n\n", 1)[-1]))
                     scoped = packet["facts"][inbound_id]
-                    verify([*scoped["facts"], *scoped["boundaries"]])
+                    visible = [*scoped.get("facts", ()), *scoped.get("boundaries", ())]
+                    if slot["kind"] == "OPERATION":
+                        verify(visible)
+                    else:
+                        bridge, = (row for row in visible if row["kind"] == "further-subscriber-outbox")
+                        self.assertIn("inventory.apply", bridge["text"])
+                        self.assertIn("the poll finds an eligible row", bridge["condition"])
+                        self.assertFalse(any(row["kind"] == "message-peer-write-compatibility" for row in visible))
 
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):

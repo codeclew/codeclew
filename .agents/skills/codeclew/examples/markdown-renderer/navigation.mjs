@@ -123,6 +123,8 @@ export function navigationView(nav,file,words,extra={}){
 }
 
 export function insertHub(html,hub){
+ const catalogSlot='<!-- clew-process-catalog -->';
+ if(html.includes(catalogSlot))return html.replace(catalogSlot,()=>hub);
  if(!hub)return html;
  // Place discovery after the existing title/opening paragraph, without rewriting them.
  const opening=html.match(/^.*?<\/h1>(?:\s*<p>.*?<\/p>)?/s);

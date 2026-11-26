@@ -11,6 +11,13 @@ installation and trusted argv selection remain explicit.
 
 ## Shared semantic catalog navigation
 
+A local registry can set `"narrativeLayout": "anchored"` to let multiple
+routes share a narrative page. Each route targets its own ID as an HTML
+anchor. Its coverage references the same anchor. Branch and outcome
+destinations stay on that page and use their route-prefixed IDs as anchors.
+Set `"compactOverview": true` with this layout to place the complete searchable
+inventory behind a disclosure and group navigation by narrative page.
+
 The optional `codeclew-cross-docset-routes/1.2` registry adds `semanticCatalog`
 to the existing docset/process navigation. Version 1.1 keeps its original shape.
 See [the owned five-service example](docset-semantic.example.json): two independent
@@ -75,8 +82,8 @@ IDs are deterministic, including duplicate headings. Set `--lang ru` for Russian
 pages. The Codeclew theme embeds its style and decorative artwork, and writes a
 byte-for-byte local `favicon.svg`. The export checker checks that SVG asset
 against the same explicit renderer; it does not allow arbitrary local assets.
-The packaged `assets/reader.css`, `typography.css` and `favicon.svg` are copies of
-the native documentation assets; `cat-standing.svg` is the existing site artwork.
+The bundled styles use the native documentation assets. The favicon and
+reader cat use the existing artwork with compact SVG paths.
 
 Use `--theme neutral` to retain the earlier neutral HTML, CSS and slug navigation
 for a comparison. Its default English markup remains byte-compatible with the
@@ -195,12 +202,13 @@ manifests; this feature does not repair imported-library/external-input bindings
 
 ## Authored sequences
 
-The `clew-sequence` fence renders an authored sequence rather than a code listing.
-It uses finite HTML/CSS lifelines and arrows; no new dependency, source inference,
-graph engine or network request is involved. Desktop shows the diagram and a
-disclosure with the same numbered steps. Narrow screens show the text trace,
-keeping sender, receiver, action and condition together without horizontal panning.
-Without JavaScript the trace stays open. Neutral pages also render sequences.
+The `clew-sequence` fence renders short numbered exchanges and their full text
+trace. The diagram groups roles with evidenced system ownership. A number can
+cover contiguous work inside one system or a call and its adjacent wait. The
+trace preserves each original sender, receiver, action, condition and link.
+Independent phases have their own diagram. A step links to a checked excerpt
+when its operation and sending scope match uniquely. The page retains its full
+source footer. Narrow screens show the text trace.
 
 ````markdown
 ```clew-sequence
@@ -218,11 +226,14 @@ Without JavaScript the trace stays open. Neutral pages also render sequences.
 ````
 
 Top-level keys are exactly `title`, `participants`, `steps`. Participants have
-unique `id`, nonempty `title` and optional `target`. Steps have `from`, `to`,
+unique `id`, nonempty `title` and optional `target`. Set `local: true` for
+a participant inside the owning system when supported by the source. Steps have `from`, `to`,
 `kind`, `label`, optional `condition` and `target`. Kinds: `call` (no implicit wait),
 `return`, `async` (start without waiting), `await` (explicit evidenced wait),
 `note` (local work/decision, usually same sender and receiver). Every condition
-applies only to its own row: write else/skip/error alternatives explicitly.
+applies to its own row. Write else, skip and error alternatives explicitly.
+Set `independent: true` on a note or async step when the evidence establishes a
+separate start.
 No implicit branches, returns, ACK, ordering or completion are added.
 
 Explicit HTML IDs are retained. If a Markdown heading would generate an ID

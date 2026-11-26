@@ -244,7 +244,7 @@ def bound_facts(rows, lifted, exact, local, read_pinned=None):
         if witnesses:
             values['witnesses'] = witnesses
         for private in ('_edgeCause', '_edgePhase', '_writeFocus', '_pollPublication', '_httpStatus', '_writeBinding',
-                        '_httpCompletion'):
+                        '_httpCompletion', '_conditionCases'):
             if private in row:
                 values[private] = row[private]
         if edge := row.get('_edge'):
@@ -877,7 +877,8 @@ def replay_reached_writes(context, propositions, exact, read_pinned):
 
 
 def prepare(job, service, scope, requirements, entries, packet, home, deadline, *,
-            page_slots=0, view_budget=0, edge_records=None, base_manifest=None, contract_resources=()):
+            page_slots=0, view_budget=0, edge_records=None, base_manifest=None, contract_resources=(),
+            route_contexts=None):
     """Produce a bounded author packet and explicit per-entry coverage."""
     # Preparation is a treatment. A refusal still leaves the original read kit.
     service_root = home / 'fact-evidence'
@@ -895,6 +896,9 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
     exact.update(acquire_sources(job, service, scope, service_root, [units, *contexts.values()], exact, deadline))
     admitted_references = {ref for row in exact.values() for ref in row['references']}
     files = {**full_files(exact), **csharp_files(units, exact)}
+    inventory = scope.get('sourceInventory', ())
+    source_members = ([row['record']['path'] for row in inventory if row['kind'] == 'THREAD_FILE']
+                      if any(row['kind'] == 'THREAD_SCOPE' for row in inventory) else None)
     boundaries = scope['coverage'].get('boundaries')
     allow_legacy_pinned = isinstance(boundaries, list) and 'WORKING_TREE_SOURCE' not in boundaries
     repository = local_repository(job, service, scope, service_root, deadline) if supported else None
@@ -963,6 +967,7 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
         projection_limits = []
         context.update(_repository=repository, _revision=scope['revision'], _snapshot=job['snapshot'],
                        _loadPinnedFile=read_pinned, _deadline=deadline, _projectionUnavailable=projection_limits,
+                       _sourceMembers=source_members,
                        _allowLegacyPinned=allow_legacy_pinned, _sourceCallSelections=[], _deferredWriteFocus=[],
                        _bindWitness=lambda witness: extra_binding(witness, exact, read_pinned))
         if file := context['file']:
@@ -1023,6 +1028,8 @@ def prepare(job, service, scope, requirements, entries, packet, home, deadline, 
                 projection_limits.append('REACHED_DECLARATION_LIMIT')
             if edge_module:
                 edge_records[entry_id] = edge_module['record'](requirement, process, context, propositions, exact)
+                if route_contexts is not None:
+                    route_contexts[entry_id] = process, context
         local_candidates[entry_id] = propositions
         for internal in propositions:
             for handle in internal['sources']:
@@ -1090,6 +1097,11 @@ def ranked_facts(local, peers, *, operation=False):
     for origin, rows in (('peer', peers), (None, local)):
         for internal in rows:
             fact = {key: value for key, value in internal.items() if not key.startswith('_')}
+            if operation and origin is None:
+                if cases := internal.get('_conditionCases'):
+                    fact['_conditionCases'] = cases
+                if status := internal.get('_httpStatus') or (internal.get('_httpCompletion') or {}).get('status'):
+                    fact['_httpStatus'] = status
             proof = sorted({tuple(sorted(row.items())) for row in fact.get('witnesses', ())})
             key = {**fact, 'sources': sorted(fact['sources']), 'witnesses': proof}
             identity = hashlib.sha256(encode(key)).digest()
@@ -1167,7 +1179,7 @@ def allocate_facts(selection, peers):
     selection['bytes'] = total
 
 
-def merge_edges(selection, edges, sources, home):
+def merge_edges(selection, edges, sources, home, *, retain=()):
     result, citations = selection['entries'], selection['citations']
     eligible = defaultdict(list)
     edge_handles = set()
@@ -1180,7 +1192,9 @@ def merge_edges(selection, edges, sources, home):
             edge_handles.update(edge['sources'])
     allocate_facts(selection, eligible)
     chosen = {handle for row in result.values() for fact in row.get('propositions', ()) for handle in fact['sources']}
-    for handle in sorted(chosen & edge_handles):
+    retained = {handle for handle in retain if handle in sources and sources[handle]['manifest'] is not None}
+    chosen |= retained
+    for handle in sorted((chosen & edge_handles) | retained):
         source = sources[handle]
         citations[handle] = {**source, 'manifest': os.path.relpath(source['manifest'], home)}
     selection['citations'] = {handle: value for handle, value in citations.items() if handle in chosen}

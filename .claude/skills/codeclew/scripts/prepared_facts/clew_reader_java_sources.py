@@ -13,6 +13,7 @@ MAX_FILE_BYTES = 128 * 1024
 MAX_FILES = 12
 MAX_LOOKUPS = 36
 MAX_CITATIONS = 28
+MAX_PROTOCOL_CITATIONS = MAX_CITATIONS + 16
 MAX_CITATION_BYTES = 3 * 1024
 MAX_TOTAL_CITATION_BYTES = 20 * 1024
 MAX_TREE_BYTES = 2 * 1024 * 1024
@@ -79,10 +80,12 @@ def work_blob(row, file, revision, snapshot):
 
 class Snapshot:
     def __init__(self, process, occurrences, repository, *, revision, work_files, citation_sources,
-                 allow_legacy_pinned=False, deadline=None):
+                 source_members=None, allow_legacy_pinned=False, deadline=None):
         self.operation = process["id"]
         self.repository = repository
-        self.work_files = {file: row for file, row in work_files.items() if java_path(file)}
+        self.source_members = (None if source_members is None
+                               else frozenset(file for file in source_members if java_path(file)))
+        self.work_files = {file: row for file, row in work_files.items() if self.admits(file)}
         self.deadline = deadline
         self.coverage = {}
         self.legacy_coverage = {}
@@ -91,12 +94,13 @@ class Snapshot:
         self.total_bytes = 0
         self.citation_count = 0
         self.files = {}
+        self.protocol_paths = set()
         self.owners = {}
         self.tree_paths = None
         self.pinned = False
-        self.complete_tree = False
+        self.complete_tree = self.source_members is not None
         retained = {ref: row for ref, row in occurrences.items()
-                    if java_path(row.get("file")) and row.get("authority") == "EXACT_SNAPSHOT_TEXT"
+                    if self.admits(row.get("file")) and row.get("authority") == "EXACT_SNAPSHOT_TEXT"
                     and not (row.get("peerProcess") or row.get("peerService"))
                     and row.get("revision") == revision
                     and isinstance(row.get("text"), str) and row.get("text")
@@ -123,7 +127,7 @@ class Snapshot:
                          if (row.get("occurrence") or {}).get("snapshot") == self.snapshot}
         for row in citation_sources.values():
             origin = row.get("occurrence") or {}
-            if (java_path(row.get("file")) and row.get("revision") == self.revision
+            if (self.admits(row.get("file")) and row.get("revision") == self.revision
                     and origin.get("snapshot") == self.snapshot and not origin.get("generatedOrigin")
                     and row.get("authority") == "EXACT_SNAPSHOT_TEXT" and isinstance(row.get("text"), str)
                     and row.get("textDigest") == "sha256:" + sha256(row["text"].encode()).hexdigest()):
@@ -156,6 +160,9 @@ class Snapshot:
     def remaining(self, limit):
         return limit if self.deadline is None else max(0, min(limit, self.deadline - time.monotonic()))
 
+    def admits(self, file):
+        return java_path(file) and (self.source_members is None or file in self.source_members)
+
     def git(self, *args):
         if (timeout := self.remaining(3)) <= 0:
             return None
@@ -185,8 +192,13 @@ class Snapshot:
     def paths(self):
         return tuple(dict.fromkeys((*self.owners, *self.work_files)))
 
+    def paths_containing(self, *markers):
+        """Locate candidates in admitted source before spending full-unit reads."""
+        return (file for file, spans in self.coverage.items()
+                if all(any(marker in raw for _, raw in spans) for marker in markers))
+
     def existing_paths(self, candidates):
-        paths = list(dict.fromkeys(file for file in candidates if java_path(file)))[:32]
+        paths = list(dict.fromkeys(file for file in candidates if self.admits(file)))[:32]
         if not paths:
             return ()
         if not self.pinned:
@@ -197,10 +209,14 @@ class Snapshot:
         return tuple(file for file in paths if file.encode() in raw.split(b"\0"))
 
     def type_paths(self, qualified):
-        """Find exact package/file suffixes in the operation's pinned source tree."""
+        """Find exact package/file suffixes among the operation's admissible sources."""
         if not all(part.isidentifier() for part in qualified.split(".")):
             return ()
         suffix = qualified.replace(".", "/") + ".java"
+        if self.source_members is not None:
+            # Work's complete file inventory belongs to this specific service,
+            # even when several services share the same pinned Git tree.
+            return tuple(sorted(path for path in self.source_members if path == suffix or path.endswith("/" + suffix)))
         if not self.pinned:
             return tuple(path for path in self.work_files if path == suffix or path.endswith("/" + suffix))
         if self.tree_paths is None:
@@ -216,12 +232,19 @@ class Snapshot:
         return tuple(path for path in self.tree_paths.get(PurePosixPath(suffix).name, ())
                      if path == suffix or path.endswith("/" + suffix))
 
-    def read(self, file):
-        if not self.revision or not (self.snapshot or self.pinned) or not java_path(file):
+    def read(self, file, *, protocol=False):
+        if not self.revision or not (self.snapshot or self.pinned) or not self.admits(file):
             return None
-        if file not in self.files and len(self.files) < MAX_LOOKUPS and sum(map(bool, self.files.values())) < MAX_FILES:
+        if file not in self.files:
+            # A protocol lookup may discover assembly/type files absent from
+            # the operation's own body walk. Cached bytes remain shared.
+            counted = [raw for path, raw in self.files.items() if (path in self.protocol_paths) == protocol]
+            if len(counted) >= MAX_LOOKUPS or sum(map(bool, counted)) >= MAX_FILES:
+                return None
             raw = work_blob(self.work_files.get(file, {}), file, self.revision, self.snapshot)
             self.files[file] = raw if raw is not None else self.pinned_blob(file) if self.pinned else None
+            if protocol:
+                self.protocol_paths.add(file)
         return self.files.get(file)
 
     def match(self, raw, source):
@@ -238,20 +261,27 @@ class Snapshot:
         raw = self.read(source["file"])
         return raw if self.match(raw, source) is not None else None
 
-    def cite(self, file, start, end, *, declaration=False):
+    def covered(self, file, start, end):
         raw = self.read(file)
-        if not raw or not 0 <= start < end <= len(raw) or end - start > (24 * 1024 if declaration else MAX_CITATION_BYTES):
-            return None
+        if not raw or not 0 <= start < end <= len(raw):
+            return False
         payload = raw[start:end]
         if self.pinned:
             for row in self.legacy_coverage.pop(file, ()):
                 if (first := self.match(raw, row)) is not None:
                     text = row["text"].encode()
                     self.coverage.setdefault(file, []).append(((first, first + len(text)), text))
-        if not any(first <= start < end <= last and covered[start - first:end - first] == payload
-                   for (first, last), covered in self.coverage.get(file, ())):
+        return any(first <= start < end <= last and covered[start - first:end - first] == payload
+                   for (first, last), covered in self.coverage.get(file, ()))
+
+    def cite(self, file, start, end, *, declaration=False, protocol=False):
+        raw = self.read(file)
+        if not raw or not 0 <= start < end <= len(raw) or end - start > (24 * 1024 if declaration else MAX_CITATION_BYTES):
+            return None
+        if not self.covered(file, start, end):
             self.missing_authority = True
             return None
+        payload = raw[start:end]
         try:
             literal = payload.decode("utf-8")
         except UnicodeError:
@@ -261,7 +291,8 @@ class Snapshot:
         identifier = "J" + sha256(identity.encode()).hexdigest()[:20]
         if identifier not in self.ranges:
             if not declaration:
-                if self.citation_count >= MAX_CITATIONS or self.total_bytes + len(payload) > MAX_TOTAL_CITATION_BYTES:
+                maximum = MAX_PROTOCOL_CITATIONS if protocol else MAX_CITATIONS
+                if self.citation_count >= maximum or self.total_bytes + len(payload) > MAX_TOTAL_CITATION_BYTES:
                     return None
                 self.total_bytes += len(payload)
                 self.citation_count += 1
@@ -274,13 +305,13 @@ class Snapshot:
             }
         return identifier
 
-    def cite_many(self, spans):
+    def cite_many(self, spans, *, protocol=False):
         """Reserve a witness's ranges together so an omitted witness uses no capacity."""
         before = set(self.ranges)
         used, count = self.total_bytes, self.citation_count
         refs = []
         for file, start, end in spans:
-            identifier = self.cite(file, start, end)
+            identifier = self.cite(file, start, end, protocol=protocol)
             if identifier is None:
                 for ref in self.ranges.keys() - before:
                     del self.ranges[ref]
@@ -288,3 +319,28 @@ class Snapshot:
                 return None
             refs.append(identifier)
         return refs
+
+    def compact_witnesses(self, spans):
+        """Keep the leading occurrence exact and coalesce adjacent supporting witnesses."""
+        first, *rest = spans
+        existing = {}
+        for row in self.ranges.values():
+            if row["endByte"] - row["startByte"] <= MAX_CITATION_BYTES:
+                existing.setdefault(row["file"], []).append((row["startByte"], row["endByte"]))
+        existing.setdefault(first[0], []).append(first[1:])
+        retained, compact = [first], []
+        for file, start, end in sorted(rest):
+            coverings = [(lower, upper) for lower, upper in existing.get(file, ()) if lower <= start and end <= upper]
+            if coverings:
+                lower, upper = min(coverings, key=lambda pair: pair[1] - pair[0])
+                retained.append((file, lower, upper))
+                continue
+            if compact and compact[-1][0] == file:
+                _, lower, upper = compact[-1]
+                merged_end = max(upper, end)
+                if (start - upper <= 96 and merged_end - lower <= 700
+                        and self.covered(file, lower, merged_end)):
+                    compact[-1] = file, lower, merged_end
+                    continue
+            compact.append((file, start, end))
+        return tuple(dict.fromkeys((*retained, *compact)))

@@ -163,7 +163,7 @@ def kotlin_discovery(process, context):
     return facts, {ref: witnesses[ref] for row in facts for ref in row["sources"] if ref in witnesses}
 
 
-def kotlin_receivers(process, context):
+def kotlin_receivers(process, context, selected=(), reserved=()):
     """Join supported receiver declaration syntax to a retained callable."""
     bind_witness = context.get("_bindWitness")
     roots = root_sources(process) & process["sources"].keys()
@@ -191,13 +191,16 @@ def kotlin_receivers(process, context):
         return process, context, {}
 
     witnesses, rows, declaration_refs = {}, [], {}
-    start_index = method.body + 1
+    methods = dict.fromkeys(unit.select(row["target"]) for row in selected) if selected else (method,)
+    indices = (index for body in methods if body for index in range(body.body + 1, body.end))
+    occupied = [row['id'] for row in context['sourceRanges']] + list(reserved)
+    last_alias = max((int(ref[1:]) for ref in occupied if ref.startswith("S") and ref[1:].isdigit()), default=0)
 
     def add_witness(site):
         raw = unit.excerpt(site)
         start_line = 1 + text.count("\n", 0, site.start)
         start_byte = len(text[:site.start].encode())
-        alias = f"S{len(context['sourceRanges']) + len(witnesses) + 1:03d}"
+        alias = f"S{last_alias + len(witnesses) + 1:03d}"
         item = {**source, "id": alias, "references": [alias], "text": raw, "textDigest": fingerprint(raw),
                 "startLine": start_line, "endLine": start_line + raw.count("\n"),
                 "startByte": start_byte, "endByte": start_byte + len(raw.encode())}
@@ -206,7 +209,7 @@ def kotlin_receivers(process, context):
             return alias
         return None
 
-    for index in range(start_index, method.end):
+    for index in indices:
         name = unit.words[index]
         if (name not in fields or unit.words[index + 1] not in {".", "?."}
                 or unit.words[index - 1] in {".", "?."} or len(rows) >= 24):
@@ -231,7 +234,7 @@ def kotlin_callback_state(process, context):
     roots = root_sources(process) & process["sources"].keys()
     bind_witness = context.get("_bindWitness")
     kind = process.get("entryKind")
-    if kind not in {"SCHEDULED_JOB", "KAFKA_LISTENER"} or len(roots) != 1 or not bind_witness:
+    if len(roots) != 1 or not bind_witness:
         return [], {}, []
     root, = roots
     source = process["sources"][root]
@@ -566,6 +569,9 @@ def project(process, context, *, node):
                 context["_sourceCallSelections"].extend(selected)
             process, context = kotlin_selected_calls(process, context, selected, state_witnesses,
                                                      adapter["SYNTAX"], adapter["FAILURE"]["UNIQUE_SYNTAX"])
+            if selected:
+                process, context, extra = kotlin_receivers(process, context, selected, state_witnesses)
+                witnesses.update(extra)
             rows = adapter["derive"](process, context)
             rows = bind_repetitions(rows, context, witnesses, state_witnesses)
             focus = module("prepared_write_focus")
@@ -609,7 +615,7 @@ def public_rows(rows, aliases, witnesses, authority):
         if (edge := row.get("_edge")) and edge["site"] in refs:
             values["_edge"] = {**edge, "site": aliases.get(edge["site"], edge["site"])}
         for private in ("_edgeCause", "_edgePhase", "_writeFocus", "_pollPublication", "_httpStatus", "_writeBinding",
-                        "_httpCompletion", "_writeSite", "_repetitionSites"):
+                        "_httpCompletion", "_writeSite", "_repetitionSites", "_conditionCases"):
             if private in row:
                 values[private] = row[private]
         declared = row.get("authority")

@@ -41,12 +41,18 @@ export async function loadSources(path){
  return value;
 }
 
+function sourcePrefix(html){
+ let prefix='clew-source';
+ while(html.includes('id="'+prefix)||html.includes("id='"+prefix))prefix+='-excerpt';
+ return prefix;
+}
+
 export function sourceFooter(bundle,file,markdown,html,ui,anchors){
  if(!bundle)return '';
  const page=bundle.pages.find(p=>p.page===file);
  need(page&&sha(Buffer.from(markdown))===page.markdownDigest,'Markdown changed: '+file);
  const words=ui||{title:'Sources',empty:'No bound sources for this page.',fragments:'Code fragments'};
- let prefix='clew-source';while(html.includes('id="'+prefix)||html.includes("id='"+prefix))prefix+='-excerpt';
+ const prefix=sourcePrefix(html);
  const details=[],rows=[];
  page.groups.forEach((g,i)=>{
   const owner=g.evidenceInput?`${g.evidenceInput} / ${g.service}`:g.service;
@@ -87,6 +93,10 @@ export function withSourceFooter(bundle,file,markdown,html,ui){
  const claims=bundle&&checkedClaims.get(bundle)?.get(file);
  const anchors=claims?.size&&new Map();
  const footer=sourceFooter(bundle,file,markdown,html,ui,anchors||null);
+ const prefix=sourcePrefix(html);
+ const groups=bundle?.pages.find(p=>p.page===file)?.groups;
+ html=html.replace(/<span data-clew-step-source="([0-9]+)-([0-9]+)"><\/span>/g,
+  (marker,i,j)=>groups?.[i]?.ranges[j]?` <a class="sequence-evidence" href="#${prefix}-${i}-${j}">${escape(ui?.title||'Sources')}</a>`:marker);
  if(!anchors)return html+footer;
  return html.replace(/<span data-clew-outcome-source="(source-outcome-[1-9][0-9]*)"><\/span>/g,(marker,id)=>{
   if(!claims.has(id))return marker;

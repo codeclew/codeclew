@@ -19,7 +19,8 @@ def snapshot_for(process, context):
         process, context['_sourceOccurrences'], context.get('_repository'),
         revision=context.get('_revision'),
         work_files=context.get('_nativeFiles', {}), citation_sources=context.get('_citationSources', {}),
-        allow_legacy_pinned=context.get('_allowLegacyPinned') is True, deadline=context.get('_deadline'),
+        source_members=context.get('_sourceMembers'), allow_legacy_pinned=context.get('_allowLegacyPinned') is True,
+        deadline=context.get('_deadline'),
     )
 
 
@@ -77,7 +78,8 @@ def discover(process, context):
                                           prepared=(parsed, fields, predicates), declaration_only=True)
                 else:
                     rows = []
-                rows.extend(CHAIN['project_frame'](units, owner, method, ref, owner.site(method), {}, {}, publication=False))
+                rows.extend(CHAIN['project_frame'](units, owner, method, ref, owner.site(method), {}, {},
+                                                  publication=False, value_flow=False))
                 for row in rows:
                     subject = f'within the cited source declaration `{declaration}`'
                     condition = row.get('condition')

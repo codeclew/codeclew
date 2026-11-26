@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, replace
 from itertools import islice
+import re
 
 
 PROTECTED = {"TRY_BODY", "CATCH_BODY", "FINALLY_BODY"}
@@ -33,6 +34,28 @@ def join(items):
     return ", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else items[0]
 
 
+def condition_code(text):
+    match = re.fullmatch(r'`([^`]+)`(?: is (true|false|null|non-null)| yields a non-null value)?', text)
+    if not match:
+        return None
+    expression, predicate = match.groups()
+    if predicate == 'true' or text.endswith('`'):
+        return expression
+    if predicate == 'false':
+        return f'!({expression})'
+    return f"({expression}) {'==' if predicate == 'null' else '!='} null"
+
+
+def action_code(note):
+    spans = re.findall(r'`([^`\n]+)`', note.text)
+    return spans[0] if spans else ''
+
+
+def path_case(body, site, condition, actions, meaning, **fields):
+    return dict(group=f'{body.ref}:{site.start}:{site.end}', scope=body.function.name,
+                condition=condition, actions=actions, meaning=meaning, **fields)
+
+
 def chunks(items, limit=6):
     source = iter(items)
     while part := tuple(islice(source, limit)):
@@ -42,13 +65,14 @@ def chunks(items, limit=6):
 class Controls:
     """Join each explicit arm and abrupt site to its own lexical successors."""
 
-    def __init__(self, body, scope, proof, throw_future=()):
+    def __init__(self, body, scope, proof, throw_future=(), *, check_paths=False):
         self.body = body
         self.scope = scope
         self.proof = proof
         self.shapes = {}
         self.flow_budget = 480
         self.throw_future = throw_future
+        self.check_paths = check_paths
 
     def action(self, statement, region):
         if note := self.body.action(statement):
@@ -208,6 +232,34 @@ class Controls:
                 result.append(action)
         return result
 
+    def default_choice(self, statement):
+        tokens = statement.expression
+        if statement.kind != 'expression' or len(tokens) < 6 or tokens[0].text != 'val':
+            return
+        unit = self.body.unit
+        start = unit.token_indices[tokens[0].start]
+        top = unit.container[start]
+        operators = [(i, token.text) for i, token in enumerate(tokens)
+                     if unit.container[start + i] == top and token.text in {'=', '?:'}]
+        if len(operators) != 2 or [word for _, word in operators] != ['=', '?:']:
+            return
+        left, pivot = (i for i, _ in operators)
+        if pivot <= left + 1 or pivot + 1 == len(tokens) or tokens[pivot + 1].text in {'throw', 'return'}:
+            return
+        source = self.body.note(unit.site(start + left + 1, start + pivot))
+        default = self.body.note(unit.site(start + pivot + 1, start + len(tokens)))
+        if not source or not default:
+            return
+        lhs, rhs = action_code(source), action_code(default)
+        if not lhs or not rhs or lhs == rhs:
+            return
+        self.body.projector.add('GUARDED_EFFECTS', f'`{tokens[1].text}` keeps {source.text} when it is non-null '
+                                f'and evaluates {default.text} when the left expression yields null.',
+                                [source, default], self.proof, scope='SOURCE_DECISION',
+                                _conditionCases=[
+                                    path_case(self.body, statement.site, f'({lhs}) != null', [lhs], 'use the left value', stepKind='note'),
+                                    path_case(self.body, statement.site, f'({lhs}) == null', [rhs], 'evaluate the fallback', stepKind='note')])
+
     def emit_hard_exit(self, hard, guards, downstream, region, catches, returns):
         scope = self.scope_for(region)
         conditions = self.body.guard_labels(guards)
@@ -242,9 +294,16 @@ class Controls:
         if outside:
             sites = join([note.text for note in outside])
             base += f" If the throw escapes the loop, it bypasses after-loop sites including {sites}."
+        cases = []
+        if self.check_paths and hard.verified and not (guards or catches or returns) and passing:
+            positive, negative = condition_code(hard.true), condition_code(hard.false)
+            if positive and negative and (effect := action_code(passing[-1])):
+                cases = [path_case(self.body, hard.failure.site, positive, [effect], 'continue to this action'),
+                         path_case(self.body, hard.failure.site, negative, [hard.exception, effect],
+                                   'throw the exception and skip the action', stepKind='note', skip=[effect])]
         self.body.projector.add("HARD_EXIT", base, [*sources, *passing, *bypassed, *outside], self.proof,
                                 identity=(self.body.ref, hard.failure.site),
-                                scope="STDLIB_HARD_EXIT", region=region, authority=authority)
+                                scope="STDLIB_HARD_EXIT", region=region, authority=authority, _conditionCases=cases)
 
     def visit(self, suite, region, guards=(), future=(), alternatives=(), callback=None, catches=False):
         if not suite or self.flow_budget <= 0:
@@ -285,5 +344,7 @@ class Controls:
                 self.body.iteration(statement, callback, catches, self.scope_for(region), subsequent)
             elif statement.kind in {"return", "throw", "break", "continue"}:
                 self.exit(statement, guards, subsequent, alternatives, region, callback, catches)
+            elif self.check_paths and region == "CALLABLE" and not guards:
+                self.default_choice(statement)
             if not shapes[index].resumes:
                 break

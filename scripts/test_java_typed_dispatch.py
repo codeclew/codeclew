@@ -59,6 +59,7 @@ class JavaTypedDispatchTests(unittest.TestCase):
                 self.assertEqual((row["kind"], row["name"], row["adapter"], row["channel"], row["eventType"]),
                                  ("JAVA_TYPED_DISPATCH", "neutral.assembly.ReceiptHandler.accept", "EVENTUATE_TRAM_DOMAIN_EVENT",
                                   "receipts.pending", "neutral.assembly.BatchArrived"))
+                self.assertEqual(row["subscriberId"], "receipts-reader")
                 ranged = lambda span: files[span["file"]]["text"].encode()[span["start"]:span["end"]].decode()
                 self.assertEqual(ranged(row["registration"]), MAKE)
                 self.assertIn("public void accept", ranged(row["callback"]))

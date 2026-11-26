@@ -184,11 +184,16 @@ class ClewPreparedJavaSyntax {
             if (dispatchSyntax) symbol.add(typeArguments(parameter.getType()));
             params.add(symbol);
         }
-        return node(method, "method", method.getName().toString(), typeName(method.getReturnType()),
+        var declaration = node(method, "method", method.getName().toString(), typeName(method.getReturnType()),
                 modifiers(method.getModifiers()), params, annotations(method.getModifiers()), body,
                 method.getTypeParameters().isEmpty() ? "DIRECT" : "GENERIC", compact ? "COMPACT" : "EXPLICIT",
                 firstSentence(path),
                 method.getTypeParameters().stream().map(parameter -> parameter.getName().toString()).toList());
+        if (!dispatchSyntax) {
+            declaration.add(!method.getParameters().isEmpty() && variableArity(method.getParameters().getLast())
+                    ? "VARARGS" : "FIXED");
+        }
+        return declaration;
     }
 
     Object firstSentence(TreePath path) {
@@ -249,9 +254,18 @@ class ClewPreparedJavaSyntax {
             case BlockTree block -> node(tree, "block", block.getStatements().stream().map(this::statement).toList());
             case IfTree check -> node(tree, "if", expression(check.getCondition()),
                     statement(check.getThenStatement()), statement(check.getElseStatement()));
+            case EnhancedForLoopTree loop when fullUnit && !dispatchSyntax -> node(tree, "foreach",
+                    node(loop.getVariable(), "parameter", loop.getVariable().getName().toString(),
+                            typeName(loop.getVariable().getType())),
+                    expression(loop.getExpression()), statement(loop.getStatement()));
             case EnhancedForLoopTree loop -> node(tree, "foreach",
                     node(loop.getVariable(), "parameter", loop.getVariable().getName().toString()),
                     expression(loop.getExpression()), statement(loop.getStatement()));
+            case WhileLoopTree loop when fullUnit && !dispatchSyntax ->
+                    node(tree, "pre-test-loop", List.of(), expression(loop.getCondition()), statement(loop.getStatement()));
+            case ForLoopTree loop when fullUnit && !dispatchSyntax ->
+                    node(tree, "pre-test-loop", loop.getInitializer().stream().map(this::statement).toList(),
+                            expression(loop.getCondition()), statement(loop.getStatement()));
             case BreakTree stop -> node(tree, "break", stop.getLabel() == null ? null : stop.getLabel().toString());
             case ContinueTree next -> node(tree, "continue", next.getLabel() == null ? null : next.getLabel().toString());
             case AssertTree check -> node(tree, "assert", expression(check.getCondition()), expression(check.getDetail()));
@@ -275,8 +289,9 @@ class ClewPreparedJavaSyntax {
 
     Object handler(CatchTree handler) {
         var parameter = handler.getParameter();
-        return node(handler, "catch", node(parameter, "parameter", parameter.getName().toString()),
-                statement(handler.getBlock()));
+        var binding = node(parameter, "parameter", parameter.getName().toString());
+        if (fullUnit && !dispatchSyntax) binding.add(typeName(parameter.getType()));
+        return node(handler, "catch", binding, statement(handler.getBlock()));
     }
 
     Object expression(ExpressionTree tree) {
@@ -301,8 +316,16 @@ class ClewPreparedJavaSyntax {
         return switch (tree) {
             case ParenthesizedTree group -> expression(group.getExpression());
             case IdentifierTree name -> node(tree, "id", name.getName().toString());
-            case LiteralTree literal when dispatchSyntax && literal.getValue() instanceof String value ->
+            case LiteralTree literal when fullUnit && literal.getValue() instanceof String value ->
                     node(tree, "literal", value.isEmpty() ? "EMPTY_STRING" : "NONEMPTY_STRING", value);
+            case LiteralTree literal when fullUnit && !dispatchSyntax -> switch (literal.getValue()) {
+                case Integer value -> node(tree, "literal", "INTEGRAL", "int", value.toString());
+                case Long value -> node(tree, "literal", "INTEGRAL", "long", value.toString());
+                case Character value -> node(tree, "literal", "INTEGRAL", "char", Integer.toString(value));
+                case Boolean truth -> node(tree, "literal", truth ? "TRUE" : "FALSE");
+                case null -> node(tree, "literal", "NULL");
+                default -> node(tree, "literal", (Object) null);
+            };
             case LiteralTree literal -> node(tree, "literal", switch (literal.getValue()) {
                 case null -> "NULL";
                 case Boolean truth -> truth ? "TRUE" : "FALSE";
@@ -311,6 +334,8 @@ class ClewPreparedJavaSyntax {
             });
             case MemberReferenceTree reference when dispatchSyntax -> node(tree, "methodref",
                     expression(reference.getQualifierExpression()), reference.getName().toString(), reference.getMode().name());
+            case MemberReferenceTree reference when fullUnit -> node(tree, "functional-reference",
+                    expression(reference.getQualifierExpression()));
             case LambdaExpressionTree lambda when dispatchSyntax -> node(tree, "deferred",
                     lambda.getParameters().stream().map(parameter -> parameter.getName().toString()).toList(),
                     lambda.getBody() instanceof ExpressionTree body ? expression(body) : statement((StatementTree) lambda.getBody()));
@@ -334,10 +359,17 @@ class ClewPreparedJavaSyntax {
                 case CONDITIONAL_OR -> node(tree, "or", expression(op.getLeftOperand()), expression(op.getRightOperand()));
                 case EQUAL_TO, NOT_EQUAL_TO -> node(tree, op.getKind() == Tree.Kind.EQUAL_TO ? "eq" : "neq",
                         expression(op.getLeftOperand()), expression(op.getRightOperand()));
+                case LESS_THAN, LESS_THAN_EQUAL, GREATER_THAN, GREATER_THAN_EQUAL ->
+                        fullUnit && !dispatchSyntax ? node(tree, "relation", op.getKind().name(),
+                                expression(op.getLeftOperand()), expression(op.getRightOperand()))
+                                : node(tree, "ordered", expression(op.getLeftOperand()), expression(op.getRightOperand()));
                 default -> node(tree, "ordered", expression(op.getLeftOperand()), expression(op.getRightOperand()));
             };
             case UnaryTree op -> switch (op.getKind()) {
                 case LOGICAL_COMPLEMENT -> node(tree, "not", expression(op.getExpression()));
+                case UNARY_PLUS, UNARY_MINUS -> fullUnit && !dispatchSyntax
+                        ? node(tree, "signed", op.getKind().name(), expression(op.getExpression()))
+                        : node(tree, "ordered", expression(op.getExpression()));
                 case POSTFIX_INCREMENT, POSTFIX_DECREMENT, PREFIX_INCREMENT, PREFIX_DECREMENT ->
                         node(tree, "mutate", expression(op.getExpression()));
                 default -> node(tree, "ordered", expression(op.getExpression()));

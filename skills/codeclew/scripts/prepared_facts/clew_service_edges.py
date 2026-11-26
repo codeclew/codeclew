@@ -25,6 +25,7 @@ JAVA_DISPATCH_AUTHORITY = "RETAINED_JAVA_DISPATCHER_WIRING"
 JAVA_DISPATCH_DECLARATION = "RETAINED_JAVA_HANDLER_BEAN_DECLARATION"
 JAVA_DECLARED_PEER_CONDITION = "If the external Eventuate registrar is activated and the message is delivered."
 JAVA_REGISTRAR_OPEN = "Retained source leaves the external Eventuate registrar and its activation unresolved."
+JAVA_TYPED_DELIVERY = "If the retained dispatcher is activated and the matching event is delivered."
 TABLE = re.compile(r'[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*){0,2}', re.ASCII)
 PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 KAFKA_ADAPTER = "SPRING_KAFKA_LITERAL_TOPIC/1.0"
@@ -54,8 +55,8 @@ HTTP_OPEN = ("Deployment destination, activation and wire mapping remain unknown
 MESSAGE_OPEN = ("Broker or adapter binding, handler activation, delivery, acknowledgement, ordering and "
                 "payload compatibility remain unknown.")
 STORAGE_OPEN = ("Database and schema binding, key or row identity, commit, visibility and timing remain unknown.")
-JAVA_DISPATCH_OPEN = ("Deployment destination, dispatcher activation, adapter event mapping, delivery, acknowledgement, "
-                      "callback completion and runtime execution order remain open.")
+JAVA_DISPATCH_OPEN = ("Deployment destination, dispatcher activation, adapter event mapping, wire payload compatibility, "
+                      "delivery, acknowledgement, callback completion and runtime execution order remain open.")
 ASYNC_OPEN = "Any wait for downstream completion and its order relative to an original HTTP response remain open."
 
 
@@ -171,7 +172,7 @@ def source_exits(process, sources):
             key = source["handle"], literal
             if key not in seen:
                 seen.add(key)
-                yield {"sources": [source["handle"]],
+                yield {"sources": [source["handle"]], "_routeExit": event["event"],
                        "text": f"The handler contains the source exit `{literal}`.",
                        "uncertainty": "Reaching the exit and completing its operand evaluation are conditional."}
 
@@ -240,6 +241,7 @@ def record(requirement, process, context, facts, exact):
             and all(ref in sources for ref in assembly) and len(registration) <= registration_limit):
         typed_registration = typed_route(trigger.get("configuration") or {})
     calls, publishes, typed_publishes, reads, writes = {}, {}, {}, {}, {}
+    call_variants, publication_variants = defaultdict(dict), defaultdict(dict)
 
     def keep(index, key, face, limit=MAX_SITES):
         if len(index) < limit:
@@ -285,10 +287,18 @@ def record(requirement, process, context, facts, exact):
             key = request_key(link.get("method"), path)
             if key and None in key[1] and not link.get("encodedSegment"):
                 key = None
-            keep(calls, (face["occurrence"] or site, key), {**face, "key": key, "path": path})
+            identity = face["occurrence"] or site, key
+            request = {**face, "key": key, "path": path}
+            keep(calls, identity, request)
+            if identity in calls:
+                keep(call_variants[identity], face.get("condition"), request, MAX_WRITE_SITES)
         elif link["kind"] == "PUBLISH":
             value = topic(link.get("topic"))
-            keep(publishes, (face["occurrence"] or site, value), {**face, "topic": value})
+            identity = face["occurrence"] or site, value
+            publication = {**face, "topic": value}
+            keep(publishes, identity, publication)
+            if identity in publishes:
+                keep(publication_variants[identity], face.get("condition"), publication, MAX_WRITE_SITES)
         elif link["kind"] == "JAVA_TYPED_PUBLISH" and link.get("adapter") == JAVA_TYPED_ADAPTER:
             route = typed_route(link)
             keep(typed_publishes, (face["occurrence"] or site, route, face.get("condition")),
@@ -322,8 +332,12 @@ def record(requirement, process, context, facts, exact):
     return {"requirement": requirement, "registration": registered, "body": callbacks or body,
             "registrationWitnesses": registration_witnesses, "topicProven": topic_proven,
             "calls": list(calls.values()), "publishes": list(publishes.values()), "pollPaths": dict(poll_paths),
+            "routeCalls": {key: list(rows.values()) for key, rows in call_variants.items()},
+            "routePublications": {key: list(rows.values()) for key, rows in publication_variants.items()},
             "typedPublishes": list(typed_publishes.values()), "typedRegistration": typed_registration,
             "typedRegistrarOpen": trigger.get("authority") == JAVA_DISPATCH_DECLARATION,
+            "typedSubscriber": (trigger.get("configuration") or {}).get("subscriberId"),
+            "typedHandlerEffects": response_facts["java-typed-handler-effect"],
             "reads": list(reads.values()), "writes": [
                 {**write, "focus": write_focus.get(write["occurrence"], {}),
                  "uniqueWrite": len(write_shapes[write["occurrence"]]) == 1 and len(write_sites[write["occurrence"]]) <= 1}
@@ -338,7 +352,7 @@ def record(requirement, process, context, facts, exact):
             "paths": [fact for fact in facts if fact["kind"] in CALLER_PATHS]}
 
 
-def project(requirements, records, *, contracts=None, isolated=False):
+def project(requirements, records, *, contracts=None, isolated=False, route_records=None, route_boundaries=None):
     """Index each protocol once and bound per-page evidence fan-out."""
     routes = Routes(requirements)
     contracts = contracts or {}
@@ -362,6 +376,38 @@ def project(requirements, records, *, contracts=None, isolated=False):
     result, seen, requester_links = defaultdict(list), defaultdict(set), defaultdict(list)
     nested_visits = defaultdict(int)
     first_outbox_hops, guarded_terminal_effects = defaultdict(list), {}
+
+    def hop(origin, peer, protocol, qualifier, site):
+        # Occurrence, rather than text or service pair, distinguishes repeated calls.
+        return {"from": origin, "to": peer, "protocol": protocol, "qualifier": qualifier or "",
+                "site": site.get("occurrence") or site.get("site") or site["sources"][0],
+                "condition": site.get("condition"), "sources": site["sources"]}
+
+    def retain_route(path, *faces, selection=None, status="SOURCE_QUALIFIED_CANDIDATE"):
+        if route_records is None or any(not edge for edge in path):
+            return
+        sources = list(dict.fromkeys(ref for face in faces for ref in face["sources"]))
+        if sources:
+            route_records.append({"hops": list(path), "sources": sources, "status": status,
+                                  "selection": selection})
+
+    def variants(local, index, face, endpoint):
+        key = face.get("occurrence") or face.get("site"), endpoint
+        return local.get(index, {}).get(key, (face,))
+
+    def choice(owner, face, effect):
+        status = face.get("_httpStatus") or (face.get("_httpCompletion") or {}).get("status")
+        exit_kind = face.get("_routeExit")
+        if effect == "outcome":
+            effect = {"RETURN": "exit-return", "THROW": "exit-throw"}.get(exit_kind, effect)
+        return {"owner": owner, "effect": effect, "condition": face.get("condition"),
+                "sources": face["sources"], "site": face.get("occurrence") or fact_occurrence(face),
+                "alternative": [face.get("kind"), face.get("verb"), status],
+                **({"httpStatus": status} if type(status) is int and 100 <= status <= 599 else {})}
+
+    def fact_occurrence(face):
+        return (face.get("_edge", {}).get("occurrence") or face.get("_edgeCause")
+                or list(face["sources"]))
 
     def emit(owner, kind, text, uncertainty, *faces, status="SOURCE_QUALIFIED_CANDIDATE",
              authority="RETAINED_SOURCE_EDGE"):
@@ -407,7 +453,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
     def entry_kind(owner):
         return records[owner]["requirement"].get("entryKind")
 
-    def readbacks(owner, writer_id, effect, *evidence, prefix, uncertainty, nested=False):
+    def readbacks(owner, writer_id, effect, *evidence, prefix, uncertainty, nested=False, path=()):
         table = effect["table"]
         matched = list(islice(local_readers(writer_id, table, ("http",)), MAX_MATCHES))
         if not matched and not nested:
@@ -418,6 +464,9 @@ def project(requirements, records, *, contracts=None, isolated=False):
             observed_outcome = ("can observe the row's absence once the deletion becomes visible and while it remains deleted"
                                 if effect["verb"] == "DELETE" else
                                 "can see the affected row after the change becomes visible")
+            proof = (*evidence, effect, registration(observed), read)
+            retain_route((*path, hop(writer_id, reader, "storage", table, effect)), *proof,
+                  selection=choice(writer_id, effect, "write"))
             emit(owner, "further-subscriber-readback" if nested else "message-storage-reader", prefix
                  + f"the retained read in `{name}` {observed_outcome} if it uses the same database and row key in `{table}`.",
                  uncertainty, *evidence, effect, registration(observed), read)
@@ -571,10 +620,10 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 variants.setdefault(key, branch)
         return variants.values()
 
-    def further_outbox(owner, writer, write, topic, visited, evidence):
-        queue = deque([(writer, write, topic, visited, evidence, True)])
+    def further_outbox(owner, writer, write, topic, visited, evidence, path=()):
+        queue = deque([(writer, write, topic, visited, evidence, True, path)])
         while queue:
-            writer, write, topic, visited, evidence, initial = queue.popleft()
+            writer, write, topic, visited, evidence, initial, path = queue.popleft()
             if write["verb"] == "DELETE":
                 continue
             table = write["table"]
@@ -587,14 +636,16 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 writer_page = records[writer]["requirement"]["page"]
                 prior_topic = f"delivery on `{topic}` reaches the cited write and " if topic else ""
                 frontier = (write, registration(poller), {**read, "condition": None})
+                poll_path = (*path, hop(writer, publisher, "poll", table, write))
                 if not paired:
-                    hop = emit(owner, "further-outbox-poll-activation",
+                    retain_route(poll_path, *evidence, *frontier, selection=choice(writer, write, "write"))
+                    retained = emit(owner, "further-outbox-poll-activation",
                                f"If {prior_topic}the cited "
                                f"{write['verb']} on `{table}` in `{writer_page}` reaches the same database and row key "
                                f"and becomes visible, the independently registered poller in `{title}` can select the row.",
                                STORAGE_OPEN + " " + ASYNC_OPEN, *evidence, *frontier)
-                    if hop and initial:
-                        first_outbox_hops[owner].append(hop)
+                    if retained and initial:
+                        first_outbox_hops[owner].append(retained)
                     emit(owner, "further-outbox-boundary",
                          f"The retained evidence leaves the row-to-publication link open for the cited query in `{title}`.",
                          STORAGE_OPEN + " " + MESSAGE_OPEN, *frontier, status="UNKNOWN")
@@ -642,25 +693,31 @@ def project(requirements, records, *, contracts=None, isolated=False):
                                  f"More continuation remains beyond the source limit from the cited poll root in `{title}`.",
                                  qualifier, *frontier, publication, status="PREPARATION_LIMIT")
                             return
-                        hop = emit(owner, "further-subscriber-outbox", prefix
+                        subscriber_path = (*poll_path, hop(publisher, target, "message", next_topic, publication))
+                        retain_route(subscriber_path, *proof, selection=choice(writer, write, "write"))
+                        retained = emit(owner, "further-subscriber-outbox", prefix
                                    + selection["text"] + f" `{subscriber['page']}` has the cited registration for that topic.",
                                    qualifier, *proof)
-                        if hop and initial:
-                            first_outbox_hops[owner].append(hop)
+                        if retained and initial:
+                            first_outbox_hops[owner].append(retained)
                             outbox_write_facets(owner, write, topic, writer_page, poller, read, qualifier, *evidence)
                         for effect in representative_writes(target, next_topic):
                             verdict, conflict = write_compatibility(effect, next_topic)
                             if verdict == "INCOMPATIBLE":
                                 emit_write_conflict(owner, publisher, recipient, publication, effect, conflict)
                                 continue
+                            retain_route(subscriber_path, *proof, effect, selection=choice(target, effect, "write"))
                             emit(owner, "further-subscriber-effect",
                                  prefix + subscriber_write_path(recipient, publication, effect), qualifier, *proof, effect)
                             add_focused(owner, publisher, recipient, publication, effect, prefix, qualifier, *proof)
-                            readbacks(owner, target, effect, *proof, prefix=prefix, uncertainty=qualifier, nested=True)
-                            queue.append((target, effect, next_topic, visited | {writer, publisher, target}, proof, False))
+                            readbacks(owner, target, effect, *proof, prefix=prefix, uncertainty=qualifier, nested=True,
+                                      path=subscriber_path)
+                            queue.append((target, effect, next_topic, visited | {writer, publisher, target}, proof, False, subscriber_path))
 
     for owner, local in records.items():
         service = local["requirement"]["service"]
+        if route_boundaries is not None:
+            route_boundaries.extend({**request, "owner": owner} for request in local.get("jdkHttpBoundaries", ()))
         for call in local["calls"]:
             matching, overflow = routes.matching(call["key"]) if call["key"] else ([], False)
             boundary = " ".join(filter(None, (HTTP_OPEN, call.get("uncertainty"))))
@@ -671,6 +728,11 @@ def project(requirements, records, *, contracts=None, isolated=False):
                      boundary, call, *cited, status="AMBIGUOUS")
                 continue
             if not peers or not cited or not cited[0]["sources"]:
+                if route_boundaries is not None and not matching and call["key"]:
+                    for request in variants(local, "routeCalls", call, call["key"]):
+                        route_boundaries.append({"owner": owner, "method": request["key"][0],
+                                                 "endpoint": request["path"].partition("?")[0],
+                                                 "sources": request["sources"], "condition": request.get("condition")})
                 if not matching or peers:
                     emit(owner, "http-peer-boundary", "A source-qualified peer handler is unavailable for this retained request.",
                          boundary, call, status="UNKNOWN")
@@ -683,13 +745,18 @@ def project(requirements, records, *, contracts=None, isolated=False):
             predicate = (f"If the deployed request reaches the matching handler in {name}, "
                          "the following are separately retained source outcomes.")
             requester_links[peer["id"]].append((owner, call, cited[0], boundary))
+            path = (hop(owner, peer["id"], "http", f"{method} {call['path'].partition('?')[0]}", call),)
+            for request in variants(local, "routeCalls", call, call["key"]):
+                retain_route((hop(owner, peer["id"], "http", path[0]["qualifier"], request),), request, cited[0])
             emit(owner, "http-peer", f"The request at {label} has a route candidate in {name}.", boundary, call, cited[0])
             emit(peer["id"], "http-peer", f"`{service}` has a retained request matching this source route at {label}.",
                  boundary, call, cited[0])
             for commit in (target["commits"] if isolated else target["commits"][:2]):
+                retain_route(path, call, cited[0], commit, selection=choice(peer["id"], commit, "write"))
                 emit(owner, "http-peer-commit-before-response", predicate + " " + commit["text"],
                      boundary + " " + commit.get("uncertainty", ""), call, cited[0], commit)
             for bypass in (target["bypasses"] if isolated else target["bypasses"][:2]):
+                retain_route(path, call, cited[0], bypass, selection=choice(peer["id"], bypass, "no-write"))
                 emit(owner, "http-peer-conditional-no-write", predicate + " " + bypass["text"],
                      boundary + " " + bypass.get("uncertainty", ""), call, cited[0], bypass)
             for declaration in contracts.get(peer["id"], ()):
@@ -716,6 +783,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                              qualifier + " " + detail.get("uncertainty", ""), call, cited[0], write, detail)
             outcomes = target["responses"] or target["exits"]
             for outcome in (outcomes if isolated else outcomes[:MAX_MATCHES]):
+                retain_route(path, call, cited[0], outcome, selection=choice(peer["id"], outcome, "outcome"))
                 emit(owner, "http-peer-outcome", predicate + " " + outcome["text"],
                      boundary + " " + outcome.get("uncertainty", ""), call, cited[0], outcome)
             if not (target["responses"] or target["commits"] or target["exits"]):
@@ -728,6 +796,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
             # a product of unrelated response decoders and callee commit paths.
             for outcome in (decoding if isolated else islice(decoding, MAX_MATCHES)):
                 for commit in target["commits"][:1]:
+                    retain_route(path, call, cited[0], commit, outcome, selection=choice(owner, outcome, "error"))
                     emit(owner, "http-failure-after-peer-commit",
                          f"If the matched handler in {name} takes its cited commit-before-response path, "
                          f"the caller can still fail while decoding the resulting response. {outcome['text']}",
@@ -737,6 +806,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
             for outcome in (local_paths if isolated else local_paths[:MAX_MATCHES]):
                 if outcome["kind"] == "response_decode_failure_outcome" and target["commits"]:
                     continue
+                retain_route(path, call, cited[0], outcome, selection=choice(owner, outcome, "outcome"))
                 emit(owner, "http-caller-continuation", outcome["text"],
                      boundary + " Persistence and rollback of any earlier effects remain unknown. "
                      + outcome.get("uncertainty", ""), call, cited[0], outcome)
@@ -744,15 +814,29 @@ def project(requirements, records, *, contracts=None, isolated=False):
         for publication in local["typedPublishes"]:
             boundary = " ".join(filter(None, (JAVA_DISPATCH_OPEN, publication.get("uncertainty"))))
             route = publication["route"]
-            candidates = [peer for peer in typed_dispatchers.get(route, ()) if peer != owner]
-            wired = [peer for peer in candidates if not records[peer]["typedRegistrarOpen"]]
-            candidates = wired or candidates
-            if not candidates or len(candidates) > (MAX_MATCHES if wired else 1):
+            matching = [peer for peer in typed_dispatchers.get(route, ()) if peer != owner]
+            # Distinct declared subscriber identities establish independent
+            # registration candidates. Alias collisions stay open.
+            named = defaultdict(list)
+            for peer in matching:
+                subscriber = records[peer]["typedSubscriber"]
+                if isinstance(subscriber, str) and subscriber:
+                    named[subscriber].append(peer)
+            conflicting = {peer for group in named.values() if len(group) > 1 for peer in group}
+            declared = {peer for group in named.values() if len(group) == 1 for peer in group}
+            candidates = [peer for peer in matching if peer not in conflicting and
+                          (not records[peer]["typedRegistrarOpen"] or peer in declared or len(matching) == 1)]
+            ambiguous = len(candidates) > MAX_MATCHES or not candidates and bool(matching)
+            if not candidates or ambiguous:
                 text = ("Multiple retained Java dispatcher candidates match this protocol, channel and event class."
-                        if candidates else "A source-qualified Java dispatcher for this publication remains open.")
+                        if ambiguous else "A source-qualified Java dispatcher for this publication remains open.")
                 emit(owner, "typed-message-peer-boundary", publication["text"] + " " + text, boundary, publication,
-                     status="AMBIGUOUS" if candidates else "UNKNOWN")
+                     status="AMBIGUOUS" if ambiguous else "UNKNOWN")
                 continue
+            if conflicting:
+                emit(owner, "typed-message-peer-boundary",
+                     "Additional declarations share a subscriber identity for this publication.",
+                     boundary, publication, status="AMBIGUOUS")
             _, channel, event = route
             basis = ("The compiler selected the publication call." if publication["compiler"]
                      else "The retained publication receiver and operands corroborate the library call.")
@@ -761,22 +845,36 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 target = receiver["requirement"]
                 title = f"`{target['service']}` (`{target['page']}`)"
                 evidence = (publication, registration(receiver), callback(receiver))
+                delivery = {"sources": (), "condition": JAVA_TYPED_DELIVERY}
+                status = "SOURCE_QUALIFIED_CANDIDATE"
+                qualifier = boundary
                 if receiver["typedRegistrarOpen"]:
-                    condition = {"sources": (), "condition": JAVA_DECLARED_PEER_CONDITION}
-                    unresolved = JAVA_REGISTRAR_OPEN + " " + boundary
+                    delivery = {"sources": (), "condition": JAVA_DECLARED_PEER_CONDITION}
+                    qualifier = JAVA_REGISTRAR_OPEN + " " + boundary
+                    status = "POSSIBLE"
                     emit(owner, "typed-message-peer", basis + f" Possible peer in {title} has a retained bean and "
                          f"handler declaration for channel `{channel}` and qualified event `{event}`.",
-                         unresolved, *evidence, condition, status="POSSIBLE")
+                         qualifier, *evidence, delivery, status=status)
                     emit(peer, "typed-message-peer", f"Possible publication peer `{service}` has a retained submission "
                          f"for channel `{channel}` and qualified event `{event}`. " + basis,
-                         unresolved, *evidence, condition, status="POSSIBLE")
-                    continue
-                emit(owner, "typed-message-peer", basis + f" Channel `{channel}` and qualified event `{event}` "
-                     f"match the retained dispatcher registration in {title}.",
-                     boundary, *evidence)
-                emit(peer, "typed-message-peer", f"`{service}` has a retained submission for channel `{channel}` "
-                     f"and qualified event `{event}`. " + basis,
-                     boundary, *evidence)
+                         qualifier, *evidence, delivery, status=status)
+                else:
+                    emit(owner, "typed-message-peer", basis + f" Channel `{channel}` and qualified event `{event}` "
+                         f"match the retained dispatcher registration in {title}.", boundary, *evidence)
+                    emit(peer, "typed-message-peer", f"`{service}` has a retained submission for channel `{channel}` "
+                         f"and qualified event `{event}`. " + basis, boundary, *evidence)
+                typed_path = (hop(owner, peer, "message", f"{channel} · {event}", publication),)
+                retain_route(typed_path, *evidence, status=status)
+                for effect in receiver["typedHandlerEffects"] if route_records is not None else ():
+                    retain_route(typed_path, *evidence, effect, selection=choice(peer, effect, "outcome"), status=status)
+                for write in receiver["writes"] if route_records is not None else ():
+                    retain_route(typed_path, *evidence, write, selection=choice(peer, write, "write"), status=status)
+                for effect in receiver["typedHandlerEffects"][:2]:
+                    emit(owner, "typed-message-peer-effect", f"The matching handler in {title} has this path. " + effect["text"],
+                         qualifier + " " + effect["uncertainty"], *evidence, delivery, effect, status=status)
+                for write in receiver["writes"][:2]:
+                    emit(owner, "typed-message-peer-effect", f"The matching handler in {title} has this write path. " + write["text"],
+                         qualifier + " " + STORAGE_OPEN, *evidence, delivery, write, status=status)
 
         for publication in local["publishes"]:
             name = publication["topic"]
@@ -806,6 +904,10 @@ def project(requirements, records, *, contracts=None, isolated=False):
                         + (" The retained declaration disables automatic startup." if disabled else
                            " The retained callback is eligible if the subscription runs and delivery reaches it."
                            if target["body"] else " An exact callback body is unavailable."))
+                path = (hop(owner, peer, "message", name, publication),)
+                for published in variants(local, "routePublications", publication, name):
+                    retain_route((hop(owner, peer, "message", name, published),),
+                                 published, registration(target), callback(target), status=result_status)
                 emit(owner, "message-peer", text, boundary,
                      publication, registration(target), callback(target), status=result_status)
                 emit(peer, "message-peer", f"`{service}` has a retained publication on {label}.", boundary,
@@ -822,13 +924,14 @@ def project(requirements, records, *, contracts=None, isolated=False):
                     if verdict == "INCOMPATIBLE":
                         emit_write_conflict(owner, owner, target, publication, effect, conflict)
                         continue
+                    retain_route(path, *proof, effect, selection=choice(peer, effect, "write"))
                     emit(owner, "message-peer-effect", subscriber_write_path(target, publication, effect),
                          boundary + " " + STORAGE_OPEN, *proof, effect)
                     add_focused(owner, owner, target, publication, effect, f"The selected callback in {title} has this retained write path.",
                                 boundary, *proof)
                     readbacks(owner, peer, effect, *proof, prefix="After the subscribed callback reaches the write, ",
-                              uncertainty=boundary + " " + STORAGE_OPEN)
-                    further_outbox(owner, peer, effect, name, {owner, peer}, proof)
+                              uncertainty=boundary + " " + STORAGE_OPEN, path=path)
+                    further_outbox(owner, peer, effect, name, {owner, peer}, proof, path)
 
         for write in local["writes"]:
             table = write["table"]
@@ -843,6 +946,8 @@ def project(requirements, records, *, contracts=None, isolated=False):
             for reader, read in [*matches, *(row for row in pollers if row not in matches)]:
                 target = records[reader]
                 name = target["requirement"]["page"]
+                path = (hop(owner, reader, "poll" if entry_kind(reader) in POLLERS else "storage", table, write),)
+                retain_route(path, write, registration(target), read, selection=choice(owner, write, "write"))
                 emit(owner, "storage-reader", f"The `{write['verb']}` and the retained query in `{name}` "
                      f"name `{write['table']}`. The reader is eligible if both operations use the same database and row key.",
                      STORAGE_OPEN, write, registration(target), read)
@@ -860,6 +965,8 @@ def project(requirements, records, *, contracts=None, isolated=False):
                          + selection["text"], STORAGE_OPEN + " " + MESSAGE_OPEN + " " + ASYNC_OPEN,
                          write, registration(target), read, publication, selection)
                     for completion in local["completions"].get((write["occurrence"], table, write["verb"]), ()):
+                        retain_route(path, completion, registration(target), read, publication, selection,
+                              selection=choice(owner, completion, "independent-response"))
                         emit(owner, "local-response-independent-poll", completion["text"] +
                              f" The related poller in `{name}` has its own registration and can publish if it selects the visible row. "
                              "The cited local response path can complete independently of that polling and delivery.",
@@ -888,6 +995,8 @@ def project(requirements, records, *, contracts=None, isolated=False):
                                                            "Other payload fields and wire mapping remain open.")))
                         evidence = (write, registration(target), read, publication, selection,
                                     registration(consumer), callback(consumer))
+                        subscriber_path = (*path, hop(reader, subscriber["id"], "message", publication["topic"], publication))
+                        retain_route(subscriber_path, *evidence, selection=choice(owner, write, "write"))
                         emit(owner, "storage-message-continuation", prefix + selection["text"] +
                              f" `{subscriber['page']}` declares the same topic `{publication['topic']}`.",
                              boundary, *evidence)
@@ -896,6 +1005,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                             if verdict == "INCOMPATIBLE":
                                 emit_write_conflict(owner, reader, consumer, publication, effect, conflict)
                                 continue
+                            retain_route(subscriber_path, *evidence, effect, selection=choice(subscriber["id"], effect, "write"))
                             reached = emit(owner, "storage-message-effect",
                                            prefix + subscriber_write_path(consumer, publication, effect),
                                            boundary, *evidence, effect)
@@ -938,6 +1048,21 @@ def project(requirements, records, *, contracts=None, isolated=False):
                 emit(requester, kind, f"If the request reaches `{name}`, the handler has this retained continuation. "
                      + row["text"], boundary + " " + row["uncertainty"], call, registration_proof, row,
                      status=row["status"])
+    if route_records is not None:
+        continuations = defaultdict(list)
+        for record in route_records:
+            first = record["hops"][0]
+            if first["protocol"] in ("poll", "storage"):
+                continuations[first["from"]].append(record)
+        for handler, requesters in requester_links.items():
+            for requester, call, registration_proof, _ in requesters:
+                for record in continuations[handler]:
+                    if requester in {edge["to"] for edge in record["hops"]}:
+                        continue
+                    method = call["key"][0]
+                    prefix = hop(requester, handler, "http", f"{method} {call['path'].partition('?')[0]}", call)
+                    retain_route((prefix, *record["hops"]), call, registration_proof, record,
+                          selection=record["selection"], status=record["status"])
     if isolated:
         return result
     preferred = ("http-failure-after-peer-commit", "http-peer-commit-before-response", "http-peer-conditional-no-write",
@@ -950,7 +1075,7 @@ def project(requirements, records, *, contracts=None, isolated=False):
                  "message-storage-reader", "http-message-storage-reader", "storage-poll-activation", "further-subscriber-outbox",
                  "further-outbox-poll-activation", "message-peer-write-compatibility", "message-peer-write-detail",
                  "message-peer-write-boundary", "message-peer-effect", "storage-message-effect",
-                 "typed-message-peer", "typed-message-peer-boundary",
+                 "typed-message-peer", "typed-message-peer-effect", "typed-message-peer-boundary",
                  "further-outbox-limit-boundary", "further-outbox-boundary")
     for owner, rows in result.items():
         if len(rows) <= MAX_LINKS:

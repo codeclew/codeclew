@@ -1,6 +1,11 @@
 """Slot contracts and evidence-preserving repair for isolated page authors."""
 from copy import deepcopy
 import re
+from pathlib import Path
+import runpy
+
+
+CONDITION_PATHS = runpy.run_path(str(Path(__file__).with_name("docs_run_condition_paths.py")))
 
 
 COMMON = ('slot', 'reviewed', 'disposition', 'limitations')
@@ -14,6 +19,7 @@ ROLES = {
 ARRAYS = ('claims', 'participants', 'steps', 'starts', 'contracts', 'routes')
 FIXED_ACTORS = ('caller', 'handler')
 KINDS = ('call', 'await', 'return', 'async', 'note')
+ROUTE_KINDS = (*KINDS, 'reference')
 DISPOSITIONS = ('EXPLAINED', 'EXPLICIT_UNKNOWN')
 MAX_ENUM_CITES = 400
 MAX_ISSUES = 28
@@ -23,23 +29,32 @@ CLAIM_TEXT_LENGTH = 20000
 ROUTE_PROSE_LENGTH = 512
 CONTENT_ISSUES = {
     'PAGE_CLAIMS_REQUIRED', 'PAGE_CLAIM_INVALID', 'PAGE_RETURN_CLAIM_SUPPORT_REQUIRED',
-    'PAGE_CONTRACT_FIELDS_REQUIRED', 'PAGE_DISCOVERY_RESULT_REQUIRED',
+    'PAGE_CONTRACT_FIELDS_REQUIRED', 'PAGE_DISCOVERY_RESULT_REQUIRED', 'PAGE_ROUTE_TRANSITION_REQUIRED',
+    'PAGE_SOURCE_PATH_MISSING',
 }
 LOCATOR = re.compile(r'(S[0-9a-zA-Z]+|V[0-9]+)(?::([1-9][0-9]{0,7})(?:-([1-9][0-9]{0,7}))?|#L([1-9][0-9]{0,7})(?:-L?([1-9][0-9]{0,7}))?)')
+
+
+def owned_fields(slot):
+    if slot.get('ownedContentOnly'):
+        return ('claims',) if slot['kind'] == 'GUIDE' else ('routes',)
+    return ROLES[slot['kind']]
 
 
 def schema_for_slot(base, slot):
     schema = deepcopy(base)
     kind = slot['kind']
-    fields = (*COMMON, *ROLES[kind])
+    common = COMMON[:-1] if slot.get('ownedContentOnly') else COMMON
+    own = owned_fields(slot)
+    fields = (*common, *own)
     properties = {key: schema['properties'][key] for key in fields}
     properties['slot'] = {'type': 'string', 'enum': [slot['key']]}
-    if kind == 'GUIDE':
+    if 'title' in own:
         properties['title'] = {'type': 'string'}
     if kind == 'DISCOVERY':
         properties['discovery'] = {'type': 'string', 'enum': ['NO_ADDITIONAL_STARTS', 'ADDITIONAL_STARTS']}
     definitions = schema['$defs']
-    used = {'claim'}
+    used = {'claim'} if 'claims' in own or kind == 'DISCOVERY' else set()
     if kind in ('DISCOVERY', 'OPERATION'):
         used.update(('participant', 'step'))
     if kind == 'DISCOVERY':
@@ -49,6 +64,8 @@ def schema_for_slot(base, slot):
         used.add('contract')
     if kind == 'PROCESS_MAP':
         used.update(('route', 'step'))
+        if slot.get('transitionRoutes'):
+            definitions['step']['properties']['kind']['enum'] = list(ROUTE_KINDS)
         entries = slot.get('operationIds', ())
         if entries:
             entry = {'type': 'string', 'enum': list(entries)}
@@ -64,6 +81,8 @@ def schema_for_slot(base, slot):
         for key in ('claim', 'route', 'contract'):
             definitions[key]['properties']['cites']['items'] = {'$ref': '#/$defs/citation'}
     claim = definitions['claim']
+    if kind == 'GUIDE' and slot.get('ownedContentOnly'):
+        claim['properties']['assessment']['enum'] = ['SUPPORTED']
     if slot['returns']:
         claim['properties']['returns']['items'] = {'type': 'string', 'enum': list(slot['returns'])}
     else:
@@ -177,7 +196,7 @@ class Review:
         if len(accepted) == len(values):
             row['cites'] = list(dict.fromkeys(accepted))
 
-    def claims(self, rows, path):
+    def claims(self, rows, path, *, supported_only=False):
         if not isinstance(rows, list) or not rows:
             self.issue('PAGE_CLAIMS_REQUIRED', path, 'Add at least one supported claim or source-bounded unknown.')
             return
@@ -191,7 +210,8 @@ class Review:
             text = claim['text']
             if not isinstance(text, str) or not text.strip() or len(text) > CLAIM_TEXT_LENGTH or 'clew-sequence' in text:
                 self.issue('PAGE_CLAIM_INVALID', target + '/text', 'Give reader Markdown. Put sequence steps in the steps array.')
-            self.choices(claim['assessment'], target + '/assessment', ('SUPPORTED', 'EXPLICIT_UNKNOWN'),
+            assessments = ('SUPPORTED',) if supported_only else ('SUPPORTED', 'EXPLICIT_UNKNOWN')
+            self.choices(claim['assessment'], target + '/assessment', assessments,
                          'PAGE_CLAIM_ASSESSMENT_REQUIRED', 'Record whether the cited source supports this statement.')
             self.cites(claim, target)
             refs = claim['returns']
@@ -209,7 +229,7 @@ class Review:
                         self.issue('PAGE_RETURN_CLAIM_SUPPORT_REQUIRED', target + '/assessment',
                                    'Bind the return ID to a supported claim that cites the retained declaration.')
 
-    def trace(self, row, path, *, actors=FIXED_ACTORS, participants=True):
+    def trace(self, row, path, *, actors=FIXED_ACTORS, participants=True, route_references=False):
         available = list(actors)
         renamed = {}
         if participants:
@@ -224,8 +244,12 @@ class Review:
                             if re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', identity)]
                 for index, actor in enumerate(entries):
                     place = f'{path}/participants/{index}'
-                    if not self.shape(actor, place, ('id', 'title')):
+                    fields = ('id', 'title', 'local') if isinstance(actor, dict) and 'local' in actor else ('id', 'title')
+                    if not self.shape(actor, place, fields):
                         continue
+                    if 'local' in actor and type(actor['local']) is not bool:
+                        self.issue('PAGE_TRACE_PARTICIPANT_INVALID', place + '/local',
+                                   'Use true only for a participant within the same source-evidenced system.')
                     identity = actor['id']
                     self.line(actor['title'], place + '/title', 120)
                     original = identity
@@ -247,11 +271,13 @@ class Review:
         if not isinstance(row['steps'], list) or not 0 < len(row['steps']) <= 48:
             self.issue('PAGE_TRACE_STEPS_REQUIRED', path + '/steps', 'Provide 1 to 48 ordered steps after the fixed start.')
             return
+        kinds = ROUTE_KINDS if route_references else KINDS
         for index, step in enumerate(row['steps']):
             place = f'{path}/steps/{index}'
             if not self.shape(step, place, ('from', 'to', 'kind', 'label', 'condition')):
                 continue
-            self.line(step['label'], place + '/label', STEP_TEXT_LENGTH)
+            self.line(step['label'], place + '/label', STEP_TEXT_LENGTH,
+                      empty=route_references and step['kind'] == 'reference')
             if isinstance(step['condition'], str) and not step['condition'].strip():
                 step['condition'] = None
             if step['condition'] is not None:
@@ -261,9 +287,12 @@ class Review:
                     step[key] = renamed[step[key]]
                 self.choices(step[key], place + '/' + key, available, 'PAGE_TRACE_ACTOR_UNKNOWN',
                              'Use a fixed actor ID or an additional actor declared in this trace.')
-            valid = self.choices(step['kind'], place + '/kind', KINDS, 'PAGE_TRACE_STEP_KIND_INVALID',
+            valid = self.choices(step['kind'], place + '/kind', kinds, 'PAGE_TRACE_STEP_KIND_INVALID',
                                  'Use the step kind that describes the evidenced action.')
-            if valid and step['kind'] != 'note' and step['from'] == step['to']:
+            if valid and step['kind'] == 'reference' and (step['from'] == 'caller' or step['from'] != step['to']):
+                self.issue('PAGE_TRACE_STEP_DIRECTION_INVALID', place + '/to',
+                           'Use the same operation ID for both actors of an operation reference.')
+            if valid and step['kind'] not in ('note', 'reference') and step['from'] == step['to']:
                 self.issue('PAGE_TRACE_STEP_DIRECTION_INVALID', place + '/to',
                            'Use the actual receiving actor. Use note for a local action on one actor.')
 
@@ -321,7 +350,14 @@ class Review:
             self.issue('PAGE_ROUTE_TERMINAL_INVALID', path + '/terminal',
                        'Use an operation in this route with an evidenced boundary, or set terminal and boundary to null.',
                        allowed=[safe_value(value) for value in members])
-        self.trace(row, path, actors=('caller', *members), participants=False)
+        self.trace(row, path, actors=('caller', *members), participants=False,
+                   route_references=self.slot.get('transitionRoutes', False))
+        if self.slot.get('transitionRoutes') and isinstance(row['steps'], list) and not any(
+                isinstance(step, dict) and step.get('from') in members and step.get('to') in members
+                and step['from'] != step['to'] and step.get('kind') in ('call', 'await', 'return', 'async')
+                for step in row['steps']):
+            self.issue('PAGE_ROUTE_TRANSITION_REQUIRED', path + '/steps',
+                       'A route needs a retained transition between two documented operations. Local behavior belongs on its operation page.')
         self.cites(row, path)
 
     def start(self, row, path):
@@ -347,15 +383,18 @@ class Review:
 
     def page(self, value):
         kind = self.slot['kind']
-        own = ROLES[kind]
+        own = owned_fields(self.slot)
+        scoped = self.slot.get('ownedContentOnly')
         if isinstance(value, dict):
-            if kind != 'GUIDE' and ('title' not in value or isinstance(value['title'], str)):
+            if 'title' not in own and ('title' not in value or isinstance(value['title'], str)):
                 value['title'] = None
             for field in ARRAYS:
                 if field not in own:
                     value.setdefault(field, [])
             if kind != 'DISCOVERY':
                 value.setdefault('discovery', None)
+            if scoped:
+                value.setdefault('limitations', [])
         fields = (*COMMON, *ARRAYS, 'title', 'discovery')
         if not self.shape(value, '', fields):
             return
@@ -365,11 +404,14 @@ class Review:
             self.issue('PAGE_WRONG_SLOT_OR_REVIEW_MISSING', '/reviewed', 'Check the content against the retained source and set reviewed to true.')
         self.choices(value['disposition'], '/disposition', DISPOSITIONS, 'PAGE_DISPOSITION_REQUIRED',
                      'Record the evidence disposition for the slot.')
-        if kind == 'GUIDE':
+        if 'title' in own:
             self.line(value['title'], '/title', HEADING_LENGTH)
         elif value['title'] is not None:
             self.issue('PAGE_TITLE_INVALID', '/title', 'The runner supplies this page title.')
-        if isinstance(value['limitations'], list):
+        if scoped and value['limitations']:
+            self.issue('PAGE_FIELD_OUTSIDE_SLOT', '/limitations',
+                       'Leave general limitations to the operation or route that owns the evidence.')
+        elif isinstance(value['limitations'], list):
             for index, label in enumerate(value['limitations']):
                 self.line(label, f'/limitations/{index}', 512)
         else:
@@ -391,9 +433,12 @@ class Review:
         else:
             if value['discovery'] is not None:
                 self.issue('PAGE_FIELD_OUTSIDE_SLOT', '/discovery', f'This {kind} slot has no discovery destination.')
-            self.claims(value['claims'], '/claims')
+            if 'claims' in own and not (value['claims'] == [] and (self.slot.get('transitionRoutes') or scoped)):
+                self.claims(value['claims'], '/claims', supported_only=bool(scoped))
         if kind == 'OPERATION':
             self.trace(value, '')
+            if not self.issues:
+                CONDITION_PATHS['check'](self, value)
         for field, validate in (('contracts', self.contract), ('routes', self.route)):
             if field in own and isinstance(value[field], list):
                 for index, row in enumerate(value[field]):

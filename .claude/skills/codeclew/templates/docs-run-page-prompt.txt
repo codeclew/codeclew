@@ -1,76 +1,78 @@
-Author only the slot named in the JSON packet. Use its language for reader
-text and preserve source identifiers and literals. The request sets the reader
-goal; the slot and its context set the boundary. Use only the verbatim retained
-ranges, attributed facts, and scope limits in this packet. A fact may narrow
-the witness to specific lines or several excerpts of the same cited source.
-Verify conditions and effects against those ranges. A reached helper fact
-keeps its call or callback premise. Check its local guard and whether the
-caller handles the resulting value, failure, or return. Treat reported
-packet or preparation omissions as evidence limits. A destination in the operation index is a navigation target, not
-evidence that it was called, registered, deployed, or reached. Declared
-interactions qualify peer scope and keep their declared authority. Verify each
-endpoint's separate behavior against its own retained source.
+Author the named slot in the packet's language. Preserve source identifiers
+and literals. Use the retained ranges, attributed facts and scope limits.
+A fact can point to narrower excerpts of a citation. Verify each proposed
+condition and effect. A reached helper keeps its call or callback premise
+and any caller handling. Treat omissions as evidence limits. Navigation
+targets alone do not prove calls, registration, deployment or reach.
+Declared interactions qualify peer scope. Check behavior at each owner.
 
-Return one JSON object using this slot's response schema. Copy the packet slot
-ID, record your disposition and set reviewed to true after checking the source.
-In each cites array, copy one or more exact keys from the packet citations
-object. The S alias already identifies its source range. V keys locate the
-visible excerpts. Put additional line details in the reader text. Every claim
-needs a SUPPORTED or EXPLICIT_UNKNOWN assessment. An empty heading is valid.
-Lead each page with the reader outcome, then explain decisions,
-observable effects, errors, and code-bounded unknowns in a useful order.
-Give claims a heading only when it helps navigation. Keep scope limitations
-concrete and attach consequential unknowns to the evidence in the reader
-claims. Do not embed diagrams, generated file paths, source links or anchors
-in Markdown. Supply the fields listed for this slot. Only GUIDE names its
-page. For an empty schema array use []. For an unconditional step use
-condition=null. Copy an existing ID exactly wherever an ID is required.
+Return one JSON response under the supplied schema. Copy the slot ID,
+record its disposition and set reviewed to true after checking the source.
+In cites, use exact packet aliases. S identifies a citation and V locates
+visible excerpts. Put line details in the prose. Each claim needs SUPPORTED
+or EXPLICIT_UNKNOWN. Keep headings useful and state important evidence gaps
+with their claims. The runner supplies links and diagrams. Only GUIDE sets
+a page title. Use [] for an empty array and null for an unconditional step.
 
-GUIDE | Give a short title and explain what readers can accomplish, the most
-important constraints, and how this service relates to neighboring systems.
-The runner links the known operations, contracts and process map.
+GUIDE | Supply only independently supported service-wide statements from these
+retained ranges. Keep their scope and conditions. The runner supplies the
+title and links the operations, contracts and process map. Leave operation
+behavior, peer relationships, and gaps in their evidence to the owning pages.
+Use an empty claims array if there is no independent statement to add.
 
-OPERATION | Explain the input and visible outcome first. Read the body and
-check each meaningful condition, state change, failure or return for its
-precondition and outcome, including cases in which work stops or no state
-changes. Describe the path with numbered natural-language steps when it
-has several stages. Emit only sequence steps after the fixed start. Use
-caller and handler for the two supplied actors. Declare other actors with
-short stable IDs. Use call for a direct call, await for a real completion
-wait, return for a result returned to its actual recipient, async for a
-handoff without waiting, and note for a local step. When the source shows a
-successful call yielding a value the recipient uses, add the return edge from
-the value producer to that recipient after the successful call or wait.
-Keep failure, void completion, and one-way handoffs distinct. Label edges
-with their source conditions. Bind each supplied R key once to the supported
-claim that cites its source. In the same paragraph put the predicate and
-the literal result in consecutive inline code spans.
+OPERATION | Lead with the visible outcome. Check each condition, effect
+and early exit. Describe the stages in order. Emit steps after the fixed
+start and use caller and handler for those actors. Give other actors short
+stable IDs. Set local only for roles within the owning system. Use call for a direct call, await for a completion wait,
+return for a result to its actual recipient, async for a one-way handoff,
+and note for a local step. Include an evidenced returned value used by
+its recipient. Keep failures and void completions distinct.
+Bind each supplied R key once to a cited claim with the predicate and
+literal in consecutive code spans in the same paragraph.
+For each conditionPaths row, write a paragraph using its cites. Put any
+scope name, exact condition, and each action in separate code spans. The
+condition applies when execution reaches that scope. In the sequence, copy
+the condition verbatim and name the same scope and actions in the label.
+Use stepKind if given. Explicitly mark skipped actions and put early exits
+before the call they skip. Rows of one decision are alternatives.
+For a partial row, describe the effect as a possible continuation when
+the cited path is reached. Keep further guards, throws, and unknowns
+from the source. conditionPathCoverage reports selections and omissions.
+Explain your side of any retained handoff and consequences that follow from
+the interaction. Leave the peer's independent branches, ordering and results
+to its operation page.
 
-CONTRACTS | Use claims to explain domain distinctions and contract boundaries.
-Use `contracts` for shapes with at least one evidenced named field. Give the
-exact contract name, its scope, and the field, type and meaning for each row.
-If the shape has no named fields, such as an open object, map, array or scalar,
-describe its exact name and known shape or constraints in a cited `claims`
-entry. Do not add an empty field table or invent a field. If no shape has
-named fields, use `contracts: []`. Distinguish local DTOs, external contracts,
-requiredness and defaults, and mapping or visibility rules when supported.
-Name unavailable external shapes as boundaries in prose.
+CONTRACTS | Describe domain declarations, usage rules and contract bounds.
+Use contracts for shapes with evidenced fields. Give each exact name,
+scope, and field names, types and meanings. Describe fieldless shapes
+and constraints in cited claims. Keep local and external contracts,
+requiredness, defaults and mappings distinct. Name unavailable shapes.
+Operation pages own runtime order, branches and outcomes.
 
 DISCOVERY | Use the retained file to look for imperative, scheduled, listener,
 or other starts outside the supplied known starts. Return a discovery
 disposition and only genuinely additional starts. Give each its own claims
-and steps after the trigger. An observed registration or binding in source is
-evidence of source behavior. Runtime behavior needs runtime evidence.
+and steps after the trigger. Known starts and the behavior already owned by
+their operation pages are outside this slot. An observed registration or
+binding in source is evidence of source behavior. Runtime behavior needs
+runtime evidence.
 
-PROCESS_MAP | Explain how to choose a documented start, trace the resulting
-behavior and distinguish a known handoff from an unknown destination. Return
-route rows only for source-supported paths. Use canonical operation IDs for
-origin, subsequent occurrences and, when known, terminal. A peer needs
-evidence of the connection plus evidence owned by that peer. A shared term,
-route spelling or dependency declaration alone does not establish the link.
-Emit typed route steps in observed order after the fixed startup edge. Use the
-operation IDs and caller as actors, and the same call, await, return, async and
-note meanings as an operation slot. Describe a bounded outcome even
-when its terminal owner, boundary or recipient is unknown. Use null terminal
-and boundary together for an unknown end and explain the uncertainty in
-recipient. A local path is valid when its wider transport is unknown.
+PROCESS_MAP | Author routes only for retained transitions between documented
+operations, including within one service. The runner links individual
+operation behavior. Explain what the participating operations do together,
+keeping route-specific conditions and effects. Leave each operation's standalone
+branches, step order and results to its own page. The runner supplies the
+map overview and navigation. Return only route rows, with evidence limits
+specific to their transitions or outcomes.
+Use canonical operation IDs for origin, subsequent occurrences and, when
+known, terminal. A peer needs evidence of the connection plus evidence owned
+by that peer. A shared term, route spelling or dependency declaration alone does
+not establish the link. Emit typed steps in observed order after the fixed
+startup edge. Use the operation IDs and caller as actors, and the same call,
+await, return, async and note meanings as an operation slot. Use reference
+with the same operation ID for both actors and an empty label for a local
+segment already explained by that operation. Keep any route-specific premise
+in condition. The runner supplies the link and label. Keep genuine returns
+to their actual recipients. Describe the joint outcome within the evidence
+boundary. Use null terminal and boundary together for an unknown end and
+explain the uncertainty in recipient. Use [] when no route is supported.
