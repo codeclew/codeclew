@@ -26,6 +26,8 @@ LOCAL = 'codeclew-local-release-candidate/1.0'
 SLOT_KEY = re.compile(r'[a-z][a-z0-9_-]{0,127}')
 SLOT_FIELDS = ('key', 'kind', 'page', 'service', 'requirement', 'citations', 'citationSpans', 'sourceRegions', 'returns')
 SCOPE_FIELDS = ('revision', 'contextDigest', 'inputDigest', 'coverage', 'sourceInventory')
+ROUTING_ERROR = 'workspace routing discovery failed'
+ROUTING_FAILURE = {'code': 'PAGE_AUTHOR_SERVICE_UNAVAILABLE', 'details': {'backendMessage': ROUTING_ERROR}}
 
 
 def exact_file(root, relative, maximum):
@@ -159,6 +161,11 @@ def run_scope(job, inventory):
     }
 
 
+def usage_summary(accounting):
+    return {key: accounting[key] for key in ('status', 'counterScope', 'budgetTokens',
+                                              'knownBudgetTokensLowerBound', 'monetaryCost')}
+
+
 def history(run, target_job, target_inventory, target_pins):
     pins = load(exact_file(run, 'pins.json', LOG_LIMIT))
     job = load(exact_file(run, 'inputs/job.json', LOG_LIMIT))
@@ -181,22 +188,25 @@ def history(run, target_job, target_inventory, target_pins):
     need(old_plan['mode'] == MODE, 'REUSE_RUN_SCOPE_MISMATCH')
     rows = defaultdict(list)
     owners = defaultdict(set)
-    for attempt in state['attempts']:
-        if attempt.get('notLaunched'):
-            continue
+    attributable = [row for row in state['attempts'] if not row.get('notLaunched')]
+    account_indexes = defaultdict(list)
+    for index, attempt in enumerate(attributable):
         rows[attempt['slot']].append(attempt)
+        account_indexes[attempt['slot']].append(index)
         if thread := attempt.get('threadId'):
             owners[thread].add(attempt['slot'])
-    historical = token_accounting([row for row in state['attempts'] if not row.get('notLaunched')])
+    historical = token_accounting(attributable)
+    usage_matches = (canonical(state.get('tokenAccounting')) == canonical(historical)
+                     and state.get('modelTokens') == historical['budgetTokens']
+                     and state.get('usageAvailable') is (historical['status'] == 'MEASURED'))
     receipt = {
         'run': str(run), 'pinsDigest': digest(pins), 'stateDigest': seal, 'runtimeKey': caps['runtimeKey'],
         'skillDigest': caps['agentContract']['skillDigest'], 'author': run_scope(job, inventory)['author'],
         'releaseKit': package_proof,
         'recordedAttempts': len(state['attempts']),
-        'reportedUsage': {key: historical[key] for key in ('status', 'counterScope', 'budgetTokens',
-                                                          'knownBudgetTokensLowerBound', 'monetaryCost')},
+        'reportedUsage': usage_summary(historical),
     }
-    return job, {slot['key']: slot for slot in old_plan['slots']}, rows, owners, receipt
+    return job, {slot['key']: slot for slot in old_plan['slots']}, rows, owners, receipt, (usage_matches, account_indexes)
 
 
 def expected_argv(run, slot, number, backend, resume, flags):
@@ -225,36 +235,40 @@ def expected_prompt(slot, original, previous):
     return b'Repair for the packet below:\n' + details + b'\n' + original
 
 
-def checked_attempt(run, slot, original, attempt, previous, backend, flags):
+def checked_attempt_evidence(run, slot, attempt, previous, backend, flags):
     key, number = slot['key'], attempt['number']
     relative = f'page-attempts/{key}/{number}'
     thread = attempt.get('threadId')
     resume = previous['threadId'] if previous is not None else None
-    need(attempt['authorMode'] == MODE and attempt['status'] == 'COMPLETED' and type(attempt['exitCode']) is int
-         and attempt['exitCode'] == 0 and isinstance(thread, str) and 0 < len(thread) <= 192
+    started = attempt['startedAt']
+    need(attempt['authorMode'] == MODE and type(attempt['exitCode']) is int
+         and isinstance(thread, str) and 0 < len(thread) <= 192
          and (resume is None or thread == resume) and attempt['resumeThread'] == resume
-         and attempt['completedAt'] >= attempt['startedAt']
+         and started <= attempt.get('launchedAt', started) <= attempt['completedAt']
+         and (previous is None or previous['completedAt'] <= started)
          and attempt['argv'] == expected_argv(run, slot, number, backend, resume, flags), 'REUSE_ATTEMPT_NOT_ADMITTED')
     result = exact_file(run, relative + '/result.json', LOG_LIMIT)
     context = result.parent / 'context'
     need(context.is_dir() and not context.is_symlink() and next(context.iterdir(), None) is None,
          'REUSE_AUTHOR_CONTEXT_CHANGED')
-    need(load(result) == attempt, 'REUSE_ATTEMPT_RECEIPT_CHANGED')
+    need(canonical(load(result)) == canonical(attempt), 'REUSE_ATTEMPT_RECEIPT_CHANGED')
     prompt = exact_file(run, relative + '/prompt.txt', LOG_LIMIT).read_bytes()
-    expected = expected_prompt(slot, original, previous)
-    # Repair details were persisted with sorted keys. Reconstruct the same
-    # structured correction without relying on its historic insertion order.
-    if previous is not None and expected.startswith(b'{'):
-        need(decode(prompt) == decode(expected), 'REUSE_ATTEMPT_PROMPT_CHANGED')
-    else:
-        need(prompt == expected, 'REUSE_ATTEMPT_PROMPT_CHANGED')
-    raw = exact_file(run, relative + '/last-message.txt', RESPONSE_LIMIT).read_bytes()
-    need(sha(raw) == attempt['responseDigest'], 'REUSE_RESPONSE_CHANGED')
+    need('promptDigest' not in attempt or attempt['promptDigest'] == sha(prompt), 'REUSE_ATTEMPT_PROMPT_CHANGED')
     stdout = exact_file(run, relative + '/stdout.jsonl', LOG_LIMIT).read_bytes()
     events = [decode(line) for line in stdout.splitlines() if line.strip()]
     need(len(events) >= 4 and events[0].get('type') == 'thread.started'
-         and events[0].get('thread_id') == thread and events[1].get('type') == 'turn.started'
-         and events[-1].get('type') == 'turn.completed' and events[-1].get('usage') == attempt['usage'],
+         and events[0].get('thread_id') == thread and events[1].get('type') == 'turn.started',
+         'REUSE_AUTHOR_STREAM_CHANGED')
+    return result, prompt, stdout, events
+
+
+def checked_completed_stream(attempt, result, events):
+    need(attempt['status'] == 'COMPLETED' and attempt['exitCode'] == 0 and 'failure' not in attempt,
+         'REUSE_ATTEMPT_NOT_ADMITTED')
+    raw = exact_file(result.parent, 'last-message.txt', RESPONSE_LIMIT).read_bytes()
+    need(sha(raw) == attempt['responseDigest'], 'REUSE_RESPONSE_CHANGED')
+    need(events[-1].get('type') == 'turn.completed'
+         and canonical(events[-1].get('usage')) == canonical(attempt['usage']),
          'REUSE_AUTHOR_STREAM_CHANGED')
     final_message = None
     for event in events[2:-1]:
@@ -265,15 +279,76 @@ def checked_attempt(run, slot, original, attempt, previous, backend, flags):
             final_message = item.get('text')
     need(isinstance(final_message, str) and final_message.encode().rstrip(b'\r\n') == raw.rstrip(b'\r\n')
          and token_accounting([attempt])['status'] == 'MEASURED', 'REUSE_AUTHOR_STREAM_CHANGED')
-    return raw, {
-        'attempt': number, 'threadId': thread, 'receiptDigest': sha(result.read_bytes()),
-        'streamDigest': sha(stdout), 'attemptPromptDigest': sha(prompt), 'responseDigest': sha(raw),
+    return raw
+
+
+def check_routing_outage(attempt, result, events):
+    need(attempt['status'] == 'FAILED' and attempt['exitCode'] > 0 and attempt['number'] == 0
+         and attempt.get('failure') == ROUTING_FAILURE and 'responseFailure' not in attempt
+         and attempt['usage'] is None and 'responseDigest' not in attempt, 'REUSE_ATTEMPT_NOT_ADMITTED')
+    # A failed dispatch may create an empty output file before it gets a response.
+    output = result.parent / 'last-message.txt'
+    if output.exists() or output.is_symlink():
+        need(exact_file(result.parent, 'last-message.txt', RESPONSE_LIMIT).stat().st_size == 0,
+             'REUSE_RESPONSE_CHANGED')
+    # The CLI reports WebSocket retries starting at 2 and HTTPS retries at 1
+    # after fallback. Keep this admission narrower than the live retry classifier.
+    websocket_retries, https_retries = [
+        [{'type': 'error', 'message': f'Reconnecting... {number}/5 ({ROUTING_ERROR})'}
+         for number in range(start, 6)]
+        for start in (2, 1)
+    ]
+    fallback = {'type': 'item.completed', 'item': {'id': 'item_0', 'type': 'error',
+                'message': f'Falling back from WebSockets to HTTPS transport. {ROUTING_ERROR}'}}
+    need(events == [
+        {'type': 'thread.started', 'thread_id': attempt['threadId']},
+        {'type': 'turn.started'},
+        *websocket_retries, fallback, *https_retries,
+        {'type': 'error', 'message': ROUTING_ERROR},
+        {'type': 'turn.failed', 'error': {'message': ROUTING_ERROR}},
+    ], 'REUSE_AUTHOR_STREAM_CHANGED')
+
+
+def checked_attempt(run, slot, original, attempt, previous, backend, flags, *, recovering=False):
+    retry = previous is not None and previous.get('failure') == ROUTING_FAILURE
+    outage = previous is None and attempt.get('failure') == ROUTING_FAILURE
+    need(('serviceRetry' not in attempt and not retry) or (attempt.get('serviceRetry') is True and retry),
+         'REUSE_ATTEMPT_NOT_ADMITTED')
+    if outage or retry or recovering:
+        need('launchedAt' in attempt and 'promptDigest' in attempt, 'REUSE_ATTEMPT_NOT_ADMITTED')
+    result, prompt, stdout, events = checked_attempt_evidence(run, slot, attempt, previous, backend, flags)
+    expected = original if retry else expected_prompt(slot, original, previous)
+    # Format repair details were persisted with sorted keys. Match the
+    # structured correction without relying on its historic insertion order.
+    if previous is not None and not retry and expected.startswith(b'{'):
+        need(decode(prompt) == decode(expected), 'REUSE_ATTEMPT_PROMPT_CHANGED')
+    else:
+        need(prompt == expected, 'REUSE_ATTEMPT_PROMPT_CHANGED')
+    proof = {
+        'attempt': attempt['number'], 'threadId': attempt['threadId'], 'receiptDigest': sha(result.read_bytes()),
+        'streamDigest': sha(stdout), 'attemptPromptDigest': sha(prompt),
         'historicalCumulativeUsage': attempt['usage'],
     }
+    if outage:
+        check_routing_outage(attempt, result, events)
+        return None, proof
+    raw = checked_completed_stream(attempt, result, events)
+    return raw, dict(proof, responseDigest=sha(raw))
+
+
+def check_routing_repair(slot, previous, raw, validate):
+    try:
+        validate(slot, decode(raw))
+    except Stop as error:
+        failure = {'code': error.code, 'details': error.details}
+        need(error.code == 'PAGE_RESPONSE_INVALID' and error.details.get('formatOnly') is True
+             and canonical(failure) == canonical(previous.get('responseFailure')), 'REUSE_UNPROVEN_REPAIR')
+        return
+    raise Stop('REUSE_UNPROVEN_REPAIR')
 
 
 def candidates(run, target, plan, job, inventory, pins, flags, validate, reserved, rejected):
-    source_job, old, histories, owners, receipt = history(run, job, inventory, pins)
+    source_job, old, histories, owners, receipt, (usage_matches, account_indexes) = history(run, job, inventory, pins)
     values = {}
     for slot in plan['slots']:
         key = slot['key']
@@ -287,16 +362,34 @@ def candidates(run, target, plan, job, inventory, pins, flags, validate, reserve
         except (Stop, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
             rejected[getattr(error, 'code', 'REUSE_SLOT_INVALID')] += 1
             continue
-        validated = []
+        validated, recovery, completed = [], [], []
         previous = None
         for number, attempt in enumerate(histories[key]):
             try:
                 need(type(attempt['number']) is int and attempt['number'] == number
                      and owners[attempt['threadId']] == {key}, 'REUSE_THREAD_SCOPE_CHANGED')
-                raw, proof = checked_attempt(run, old[key], pinned['prompt'], attempt, previous, source_job['author'], flags)
-                need(token_accounting(histories[key][:number + 1])['status'] == 'MEASURED',
-                     'REUSE_HISTORICAL_COUNTERS_CHANGED')
-                validated.append((raw, proof))
+                if recovery and validated:
+                    check_routing_repair(old[key], previous, validated[-1][0], validate)
+                raw, proof = checked_attempt(run, old[key], pinned['prompt'], attempt, previous, source_job['author'],
+                                             flags, recovering=bool(recovery))
+                routed = bool(recovery) or raw is None
+                if routed:
+                    need(usage_matches, 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+                    proof['reportedUsageIndex'] = account_indexes[key][number]
+                if raw is not None:
+                    completed.append(attempt)
+                    need(token_accounting(completed)['status'] == 'MEASURED', 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+                    candidate = proof
+                    if recovery:
+                        chain_usage = token_accounting(histories[key][:number + 1])
+                        need(chain_usage['status'] == 'UNAVAILABLE'
+                             and all(row['attempt'] == 0 for row in chain_usage['missing']),
+                             'REUSE_HISTORICAL_COUNTERS_CHANGED')
+                        candidate = dict(proof, routingRecovery={
+                            'priorAttempts': recovery.copy(), 'usage': usage_summary(chain_usage)})
+                    validated.append((raw, candidate))
+                if routed:
+                    recovery.append(proof)
                 previous = attempt
             except (Stop, OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError) as error:
                 rejected[getattr(error, 'code', 'REUSE_ATTEMPT_INVALID')] += 1

@@ -581,7 +581,7 @@ else:
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
 
-    def isolated_reuse_fixture(self, *, official=False):
+    def isolated_reuse_fixture(self, *, official=False, routing=None):
         package = self.root / 'release'
         source = package / 'source/skills/codeclew'
         shutil.copytree(ROOT / 'skills/codeclew', source)
@@ -602,20 +602,55 @@ else:
         self.backend.write_text('#!' + sys.executable + '\n' + f"""
 import hashlib,json,sys
 from pathlib import Path
+seed=Path({str(self.seed)!r})
 out=Path(sys.argv[sys.argv.index('-o')+1])
 packet=json.loads(sys.stdin.read().split('\\n\\n')[-1])
-thread='fixture-'+hashlib.sha256(str(Path.cwd()).encode()).hexdigest()
-raw=(Path({str(self.seed)!r})/(packet['slot']+'-response.json')).read_text()
+thread='fixture-'+hashlib.sha256(str(Path.cwd().parent).encode()).hexdigest()
+if 'resume' in sys.argv:
+    thread=sys.argv[sys.argv.index('resume')+1]
+print(json.dumps({{'type':'thread.started','thread_id':thread}}))
+print(json.dumps({{'type':'turn.started'}}))
+routing=seed/'routing-slot.txt'
+if routing.exists() and routing.read_text()==packet['slot'] and 'resume' not in sys.argv:
+    message='workspace routing discovery failed'
+    out.touch()
+    for start in (2, 1):
+        for index in range(start, 6):
+            print(json.dumps({{'type':'error','message':f'Reconnecting... {{index}}/5 ({{message}})'}}))
+        if start==2:
+            print(json.dumps({{'type':'item.completed','item':{{'id':'item_0','type':'error',
+                'message':'Falling back from WebSockets to HTTPS transport. '+message}}}}))
+    print(json.dumps({{'type':'error','message':message}}))
+    print(json.dumps({{'type':'turn.failed','error':{{'message':message}}}}))
+    sys.exit(1)
+repair='formatRepair' in packet
+raw=(seed/(packet['slot']+('-repair.json' if repair else '-response.json'))).read_text()
 out.write_text(raw)
+multiplier=2 if repair else 1
 for row in (
-    {{'type':'thread.started','thread_id':thread}},
-    {{'type':'turn.started'}},
     {{'type':'item.completed','item':{{'type':'agent_message','text':raw.removesuffix('\\n')}}}},
-    {{'type':'turn.completed','usage':{{'input_tokens':20,'cached_input_tokens':10,'output_tokens':10}}}},
+    {{'type':'turn.completed','usage':{{'input_tokens':20*multiplier,'cached_input_tokens':10*multiplier,
+                                      'output_tokens':10*multiplier}}}},
 ): print(json.dumps(row))
 """)
-        old, plan, _, _ = self.isolated_fixture(run_name='historical-run')
-        self.assertEqual(D['execute'](old)['status'], 'READY_PROMOTED')
+        old, plan, _, _ = self.isolated_fixture(run_name='historical-run', repairs=int(routing == 'format-repair'))
+        if routing:
+            slot = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+            key = slot['key']
+            (self.seed / 'routing-slot.txt').write_text(key)
+            if routing == 'format-repair':
+                path = self.seed / (key + '-response.json')
+                response = D['load'](path)
+                D['save'](self.seed / (key + '-repair.json'), response)
+                response['claims'][0]['cites'] = ['Unbound']
+                D['save'](path, response)
+            with patch.dict(D['PX']['execute_authors'].__globals__, {'SERVICE_RETRY_DELAY': 0}):
+                with self.assertRaises(D['Stop']) as paused:
+                    D['execute'](old)
+                self.assertEqual(paused.exception.code, 'PAGE_AUTHOR_SERVICE_UNAVAILABLE')
+                self.assertEqual(D['execute'](old)['status'], 'READY_PROMOTED')
+        else:
+            self.assertEqual(D['execute'](old)['status'], 'READY_PROMOTED')
         (old / '.runner.lock').touch()
         target, _, _, _ = self.isolated_fixture(run_name='new-run')
         return old, target, plan
@@ -784,6 +819,99 @@ for row in (
         self.assertEqual(result['status'], 'READY_PROMOTED', result)
         self.assertEqual((result['reuse']['reusedPages'], result['reuse']['newAuthorInvocations']), (len(plan['slots']), 0))
         self.assertEqual(D['load'](target / 'report.json')['checks']['author']['reportedModelTokens'], 0)
+
+    def test_reuse_accepts_same_thread_routing_recovery_and_format_repair(self):
+        old, target, plan = self.isolated_reuse_fixture(routing='format-repair')
+        owner = D['PR']
+        job, inventory, pins = D['frozen_inputs'](target)
+        old_files = D['tree'](old)
+        result = owner['import_pages'](target, [old], job, inventory, pins, plan, D['load'](target / 'state.json'),
+                                      D['inline_cli_flags'], D['P']['validate_response'])
+        self.assertEqual((result['reusedPages'], result['remainingPages'], result['rejected']),
+                         (len(plan['slots']), 0, {}))
+        key = (self.seed / 'routing-slot.txt').read_text()
+        proof = D['load'](target / 'page-reuse.json')['pages'][key]
+        self.assertEqual(proof['attempt'], 2)
+        recovered = proof['routingRecovery']
+        self.assertEqual([row['attempt'] for row in recovered['priorAttempts']], [0, 1])
+        self.assertEqual(recovered['priorAttempts'][0]['attemptPromptDigest'],
+                         recovered['priorAttempts'][1]['attemptPromptDigest'])
+        accounting = D['load'](old / 'state.json')['tokenAccounting']
+        for row in [*recovered['priorAttempts'], proof]:
+            self.assertEqual(accounting['reportedUsage'][row['reportedUsageIndex']]['usage'],
+                             row['historicalCumulativeUsage'])
+            self.assertEqual(row['threadId'], proof['threadId'])
+        self.assertIsNone(recovered['priorAttempts'][0]['historicalCumulativeUsage'])
+        self.assertEqual(recovered['usage']['status'], 'UNAVAILABLE')
+        self.assertIsNone(recovered['usage']['budgetTokens'])
+        self.assertEqual(recovered['usage']['knownBudgetTokensLowerBound'], 40)
+        self.assertEqual(D['execute'](target)['reuse']['newAuthorInvocations'], 0)
+        self.assertEqual(D['tree'](old), old_files)
+
+    def test_reuse_refuses_unproven_routing_recovery(self):
+        from collections import Counter
+        old, target, plan = self.isolated_reuse_fixture(routing='plain')
+        owner = D['PR']
+        job, inventory, pins = D['frozen_inputs'](target)
+        key = (self.seed / 'routing-slot.txt').read_text()
+        state_path = old / 'state.json'
+        state = D['load'](state_path)
+        failed, resumed = [row for row in state['attempts'] if row['slot'] == key]
+        fail_dir, retry_dir = (D['PX']['attempt_dir'](old, row) for row in (failed, resumed))
+        fail_stream, retry_stream = fail_dir / 'stdout.jsonl', retry_dir / 'stdout.jsonl'
+        prompt = retry_dir / 'prompt.txt'
+        output = retry_dir / 'last-message.txt'
+
+        def with_attempt(row, fields, folder, *, refresh_usage=False):
+            changed = dict(row, **fields)
+            attempts = [changed if entry is row else entry for entry in state['attempts']]
+            modified = dict(state, attempts=attempts)
+            if refresh_usage:
+                accounting = D['token_accounting'](attempts)
+                modified.update(tokenAccounting=accounting, modelTokens=accounting['budgetTokens'],
+                                usageAvailable=accounting['status'] == 'MEASURED')
+            return {folder / 'result.json': D['encode'](changed), state_path: D['encode'](modified)}
+
+        altered_prompt = b'A different packet.'
+        forged = b'{"unproven":"output"}'
+        altered_accounting = {**state['tokenAccounting'], 'reportedUsage': []}
+        missing_usage = {'input_tokens': 20, 'output_tokens': 10}
+        missing_usage_stream = retry_stream.read_bytes().splitlines(keepends=True)
+        missing_usage_stream[-1] = json.dumps({'type': 'turn.completed', 'usage': missing_usage}).encode() + b'\n'
+        mutations = (
+            (with_attempt(failed, {'failure': {'code': 'PAGE_AUTHOR_PROCESS_FAILED', 'details': {}}}, fail_dir),
+             'REUSE_ATTEMPT_NOT_ADMITTED'),
+            ({fail_stream: fail_stream.read_bytes().replace(b'3/5', b'1/5', 1)}, 'REUSE_AUTHOR_STREAM_CHANGED'),
+            ({fail_dir / 'last-message.txt': forged}, 'REUSE_RESPONSE_CHANGED'),
+            ({retry_stream: retry_stream.read_bytes().replace(b'turn.completed', b'turn.failed')},
+             'REUSE_AUTHOR_STREAM_CHANGED'),
+            ({**with_attempt(resumed, {'usage': missing_usage}, retry_dir, refresh_usage=True),
+              retry_stream: b''.join(missing_usage_stream)}, 'REUSE_AUTHOR_STREAM_CHANGED'),
+            ({**with_attempt(resumed, {'responseDigest': D['sha'](forged)}, retry_dir), output: forged},
+             'REUSE_AUTHOR_STREAM_CHANGED'),
+            ({**with_attempt(resumed, {'promptDigest': D['sha'](altered_prompt)}, retry_dir), prompt: altered_prompt},
+             'REUSE_ATTEMPT_PROMPT_CHANGED'),
+            (with_attempt(resumed, {'resumeThread': 'another-session'}, retry_dir), 'REUSE_ATTEMPT_NOT_ADMITTED'),
+            (with_attempt(resumed, {'argv': ['workspace-write' if arg == 'read-only' else arg
+                                             for arg in resumed['argv']]}, retry_dir), 'REUSE_ATTEMPT_NOT_ADMITTED'),
+            ({state_path: D['encode']({**state, 'tokenAccounting': altered_accounting})},
+             'REUSE_HISTORICAL_COUNTERS_CHANGED'),
+        )
+        for index, (edits, expected) in enumerate(mutations):
+            with self.subTest(index=index, expected=expected):
+                originals = {file: file.read_bytes() for file in edits}
+                try:
+                    for file, raw in edits.items():
+                        file.write_bytes(raw)
+                    rejected = Counter()
+                    rows, _ = owner['candidates'](old, target, plan, job, inventory, pins, D['inline_cli_flags'],
+                                                  D['P']['validate_response'], {}, rejected)
+                    self.assertNotIn(key, rows)
+                    self.assertEqual(len(rows), len(plan['slots']) - 1)
+                    self.assertEqual(rejected[expected], 1)
+                finally:
+                    for file, raw in originals.items():
+                        file.write_bytes(raw)
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'
