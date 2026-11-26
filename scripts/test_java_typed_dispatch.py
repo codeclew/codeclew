@@ -160,15 +160,50 @@ class JavaTypedDispatchTests(unittest.TestCase):
         self.assertIn("return handler;", excerpts)
         self.assertFalse(any("TramEventSubscriberConfiguration" in excerpt for excerpt in excerpts))
 
-    def test_partial_registration_requires_a_retained_unconditional_spring_bean(self):
+    def test_boot_auto_configuration_marker_preserves_the_exact_bean_declaration(self):
+        imports = "import org.springframework.boot.autoconfigure.EnableAutoConfiguration;"
+        changes = [(ANNOTATED_WIRING, "import org.springframework.context.annotation.Bean;",
+                    imports + "\nimport org.springframework.context.annotation.Bean;"),
+                   (ANNOTATED_WIRING, "@Configuration", "@Configuration\n@EnableAutoConfiguration")]
+        rows, files = self.prepared([*NO_REGISTRAR, *changes], fixture=self.annotated)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertTrue(row["registrarOpen"])
+            self.assertFalse(row["beanActivationOpen"])
+            excerpts = [files[span["file"]]["text"].encode()[span["start"]:span["end"]].decode()
+                        for span in row["assemblySources"]]
+            self.assertIn("@EnableAutoConfiguration", excerpts)
+            self.assertIn(imports, excerpts)
+
+    def test_unknown_or_conditional_annotations_preserve_only_the_bean_declaration(self):
         cases = {
-            "foreign bean": [(ANNOTATED_WIRING, "org.springframework.context.annotation.Bean", "neutral.foreign.Bean")],
-            "configuration has an unresolved gate": [(ANNOTATED_WIRING, "@Configuration", "@Configuration\n@EnvironmentGate")],
-            "bean has an unresolved gate": [(ANNOTATED_WIRING, "    @Bean", "    @EnvironmentGate\n    @Bean")],
+            "foreign Boot marker": ("@EnableAutoConfiguration",
+                                    "import neutral.foreign.EnableAutoConfiguration;"),
+            "real Spring profile": ('@Profile("test")', "import org.springframework.context.annotation.Profile;"),
+            "unresolved configuration decorator": ("@EnvironmentGate", ""),
+            "unresolved factory decorator": ("@FactoryGate", ""),
         }
-        for label, changes in cases.items():
+        for label, (decorator, imported) in cases.items():
             with self.subTest(case=label):
-                self.assertEqual(self.prepared([*NO_REGISTRAR, *changes], fixture=self.annotated)[0], [])
+                if label == "unresolved factory decorator":
+                    member, decorated = "    @Bean", f"    {decorator}\n    @Bean"
+                else:
+                    member, decorated = "@Configuration", f"@Configuration\n{decorator}"
+                changes = [(ANNOTATED_WIRING, member, decorated)]
+                if imported:
+                    changes.append((ANNOTATED_WIRING, "import org.springframework.context.annotation.Bean;",
+                                    imported + "\nimport org.springframework.context.annotation.Bean;"))
+                rows, files = self.prepared([*NO_REGISTRAR, *changes], fixture=self.annotated)
+                self.assertEqual(len(rows), 3)
+                for row in rows:
+                    self.assertTrue(row["registrarOpen"] and row["beanActivationOpen"])
+                    excerpts = [files[span["file"]]["text"].encode()[span["start"]:span["end"]].decode()
+                                for span in row["assemblySources"]]
+                    self.assertIn(decorator, excerpts)
+
+    def test_partial_registration_requires_a_retained_exact_spring_bean(self):
+        foreign = [(ANNOTATED_WIRING, "org.springframework.context.annotation.Bean", "neutral.foreign.Bean")]
+        self.assertEqual(self.prepared([*NO_REGISTRAR, *foreign], fixture=self.annotated)[0], [])
         without_handler = {file: row for file, row in self.annotated.items() if file != ANNOTATED_HANDLER}
         self.assertEqual(self.prepared(NO_REGISTRAR, fixture=without_handler)[0], [])
 

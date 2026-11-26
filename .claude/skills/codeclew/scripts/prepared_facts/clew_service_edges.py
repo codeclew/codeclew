@@ -235,6 +235,7 @@ def record(requirement, process, context, facts, exact):
     typed_registration = None
     if (requirement.get("entryKind") == trigger.get("kind") == "JAVA_TYPED_DISPATCH"
             and trigger.get("authority") in {JAVA_DISPATCH_AUTHORITY, JAVA_DISPATCH_DECLARATION}
+            and not trigger.get("beanActivationOpen")
             and trigger.get("registration") in sources and callbacks
             and all(ref in sources for ref in assembly) and len(registration) <= registration_limit):
         typed_registration = typed_route(trigger.get("configuration") or {})

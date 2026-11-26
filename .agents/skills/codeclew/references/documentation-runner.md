@@ -113,10 +113,13 @@ A handler table can bind a method reference or a single-step delegate. For
 `@EventuateDomainEventHandler`, discovery takes the subscriber ID and channel
 from the annotation and the qualified event class from `DomainEventEnvelope<T>`.
 A retained subscriber configuration import and handler bean support a
-source-qualified dispatcher candidate. A direct, unconditional `@Bean`
-declaration also supports an operation when the external registrar remains open.
-Its unique publication peer can be marked `POSSIBLE` for the same channel and
-qualified event class, conditional on registrar activation and message delivery.
+source-qualified dispatcher candidate. A direct `@Bean` declaration also
+supports an operation when the external registrar remains open, including with
+Spring Boot's `@EnableAutoConfiguration`. Its unique publication peer can be
+marked `POSSIBLE` for the same channel and qualified event class, conditional on
+registrar activation and message delivery. A potentially gated configuration
+or factory keeps its declaration with an explicit Spring condition boundary
+and leaves its peer unresolved.
 Opaque wiring and competing handlers leave selection open. Deployment bindings,
 activation, delivery, acknowledgement and execution order remain unknown.
 A discovered background entry has its own starter page, sequence template,

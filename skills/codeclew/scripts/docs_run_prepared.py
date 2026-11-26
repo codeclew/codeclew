@@ -658,6 +658,7 @@ def background_operation(service, found, files, exact):
     sources, handles = {}, {}
     kind, authority = BACKGROUND_KINDS[found['kind']]
     registrar_open = kind == 'JAVA_TYPED_DISPATCH' and found.get('registrarOpen')
+    bean_activation_open = registrar_open and found.get('beanActivationOpen')
     if registrar_open:
         authority = 'RETAINED_JAVA_HANDLER_BEAN_DECLARATION'
 
@@ -724,6 +725,8 @@ def background_operation(service, found, files, exact):
                                     'eventType': found['eventType']}
         if 'subscriberId' in found:
             trigger['configuration']['subscriberId'] = found['subscriberId']
+        if bean_activation_open:
+            trigger['beanActivationOpen'] = True
         trigger['assemblySources'] = list(dict.fromkeys(assembly))
         refs = list(dict.fromkeys([*refs, *assembly]))
     origins = list(dict.fromkeys(handles[ref] for ref in refs))
@@ -737,6 +740,8 @@ def background_operation(service, found, files, exact):
                    'trigger': trigger, 'boundaries': ['RUNTIME_ACTIVATION_NOT_ESTABLISHED']}
     if registrar_open:
         requirement['boundaries'].append('EXTERNAL_REGISTRAR_NOT_ESTABLISHED')
+    if bean_activation_open:
+        requirement['boundaries'].append('SPRING_BEAN_ACTIVATION_CONDITION_UNRESOLVED')
     helpers = [ref for row in found.get('helpers', ()) if (ref := bind(row))]
     bodies = list(dict.fromkeys([callback, *helpers]))
     calls, offsets, publications = [], [], []
@@ -772,6 +777,9 @@ def background_operation(service, found, files, exact):
                                  uncertainty='Retained source leaves the external Eventuate registrar and its '
                                  'activation unresolved. Transport and wire bindings, delivery, acknowledgement '
                                  'and runtime execution order remain open.')
+    if bean_activation_open:
+        registration_fact['uncertainty'] += (' Spring must also permit bean registration under the cited '
+                                             'configuration or factory annotations.')
     facts = [registration_fact]
     if trigger.get('topicCoverageOpen'):
         facts.append(dict(kind='background-topic-boundary', authority=authority, sources=[registration],

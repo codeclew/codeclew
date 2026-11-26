@@ -3093,11 +3093,12 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
 
         assembly = ["assembly", *(f"alias-{index}" for index in range(10))]
 
-        def listener(name, configuration, *, registered=True, callback=True, complete=True,
+        def listener(name, configuration, *, registered=True, callback=True, complete=True, gated=False,
                      authority="RETAINED_JAVA_DISPATCHER_WIRING"):
             references = [f"{name}-{piece}" for piece in assembly]
             return self.retained(name, entry_kind="JAVA_TYPED_DISPATCH", proof=registered,
                                  trigger={"kind": "JAVA_TYPED_DISPATCH", "authority": authority,
+                                          "beanActivationOpen": gated,
                                           "configuration": configuration, "registration": name + "-registration",
                                           "callback": name + ("-body" if callback else "-absent"),
                                           "assemblySources": references if complete else [*references, name + "-missing"]},
@@ -3128,8 +3129,11 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         declared = "RETAINED_JAVA_HANDLER_BEAN_DECLARATION"
         possible = listener("declared", config, authority=declared)
         missing = listener("missing-declaration-source", config, authority=declared, complete=False)
-        partial = self.project(owner, possible, missing, *peers)
+        gated = listener("gated-declaration", config, authority=declared, gated=True)
+        partial = self.project(owner, possible, missing, gated, *peers)
         self.assertNotIn(missing[0]["id"], partial)
+        self.assertNotIn(gated[0]["id"], partial)
+        self.assertEqual(self.project(owner, gated)[owner[0]["id"]][0]["status"], "UNKNOWN")
         for entry in (owner, possible):
             edge, = partial[entry[0]["id"]]
             self.assertEqual((edge["kind"], edge["status"]), ("typed-message-peer", "POSSIBLE"))
