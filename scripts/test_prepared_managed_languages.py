@@ -1299,6 +1299,82 @@ class ParcelDispatcher(
         audit = [row for row in rows if row.get("_writeFocus", {}).get("occurrence") == writes.get("audit_log")]
         self.assertFalse(any(row["kind"] in {"write_request", "write_commit"} for row in audit), audit)
 
+    def test_typescript_focus_preserves_validated_writes_for_each_subscribed_topic(self):
+        self.require_typescript()
+        source = """import { Kafka } from "kafkajs";
+const kafka = new Kafka({brokers: []});
+const consumer = kafka.consumer({groupId: "reader"});
+function validate(payload: any, topic: string) {
+    if (topic === "stock.arrived") {
+        if (payload.action !== "store") throw new Error("invalid action");
+    } else {
+        if (payload.action !== "remove") throw new Error("invalid action");
+    }
+    return payload;
+}
+async function receive({topic, message}: Envelope) {
+    const input = validate(JSON.parse(message.value), topic);
+    if (input.action === "store") {
+        await db.query("INSERT INTO slots (id) VALUES ($1)", [input.id]);
+    } else {
+        await db.query("DELETE FROM slots WHERE id = $1", [input.id]);
+    }
+}
+async function start() {
+    await consumer.subscribe({topics: ["stock.arrived", "stock.departed"]});
+    await consumer.run({eachMessage: receive});
+}
+"""
+        candidate, = self.adapter["discover_background"]({"Worker.ts": {"text": source}}, node=self.node,
+                                                         deadline=time.monotonic() + 10, family="typescript")
+        operations = runpy.run_path(str(MANAGED.parent / "docs_run_prepared.py"), init_globals={
+            "sha": lambda data: "sha256:" + sha256(data).hexdigest(),
+            "encode": lambda value: json.dumps(value, sort_keys=True).encode()})
+        _, context = selected("Worker.ts", source)
+        record, = context["sourceRanges"]
+        original = {**record, "occurrence": {"snapshot": "snapshot", "blob": "blob"}}
+        _, process, witnesses, _, _ = operations["background_operation"](
+            "warehouse", candidate, {"Worker.ts": original}, {HANDLE: original})
+        context = {"sourceRanges": list(witnesses.values()), "_sourceOccurrences": witnesses,
+                   "entrySources": process["entrySources"]}
+        rows, _ = self.project(process, context)
+        calls = {row["_edge"]["kind"]: row["_edge"]["occurrence"] for row in rows
+                 if row.get("_edge", {}).get("kind") in {"INSERT", "DELETE"}}
+        self.assertEqual(calls.keys(), {"INSERT", "DELETE"})
+        for name, accepted in (("stock.arrived", "INSERT"), ("stock.departed", "DELETE")):
+            for verb, occurrence in calls.items():
+                with self.subTest(topic=name, write=verb):
+                    scoped = [row for row in rows if (focus := row.get("_writeFocus", {})).get("topic") == name
+                              and focus["occurrence"] == occurrence]
+                    verdict, = (row for row in scoped if row["kind"] == "write_compatibility")
+                    self.assertEqual(verdict["_writeFocus"]["compatibility"],
+                                     "COMPATIBLE" if accepted == verb else "INCOMPATIBLE")
+                    self.assertIn(f"incoming topic `{name}`", verdict["text"])
+                    self.assertIn(verb, verdict["text"])
+                    self.assertIn('input.action === "store"', verdict["text"])
+                    self.assertIn("after the retained validator returns normally", verdict["text"])
+                    self.assertIn('`input.action` set to `"' + ("store" if name == "stock.arrived" else "remove") + '"`',
+                                  verdict["text"])
+                    self.assertEqual(any(row["kind"] == "write_request" for row in scoped), accepted == verb)
+
+    def test_typescript_focus_leaves_mutable_envelope_topic_open_after_escape(self):
+        self.require_typescript()
+        text = """async function receive(input: Envelope) {
+    revise(input);
+    if (input.topic === "stock.manual") {
+        await db.query("INSERT INTO slots (id) VALUES ($1)", [1]);
+    }
+}"""
+        process, context = selected("Worker.ts", text)
+        process.update(entryKind="KAFKA_LISTENER", trigger={"kind": "EACH_MESSAGE",
+                       "authority": "KAFKAJS_RETAINED_SOURCE", "callback": "s1",
+                       "configuration": {"topics": ["stock.arrived"]}})
+        rows, _ = self.project(process, context)
+        focused = [row for row in rows if row.get("_writeFocus")]
+        self.assertTrue(any(row["kind"] == "write_request" for row in focused))
+        self.assertTrue(any(row["kind"] == "write_boundary" and "compatibility" in row["text"] for row in focused))
+        self.assertFalse(any(row["kind"] == "write_compatibility" for row in focused))
+
     def test_installed_roslyn_reuses_projected_graph_for_a_reached_write(self):
         self.require_roslyn()
         header = """using System.Data.Common;

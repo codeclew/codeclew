@@ -4588,6 +4588,112 @@ class Inventory(private val tx: TransactionTemplate, private val db: JdbcTemplat
         self.assertTrue(any(row["status"] == "INCOMPATIBLE_IN_RETAINED_PATHS" for row in prior))
         self.assertFalse(any(row["kind"] in {"message-peer-effect", "message-storage-reader"} for row in prior))
 
+    def test_scoped_subscriber_verdicts_and_conditional_relay_survive_author_packets(self):
+        def retained_fact(name, kind, text, **data):
+            return {"kind": kind, "authority": "RETAINED_PATH", "text": text, "sources": [name + "-body"], **data}
+
+        def operation(name, verb, occurrence, **identity):
+            return retained_fact(name, "effect", "The source reaches the cited operation.",
+                                 _edge={"kind": verb, "site": name + "-body", "occurrence": occurrence, **identity})
+
+        def verdict(occurrence, topic, compatible, text, **conditions):
+            return retained_fact("apply-change", "write_compatibility", text,
+                                 _writeFocus={"occurrence": occurrence, "topic": topic,
+                                              "compatibility": "COMPATIBLE" if compatible else "INCOMPATIBLE"},
+                                 **conditions)
+
+        inbound = self.retained("intake", name="submit", facts=[operation("submit", "PUBLISH", "start", topic="pickup.ready")])
+        enqueue = self.retained("routing", name="enqueue", entry_kind="KAFKA_LISTENER",
+                                trigger={"configuration": {"topics": ["pickup.ready"]}}, facts=[
+                                    {**operation("enqueue", "INSERT", "queue", table="pending_changes"),
+                                     "condition": "the request has a warehouse key"}])
+        relay_facts = [operation("relay", "SELECT", "select", table="pending_changes"),
+                       operation("relay", "PUBLISH", "send", topic="inventory.apply")]
+        poller = self.retained("routing", name="relay", entry_kind="SCHEDULED_JOB",
+                              facts=[*relay_facts, {**self.poll_proof("relay"), "condition": "the poll finds an eligible row"}])
+        other = self.retained("retirement", name="cancel", facts=[operation("cancel", "PUBLISH", "retire", topic="inventory.retire")])
+        recipient = self.retained("warehouse", name="apply-change", entry_kind="KAFKA_LISTENER",
+            trigger={"configuration": {"topics": ["inventory.apply", "inventory.retire"]}}, facts=[
+                operation("apply-change", "UPDATE", "apply", table="inventory"),
+                operation("apply-change", "DELETE", "retire", table="inventory"),
+                verdict("apply", "inventory.apply", True, 'Normal validation fixes `action` to `"apply"`.',
+                        condition="the validator returns normally"),
+                verdict("retire", "inventory.apply", False, 'The `action === "retire"` guard evaluates to `false`.'),
+                verdict("apply", "inventory.retire", False, 'The `action === "apply"` guard evaluates to `false`.'),
+                verdict("retire", "inventory.retire", True, 'Normal validation fixes `action` to `"retire"`.')])
+        operations = (inbound, enqueue, poller, other, recipient)
+        inbound_id, other_id = inbound[0]["id"], other[0]["id"]
+
+        def verify(rows):
+            hop, = (row for row in rows if row["kind"] == "further-subscriber-outbox")
+            for part in ("pickup.ready", "pending_changes", "enqueue.md", "relay.md", "same key", "inventory.apply"):
+                self.assertIn(part, hop["text"])
+            self.assertIn("the request has a warehouse key", hop["condition"])
+            self.assertIn("the poll finds an eligible row", hop["condition"])
+            positive, = (row for row in rows if row["kind"] == "message-peer-write-compatibility")
+            for part in ("relay.md", "inventory.apply", "UPDATE", "apply-change.md", "validator returns normally"):
+                self.assertIn(part, positive["text"] + " " + positive["condition"])
+            negative, = (row for row in rows if row["kind"] == "message-peer-write-boundary")
+            self.assertEqual(negative["status"], "INCOMPATIBLE_IN_RETAINED_PATHS")
+            for part in ("relay.md", "inventory.apply", "DELETE", "apply-change.md", 'action === "retire"'):
+                self.assertIn(part, negative["text"])
+            self.assertNotIn("enqueue.md", negative["text"])
+            self.assertNotIn("condition", negative)
+            self.assertTrue(all("delivery" in row["uncertainty"] for row in (hop, positive, negative)))
+
+        for isolated in (False, True):
+            with self.subTest(isolated=isolated):
+                projected = self.project(*operations, isolated=isolated)
+                verify(projected[inbound_id])
+                positives = [row["text"] for row in projected[other_id] if row["kind"] == "message-peer-write-compatibility"]
+                self.assertTrue(any("inventory.retire" in text and "DELETE" in text for text in positives))
+                self.assertFalse(any("UPDATE" in text for text in positives))
+
+        unmatched = self.retained("routing", name="relay", entry_kind="SCHEDULED_JOB", facts=relay_facts)
+        missing = self.project(inbound, enqueue, unmatched, recipient, isolated=True)[inbound_id]
+        frontier, = (row for row in missing if row["kind"] == "further-outbox-poll-activation")
+        self.assertIn("the independently registered poller in `relay.md` can select the row", frontier["text"])
+        self.assertIn("same database and row key", frontier["text"])
+        boundary, = (row for row in missing if row["kind"] == "further-outbox-boundary")
+        self.assertIn("leaves the row-to-publication link open", boundary["text"])
+        self.assertEqual(boundary["status"], "UNKNOWN")
+        self.assertFalse(any(row["status"] == "INCOMPATIBLE_IN_RETAINED_PATHS" for row in missing))
+
+        requirements, services = [], {}
+        projected = self.project(*operations, isolated=True)
+        citations = {handle: source for _, _, exact in operations for handle, source in exact.items()}
+        entries = {row[0]["id"]: {"propositions": projected[row[0]["id"]]} for row in operations}
+        author_entries = self.prepared["author_entries"](entries, citations)
+        for requirement, _, exact in operations:
+            service, identity = requirement["service"], requirement["id"]
+            requirements.append({**requirement, "handlerId": identity + "-handler"})
+            scope = services.setdefault(service, {"ready": {}, "sources": {}, "facts": {}, "returns": [],
+                  "coverage": {"coverage": "SYNTAX"}, "deferred": []})
+            scope["ready"][identity] = {"evidenceCandidates": list(exact)}
+            scope["sources"].update(exact)
+            if identity in author_entries:
+                scope["facts"][identity] = author_entries[identity]
+            for fact in projected[identity]:
+                scope["sources"].update({handle: citations[handle] for handle in fact["sources"]})
+
+        job = {"services": list(services), "request": "Describe retained behavior.", "language": "en"}
+        inventory = {"services": {service: {} for service in services}, "requirements": requirements,
+                     "snapshot": F["SNAPSHOT"]}
+        pages = D["P"]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.dict(pages["page_jobs"].__globals__, {"service_evidence": lambda scope, *_: scope}):
+                plan = pages["page_jobs"](job, inventory, {"services": services}, home / "prompts",
+                                          D["M"]["MAX_PAGES"], "Owned instructions.")
+            slots = [slot for slot in plan["slots"] if slot["requirement"] == inbound_id or slot["kind"] == "PROCESS_MAP"]
+            self.assertEqual(len(slots), 2)
+            for slot in slots:
+                with self.subTest(slot=slot["kind"]):
+                    prompt = (home / slot["prompt"]).read_text()
+                    packet = pages["expand_fact_context"](json.loads(prompt.rsplit("\n\n", 1)[-1]))
+                    scoped = packet["facts"][inbound_id]
+                    verify([*scoped["facts"], *scoped["boundaries"]])
+
     def test_registered_reader_publication_and_subscriber_require_matching_retained_keys(self):
         def effect(service, operation, **identity):
             site = service + "-body"

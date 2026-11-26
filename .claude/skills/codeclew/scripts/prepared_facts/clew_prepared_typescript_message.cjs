@@ -1,10 +1,12 @@
 /* Specialize an admitted callback only through the retained topic binding and validator. */
-module.exports = function ({ts, unwrap, source, topic, resolve}) {
+module.exports = function ({ts, unwrap, source, caption, topic, resolve}) {
     const UNKNOWN = Symbol("unknown");
     const literal = value => ({kind: "literal", value});
     const incomingTopic = {...literal(topic), message: true};
     const record = (facts = new Map(), origin = Symbol("decoded value")) => ({kind: "record", facts, origin});
     const envelope = {kind: "envelope"};
+    const escapedEnvelope = {kind: "envelope"};
+    const unknownTopic = {kind: "unknown"};
     const isRecord = value => value?.kind === "record";
     const symbol = (scope, node) => scope.checker.getSymbolAtLocation(node);
     const operators = ts.SyntaxKind;
@@ -38,6 +40,7 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
         if (ts.isPropertyAccessExpression(node) && !ts.isOptionalChain(node)) {
             const base = operand(scope, node.expression, values, validation);
             if (base === envelope && node.name.text === "topic") return incomingTopic;
+            if (base === escapedEnvelope && node.name.text === "topic") return unknownTopic;
             if (isRecord(base) || base?.kind === "path") {
                 const path = [...(base.path || []), node.name.text];
                 if (path.length <= 6) return {kind: "path", path, facts: validation || base.facts, origin: base.origin};
@@ -72,11 +75,11 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
         if (ts.isIdentifier(name)) {
             const binding = symbol(scope, name);
             if (binding) values.set(binding, value);
-        } else if (value === envelope && ts.isObjectBindingPattern(name)) {
+        } else if (value.kind === "envelope" && ts.isObjectBindingPattern(name)) {
             for (const member of name.elements) {
                 if (!member.dotDotDotToken && !member.initializer && property(member) === "topic" && ts.isIdentifier(member.name)) {
                     const binding = symbol(scope, member.name);
-                    if (binding) values.set(binding, incomingTopic);
+                    if (binding) values.set(binding, value === envelope ? incomingTopic : unknownTopic);
                 }
             }
         }
@@ -277,7 +280,7 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
             for (const declaration of statement.declarationList.declarations) {
                 if (!ts.isIdentifier(declaration.name) || !declaration.initializer) return undefined;
                 const value = operand(scope, declaration.initializer, values);
-                if (!value || value === envelope) return undefined;
+                if (!value || value.kind === "envelope") return undefined;
                 bind(scope, values, declaration.name, value);
             }
             return values;
@@ -363,16 +366,30 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
     function observe(scope, expression, state, outcome) {
         function usesMessage(node) {
             const selected = operand(scope, node, state.messageValues);
-            return selected === incomingTopic || selected === envelope || isRecord(selected) || selected?.kind === "path" ||
+            return selected === incomingTopic || selected === unknownTopic || selected?.kind === "envelope" ||
+                isRecord(selected) || selected?.kind === "path" ||
                 Boolean(ts.forEachChild(node, child => usesMessage(child) ? true : undefined));
         }
         if (!usesMessage(expression)) return state;
         const known = safeCondition(scope, expression, state.messageValues)
             ? test(scope, expression, state.messageValues) : UNKNOWN;
         if (known === UNKNOWN) return {...state, messageOpen: true};
-        const evidence = [...new Set([...state.messageEvidence, source(scope, expression)])];
-        return {...state, messageEvidence: evidence, messageCompared: true,
-            messageContradiction: state.messageContradiction || known !== outcome};
+        const site = source(scope, expression);
+        const evidence = [...new Set([...state.messageEvidence, site])];
+        const validation = state.messageValidation && test(scope, expression, dropRecords(state.messageValues)) !== known;
+        const predicate = unwrap(expression);
+        const values = validation && ts.isBinaryExpression(predicate) && strict.has(predicate.operatorToken.kind)
+            ? [predicate.left, predicate.right].flatMap(node => {
+                const value = operand(scope, node, state.messageValues);
+                const fact = fieldFact(value);
+                const name = caption(node);
+                return fact && Object.hasOwn(fact, "equal") && name
+                    ? [{name, value: JSON.stringify(fact.equal) ?? "undefined"}] : [];
+            }) : [];
+        const check = {guard: caption(expression), actual: known, required: outcome, validation, values};
+        return {...state, messageEvidence: evidence,
+            messageAgreement: known === outcome && (validation || !state.messageAgreement) ? check : state.messageAgreement,
+            messageContradiction: state.messageContradiction || (known !== outcome ? check : undefined)};
     }
 
     function dropRecords(values) {
@@ -381,10 +398,17 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
 
     function escapedValues(scope, expressions, values) {
         const escaped = new Map();
+        let envelopeEscaped = false;
         function visit(expression) {
             const node = unwrap(expression);
             if (!node) return;
             const value = operand(scope, node, values);
+            if (value === envelope) {
+                envelopeEscaped = true;
+                return;
+            }
+            if (value === incomingTopic || (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
+                    operand(scope, node.expression, values) === envelope) return;
             if (isRecord(value) || value?.kind === "path") {
                 const observed = exact(value);
                 const immutable = observed !== UNKNOWN && (observed === null || typeof observed !== "object") ||
@@ -398,8 +422,9 @@ module.exports = function ({ts, unwrap, source, topic, resolve}) {
             ts.forEachChild(node, visit);
         }
         for (const expression of expressions) visit(expression);
-        if (!escaped.size) return values;
+        if (!escaped.size && !envelopeEscaped) return values;
         return new Map([...values].map(([binding, value]) => {
+            if (value === envelope && envelopeEscaped) return [binding, escapedEnvelope];
             const paths = escaped.get(value.origin);
             if (!paths) return [binding, value];
             // An ordinary JSON decode is a tree. An escaped child can change

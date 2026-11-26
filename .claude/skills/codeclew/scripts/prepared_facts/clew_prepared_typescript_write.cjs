@@ -117,10 +117,11 @@ module.exports = function ({ts, focus, source, unwrap, callName, caption, emit})
         if (selected) {
             const site = source(scope, call);
             const path = callPath(scope, call, state);
-            arrivals.push({state, path, identity: JSON.stringify([scope.excerpt.id, where(scope, call)])});
+            const action = sql ? sql.label : callName(call);
+            arrivals.push({state, path, action, identity: JSON.stringify([scope.excerpt.id, where(scope, call)])});
             if (!state.messageContradiction) {
                 const evidence = [focus.site, site, sql && source(scope, sql.literal)];
-                const request = sql ? callName(call) + " with " + sql.label : callName(call);
+                const request = sql ? callName(call) + " with " + action : action;
                 emit("write_request", (awaited ? "The callback path awaits " : "The callback path calls ") + request + ".",
                     evidence, state, "The request's outcome depends on the runtime binding and data.");
                 if (sql) sqlDetails(scope, sql, state, evidence);
@@ -130,32 +131,47 @@ module.exports = function ({ts, focus, source, unwrap, callName, caption, emit})
             writeTransactions: transaction(scope, call, sql, state, awaited, localBinding, selected)};
     }
 
+    function checkText(check) {
+        const guard = check.guard ? "The guard `" + check.guard + "`" : "The cited discriminator guard";
+        const values = check.values.length ? " with " + check.values.map(({name, value}) =>
+            "`" + name + "` set to `" + value + "`").join(" and ") : "";
+        return guard + " evaluates to `" + check.actual + "`" +
+            (check.validation ? " after the retained validator returns normally" + values : "") +
+            (check.actual === check.required ? "." : ". Reaching the write on this path requires `" + check.required + "`.");
+    }
+
     function finish(validationBoundaries) {
         if (!arrivals.length) {
             emit("write_boundary", "The admitted TypeScript path does not establish a reachable call at this exact write occurrence.", [focus.site]);
             return;
         }
         const candidates = arrivals.filter(({state}) => !state.messageContradiction);
+        const scope = focus.topic ? "For incoming topic `" + focus.topic + "`, " : "";
+        const action = "the cited `" + arrivals[0].action + "`";
         if (!candidates.length) {
             if (coverageOpen) {
-                emit("write_boundary", "The bounded callback paths leave this write's incoming message compatibility open.", [focus.site]);
+                emit("write_boundary", scope + "the bounded callback paths leave compatibility with " + action + " open.", [focus.site]);
             } else {
-                const sourceProof = arrivals.every(({state}) => state.messageValidation)
-                    ? "The incoming topic and retained normal-return validation contradict" : "The retained incoming topic contradicts";
-                emit("write_compatibility", sourceProof + " the branch needed by this write.",
+                const checks = [...new Set(arrivals.map(({state}) => checkText(state.messageContradiction)))];
+                emit("write_compatibility", scope + "each retained path to " + action +
+                    " is blocked by a discriminator guard. " + checks.join(" "),
                     [focus.site, ...arrivals.flatMap(({state}) => state.messageEvidence)], undefined, undefined,
                     {compatibility: "INCOMPATIBLE"});
             }
             return;
         }
-        if (!coverageOpen && candidates.every(({state}) => state.messageCompared && !state.messageOpen)) {
-            emit("write_compatibility", "The selected write has a callback path compatible with the retained incoming message discriminator.",
-                [focus.site, ...candidates.flatMap(({state}) => state.messageEvidence)], undefined, undefined,
+        const agreed = candidates.find(({state}) => state.messageAgreement && !state.messageOpen);
+        if (!coverageOpen && agreed) {
+            const {state} = agreed;
+            emit("write_compatibility", scope + "the checked discriminator permits a retained callback path to " +
+                action + ". " + checkText(state.messageAgreement), [focus.site, ...state.messageEvidence], state, undefined,
                 {compatibility: "COMPATIBLE"});
         } else if (validationBoundaries?.size) {
-            emit("write_boundary", "The retained validator has a guard whose read-only evaluation remains open.",
+            emit("write_boundary", scope + "the retained validator for " + action + " has a guard whose read-only evaluation remains open.",
                 [focus.site, ...validationBoundaries.values()], undefined, undefined,
                 {diagnostic: [...validationBoundaries.keys()]});
+        } else if (focus.topic && (coverageOpen || candidates.some(({state}) => state.messageOpen))) {
+            emit("write_boundary", scope + "the bounded callback paths leave compatibility with " + action + " open.", [focus.site]);
         }
         const reached = new Set(candidates.flatMap(({state}) => clauses(state).map(branchKey)));
         const common = clauses(candidates[0].state).filter(guard => candidates.every(({state}) =>

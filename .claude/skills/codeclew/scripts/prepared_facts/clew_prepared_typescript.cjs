@@ -145,7 +145,7 @@ const focus = request.focus && require("./clew_prepared_typescript_write.cjs")({
     ts, focus: request.focus, source, unwrap, callName, caption, emit,
 });
 const compatibility = request.focus?.topic && request.callback.active && request.callback.kind === "EACH_MESSAGE" &&
-    require("./clew_prepared_typescript_message.cjs")({ts, unwrap, source, topic: request.focus.topic, resolve: linkedBody});
+    require("./clew_prepared_typescript_message.cjs")({ts, unwrap, source, caption, topic: request.focus.topic, resolve: linkedBody});
 function evenly(rows, count) {
     if (rows.length <= count) return rows;
     return Array.from({length: count}, (_, index) => rows[Math.round(index * (rows.length - 1) / (count - 1))]);
@@ -304,7 +304,7 @@ function scan(scope, inherited) {
         const previous = inherited.message;
         Object.assign(initial, {
             messageValues: compatibility.seeds(scope, previous?.args || (inherited.chain.length === 1 ? compatibility.root : [])),
-            messageEvidence: previous?.evidence || [], messageCompared: previous?.compared,
+            messageEvidence: previous?.evidence || [], messageAgreement: previous?.agreement,
             messageContradiction: previous?.contradiction, messageOpen: previous?.open, messageValidation: previous?.validation,
         });
     }
@@ -429,7 +429,7 @@ function scan(scope, inherited) {
         const guard = {text: name + " reaches the retained implementation", source: site};
         const guards = [...state.guards, guard];
         schedule(target.id, guards, inherited.chain, focus?.callPath(scope, call, state), compatibility ? {
-            args: messageArgs, evidence: [...state.messageEvidence, site], compared: state.messageCompared,
+            args: messageArgs, evidence: [...state.messageEvidence, site], agreement: state.messageAgreement,
             contradiction: state.messageContradiction, open: state.messageOpen, validation: state.messageValidation,
         } : undefined);
         const observed = {target: target.id, site, name, guards, awaited: waited, async: asyncFunction(target.node),
@@ -811,9 +811,16 @@ function scan(scope, inherited) {
             const failure = failureAt(catcher, source(scope, call), "construction with " + callName(call), awaited, state);
             if (failure) errors.push(failure);
             if (query) state = query.escape(state, call.arguments || [], evaluated);
+            if (compatibility) state = {...state, messageValues: compatibility.escapedValues(scope, call.arguments || [], state.messageValues)};
         }
         if (!ts.isCallExpression(call) || ts.isOptionalChain(call) ||
                 ts.isPropertyAccessChain(call.expression) || ts.isElementAccessChain(call.expression)) {
+            if (compatibility && ts.isCallExpression(call)) {
+                const method = unwrap(call.expression);
+                const receiver = (ts.isPropertyAccessExpression(method) || ts.isElementAccessExpression(method)) && method.expression;
+                const values = receiver ? [receiver, ...call.arguments] : call.arguments;
+                state = {...state, messageValues: compatibility.escapedValues(scope, values, state.messageValues)};
+            }
             if (inventory && ts.isCallExpression(call)) inventory.record(call, {label: caption(call) || callName(call)});
             if (inventory && ts.isTaggedTemplateExpression(call)) inventory.record(call, {label: "template tagged by " +
                 (caption(call.tag) || "the cited expression")});
