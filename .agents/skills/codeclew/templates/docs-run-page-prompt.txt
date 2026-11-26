@@ -25,8 +25,9 @@ and early exit. Describe the stages in order. Emit steps after the fixed
 start and use caller and handler for those actors. Give other actors short
 stable IDs. Set local only for roles within the owning system. Use call for a direct call, await for a completion wait,
 return for a result to its actual recipient, async for a one-way handoff,
-and note for a local step. Include an evidenced returned value used by
-its recipient. Keep failures and void completions distinct.
+and note for a local step. When the recipient uses an evidenced value,
+show its return from the producer after the successful call or wait.
+Keep failures, void completions and handoffs distinct.
 Bind each supplied R key once to a cited claim with the predicate and
 literal in consecutive code spans in the same paragraph.
 For each conditionPaths row, write a paragraph using its cites. Put any

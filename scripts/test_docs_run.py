@@ -23,6 +23,11 @@ REQUEST_MARKER = 'AUTHOR-INSTRUCTIONS-7C5B'
 LARGE_USAGE = {'input_tokens': 600000, 'cached_input_tokens': 200000, 'output_tokens': 33917, 'reasoning_output_tokens': 12000}
 
 
+def sequence_rendering(html):
+    figure = html.split('<figure class="clew-sequence">', 1)[1].split('</figure>', 1)[0]
+    return figure.split('<details class="sequence-text" open>', 1)
+
+
 class PageExecutionOrderTests(unittest.TestCase):
     def test_fresh_queue_prioritizes_large_packets_and_stably_orders_ties(self):
         execution = D['PX']
@@ -938,15 +943,20 @@ for row in (
         def prepare_smaller(name):
             with patch.dict(D['P'], {'page_jobs': native_plan}):
                 target, plan, _, _ = self.isolated_fixture(run_name=name)
-            guide = next(slot for slot in plan['slots'] if slot['kind'] == 'GUIDE')
-            schema = target / 'inputs' / guide['schema']
-            D['save'](schema, {**D['load'](schema), 'title': 'Updated overview response schema'})
+            current = {slot['kind']: slot for slot in plan['slots']}
+            self.assertEqual(set(slots) - set(current), {'GUIDE', 'PROCESS_MAP'})
+            self.assertEqual(set(current), {'OPERATION', 'CONTRACTS', 'DISCOVERY'})
+            for kind, slot in current.items():
+                self.assertEqual(slot, slots[kind])
+                self.assertEqual(D['PR']['slot_files'](target, slot), D['PR']['slot_files'](reviewed, slots[kind]))
+            contracts = current['CONTRACTS']
+            schema = target / 'inputs' / contracts['schema']
+            D['save'](schema, {**D['load'](schema), 'title': 'Updated contract response schema'})
             pins = D['load'](target / 'pins.json')
             D['save'](target / 'pins.json', {**pins, 'inputFiles': D['tree'](target / 'inputs')})
             return target, plan
 
         target, plan = prepare_smaller('smaller-plan')
-        self.assertNotIn('PROCESS_MAP', {slot['kind'] for slot in plan['slots']})
         args = ('--reuse-from', str(reviewed))
         rejected = call('reuse-pages', target, *args, status=2)
         self.assertEqual(rejected['code'], 'NO_ELIGIBLE_REUSED_PAGES')
@@ -965,20 +975,24 @@ for row in (
         self.assertEqual(adopted['reusedPages'], len(plan['slots']) - 1)
         self.assertEqual(adopted['rejected'], {'REUSE_PROMPT_OR_SCHEMA_CHANGED': 1})
         ledger = D['load'](target / 'page-reuse.json')
-        self.assertNotIn(slots['PROCESS_MAP']['key'], ledger['pages'])
+        self.assertEqual(set(ledger['pages']), {key, slots['DISCOVERY']['key']})
         proof = ledger['pages'][key]
         self.assertEqual(proof['responseDigest'], accepted['reuse']['reviewedSlots'][key]['responseDigest'])
         self.assertEqual(proof['correctionDigest'], D['load'](reviewed / 'state.json')['attempts'][0]['responseDigest'])
-        guide = slots['GUIDE']['key']
-        overview = self.seed / (guide + '-response.json')
-        D['save'](overview, {**D['load'](overview), 'title': 'Reservation guide'})
+        contracts = slots['CONTRACTS']
+        contract_response = self.seed / (contracts['key'] + '-response.json')
+        revised = D['load'](contract_response)
+        revised['contracts'][0]['fields'][0]['meaning'] = 'Number of items in this reservation'
+        D['save'](contract_response, revised)
         result = call('run', target)
         self.assertEqual(result['reuse']['newAuthorInvocations'], 1)
-        self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [guide])
+        self.assertEqual([row['slot'] for row in D['load'](target / 'state.json')['attempts']], [contracts['key']])
         operation_html = (Path(result['ready']) / 'html' / page).read_text()
         self.assertIn(statement, operation_html)
         self.assertIn('id="behavior"', operation_html)
-        self.assertIn('Reservation guide', (Path(result['ready']) / 'html' / 'reservations.html').read_text())
+        self.assertEqual(sequence_rendering(operation_html)[1], sequence_rendering(original_bytes.decode())[1])
+        self.assertIn('Number of items in this reservation',
+                      (Path(result['ready']) / 'html' / Path(contracts['page']).with_suffix('.html')).read_text())
         self.assertEqual(D['tree'](reviewed), sealed)
 
         successor, _ = prepare_smaller('reuse-from-mixed-plan')
@@ -1486,16 +1500,18 @@ for row in (
                 self.assertNotIn('Archive the note', json.dumps(packet))
 
         old_html, new_html = [Path(site['ready']) / 'html' for site in (old_site, reviewed)]
-        def diagram(root, page):
-            return (root / page).read_text().split('<figure class="clew-sequence">', 1)[1].split('</figure>', 1)[0]
-
-        for page, old_condition, new_condition in (
-                (route['narrative']['page'], 'count > 0', 'count >= 0'),
-                (Path(discovered['page']).with_suffix('.html').name, 'it.isClosed', 'it.isReady')):
-            self.assertIn('<small>' + old_condition + '</small>', diagram(old_html, page))
-            corrected = diagram(new_html, page)
-            self.assertIn('<small>' + new_condition + '</small>', corrected)
-            self.assertNotIn('<small>' + old_condition + '</small>', corrected)
+        for page, action, label, old_condition, new_condition in (
+                (route['narrative']['page'], 'Return', 'accepted.size', 'count > 0', 'count >= 0'),
+                (Path(discovered['page']).with_suffix('.html').name, 'Work', 'Accept the note', 'it.isClosed', 'it.isReady')):
+            previous, corrected = [sequence_rendering((root / page).read_text()) for root in (old_html, new_html)]
+            self.assertEqual(previous[0], corrected[0])
+            guard = re.search(rf'href="#(clew-sequence-1-step-2)">2\. {action}</a><small>Conditional</small>', corrected[0])
+            self.assertIsNotNone(guard)
+            for (_, trace), condition in ((previous, old_condition), (corrected, new_condition)):
+                step = re.search(rf'<li id="{guard[1]}">(.*?)</li>', trace)
+                self.assertIsNotNone(step)
+                self.assertIn(f'</span>{label}<p>{condition}</p>', step[1])
+            self.assertNotIn(f'<p>{old_condition}</p>', corrected[1])
         for page in (neighbor_route['narrative']['page'], Path(neighbor_start['page']).with_suffix('.html').name):
             self.assertEqual((old_html / page).read_bytes(), (new_html / page).read_bytes())
 
@@ -1533,7 +1549,8 @@ for row in (
         outcome_section = (next_html / route_page).read_text().split('id="outcome"', 1)[1]
         self.assertIn(outcome, outcome_section)
         self.assertNotIn(main['outcome'], outcome_section)
-        self.assertEqual(diagram(next_html, route_page), diagram(new_html, route_page))
+        self.assertEqual(sequence_rendering((next_html / route_page).read_text()),
+                         sequence_rendering((new_html / route_page).read_text()))
         attempt, = D['load'](next_run / 'state.json')['attempts']
         schema = D['load'](D['PX']['attempt_dir'](next_run, attempt) / schema_file)
         value, unset = schema['properties']['replacement']['anyOf']
@@ -2092,7 +2109,9 @@ for row in (
         self.assertEqual(set(schema['$defs']['citation']['enum']), set(operation['citations']))
         self.assertEqual(set(schema['$defs']['claim']['properties']['returns']['items']['enum']), set(operation['returns']))
         prompt = (run / 'inputs' / operation['prompt']).read_text()
-        self.assertIn('add the return edge from', prompt)
+        instructions = ' '.join(prompt.rsplit('\n\n', 1)[0].split())
+        self.assertIn('return for a result to its actual recipient', instructions)
+        self.assertIn('show its return from the producer after the successful call or wait', instructions)
         self.assertNotIn('CONTRACTS |', prompt)
         self.assertFalse(any(slot['kind'] == 'GUIDE' for slot in plan['slots']))
 
@@ -2103,8 +2122,13 @@ for row in (
         result = D['execute'](run)
         self.assertEqual(result['status'], 'READY_PROMOTED', result)
         html = (Path(result['ready']) / 'html' / self.entry['page'].replace('.md', '.html')).read_text()
-        self.assertIn('Return selected rows', html)
-        self.assertIn('sequence-message return', html)
+        diagram, trace = sequence_rendering(html)
+        self.assertRegex(diagram, r'aria-label="[^"]+ → Row reader"[^>]*><span><a href="#clew-sequence-1-step-2">2\. Wait</a>')
+        self.assertRegex(diagram, r'class="sequence-message return reverse"[^>]+aria-label="Row reader → [^"]+"[^>]*>'
+                                  r'<span><a href="#clew-sequence-1-step-3">3\. Return</a><small>Conditional</small>')
+        self.assertRegex(trace, r'<li id="clew-sequence-1-step-3"><div class="sequence-detail">'
+                                r'<span class="sequence-direction">Row reader → .*? · Return</span>'
+                                r'Return selected rows<p>Read succeeds</p></div></li>')
 
     def test_isolated_diagnostics_reject_outside_or_ambiguous_evidence_in_one_pass(self):
         run, plan, _, _ = self.isolated_fixture()
@@ -2385,10 +2409,15 @@ for row in (
             self.assertIn('id="sequence"', (rendered / page).read_text())
             self.assertIn(f'href="{page}#behavior"', (rendered / 'process-map.html').read_text())
         self.assertNotIn(own_note['label'], html)
-        self.assertIn(linked_local['condition'], html)
-        self.assertIn(unique_note['label'], html)
-        self.assertRegex(html, r'5\. Return the stock lookup result\.')
-        self.assertIn('sequence-message return reverse', html)
+        diagram, trace = sequence_rendering(html)
+        self.assertIn(linked_local['condition'], trace)
+        self.assertIn(unique_note['label'], trace)
+        self.assertRegex(diagram, r'class="sequence-message return reverse"[^>]+aria-label="warehouse → reservations"[^>]*>'
+                                  r'<span><a href="#clew-sequence-1-step-4">4\. Return</a>')
+        self.assertRegex(trace, r'<li id="clew-sequence-1-step-4"><div class="sequence-detail"><span class="sequence-direction">'
+                                r'<a href="warehouse-get-stock.html#handler">GET /stock</a> → '
+                                r'<a href="reservations-post-reservations.html#handler">POST /reservations</a> · Return</span>'
+                                r'Return the stock lookup result\.</div></li>')
         self.assertIn(f'href="{warehouse["page"].replace(".md", ".html")}#behavior"',
                       (rendered / reservation['page'].replace('.md', '.html')).read_text())
         overview = (rendered / (self.service + '.html')).read_text()
