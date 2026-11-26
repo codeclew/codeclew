@@ -13,6 +13,15 @@ import time
 POOL_SIZE = 3
 LOG_LIMIT = 2 * 1024 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
+SERVICE_FAILURE = 'PAGE_AUTHOR_SERVICE_UNAVAILABLE'
+SERVICE_ERROR_MESSAGES = {'workspace routing discovery failed'}
+SERVICE_RETRY_DELAY = 10
+MAX_SERVICE_RETRIES = 3
+
+
+def service_failure(attempt):
+    failure = attempt.get('failure') or {}
+    return failure.get('code') == SERVICE_FAILURE
 
 
 def stop_process(process):
@@ -31,7 +40,7 @@ def stop_process(process):
 
 
 def author_events(path):
-    starts, usage = [], None
+    starts, usage, terminal = [], None, None
     with path.open('rb') as stream:
         for line in stream:
             try:
@@ -43,8 +52,14 @@ def author_events(path):
             if event.get('type') == 'thread.started':
                 starts.append(event.get('thread_id'))
             if event.get('type') == 'turn.completed':
-                usage = event.get('usage')
-    return starts, usage
+                usage, terminal = event.get('usage'), event
+            if event.get('type') == 'turn.failed':
+                terminal = event
+    if terminal and terminal.get('type') == 'turn.failed':
+        usage = terminal.get('usage')
+        failure = terminal.get('error')
+        return starts, usage, failure.get('message') if isinstance(failure, dict) else None
+    return starts, usage, None
 
 
 def attempt_dir(run, attempt):
@@ -89,7 +104,7 @@ def launch(run, deadline, cancelled, attempt):
             'code': 'PAGE_AUTHOR_PROCESS_FAILED', 'details': {'failure': type(error).__name__}})
     else:
         over_log_limit = out.stat().st_size > LOG_LIMIT or err.stat().st_size > LOG_LIMIT
-        starts, usage = ([], None) if over_log_limit else author_events(out)
+        starts, usage, message = ([], None, None) if over_log_limit else author_events(out)
         valid = len(starts) == 1 and isinstance(starts[0], str) and bool(starts[0])
         if over_log_limit:
             cause = 'PAGE_AUTHOR_LOG_LIMIT'
@@ -98,11 +113,13 @@ def launch(run, deadline, cancelled, attempt):
         elif expected is not None and starts[0] != expected:
             cause = 'PAGE_AUTHOR_THREAD_CHANGED'
         elif process.returncode:
-            cause = cause or 'PAGE_AUTHOR_PROCESS_FAILED'
+            transient = (process.returncode > 0 and isinstance(message, str)
+                         and message.strip().lower() in SERVICE_ERROR_MESSAGES)
+            cause = cause or (SERVICE_FAILURE if transient else 'PAGE_AUTHOR_PROCESS_FAILED')
         attempt.update(status='FAILED' if cause else 'COMPLETED', exitCode=process.returncode,
                        threadId=starts[0] if valid else None, usage=usage)
         if cause:
-            attempt['failure'] = {'code': cause, 'details': {}}
+            attempt['failure'] = {'code': cause, 'details': {'backendMessage': message} if cause == SERVICE_FAILURE else {}}
     path = response_path(run, attempt)
     if attempt['status'] == 'COMPLETED' and path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_RESPONSE_BYTES:
         attempt['responseDigest'] = sha(path.read_bytes())
@@ -132,7 +149,7 @@ def reconcile(run, state):
         try:
             need(receipt.is_file(), 'PAGE_AUTHOR_ATTEMPT_INDETERMINATE', slot=pending['slot'], blocked=True)
             result = load(receipt)
-            need(all(result.get(key) == pending.get(key) for key in ('slot', 'number', 'argv', 'resumeThread'))
+            need(all(result.get(key) == pending.get(key) for key in ('slot', 'number', 'argv', 'resumeThread', 'promptDigest', 'serviceRetry'))
                  and result.get('status') in ('COMPLETED', 'FAILED'),
                  'PAGE_AUTHOR_ATTEMPT_CHANGED', slot=pending['slot'], blocked=True)
         except Stop as error:
@@ -152,10 +169,18 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags):
     attempt = {'slot': slot['key'], 'number': number, 'authorMode': 'ISOLATED_PAGES', 'resumeThread': resume,
                'status': 'RUNNING', 'startedAt': time.time(), 'exitCode': None}
     folder = attempt_dir(run, attempt)
-    (folder / 'context').mkdir(mode=0o700, parents=True)
     original_prompt = (run / 'inputs' / slot['prompt']).read_bytes()
     prompt = original_prompt
-    if failure:
+    if failure and failure['code'] == SERVICE_FAILURE:
+        interrupted = next(row for row in reversed(previous) if not row.get('cancelledBeforeLaunch'))
+        old_prompt = attempt_dir(run, interrupted) / 'prompt.txt'
+        need(resume == interrupted['threadId'] and old_prompt.is_file() and not old_prompt.is_symlink(),
+             'PAGE_AUTHOR_SERVICE_RETRY_EVIDENCE_CHANGED', slot=slot['key'])
+        prompt = old_prompt.read_bytes()
+        need(sha(prompt) == interrupted.get('promptDigest'),
+             'PAGE_AUTHOR_SERVICE_RETRY_EVIDENCE_CHANGED', slot=slot['key'])
+        attempt['serviceRetry'] = True
+    elif failure:
         details = failure.get('details', {})
         original_attempt = attempt_dir(run, previous[0]) / 'prompt.txt' if previous else None
         if (resume is not None and failure['code'] == 'PAGE_RESPONSE_INVALID' and details.get('formatOnly') is True
@@ -169,7 +194,9 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags):
             details = encode({'instruction': 'Repair only this slot using its retained code. Check the stated issue and preserve supported behavior.',
                               'failure': failure})
             prompt = b'Repair for the packet below:\n' + details + b'\n' + original_prompt
+    (folder / 'context').mkdir(mode=0o700, parents=True)
     (folder / 'prompt.txt').write_bytes(prompt)
+    attempt['promptDigest'] = sha(prompt)
     if 'schema' in slot:
         schema = run / 'inputs' / slot['schema']
     argv = [backend['executable'], 'exec', '--ignore-user-config', '--skip-git-repo-check', '--json',
@@ -191,7 +218,13 @@ def check_author_state(state, *, settled_only=False):
                     and (not settled_only or row['status'] != 'RUNNING')]
     tokens = token_accounting(attributable)
     need(tokens['status'] != 'INVALID', 'AUTHOR_USAGE_INVALID', accounting=tokens)
-    need(tokens['status'] == 'MEASURED', 'AUTHOR_USAGE_UNAVAILABLE', accounting=tokens, blocked=True)
+    unknown = [attributable[row['attempt']] for row in tokens['missing']]
+    if tokens['status'] == 'UNAVAILABLE':
+        failures = [{'slot': row['slot'], 'number': row['number'], 'failure': row.get('failure')}
+                    for row in unknown if row.get('failure')]
+        need(unknown and all(service_failure(attempt) and attempt.get('threadId') for attempt in unknown),
+             'AUTHOR_USAGE_UNAVAILABLE', accounting=tokens, blocked=True,
+             **({'attemptFailures': failures} if failures else {}))
     owners = {}
     for attempt in attributable:
         thread = attempt.get('threadId')
@@ -223,7 +256,11 @@ def next_action(run, slot, history, scheduled, max_repairs, responses, validate,
             save(attempt_dir(run, previous) / 'result.json', previous)
     elif previous and not failure:
         failure = previous.get('failure')
-    need(len(launched) <= max_repairs, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED', slot=key, page=slot['page'], failure=failure)
+    if previous and service_failure(previous):
+        need(not previous.get('serviceRetry'), 'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED',
+             slot=key, failure=previous['failure'])
+    content_attempts = sum(not service_failure(attempt) for attempt in launched)
+    need(content_attempts <= max_repairs, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED', slot=key, page=slot['page'], failure=failure)
     return slot, failure
 
 
@@ -237,9 +274,16 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
         raise Stop('PAGE_AUTHOR_REPAIRS_EXHAUSTED', **state['terminalFailure'])
     check_author_state(state)
     fresh = state['authorStartedAt'] is None and not state['attempts']
+    now = time.time()
+    paused = state.get('serviceRetryPending')
+    if paused:
+        need(now >= paused['retryNotBefore'], SERVICE_FAILURE, blocked=True, **paused)
+        state['authorPausedSeconds'] = state.get('authorPausedSeconds', 0) + max(0, now - paused['pausedAt'])
+        del state['serviceRetryPending']
     if state['authorStartedAt'] is None:
-        state['authorStartedAt'] = time.time()
-    remaining = job['budget']['wallSeconds'] - (time.time() - state['authorStartedAt'])
+        state['authorStartedAt'] = now
+    elapsed = now - state['authorStartedAt'] - state.get('authorPausedSeconds', 0)
+    remaining = job['budget']['wallSeconds'] - elapsed
     deadline = time.monotonic() + remaining
     scheduled = state.setdefault('pageRepairs', {})
     scheduled.update(repairs or {})
@@ -247,6 +291,9 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
     for attempt in state['attempts']:
         histories[attempt['slot']].append(attempt)
     responses, pending, active = {}, deque(), {}
+    deferred, pause = {}, None
+    service_retries = sum(row.get('serviceRetry', False) and not row.get('cancelledBeforeLaunch')
+                          for row in state['attempts'])
     cancelled = threading.Event()
 
     def assess(slot):
@@ -271,11 +318,18 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                 # Prompt bytes approximate author time. Stable ties keep the plan's order.
                 pending = deque(sorted(pending, key=lambda action: (run / 'inputs' / action[0]['prompt']).stat().st_size,
                                        reverse=True))
-            while pending or active:
-                while pending and len(active) < POOL_SIZE and not any(future.done() for future in active):
+            elif paused:
+                pending = deque(sorted(pending, key=lambda action: (action[1] or {}).get('code') != SERVICE_FAILURE))
+            while (pending and not deferred) or active:
+                while (pending and not deferred and len(active) < POOL_SIZE
+                       and not any(future.done() for future in active)):
                     need(time.monotonic() < deadline, 'AUTHOR_BUDGET_EXHAUSTED')
                     slot, failure = pending.popleft()
                     history = histories[slot['key']]
+                    if failure and failure['code'] == SERVICE_FAILURE:
+                        need(service_retries < MAX_SERVICE_RETRIES, 'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED',
+                             slot=slot['key'], failure=failure)
+                        service_retries += 1
                     attempt = launch_attempt(run, schema, job['author'], slot, history, failure, flags)
                     history.append(attempt)
                     index = len(state['attempts'])
@@ -295,7 +349,19 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                 # siblings have not reported their final counters yet.
                 check_author_state(state, settled_only=True)
                 for slot in settled:
-                    assess(slot)
+                    result = histories[slot['key']][-1]
+                    if service_failure(result):
+                        need(not result.get('serviceRetry') and service_retries < MAX_SERVICE_RETRIES,
+                             'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED', slot=slot['key'], failure=result['failure'])
+                        deferred[slot['key']] = result['failure']
+                    else:
+                        assess(slot)
+            if deferred:
+                remaining = deadline - time.monotonic()
+                need(remaining > 0, 'AUTHOR_BUDGET_EXHAUSTED')
+                paused_at = time.time()
+                pause = {'slots': deferred, 'pausedAt': paused_at, 'remainingAuthorSeconds': remaining,
+                         'retryNotBefore': paused_at + SERVICE_RETRY_DELAY * (1 + service_retries)}
         except Stop as error:
             cancelled.set()
             state['authorTerminal'] = {'code': error.code, 'blocked': error.blocked, 'details': error.details}
@@ -318,4 +384,8 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
                 # Preserve completed counters even if an unrelated child was interrupted
                 # or a worker failed before it could persist its own result.
                 record_accounting(run, state)
+    if pause:
+        state.update(status='AUTHOR_SERVICE_RETRY_PENDING', serviceRetryPending=pause)
+        record_accounting(run, state)
+        raise Stop(SERVICE_FAILURE, blocked=True, **pause)
     return state, {key: responses[key] for key in histories if key in responses}

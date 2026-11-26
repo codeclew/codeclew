@@ -98,6 +98,7 @@ if mode!='missing-thread':
  print(json.dumps({{'type':'thread.started','thread_id':'other-test-session' if mode=='thread-switch' and 'resume' in sys.argv else thread}}),flush=True)
 if mode=='ambiguous-thread':print(json.dumps({{'type':'thread.started','thread_id':'second-test-session'}}),flush=True)
 if mode=='interrupt':time.sleep(10)
+control={{}}
 if mode=='controlled-page':
  control=json.loads((seed/'queue-control.json').read_text()).get(slot,{{}})
  (seed/(slot+'.started')).write_text(str(time.monotonic()))
@@ -128,9 +129,10 @@ if mode=='high-usage-invalid-cache': usage['cached_input_tokens']=usage['input_t
 counter=(seed/('usage-'+slot+'.json')) if page else Path.cwd()/'owned-cumulative-usage.json'
 if 'resume' in sys.argv and counter.exists():
  previous=json.loads(counter.read_text());usage={{key:value+previous.get(key,0) for key,value in usage.items()}}
-counter.write_text(json.dumps(usage))
+failure=control.get('terminalFailure')
+if not failure:counter.write_text(json.dumps(usage))
 if mode=='controlled-page':
- if control.get('report', True):
+ if control.get('report', True) and not failure:
   print(json.dumps({{'type':'turn.completed','usage':usage}}),flush=True)
  (seed/(slot+'.waiting')).touch()
  expires=time.monotonic()+6
@@ -138,6 +140,10 @@ if mode=='controlled-page':
   while not (seed/target).exists():
    if time.monotonic()>=expires:sys.exit(30)
    time.sleep(0.01)
+ if control.get('delay'):time.sleep(control['delay'])
+ if failure:
+  print(json.dumps({{'type':'turn.failed','error':{{'message':failure}}}}),flush=True)
+  sys.exit(1)
  (seed/(slot+'.finished')).write_text(str(time.monotonic()))
 else:
  print(json.dumps({{'type':'turn.completed','usage':usage}}))
@@ -752,6 +758,105 @@ else:
             self.assertEqual((D['PX']['attempt_dir'](run, attempt) / 'prompt.txt').read_bytes(),
                              (run / 'inputs' / slot['prompt']).read_bytes())
 
+    def author_service_outage(self, run, plan, message='workspace routing discovery failed'):
+        failed, sibling_a, sibling_b, later, last = (row['key'] for row in self.first_launch_order(run, plan))
+        terminal = run / 'page-attempts' / failed / '0/result.json'
+        self.control_isolated_slots({
+            failed: {'terminalFailure': message, 'until': [f'{sibling_a}.waiting', f'{sibling_b}.waiting']},
+            sibling_a: {'until': [str(terminal)], 'delay': .15},
+            sibling_b: {'until': [str(terminal)], 'delay': .15},
+        })
+        return failed, sibling_a, sibling_b, later, last
+
+    def test_isolated_service_failure_drains_siblings_then_resumes_with_honest_usage(self):
+        run, plan, _, _ = self.isolated_fixture(wall_seconds=2)
+        failed, sibling_a, sibling_b, later, last = self.author_service_outage(run, plan)
+        execution = D['PX']['execute_authors'].__globals__
+        with patch.dict(execution, {'SERVICE_RETRY_DELAY': 2.1}):
+            with self.assertRaises(D['Stop']) as raised:
+                D['execute'](run)
+            self.assertEqual(raised.exception.code, 'PAGE_AUTHOR_SERVICE_UNAVAILABLE')
+            self.assertTrue(raised.exception.blocked)
+            waiting = D['load'](run / 'state.json')
+            self.assertEqual(waiting['status'], 'AUTHOR_SERVICE_RETRY_PENDING')
+            pause = waiting['serviceRetryPending']
+            self.assertEqual(pause['slots'][failed]['details']['backendMessage'], 'workspace routing discovery failed')
+            self.assertGreater(pause['remainingAuthorSeconds'], 1)
+            by_slot = {row['slot']: row for row in waiting['attempts']}
+            self.assertEqual(set(by_slot), {failed, sibling_a, sibling_b})
+            self.assertEqual([by_slot[slot]['status'] for slot in (sibling_a, sibling_b)], ['COMPLETED'] * 2)
+            self.assertIsNone(by_slot[failed]['usage'])
+            original = {D['PX']['attempt_dir'](run, row) / name: (D['PX']['attempt_dir'](run, row) / name).read_bytes()
+                        for row in by_slot.values() for name in ('prompt.txt', 'result.json')}
+            with self.assertRaises(D['Stop']) as early:
+                D['execute'](run)
+            self.assertEqual(early.exception.code, raised.exception.code)
+            self.assertEqual(D['load'](run / 'state.json'), waiting)
+            self.mode.write_text('normal')
+            time.sleep(max(0, pause['retryNotBefore'] - time.time()) + .02)
+            result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        resumed = D['load'](run / 'state.json')
+        self.assertGreaterEqual(resumed['authorPausedSeconds'], 2)
+        self.assertEqual(resumed['attempts'][:3], waiting['attempts'])
+        self.assertEqual(resumed['attempts'][3]['slot'], failed)
+        self.assertCountEqual([attempt['slot'] for attempt in resumed['attempts'][3:]], [failed, later, last])
+        retry = resumed['attempts'][3]
+        self.assertTrue(retry['serviceRetry'])
+        self.assertEqual(retry['resumeThread'], by_slot[failed]['threadId'])
+        self.assertEqual(retry['promptDigest'], by_slot[failed]['promptDigest'])
+        self.assertEqual({path: path.read_bytes() for path in original}, original)
+        accounting = D['load'](run / 'report.json')['checks']['author']
+        self.assertFalse(accounting['usageAvailable'])
+        self.assertIsNone(accounting['reportedModelTokens'])
+        self.assertEqual(accounting['tokenAccounting']['knownBudgetTokensLowerBound'], 100)
+        self.assertEqual(accounting['tokenAccounting']['status'], 'UNAVAILABLE')
+
+    def test_isolated_service_recovery_refuses_a_second_outage_in_the_same_thread(self):
+        run, plan, _, _ = self.isolated_fixture()
+        failed, *_ = self.author_service_outage(run, plan)
+        with patch.dict(D['PX']['execute_authors'].__globals__, {'SERVICE_RETRY_DELAY': 0}):
+            with self.assertRaises(D['Stop']) as paused:
+                D['author'](run)
+            self.assertEqual(paused.exception.code, 'PAGE_AUTHOR_SERVICE_UNAVAILABLE')
+            with self.assertRaises(D['Stop']) as terminal:
+                D['author'](run)
+        self.assertEqual(terminal.exception.code, 'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED')
+        state = D['load'](run / 'state.json')
+        history = [attempt for attempt in state['attempts'] if attempt['slot'] == failed]
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[1]['resumeThread'], history[0]['threadId'])
+        with self.assertRaises(D['Stop']) as again:
+            D['author'](run)
+        self.assertEqual(again.exception.code, terminal.exception.code)
+        self.assertEqual(D['load'](run / 'state.json'), state)
+
+    def test_isolated_service_recovery_refuses_changed_failed_attempt_prompt(self):
+        run, plan, _, _ = self.isolated_fixture()
+        failed, *_ = self.author_service_outage(run, plan)
+        with patch.dict(D['PX']['execute_authors'].__globals__, {'SERVICE_RETRY_DELAY': 0}):
+            with self.assertRaises(D['Stop']):
+                D['author'](run)
+            receipt = D['load'](run / 'state.json')
+            (run / 'page-attempts' / failed / '0/prompt.txt').write_text('Changed source input')
+            with self.assertRaises(D['Stop']) as refused:
+                D['author'](run)
+        self.assertEqual(refused.exception.code, 'PAGE_AUTHOR_SERVICE_RETRY_EVIDENCE_CHANGED')
+        state = D['load'](run / 'state.json')
+        self.assertEqual(state['attempts'], receipt['attempts'])
+
+    def test_isolated_service_recovery_does_not_retry_unknown_unmetered_failures(self):
+        run, plan, _, _ = self.isolated_fixture()
+        failed, *_ = self.author_service_outage(run, plan, 'request failed for an unclassified reason')
+        with self.assertRaises(D['Stop']) as error:
+            D['author'](run)
+        self.assertEqual(error.exception.code, 'AUTHOR_USAGE_UNAVAILABLE')
+        self.assertTrue(any(row['slot'] == failed and row['failure']['code'] == 'PAGE_AUTHOR_PROCESS_FAILED'
+                            for row in error.exception.details['attemptFailures']))
+        state = D['load'](run / 'state.json')
+        self.assertNotIn('serviceRetryPending', state)
+        self.assertTrue(all(row['number'] == 0 for row in state['attempts']))
+
     def test_isolated_queue_terminal_cancels_and_accounts_for_already_started_slots(self):
         run, plan, _, _ = self.isolated_fixture()
         slow, invalid, fast, fourth, fifth = (row['key'] for row in self.first_launch_order(run, plan))
@@ -802,7 +907,7 @@ else:
         self.assertTrue(all(row['failure']['code'] == 'PAGE_AUTHOR_INTERRUPTED' for row in state['attempts']))
         # Simulate a crash between child receipt and the coordinator's journal.
         last = state['attempts'][-1]
-        reservation = {field: last[field] for field in ('slot', 'number', 'argv', 'resumeThread', 'startedAt')}
+        reservation = {field: last[field] for field in ('slot', 'number', 'argv', 'resumeThread', 'startedAt', 'promptDigest')}
         reservation.update(status='RUNNING', exitCode=None)
         journal = {**state, 'attempts': state['attempts'][:-1] + [reservation]}
         D['save'](run / 'state.json', journal)

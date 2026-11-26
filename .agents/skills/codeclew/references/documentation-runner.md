@@ -256,6 +256,17 @@ provenance, entry identity, route ownership, and rendered export gates.
 Independent semantic and visual qualification remains separate from these
 mechanical checks.
 
+A recognized backend routing failure with an identified author session pauses
+the queue. Running siblings can finish their current attempt within the shared
+budget. The runner records the original cause, its retry time and the remaining
+author time. After the recorded backoff, repeat `docs_run.py run` on the same run
+with the same authorized author session. The affected slot resumes its original
+thread with the saved, digest-checked prompt. The runner retains completed slots,
+limits service retries to one per slot and three per run, and records pause time
+separately from the author budget. Lost terminal counters for this known failure
+leave exact model usage unavailable. A mechanical reader export can still pass
+with a recorded usage lower bound.
+
 An English operation page may include a compact disclosure of selected
 conditions and outcomes under its authored explanation. It uses qualified paths
 from the operation's own immutable author packet. It keeps each path's conditions
@@ -338,8 +349,10 @@ The existing `budgetTokens` field reports that measured usage and
 already included in output and is never added again. Total input/output footprint
 remains separate from the primary usage metric and is not a dollar-cost estimate.
 Missing or ambiguous thread identity, changed resume identity and invalid or
-regressing counters refuse completion. Missing counters stay unavailable and
-prevent readiness and another author invocation.
+regressing counters refuse completion. Missing counters remain unavailable.
+The isolated service-recovery procedure above allows a bounded exception for
+its attributable usage gaps. Other missing counters prevent readiness and
+another author invocation.
 
 Frozen runs retain the exact runner, package and input pins from preparation.
 Changing the package requires a fresh preparation for a new run. A historical
