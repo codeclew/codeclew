@@ -7,7 +7,7 @@ import {validateDocsetRoutes,REGISTRY_BYTES} from './docset-routes.mjs';
 import {docsetView,routeStyle,routeWords} from './route-view.mjs';
 import {htmlIds,validateNavigation,navigationView,insertHub} from './navigation.mjs';
 import {renderSequence,checkSequenceTargets,resolveCatalogSequenceLinks} from './sequence.mjs';
-import {loadSources,sourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
+import {loadSources,withSourceFooter,sourcesStyle,sourcesScript} from './sources.mjs';
 const require=createRequire(import.meta.url);
 const {marked}=await import(pathToFileURL(require.resolve('marked')));
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
@@ -65,8 +65,7 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  const sequences=[],sequenceWords=locale?.sequence;
  const pages=await Promise.all(files.map(async file=>{
   const markdown=await readFile(join(input,file),'utf8');
-  let html=renderMarkdown(markdown,sequences,sequenceWords);
-  html+=sourceFooter(sourceBundle,file,markdown,html,locale?.sources);
+  const html=withSourceFooter(sourceBundle,file,markdown,renderMarkdown(markdown,sequences,sequenceWords),locale?.sources);
   const heading=html.match(/<h1\b[^>]*>(.*?)<\/h1>/s);
   return {file,html,title:heading?plain(heading[1]):basename(file,'.md')};
  }));

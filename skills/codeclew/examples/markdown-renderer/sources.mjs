@@ -5,27 +5,32 @@ const sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 const need=(ok,message)=>{if(!ok)throw Error('Invalid source footer: '+message)};
 const stable=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
+const sourceKey=s=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine,
+ ...(s.evidenceInput?[s.evidenceInput,s.bindingRepository??s.repository??null]:[])]);
+const checkedClaims=new WeakMap();
 
 export async function loadSources(path){
  const value=JSON.parse(await readFile(path,'utf8'));
  need(value.schema==='codeclew-reader-sources/1','unsupported bundle');
  need(sha(await readFile(resolve(dirname(path),value.checkedIndex)))===value.indexFileDigest,'checked index changed');
- const key=s=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine,
-  ...(s.evidenceInput?[s.evidenceInput,s.bindingRepository??s.repository??null]:[])]);
+ const claims=new Map();
  for(const p of value.pages){
   const raw=await readFile(resolve(dirname(path),p.map));need(sha(raw)===p.mapFileDigest,'checked map changed: '+p.page);
   const mapped=JSON.parse(raw);
-  const expected=new Map(mapped.claims.flatMap(c=>(c.sources||[]).map(s=>[key(s),s.textDigest])));
-  const actual=new Map(p.groups.flatMap(g=>g.ranges.map(r=>[key({...g,...r}),sha(Buffer.from(r.text))])));
+  const expected=new Map(mapped.claims.flatMap(c=>(c.sources||[]).map(s=>[sourceKey(s),s.textDigest])));
+  const actual=new Map(p.groups.flatMap(g=>g.ranges.map(r=>[sourceKey({...g,...r}),sha(Buffer.from(r.text))])));
   need(actual.size===expected.size&&[...actual].every(([k,d])=>expected.get(k)===d),'excerpt bytes or coverage changed: '+p.page);
   const declared=new Map(mapped.claims.flatMap(c=>(c.declaredEvidence||[]).map((h,i)=>[h,stable(c.declarations[i])])));
   const delivered=new Map((p.declarations||[]).map(d=>[d.cite,stable(d.record)]));
   need(delivered.size===declared.size&&[...delivered].every(([h,d])=>declared.get(h)===d),'declared bindings changed: '+p.page);
+  claims.set(p.page,new Map(mapped.claims.filter(c=>c.id.startsWith('source-outcome-')&&c.sources?.length)
+   .map(c=>[c.id,c.sources.map(sourceKey)])));
  }
+ checkedClaims.set(value,claims);
  return value;
 }
 
-export function sourceFooter(bundle,file,markdown,html,ui){
+export function sourceFooter(bundle,file,markdown,html,ui,anchors){
  if(!bundle)return '';
  const page=bundle.pages.find(p=>p.page===file);
  need(page&&sha(Buffer.from(markdown))===page.markdownDigest,'Markdown changed: '+file);
@@ -37,6 +42,8 @@ export function sourceFooter(bundle,file,markdown,html,ui){
   const full=`${owner}:${g.file} @ ${g.revision}${g.snapshot?' · '+g.snapshot:''}`;
   const links=g.ranges.map((r,j)=>{
    const id=`${prefix}-${i}-${j}`,label=r.startLine===r.endLine?String(r.startLine):`${r.startLine}–${r.endLine}`;
+   anchors?.set(sourceKey({...g,...r}),
+    `<a href="#${id}" title="${escape(full)}">${escape(g.service)} / ${escape(g.file.split('/').at(-1))}:${label}</a>`);
    details.push(`<details class="source-excerpt"><summary>${escape(full)} — ${label}</summary><pre id="${id}" tabindex="0" role="region" aria-label="${escape(g.file)} — ${label}"><code>${escape(r.text)}</code></pre></details>`);
    return `<a href="#${id}">${label}</a>`;
   });
@@ -58,5 +65,21 @@ export function sourceFooter(bundle,file,markdown,html,ui){
  return `<section class="page-sources"><h2>${declarations.length&&!rows.length?declaredTitle:words.title}</h2>${code}${declared}</section>`;
 }
 
-export const sourcesStyle='.page-sources{border-top:1px solid #ccd5df;margin-top:32px;padding-top:8px}.page-sources small{display:block;color:#435364;font-size:12px}.page-sources li{margin:12px 0}.source-excerpt{margin:8px 0}.source-excerpt summary{cursor:pointer;overflow-wrap:anywhere}.source-excerpt pre{white-space:pre;overflow:auto;max-height:28rem;padding:12px;background:#f1f4f7;font-size:13px}.source-excerpt code{font:inherit}';
-export const sourcesScript=`const openSource=(hash=location.hash)=>{let id;try{id=decodeURIComponent(hash.slice(1))}catch{return}const detail=document.getElementById(id)?.closest('.source-excerpt');if(detail){for(let p=detail;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;detail.scrollIntoView()}};openSource();addEventListener('hashchange',()=>openSource());for(const a of document.querySelectorAll('.page-sources a'))a.addEventListener('click',()=>openSource(a.hash));`;
+export function withSourceFooter(bundle,file,markdown,html,ui){
+ const claims=bundle&&checkedClaims.get(bundle)?.get(file);
+ const anchors=claims?.size&&new Map();
+ const footer=sourceFooter(bundle,file,markdown,html,ui,anchors||null);
+ if(!anchors)return html+footer;
+ return html.replace(/<span data-clew-outcome-source="(source-outcome-[1-9][0-9]*)"><\/span>/g,(marker,id)=>{
+  if(!claims.has(id))return marker;
+  const links=[...new Set(claims.get(id))].map(key=>anchors.get(key));
+  need(links.every(Boolean),'outcome source link unavailable: '+id);
+  const title=escape(ui?.title||'Sources'), list=links.join(', ');
+  return links.length>4
+   ? `<details class="operation-outcome-sources"><summary>${title} (${links.length})</summary><p>${list}</p></details>`
+   : `<small class="operation-outcome-sources">${title} · ${list}</small>`;
+ })+footer;
+}
+
+export const sourcesStyle='.page-sources{border-top:1px solid #ccd5df;margin-top:32px;padding-top:8px}.page-sources small{display:block;color:#435364;font-size:12px}.page-sources li{margin:12px 0}.source-excerpt{margin:8px 0}.source-excerpt summary{cursor:pointer;overflow-wrap:anywhere}.source-excerpt pre{white-space:pre;overflow:auto;max-height:28rem;padding:12px;background:#f1f4f7;font-size:13px}.source-excerpt code{font:inherit}.operation-outcomes{margin-block:1rem}.operation-outcomes summary{cursor:pointer}.operation-outcomes li{margin-block:.9rem}.operation-outcomes p{margin:.25rem 0}.operation-outcome-sources{display:block;overflow-wrap:anywhere}';
+export const sourcesScript=`const openSource=(hash=location.hash)=>{let id;try{id=decodeURIComponent(hash.slice(1))}catch{return}const detail=document.getElementById(id)?.closest('.source-excerpt');if(detail){for(let p=detail;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;detail.scrollIntoView()}};openSource();addEventListener('hashchange',()=>openSource());for(const a of document.querySelectorAll('.page-sources a,.operation-outcome-sources a'))a.addEventListener('click',()=>openSource(a.hash));`;

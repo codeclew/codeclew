@@ -253,6 +253,20 @@ provenance, entry identity, route ownership, and rendered export gates.
 Independent semantic and visual qualification remains separate from these
 mechanical checks.
 
+An English operation page may include a compact disclosure of selected
+conditions and outcomes under its authored explanation. It uses qualified paths
+from the operation's own immutable author packet. It keeps each path's conditions
+and evidence boundary, and links directly to the checked source excerpts.
+Identical outcomes with the same condition and boundary share one item.
+Russian pages use the author's localized explanation, with the same retained
+facts available in the author packet. The projector's prose is currently English.
+
+An authored explanation can still contradict a projected path. For a reported
+contradiction, compare only that page, the affected author clause or sequence edge,
+and the cited path. Check the condition, event order, result, and prior effect.
+Use the existing slot repair for a confirmed contradiction within the remaining
+job allowance. Preserve the source boundary when the evidence cannot decide it.
+
 ### Workspace authoring
 
 The runner provides a short author prompt and starter original/navigation files.

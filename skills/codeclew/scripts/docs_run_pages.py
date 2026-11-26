@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import hashlib
+import json
 from itertools import chain, zip_longest
 from pathlib import Path
 import re
@@ -15,12 +16,15 @@ MAX_OVERVIEW_FACTS = 64
 REACHED = runpy.run_path(str(Path(__file__).with_name('docs_run_reached.py')))
 FACT_CONTEXT = runpy.run_path(str(Path(__file__).with_name('docs_run_fact_context.py')))
 RESPONSE = runpy.run_path(str(Path(__file__).with_name('docs_run_page_response.py')))
+OUTCOMES = runpy.run_path(str(Path(__file__).with_name('docs_run_page_outcomes.py')))
 expand_fact_context = FACT_CONTEXT['expand_fact_context']
 LABELS = {
     'en': {'contracts': 'Data and contracts', 'process': 'Process map',
            'type': 'Type',
            'caller': 'Initiator', 'field': 'Field', 'meaning': 'Meaning', 'local': 'Service contracts',
-           'external': 'External contracts', 'unsupported': 'The retained source does not establish the complete route.'},
+           'external': 'External contracts', 'unsupported': 'The retained source does not establish the complete route.',
+           'operationOutcomes': {'title': 'Selected conditions and outcomes', 'condition': 'Path condition',
+                                 'boundary': 'Evidence boundary'}},
 
 }
 
@@ -424,6 +428,11 @@ def page_jobs(job, inventory, prepared, directory, maximum_pages, instructions):
                 'prompt': str(path.relative_to(directory.parent)), 'schema': str(schema.relative_to(directory.parent)),
                 'requirement': required['id'] if required else None, 'citations': aliases, 'citationSpans': spans,
                 'sourceRegions': regions, 'returns': {ref: {'id': row['id'], 'page': row['page']} for ref, row in returns.items()}}
+        if kind == 'OPERATION' and job['language'] == 'en':
+            packet = expand_fact_context(json.loads(prompt.rsplit('\n\n', 1)[-1]))
+            source_bytes = {ref: len(all_sources[handle]['text'].encode()) for ref, handle in aliases.items()}
+            if outcomes := OUTCOMES['select'](packet, required['id'], source_bytes):
+                slot['sourceOutcomes'] = outcomes
         if kind == 'PROCESS_MAP':
             slot['operationIds'] = [entry['id'] for entry in context['operations']]
         schema.parent.mkdir(mode=0o700, parents=True)
@@ -668,8 +677,12 @@ def assemble_pages(job, inventory, plan, values, starter, navigation, inline_ass
         links = {'text': '\n- ' + page_link(labels['contracts'], contracts['page']) + '\n- '
                  + page_link(labels['process'], plan['processPage']) + '\n\n'}
         overview['fragments'].append(links)
-        for page in original['pages']:
-            if page['page'] in {slot['page'] for slot in operations}:
+        by_page = {slot['page']: slot for slot in operations}
+        for page in artifacts['original.json']['pages']:
+            if slot := by_page.get(page['page']):
+                if job['language'] == 'en':
+                    OUTCOMES['append'](page, review, slot, values[slot['key']]['claims'],
+                                       labels['operationOutcomes'], citation_handles)
                 page['fragments'].append(links)
     navigation['home']['title'] = navigation['services'][0]['title']
     process = next(slot for slot in slots.values() if slot['kind'] == 'PROCESS_MAP')

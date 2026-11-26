@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 from pathlib import Path
 import runpy
 import shutil
@@ -572,6 +573,113 @@ else:
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
 
+    def isolated_decoding_outcome(self, language):
+        body = ('fun reserve(count: Int): Int {\n'
+                '    val receipt = reserveStock(count)\n'
+                '    try { return parser.decode(receipt) } catch (error: DecodeException) { return 502 }\n'
+                '}\n'
+                'fun reserveStock(count: Int): String {\n'
+                '    ledger.commit(count)\n'
+                '    return receipt()\n'
+                '}\n')
+        fact_text = ('After `reserveStock` takes its commit-before-receipt path, '
+                     'failing to decode that receipt can return `502` to the caller.')
+        premise = 'The receipt from the committing branch is malformed.'
+        limit = 'The decoder failure does not establish rollback of the ledger write.'
+
+        def project(process, context, *, node):
+            if process['root'] is None:
+                return [], {}
+            source, = context['sourceRanges']
+            fact = {'kind': 'handled-exception-continuation', 'authority': 'BOUNDED_KOTLIN_SOURCE_SYNTAX',
+                    'text': fact_text, 'condition': premise, 'uncertainty': limit, 'sources': [source['id']]}
+            return [fact, dict(fact, status='AMBIGUOUS', text='An unrelated ledger committed.')], {}
+
+        run, plan, packets, _ = self.isolated_fixture(language=language, project=project, body=body)
+        operation = next(slot for slot in plan['slots'] if slot['kind'] == 'OPERATION')
+        return run, operation, packets['OPERATION'], fact_text, premise, limit
+
+    def test_isolated_reader_preserves_source_qualified_outcome_omitted_by_author(self):
+        run, operation, _, fact_text, premise, limit = self.isolated_decoding_outcome('en')
+        frozen, = operation['sourceOutcomes']
+        self.assertEqual((frozen['text'], frozen['condition'], frozen['uncertainty']), (fact_text, premise, limit))
+        path = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](path)
+        response['claims'].extend([{**response['claims'][0], 'text': text} for text in (
+            '`reserveStock` writes the reservation before preparing the receipt.',
+            'The handler returns `502` on a decoding error.')])
+        D['save'](path, response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        state = D['load'](run / 'state.json')
+        attempt, = (row for row in state['attempts'] if row['slot'] == operation['key'])
+        authored = D['load'](D['PX']['response_path'](run, attempt))
+        self.assertEqual(authored, response)
+        self.assertNotIn(fact_text, ' '.join(claim['text'] for claim in authored['claims']))
+        html = (Path(result['ready']) / 'html' / self.entry['page'].replace('.md', '.html')).read_text()
+        section = re.search(r'<details class="operation-outcomes">(.*?)</details>', html, re.S)[1]
+        self.assertIn('Selected conditions and outcomes', section)
+        self.assertIn('After <code>reserveStock</code> takes its commit-before-receipt path,', section)
+        self.assertIn('failing to decode that receipt can return <code>502</code> to the caller.', section)
+        self.assertIn(premise, section)
+        self.assertIn(limit, section)
+        self.assertNotIn('An unrelated ledger committed.', html)
+        anchor, = re.findall(r'href="#(clew-source-\d+-\d+)"', section)
+        self.assertIn('Sources', section)
+        self.assertIn('reservations / Reservations.kt:', section)
+        self.assertRegex(html, rf'<pre id="{anchor}"[^>]*><code>[^<]*ledger\.commit')
+        self.assertLess(html.index('on a decoding error.'), html.index('class="operation-outcomes"'))
+        self.assertIn('sequence-message return', html)
+        self.assertIn('reservations-contracts.html', html)
+
+    def test_isolated_russian_reader_leaves_english_projector_prose_in_the_packet(self):
+        run, operation, packet, fact_text, _, limit = self.isolated_decoding_outcome('ru')
+        expanded = D['P']['expand_fact_context'](packet)
+        self.assertTrue(any(fact['text'] == fact_text for fact in
+                            expanded['facts'][operation['requirement']]['facts']))
+        self.assertNotIn('sourceOutcomes', operation)
+        path = self.seed / (operation['key'] + '-response.json')
+        response = D['load'](path)
+        authored = '\u041f\u043e\u0441\u043b\u0435 \u0437\u0430\u043f\u0438\u0441\u0438 \u0440\u0435\u0437\u0435\u0440\u0432\u0430 \u043e\u0448\u0438\u0431\u043a\u0430 \u0447\u0442\u0435\u043d\u0438\u044f \u043e\u0442\u0432\u0435\u0442\u0430 \u043f\u0440\u0438\u0432\u043e\u0434\u0438\u0442 \u043a \u043a\u043e\u0434\u0443 502.'
+        response['claims'].append({**response['claims'][0], 'text': authored})
+        D['save'](path, response)
+        result = D['execute'](run)
+        self.assertEqual(result['status'], 'READY_PROMOTED', result)
+        html = (Path(result['ready']) / 'html' / self.entry['page'].replace('.md', '.html')).read_text()
+        self.assertIn('<html lang="ru">', html)
+        self.assertIn(authored, html)
+        self.assertIn('\u041a\u0430\u0440\u0442\u0430 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432', html)
+        self.assertNotIn('class="operation-outcomes"', html)
+        self.assertNotIn(limit, html)
+
+    def test_isolated_source_outcomes_dedup_qualified_paths_without_merging_distinct_guards(self):
+        module = D['P']['OUTCOMES']
+        template = {'kind': 'http-failure-after-peer-commit', 'status': 'SOURCE_QUALIFIED_CANDIDATE',
+                    'authority': 'RETAINED_SOURCE_EDGE', 'text': 'A response decoder can still fail.',
+                    'condition': 'The receiver committed.', 'uncertainty': 'Rollback remains open.',
+                    'sources': ['S1', 'S2']}
+        packet = {'facts': {
+            'owner': {'facts': [template, dict(template, sources=['S2', 'S3']),
+                                dict(template, condition='The receiver was interrupted.'),
+                                dict(template, status='AMBIGUOUS', text='Ambiguous'),
+                                dict(template, uncertainty='', text='Unqualified'),
+                                dict(template, sources=['S4'], text='Unbound'),
+                                dict(template, sources=['S5'], text='Oversize retained source'),
+                                dict(template, kind='ORDERED_EFFECTS', text='Routine steps')]},
+            'other': {'facts': [dict(template, text='Wrong operation'),
+                                dict(template, text='Explicitly shared', alsoFor=['owner'])]},
+        }}
+        rows = module['select'](packet, 'owner', {'S1': 200, 'S2': 230, 'S3': 250, 'S5': 300 * 1024})
+        self.assertEqual([row['cites'] for row in rows], [['S1', 'S2', 'S3'], ['S1', 'S2'], ['S1', 'S2']])
+        self.assertEqual([row['condition'] for row in rows], ['The receiver committed.', 'The receiver was interrupted.',
+                                                             'The receiver committed.'])
+        self.assertEqual([row['text'] for row in rows][-1:], ['Explicitly shared'])
+        full = {'text': ' '.join(template[key] for key in ('text', 'condition', 'uncertainty')),
+                'cites': ['S1', 'S2', 'S3'], 'assessment': 'SUPPORTED'}
+        self.assertTrue(module['stated_in_author_text'](rows[0], [full]))
+        self.assertFalse(module['stated_in_author_text'](rows[0], [dict(full, text=template['text'])]))
+        self.assertFalse(module['stated_in_author_text'](rows[0], [dict(full, cites=['S1', 'S2'])]))
+
     def test_isolated_contracts_render_cited_fieldless_shape_as_prose(self):
         body = ('fun reserve(count: Int): Int {\n'
                 '    if (count < 0) return 0\n'
@@ -951,6 +1059,22 @@ else:
         interaction, = packet['context']['declaredInteractions']
         self.assertEqual(interaction['peer'], warehouse['handlerId'])
         self.assertEqual(interaction['authority'], 'RETAINED_DECLARATION_NOT_EXECUTED')
+        # A peer's independent facts do not become this operation's outcomes.
+        warehouse_facts = by_service['warehouse']['facts'][warehouse['id']]['facts']
+        warehouse_facts.append({'text': 'The peer alone returns when stock is missing.', 'kind': 'EARLY_EXIT',
+                                'authority': 'SOURCE', 'sources': ['cite:' + warehouse['handlerId']]})
+        linked_fact = {'text': 'If warehouse commits before returning, decoding can fail after the write.',
+                       'kind': 'http-failure-after-peer-commit', 'authority': 'RETAINED_SOURCE_EDGE',
+                       'status': 'SOURCE_QUALIFIED_CANDIDATE', 'uncertainty': 'Persistence remains unresolved.',
+                       'sources': ['cite:' + reservation['handlerId'], 'cite:' + warehouse['handlerId']]}
+        by_service[self.service]['facts'][reservation['id']]['facts'].append(linked_fact)
+        with patch.dict(pages['page_jobs'].__globals__, {'service_evidence': lambda service, *_: by_service[service]}):
+            qualified = pages['page_jobs'](job, inventory, {'services': {key: key for key in by_service}},
+                                           self.root / 'qualified-prompts', D['M']['MAX_PAGES'], 'Owned instructions.')
+        linked = next(slot for slot in qualified['slots'] if slot['requirement'] == reservation['id'])
+        outcome, = linked['sourceOutcomes']
+        self.assertEqual(outcome['text'], linked_fact['text'])
+        self.assertEqual([linked['citations'][alias] for alias in outcome['cites']], linked_fact['sources'])
         D['starter'](inventory, 'en', self.root / 'starter', all_entries=True)
         original = D['load'](self.root / 'starter/original.json')
         navigation = D['load'](self.root / 'starter/navigation.json')
