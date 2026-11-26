@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.15.21
+## 0.15.22
+
+- Restore the v0.15.6 full-width sequence diagram and Steps disclosure. Each
+  independent phase uses the same renderer and continues the numbering. A
+  step link opens its explanation on desktop and mobile.
+
+## 0.15.21 (unreleased)
 
 - Render sequence diagrams by evidenced system. Short numbered exchanges link
   to the full trace, including conditions, local calls, typed returns and bound

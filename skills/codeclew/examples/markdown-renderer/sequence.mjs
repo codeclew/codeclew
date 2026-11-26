@@ -34,13 +34,13 @@ function stepText(label,position,hasOpening){
 
 const english={
  call:'Call',return:'Return',async:'Start without waiting',await:'Await completion',
- note:'Local step',steps:'Steps',participants:'Systems',diagram:'Diagram. Scroll horizontally when needed.',
+ note:'Local step',steps:'Steps',participants:'Participants',diagram:'Diagram; scroll horizontally when needed',
  arrows:{call:'Call',return:'Return',async:'Hand off',await:'Wait',note:'Work'},
  read:'Read',insert:'Insert',update:'Update',open:'Open connection',transaction:'Begin transaction',commit:'Commit',awaitCommit:'Wait for commit',
  requiredWait:'The successful result on this path requires this wait to complete. If it fails, the response is open.',
  phaseOrder:'Order relative to the earlier phase is open.',
  visibility:'The reader can see an earlier write when it becomes visible and the same record is selected.',
- results:{202:'Accepted',404:'Not found'},start:'Start',request:'Request',entry:'Entry',independent:'Independent start',conditional:'Conditional',relation:'Related step',
+ results:{202:'Accepted',404:'Not found'},start:'Start',request:'Request',independent:'Independent start',conditional:'Conditional',relation:'Related step',
 };
 
 const typeDeclaration=/^\s*(?:[\w$]+ +)*(?:class|interface|object|record|struct) +([\w$]+)/gm;
@@ -247,6 +247,23 @@ function phaseEvidence(phases, words, participant, frameworks, owner){
  return {notes,visibility};
 }
 
+const link=(href,label,ref)=>ref!==undefined?`<a data-clew-catalog-ref="${escape(ref)}">${escape(label)}</a>`:href===undefined?escape(label):`<a href="${escape(target(href,'/target'))}">${escape(label)}</a>`;
+
+// The bundled v0.15.6 drawing routine also accepts projected labels and detail rows.
+export function drawSequence(v,words=english,{offset=0,label,detail}={}){
+ const stepLabel=label??((s,number)=>number+'. '+link(s.target,s.label,s.catalogRef));
+ const actors=v.participants.map(p=>link(p.target,p.title,p.catalogRef)).join(' · ');
+ const n=v.participants.length,index=id=>v.participants.findIndex(p=>p.id===id),title=id=>v.participants[index(id)].title;
+ const lifelines=`<div class="sequence-lifelines" aria-hidden="true">${v.participants.map(()=>'<span></span>').join('')}</div>`;
+ const rows=v.steps.map((s,i)=>{
+  const from=index(s.from),to=index(s.to);let left=(Math.min(from,to)+.5)/n*100,width=Math.abs(from-to)/n*100;
+  const self=from===to;if(self){left=from/n*100;width=100/n;}
+  return `<div class="sequence-row"><div class="sequence-message ${s.kind}${from>to?' reverse':''}${self?' self':''}" role="group" aria-label="${escape(title(s.from))} → ${escape(title(s.to))}" style="margin-left:${left}%;width:${width}%"><span>${stepLabel(s,offset+i+1)}${(['async','await'].includes(s.kind)||(self&&s.kind==='note'))?`<small>${escape(words[s.kind])}</small>`:''}${s.condition?`<small>${escape(s.condition)}</small>`:''}</span>${self&&s.kind!=='note'?'<i class="sequence-loop" aria-hidden="true"></i>':''}</div></div>`;
+ }).join('');
+ const trace=v.steps.map((s,i)=>detail?detail(s,offset+i+1):`<li><span class="sequence-direction">${escape(title(s.from))} → ${escape(title(s.to))} · ${escape(words[s.kind])}</span>${link(s.target,s.label,s.catalogRef)}${s.condition?`<p>${escape(s.condition)}</p>`:''}</li>`).join('');
+ return `<figure class="clew-sequence"><figcaption>${escape(v.title)}</figcaption><p class="sequence-participants">${escape(words.participants)}: ${actors}</p><p class="sequence-hint">${escape(words.diagram)}</p><div class="sequence-scroll" tabindex="0" role="region" aria-label="${escape(words.diagram)}"><div class="sequence-diagram" role="group" aria-label="${escape(v.title)}" style="min-width:${Math.max(560,n*150)}px"><div class="sequence-actors">${v.participants.map(p=>`<span>${link(p.target,p.title,p.catalogRef)}</span>`).join('')}</div><div class="sequence-body">${lifelines}${rows}</div></div></div><details class="sequence-text" open><summary>${escape(words.steps)}</summary><ol${offset?` start="${offset+1}"`:''}>${trace}</ol></details></figure>\n`;
+}
+
 export function renderSequence(value,localWords,entryLabel=(_target,text)=>text,
   {id,systems=new Map(),names=new Map(),sources=[],independentConditions=[]}={}){
  const v=validateSequence(value);
@@ -261,7 +278,6 @@ export function renderSequence(value,localWords,entryLabel=(_target,text)=>text,
   const displayTarget=s.target??(i===0&&hasOpening?openingTarget:undefined);
   return {...s,label:stepText(entryLabel(displayTarget,s.label),i+1,hasOpening)};
  });
- const link=(href,label,ref)=>ref!==undefined?`<a data-clew-catalog-ref="${escape(ref)}">${escape(label)}</a>`:href===undefined?escape(label):`<a href="${escape(target(href,'/target'))}">${escape(label)}</a>`;
  const participant=new Map(participants.map(p=>[p.id,p]));
  const actor=p=>link(p.target,p.title,p.catalogRef);
  const files=sourceFiles(sources);
@@ -273,43 +289,38 @@ export function renderSequence(value,localWords,entryLabel=(_target,text)=>text,
   phases.at(-1).push({...group,number:offset+1});
  }
  const {notes,visibility}=phaseEvidence(phases,words,participant,frameworks,first.to);
- const diagrams=phases.map((phase,phaseIndex)=>{
+ return phases.map((phase,phaseIndex)=>{
   const present=new Set(phase.flatMap(group=>group.independent?[group.to]:[group.from,group.to]));
-  const ids=[...present].sort((a,b)=>a-b), n=ids.length;
-  const lifelines=`<div class="sequence-lifelines" aria-hidden="true">${ids.map(()=>'<span></span>').join('')}</div>`;
-  const rows=phase.map(({from,to,kind,condition,independent,local,internal,number,details,lead})=>{
-   const source=ids.indexOf(from), destination=ids.indexOf(to);
+  const actors=[...present].sort((a,b)=>a-b).map(i=>({...lanes[i],id:i}));
+  const exchanges=phase.map(({from,to,kind,condition,independent,local,internal,number,details,lead})=>{
    const association=kind==='note'&&!local&&!internal;
-   const self=source===destination||independent||association;
-   const position=independent||association?destination:source;
-   const left=(self?position:Math.min(source,destination)+.5)/n*100;
-   const width=(self?1:Math.abs(source-destination))/n*100;
-   const title=independent?words.start:association?words.relation:number===1&&hasOpening?(kind==='call'?words.request:words.start):internal&&kind!=='await'?words.arrows.note:actionLabel(lead,words,participant.get(lead.to),frameworks);
-   const short=kind==='call'&&details.some(step=>step.kind==='await')?title+' · '+words.arrows.await:title;
-   const label=`${number}. ${escape(short)}`;
-   const link=id?`<a href="#${id}-step-${number}">${label}</a>`:label;
-   const displayKind=independent||association||internal?'note':kind;
-   const classes=displayKind+(source>destination&&!self?' reverse':'')+(self?' self':'');
-   const loop=self&&!independent&&!association&&!internal&&kind!=='note'&&local?'<i class="sequence-loop" aria-hidden="true"></i>':'';
-   const direction=independent?lanes[to].title:lanes[from].title+(self?'':' → '+lanes[to].title);
-   return `<div class="sequence-row"${independent?' data-sequence-start="independent"':''}><div class="sequence-message ${classes}" role="group" aria-label="${escape(direction)}" style="margin-left:${left}%;width:${width}%"><span>${link}${condition?`<small>${escape(words.conditional)}</small>`:''}</span>${loop}</div></div>`;
-  }).join('');
-  const phaseTitle=phaseIndex?words.independent:words.entry;
-  const qualifier=phaseIndex?`<p>${escape(words.phaseOrder)}${visibility.has(phaseIndex)?' '+escape(words.visibility):''}</p>`:'';
-  return (phases.length>1?`<p class="sequence-phase"><strong>${escape(phaseTitle)}</strong></p>`:'')+qualifier+
-    `<div class="sequence-scroll" tabindex="0" role="region" aria-label="${escape(words.diagram)}"><div class="sequence-diagram" role="group" aria-label="${escape(phases.length>1?phaseTitle:caption)}" style="min-width:${Math.max(360,n*113)}px"><div class="sequence-actors">${ids.map(i=>`<span>${actor(lanes[i])}</span>`).join('')}</div><div class="sequence-body">${lifelines}${rows}</div></div></div>`;
+   const title=independent?words.start:association?words.relation:number===1&&hasOpening
+    ?(kind==='call'?words.request:words.start):internal&&kind!=='await'?words.arrows.note:actionLabel(lead,words,participant.get(lead.to),frameworks);
+   const label=kind==='call'&&details.some(step=>step.kind==='await')?title+' · '+words.arrows.await:title;
+   return {from:independent||association?to:from,to,kind:independent||association||internal?'note':kind,
+    label,condition:condition?words.conditional:undefined,details,independent};
+  });
+  const qualifier=phaseIndex?`<p>${escape(words.phaseOrder)}${visibility.has(phaseIndex)?' '+escape(words.visibility):''}</p>\n`:'';
+  const diagram={title:phaseIndex?words.independent:caption,participants:actors,steps:exchanges};
+  return qualifier+drawSequence(diagram,words,{
+   offset:phase[0].number-1,
+   label:(step,number)=>{
+    const text=number+'. '+escape(step.label);
+    return id?`<a href="#${id}-step-${number}-detail">${text}</a>`:text;
+   },
+   detail:({details,independent},number)=>{
+    const statements=details.map((s,position)=>{
+     const from=participant.get(s.from),to=participant.get(s.to);
+     const type=independent?words.independent:s.kind==='note'&&from!==to?words.relation:words[s.kind];
+     const direction=actor(from)+(from===to?'':(s.kind==='note'||independent?' · ':' → ')+actor(to));
+     const anchor=id&&position===0?` id="${id}-step-${number}-detail" tabindex="-1"`:'';
+     return `<div class="sequence-detail"><span class="sequence-direction"${anchor}>${direction} · ${escape(type)}</span>${link(s.target,s.label,s.catalogRef)}${sourceMarker(files,s,from,known.has(index.get(s.from))?lanes[index.get(s.from)].id:null)}${s.condition?`<p>${escape(s.condition)}</p>`:''}</div>`;
+    }).join('');
+    const note=notes.get(number);
+    return `<li${id?` id="${id}-step-${number}"`:''}>${statements}${note?`<p>${escape(note)}</p>`:''}</li>`;
+   },
+  });
  }).join('');
- const trace=groups.map(({details,independent},i)=>{
-  const statements=details.map(s=>{
-   const from=participant.get(s.from),to=participant.get(s.to);
-   const type=independent?words.independent:s.kind==='note'&&from!==to?words.relation:words[s.kind];
-   const direction=actor(from)+(from===to?'':(s.kind==='note'||independent?' · ':' → ')+actor(to));
-   return `<div class="sequence-detail"><span class="sequence-direction">${direction} · ${escape(type)}</span>${link(s.target,s.label,s.catalogRef)}${sourceMarker(files,s,from,known.has(index.get(s.from))?lanes[index.get(s.from)].id:null)}${s.condition?`<p>${escape(s.condition)}</p>`:''}</div>`;
-  }).join('');
-  const note=notes.get(i+1);
-  return `<li${id?` id="${id}-step-${i+1}"`:""}>${statements}${note?`<p>${escape(note)}</p>`:''}</li>`;
- }).join('');
- return `<figure class="clew-sequence"><figcaption>${escape(caption)}</figcaption><p class="sequence-hint">${escape(words.diagram)}</p><div class="sequence-layout"><div class="sequence-graphs">${diagrams}</div><details class="sequence-text" open><summary>${escape(words.steps)}</summary><ol>${trace}</ol></details></div></figure>\n`;
 }
 
 export function resolveCatalogSequenceLinks(sequences,pages,model){

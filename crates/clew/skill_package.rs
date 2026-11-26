@@ -4,7 +4,7 @@ use std::{fs, io, path::Path};
 use walkdir::WalkDir;
 
 const MAX_FILES: usize = 192;
-const MAX_TOTAL_BYTES: usize = 3 * 1024 * 1024 + 18 * 1024;
+const MAX_TOTAL_BYTES: usize = 3 * 1024 * 1024 + 20 * 1024;
 
 /// Matches scripts/install_agent_skill.py:package_files/digest. Keep the
 /// cross-language parity tests when the installer contract changes.

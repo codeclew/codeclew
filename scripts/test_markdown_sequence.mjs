@@ -1,8 +1,17 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {renderSequence} from '../skills/codeclew/examples/markdown-renderer/sequence.mjs';
+import {drawSequence,renderSequence} from '../skills/codeclew/examples/markdown-renderer/sequence.mjs';
 const fixture=JSON.parse(await readFile(new URL('./fixtures/human-http-reader/self-steps.json',import.meta.url),'utf8'));
+
+test('stock figure markup and CSS match the v0.15.6 bundled renderer',async()=>{
+ const sha=value=>createHash('sha256').update(value).digest('hex');
+ const css=await readFile(new URL('../skills/codeclew/examples/markdown-renderer/assets/sequence.css',import.meta.url));
+ // The tagged renderer at 848f3c813519 produced this fixture output.
+ assert.equal(sha(drawSequence(fixture)),'24782752b398fe55c616d151f6662da19b1bf518b09a9f9dbd83474be48f7c34');
+ assert.equal(sha(css),'73116d5b1e5244a9f3f037f3bbb2d55f464728be403677d2771f9d7a5bcbf914');
+});
 
 test('self notes remain annotations while self calls retain loops and ordinary messages',()=>{
  const html=renderSequence(fixture);
@@ -36,7 +45,7 @@ test('aligned step ordinals are shown once in the diagram and ordered text trace
  value.steps.push(step('30. Check result'));
  const original=JSON.stringify(value);
  const html=renderSequence(value,undefined,undefined,{id:'clew-sequence'});
- assert.match(html,/<a href="#clew-sequence-step-2">2\. Work<\/a>/);
+ assert.match(html,/<a href="#clew-sequence-step-2-detail">2\. Work<\/a>/);
  assert.match(html,/· Local step<\/span><a href="worker.html#handler">404 response<\/a><p>Status remains 404<\/p>/);
  // Consecutive unconditioned local annotations share a number. Their detailed
  // labels retain values and authored text, with aligned ordinals removed.
@@ -80,6 +89,14 @@ test('projected systems keep source branches, a required wait and an independent
    {service:'fulfillment',file:'PendingWorker.cs',ranges:[{startLine:1,text:'class PendingWorker { }'}]},
   ]};
  const html=renderSequence(v,undefined,undefined,options);
+ const figures=[...html.matchAll(/<figure class="clew-sequence">([\s\S]*?)<\/figure>/g)].map(row=>row[1]);
+ assert.equal(figures.length,2);
+ for(const figure of figures){
+  assert.match(figure,/<p class="sequence-participants">/);
+  assert.match(figure,/<\/div><\/div><\/div><details class="sequence-text" open>/);
+ }
+ const firstCount=[...figures[0].matchAll(/class="sequence-row"/g)].length;
+ assert.ok(figures[1].includes('<ol start="'+(firstCount+1)+'">'));
  const diagrams=[...html.matchAll(/class="sequence-actors">(.*?)<\/div>/g)].map(row=>row[1]);
  assert.equal(diagrams.length,2);
  assert.match(diagrams[0],/Client.*Fulfillment.*Database/);
@@ -95,8 +112,10 @@ test('projected systems keep source branches, a required wait and an independent
  assert.match(html,/data-clew-step-source="0-0"/);
  assert.equal([...html.matchAll(/class="sequence-direction"/g)].length,v.steps.length);
  assert.ok([...html.matchAll(/class="sequence-row"/g)].length<v.steps.length);
- for(const [,anchor] of html.matchAll(/href="#(clew-sequence-step-\d+)"/g))
+ for(const [,anchor] of html.matchAll(/href="#(clew-sequence-step-\d+)-detail"/g)){
   assert.equal(html.split('id="'+anchor+'"').length,2);
+  assert.equal(html.split('id="'+anchor+'-detail" tabindex="-1"').length,2);
+ }
  assert.equal(JSON.stringify(v),original);
  v.steps[10].condition='Different predicate';
  assert.doesNotMatch(renderSequence(v,undefined,undefined,options),/The successful result on this path requires/);

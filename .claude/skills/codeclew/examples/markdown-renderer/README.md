@@ -206,9 +206,10 @@ The `clew-sequence` fence renders short numbered exchanges and their full text
 trace. The diagram groups roles with evidenced system ownership. A number can
 cover contiguous work inside one system or a call and its adjacent wait. The
 trace preserves each original sender, receiver, action, condition and link.
-Independent phases have their own diagram. A step links to a checked excerpt
-when its operation and sending scope match uniquely. The page retains its full
-source footer. Narrow screens show the text trace.
+Each independent phase uses the same full-width diagram, with its numbered
+steps beneath it. On narrow screens the steps are open in place of the diagram.
+A step links to a checked excerpt when its operation and sending scope match
+uniquely. The page retains its full source footer.
 
 ````markdown
 ```clew-sequence

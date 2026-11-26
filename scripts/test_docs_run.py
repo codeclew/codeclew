@@ -1505,7 +1505,8 @@ for row in (
                 (Path(discovered['page']).with_suffix('.html').name, 'Work', 'Accept the note', 'it.isClosed', 'it.isReady')):
             previous, corrected = [sequence_rendering((root / page).read_text()) for root in (old_html, new_html)]
             self.assertEqual(previous[0], corrected[0])
-            guard = re.search(rf'href="#(clew-sequence-1-step-2)">2\. {action}</a><small>Conditional</small>', corrected[0])
+            guard = re.search(rf'href="#(clew-sequence-1-step-2)-detail">2\. {action}</a>'
+                              r'(?:<small>Local step</small>)?<small>Conditional</small>', corrected[0])
             self.assertIsNotNone(guard)
             for (_, trace), condition in ((previous, old_condition), (corrected, new_condition)):
                 step = re.search(rf'<li id="{guard[1]}">(.*?)</li>', trace)
@@ -2123,11 +2124,11 @@ for row in (
         self.assertEqual(result['status'], 'READY_PROMOTED', result)
         html = (Path(result['ready']) / 'html' / self.entry['page'].replace('.md', '.html')).read_text()
         diagram, trace = sequence_rendering(html)
-        self.assertRegex(diagram, r'aria-label="[^"]+ → Row reader"[^>]*><span><a href="#clew-sequence-1-step-2">2\. Wait</a>')
+        self.assertRegex(diagram, r'aria-label="[^"]+ → Row reader"[^>]*><span><a href="#clew-sequence-1-step-2-detail">2\. Wait</a>')
         self.assertRegex(diagram, r'class="sequence-message return reverse"[^>]+aria-label="Row reader → [^"]+"[^>]*>'
-                                  r'<span><a href="#clew-sequence-1-step-3">3\. Return</a><small>Conditional</small>')
+                                  r'<span><a href="#clew-sequence-1-step-3-detail">3\. Return</a><small>Conditional</small>')
         self.assertRegex(trace, r'<li id="clew-sequence-1-step-3"><div class="sequence-detail">'
-                                r'<span class="sequence-direction">Row reader → .*? · Return</span>'
+                                r'<span class="sequence-direction" id="clew-sequence-1-step-3-detail" tabindex="-1">Row reader → .*? · Return</span>'
                                 r'Return selected rows<p>Read succeeds</p></div></li>')
 
     def test_isolated_diagnostics_reject_outside_or_ambiguous_evidence_in_one_pass(self):
@@ -2413,8 +2414,9 @@ for row in (
         self.assertIn(linked_local['condition'], trace)
         self.assertIn(unique_note['label'], trace)
         self.assertRegex(diagram, r'class="sequence-message return reverse"[^>]+aria-label="warehouse → reservations"[^>]*>'
-                                  r'<span><a href="#clew-sequence-1-step-4">4\. Return</a>')
-        self.assertRegex(trace, r'<li id="clew-sequence-1-step-4"><div class="sequence-detail"><span class="sequence-direction">'
+                                  r'<span><a href="#clew-sequence-1-step-4-detail">4\. Return</a>')
+        self.assertRegex(trace, r'<li id="clew-sequence-1-step-4"><div class="sequence-detail">'
+                                r'<span class="sequence-direction" id="clew-sequence-1-step-4-detail" tabindex="-1">'
                                 r'<a href="warehouse-get-stock.html#handler">GET /stock</a> → '
                                 r'<a href="reservations-post-reservations.html#handler">POST /reservations</a> · Return</span>'
                                 r'Return the stock lookup result\.</div></li>')

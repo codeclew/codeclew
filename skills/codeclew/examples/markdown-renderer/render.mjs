@@ -153,7 +153,35 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
    let mainId='clew-reader-main';while(html.includes(`id="${mainId}"`))mainId+='-content';
    const view=explicit?navigationView(explicit,file,words,cross?.extra):null;
    const links=view?view.menu:ordered.map(p=>`<a href="${escape(p.file.replace(/\.md$/,'.html'))}"${p.file===file?' aria-current="page"':''}>${escape(p.title)}</a>`).join('');
-   const script=`const menu=document.querySelector('.guide-local-navigation');const narrow=matchMedia('(max-width:950px)');const resize=()=>{menu.open=!narrow.matches};resize();narrow.addEventListener('change',resize);for(const table of document.querySelectorAll('main table')){const region=document.createElement('div');region.className='table-scroll';region.tabIndex=0;region.setAttribute('role','region');region.setAttribute('aria-label',${JSON.stringify(words.table)});table.before(region);region.append(table);for(const th of table.querySelectorAll('thead th'))th.scope='col'}`;
+   const sequenceScript=`
+const sequenceNarrow=matchMedia('(max-width:700px)');
+const stepLinks=document.querySelectorAll('.sequence-scroll a[href^="#"][href$="-detail"]');
+const stepArrows=new Map([...stepLinks].map(link=>[link.hash.slice(1,-'-detail'.length),link]));
+const openSequenceStep=(hash=location.hash,focus=false)=>{
+ let id;try{id=decodeURIComponent(hash.slice(1))}catch{return}
+ const arrow=stepArrows.get(id);
+ const step=document.getElementById(id),trace=step?.closest('.sequence-text');
+ if(arrow&&!sequenceNarrow.matches){
+  if(trace)trace.open=false;
+  arrow.scrollIntoView({block:'nearest',inline:'nearest'});
+  const lanes=arrow.closest('.sequence-diagram').querySelector('.sequence-actors');
+  const top=lanes.getBoundingClientRect().top;
+  const margin=document.querySelector('.reader-nav').offsetHeight+16;
+  if(arrow.closest('.sequence-row').getBoundingClientRect().bottom-top+margin<=innerHeight)scrollBy(0,top-margin);
+  else arrow.scrollIntoView({block:'center'});
+  return;
+ }
+ if(trace){trace.open=true;step.scrollIntoView({block:'center'});if(focus)step.focus({preventScroll:true})}
+};
+const syncSequences=()=>{
+ for(const trace of document.querySelectorAll('.sequence-text'))trace.open=sequenceNarrow.matches;
+ requestAnimationFrame(()=>openSequenceStep());
+};
+syncSequences();sequenceNarrow.addEventListener('change',syncSequences);
+addEventListener('hashchange',()=>openSequenceStep());
+for(const link of stepLinks)link.addEventListener('click',event=>requestAnimationFrame(()=>openSequenceStep(link.hash,event.detail===0)));
+`;
+   const script=sequenceScript+`const menu=document.querySelector('.guide-local-navigation');const narrow=matchMedia('(max-width:950px)');const resize=()=>{menu.open=!narrow.matches};resize();narrow.addEventListener('change',resize);for(const table of document.querySelectorAll('main table')){const region=document.createElement('div');region.className='table-scroll';region.tabIndex=0;region.setAttribute('role','region');region.setAttribute('aria-label',${JSON.stringify(words.table)});table.before(region);region.append(table);for(const th of table.querySelectorAll('thead th'))th.scope='col'}`;
    const locationScript=`const syncLocation=()=>{let id='';try{id=decodeURIComponent(location.hash.slice(1))}catch{}const target=id?document.getElementById(id):null;const heading=target&&target.tagName!=='MAIN'?(target.matches('h1,h2,h3,h4,h5,h6')?target:target.querySelector('h1,h2,h3,h4,h5,h6')):null;const crumb=document.querySelector('.breadcrumb-section');if(crumb){crumb.hidden=!heading;crumb.replaceChildren();if(heading){crumb.append(' / ');const link=document.createElement('a');link.href='#'+encodeURIComponent(id);link.textContent=heading.textContent;link.setAttribute('aria-current','location');crumb.append(link)}}for(const link of document.querySelectorAll('.guide-local-navigation a[data-page]')){if(link.dataset.page===document.body.dataset.readerPage&&link.dataset.fragment){if(link.dataset.fragment===id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}};syncLocation();addEventListener('hashchange',syncLocation);`;
    page=`<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12334e"><title>${escape(title)} — ${escape(label)}</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>${assets.style}</style></head><body class="markdown-reader" data-reader-page="${escape(file)}"><a class="skip-link" href="#${mainId}">${escape(words.skip)}</a><header class="reader-nav"><a class="reader-brand" href="${escape(home||'#')}">${decoration(assets.icon)}<span>Codeclew</span></a><span class="reader-project">${escape(label)}</span></header><div class="guide-layout"><aside class="guide-toc"><details class="guide-local-navigation" open><summary>${escape(words.pages)}</summary><nav aria-label="${escape(words.navigation)}">${links}</nav></details></aside><main class="reader-guide" id="${mainId}">${view?view.breadcrumb:''}${insertHub(html,(view?.hub||'')+(cross?.hub||''))}<footer class="markdown-footer">${decoration(assets.cat)}<span>Codeclew · ${escape(words.documentation)}</span></footer></main></div><script>${script}${view?locationScript:''}</script></body></html>`;
   }
