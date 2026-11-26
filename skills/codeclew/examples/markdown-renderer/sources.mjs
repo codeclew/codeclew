@@ -23,7 +23,7 @@ export async function loadSources(path){
   const declared=new Map(mapped.claims.flatMap(c=>(c.declaredEvidence||[]).map((h,i)=>[h,stable(c.declarations[i])])));
   const delivered=new Map((p.declarations||[]).map(d=>[d.cite,stable(d.record)]));
   need(delivered.size===declared.size&&[...delivered].every(([h,d])=>declared.get(h)===d),'declared bindings changed: '+p.page);
-  claims.set(p.page,new Map(mapped.claims.filter(c=>c.id.startsWith('source-outcome-')&&c.sources?.length)
+  claims.set(p.page,new Map(mapped.claims.filter(c=>typeof c.id==='string'&&/^source-outcome-[1-9][0-9]*$/.test(c.id)&&c.sources?.length)
    .map(c=>[c.id,c.sources.map(sourceKey)])));
  }
  checkedClaims.set(value,claims);

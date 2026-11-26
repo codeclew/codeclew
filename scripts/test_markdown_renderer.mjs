@@ -29,9 +29,12 @@ test('source footers keep local linked ranges and refuse changed excerpts, maps,
  const sha=s=>'sha256:'+createHash('sha256').update(s).digest('hex');
  try{
   const input=join(root,'input');await mkdir(input);
-  const body='# Reader\n\nBound text.\n',text='val example = "<literal>"\n';
+  const legacy='# Reader\n\nBound text.\n',text='val example = "<literal>"\n';
+  const boundOutcome='<span data-clew-outcome-source="source-outcome-1"></span>';
+  const unboundOutcome='<span data-clew-outcome-source="source-outcome-2"></span>';
+  const body=legacy+'\n'+boundOutcome+'\n\n'+unboundOutcome+'\n';
   const source={service:'one',file:'src/OrderService.kt',revision:'rev-a',snapshot:'snapshot-a',startLine:40,endLine:40,textDigest:sha(text),url:null,repository:null,linkMapping:'MISSING'};
-  const map=JSON.stringify({claims:[{sources:[source]}]}),index='{}';
+  const map=JSON.stringify({claims:[{sources:[source]},{id:'source-outcome-1',sources:[source]}]}),index='{}';
   const bundle={schema:'codeclew-reader-sources/1',checkedIndex:join(root,'index.json'),indexFileDigest:sha(index),pages:[{
    page:'reader.md',markdownDigest:sha(body),map:join(root,'map.json'),mapFileDigest:sha(map),groups:[{
     service:source.service,file:source.file,revision:source.revision,snapshot:source.snapshot,ranges:[{startLine:40,endLine:40,text}]
@@ -46,6 +49,9 @@ test('source footers keep local linked ranges and refuse changed excerpts, maps,
   assert.doesNotMatch(html,/<details class="source-fragments" open/);
   assert.ok(html.indexOf('class="source-fragments"')<html.indexOf('class="source-excerpt"'));
   assert.match(html,/href="#clew-source-0-0">40<\/a>/);assert.match(html,/id="clew-source-0-0"/);
+  assert.match(html,/<small class="operation-outcome-sources">[^<]*<a href="#clew-source-0-0"[^>]*>one \/ OrderService\.kt:40<\/a>/);
+  assert.ok(!html.includes(boundOutcome));
+  assert.ok(html.includes(unboundOutcome));
   assert.match(html,/src\/OrderService.kt/);assert.match(html,/&lt;literal>/);assert.doesNotMatch(html,/<literal>|href="https?:/);
   const cases=[
    ()=>writeFile(join(root,'index.json'),'{"changed":true}'),
