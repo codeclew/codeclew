@@ -153,12 +153,16 @@ def witness_texts(fact, sources):
         yield source['text'].encode()[lower:upper].decode()
 
 
-@unittest.skipUnless(HAS_JDK, 'JDK 21 or newer required')
-class PackagedJava(unittest.TestCase):
+class InstalledJava(unittest.TestCase):
+    def __init__(self, launcher, skill, renderer):
+        super().__init__('test_installed_source_admits_cross_file_java_values_into_operation_prompt')
+        self.launcher = launcher
+        self.skill = skill
+        self.renderer = renderer
+
     def test_installed_source_admits_cross_file_java_values_into_operation_prompt(self):
-        launcher = os.environ.get('CODECLEW_TEST_INSTALLED_SOURCE_LAUNCHER')
-        if not launcher:
-            self.skipTest('An installed release launcher was not configured.')
+        self.assertTrue(HAS_JDK, 'Installed Java qualification requires JDK 21 or newer.')
+        launcher = str(self.launcher)
         main = '''package catalog;
 import java.util.Map;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -287,8 +291,7 @@ interface Slice<T> {
     java.util.List<T> entries();
 }
 '''
-        docs = runpy.run_path(str(SCRIPTS / 'docs_run.py'))
-        renderer = Path(os.environ.get('CODECLEW_MARKDOWN_RENDERER', SCRIPTS.parent / 'examples' / 'markdown-renderer'))
+        docs = runpy.run_path(str(self.skill / 'scripts/docs_run.py'))
         with tempfile.TemporaryDirectory(prefix='clew-java-values-') as directory:
             base = Path(directory).resolve()
             repo, root, run = (base / name for name in ('catalog', 'docs', 'run'))
@@ -326,7 +329,7 @@ interface Slice<T> {
             job = base / 'job.json'
             docs['save'](job, {'schema': docs['SCHEMA'], 'clew': launcher, 'root': str(root), 'snapshot': snapshot,
                                'services': ['catalog'], 'request': 'Document catalog selection.', 'language': 'en',
-                               'renderer': str(renderer.resolve()),
+                               'renderer': str(self.renderer),
                                'node': str(Path(shutil.which('node')).absolute()), 'evidenceMode': 'PREPARED_FACTS',
                                'authorMode': 'ISOLATED_PAGES',
                                'author': {'executable': sys.executable, 'model': 'fixture-author', 'reasoningEffort': 'low'},
@@ -397,6 +400,8 @@ interface Slice<T> {
             self.assertTrue(any('!ignoreNew || !item.isNew()' in text and 'return item;' in text for text in excerpts),
                             excerpts)
 
+@unittest.skipUnless(HAS_JDK, 'JDK 21 or newer required')
+class PackagedJava(unittest.TestCase):
     def test_interprocedural_values_reach_only_the_owning_operation_author(self):
         body = '''String choose(boolean enabled, Helper helper, Item[] items) {
         if (!enabled) return "off";
@@ -790,4 +795,4 @@ record Removed(String id) implements DomainEvent {}
 
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main(defaultTest='PackagedJava')

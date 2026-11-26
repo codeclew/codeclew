@@ -214,8 +214,9 @@ class ReleaseVersionTest(unittest.TestCase):
         for profile in ["core"]:
             with self.subTest(profile=profile), mock.patch.object(release, "run") as run, mock.patch.object(release, "verify_cli_version") as version:
                 release.verify_installer(Path("/source"), Path("/assets"), Path("/smoke"), "v1.2.3", profile)
-                arguments = run.call_args.args[0]
-                environment = run.call_args.kwargs["environment"]
+                installer, qualification = run.call_args_list
+                arguments = installer.args[0]
+                environment = installer.kwargs["environment"]
                 self.assertEqual(arguments, ["/bin/sh", "/source/site/install.sh"])
                 self.assertEqual(environment["CODECLEW_ASSET_DIR"], "/assets")
                 self.assertEqual(environment["CODECLEW_PACKS"], "" if profile == "core" else profile)
@@ -224,6 +225,11 @@ class ReleaseVersionTest(unittest.TestCase):
                 self.assertEqual(environment["CODECLEW_BIN_DIR"], "/smoke/bin")
                 self.assertEqual(environment["CODECLEW_INSTALL_ROOT"], "/smoke/install")
                 version.assert_called_once_with(Path("/smoke/bin/clew"), "v1.2.3", Path("/smoke/state"), Path("/source"))
+                self.assertEqual(qualification.args, (
+                    [sys.executable, "-I", "-S", "/source/scripts/qualify_prepared_projectors.py",
+                     "--installed-launcher", "/smoke/bin/clew"], Path("/source"),
+                ))
+                self.assertEqual(qualification.kwargs["environment"], environment)
 
     def test_linux_archives_have_distinct_names_and_matching_checksums(self) -> None:
         with tempfile.TemporaryDirectory() as value:

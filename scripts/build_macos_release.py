@@ -14,6 +14,7 @@ import runpy
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -406,7 +407,13 @@ def verify_installer(
         "CODECLEW_HOME": str(work / "state"),
     })
     run(["/bin/sh", str(root / "site" / "install.sh")], root, environment=environment)
-    verify_cli_version(work / "bin" / "clew", version, work / "state", root)
+    launcher = work / "bin" / "clew"
+    verify_cli_version(launcher, version, work / "state", root)
+    run(
+        [sys.executable, "-I", "-S", str(root / "scripts/qualify_prepared_projectors.py"),
+         "--installed-launcher", str(launcher)],
+        root, environment=environment,
+    )
 
 
 def extract_release_archive(asset: Path, destination: Path) -> Path:
