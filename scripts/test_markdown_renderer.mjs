@@ -33,7 +33,8 @@ test('source footers keep local linked ranges and refuse changed excerpts, maps,
   const boundOutcome='<span data-clew-outcome-source="source-outcome-1"></span>';
   const unboundOutcome='<span data-clew-outcome-source="source-outcome-2"></span>';
   const body=legacy+'\n'+boundOutcome+'\n\n'+unboundOutcome+'\n';
-  const source={service:'one',file:'src/OrderService.kt',revision:'rev-a',snapshot:'snapshot-a',startLine:40,endLine:40,textDigest:sha(text),url:null,repository:null,linkMapping:'MISSING'};
+  const source={service:'one',file:'src/OrderService.kt',revision:'rev-a',snapshot:'snapshot-a',startLine:40,endLine:40,textDigest:sha(text),url:null,repository:null,linkMapping:'MISSING',
+   occurrence:{snapshot:'capture-a',blob:'blob-a',startByte:100,endByte:100+Buffer.byteLength(text)}};
   const map=JSON.stringify({claims:[{sources:[source]},{id:'source-outcome-1',sources:[source]}]}),index='{}';
   const bundle={schema:'codeclew-reader-sources/1',checkedIndex:join(root,'index.json'),indexFileDigest:sha(index),pages:[{
    page:'reader.md',markdownDigest:sha(body),map:join(root,'map.json'),mapFileDigest:sha(map),groups:[{
@@ -64,6 +65,43 @@ test('source footers keep local linked ranges and refuse changed excerpts, maps,
    await assert.rejects(renderDirectory(input,output,{sources:bundleFile}),/Invalid source footer/);
    await assert.rejects(readFile(join(output,'reader.html')));
   }
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test('same-line outcome citations resolve to their exact local excerpts',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'clew-source-coordinates-'));
+ const sha=s=>'sha256:'+createHash('sha256').update(s).digest('hex');
+ try{
+  const input=join(root,'input');await mkdir(input);
+  const markers=[1,2,3].map(i=>`<span data-clew-outcome-source="source-outcome-${i}"></span>`);
+  const body='# Reader\n\n'+markers.join('\n\n')+'\n';
+  const file={service:'one',file:'src/Example.kt',revision:'rev-a',snapshot:'snapshot-a'};
+  const ranges=[['foo',50],['bar',55],['foo',60]].map(([text,startByte])=>({startLine:3,endLine:3,text,
+   occurrence:{snapshot:'capture-a',blob:'blob-a',startByte,endByte:startByte+3}}));
+  const claims=ranges.map(({text,...range},i)=>({id:`source-outcome-${i+1}`,sources:[{...file,...range,textDigest:sha(text)}]}));
+  const index='{}', map=JSON.stringify({claims});
+  const bundle={schema:'codeclew-reader-sources/1',checkedIndex:'index.json',indexFileDigest:sha(index),pages:[{
+   page:'reader.md',markdownDigest:sha(body),map:'map.json',mapFileDigest:sha(map),groups:[{...file,ranges}]
+  }]};
+  const bundleFile=join(root,'sources.json');
+  await writeFile(join(root,'index.json'),index);await writeFile(join(root,'map.json'),map);
+  await writeFile(join(input,'reader.md'),body);await writeFile(bundleFile,JSON.stringify(bundle));
+  await renderDirectory(input,join(root,'html'),{sources:bundleFile});
+  const html=await readFile(join(root,'html/reader.html'),'utf8');
+  const links=[...html.matchAll(/class="operation-outcome-sources">[^<]*<a href="#([^"]+)"[^>]*>[^<]+/g)];
+  assert.deepEqual(links.map(link=>link[1]),['clew-source-0-0','clew-source-0-1','clew-source-0-2']);
+  for(const [i,{text,occurrence}] of ranges.entries()){
+   assert.ok(links[i][0].includes(`bytes [${occurrence.startByte}, ${occurrence.endByte})`));
+   assert.match(html,new RegExp(`id="${links[i][1]}"[^>]*><code>${text}</code>`));
+  }
+  const changed=structuredClone(bundle);
+  changed.pages[0].groups[0].ranges[2].occurrence.startByte++;
+  await writeFile(bundleFile,JSON.stringify(changed));
+  await assert.rejects(renderDirectory(input,join(root,'changed'),{sources:bundleFile}),/excerpt bytes or coverage changed/);
+  const {occurrence,...lineOnly}=ranges[2];
+  changed.pages[0].groups[0].ranges=[lineOnly];
+  await writeFile(bundleFile,JSON.stringify(changed));
+  await assert.rejects(renderDirectory(input,join(root,'ambiguous'),{sources:bundleFile}),/conflicting bound excerpts/);
  }finally{await rm(root,{recursive:true,force:true})}
 });
 

@@ -71,4 +71,71 @@ class SourcesTest(unittest.TestCase):
             self.assertFalse((self.root/'sources.json').exists())
 
 
+class SourceOccurrenceTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def bind(self, selections):
+        manifests, handles, records, pool = [], [], [], {}
+        for i, (text, start, blob) in enumerate(selections):
+            source = F['source'](text)
+            if start is not None:
+                source['occurrence'] = {'snapshot': 'capture-a', 'blob': blob,
+                                        'startByte': start, 'endByte': start + len(text.encode())}
+            name = f'work-{i}'
+            manifest, view, _ = F['fixture'](self.root, name, work=name, record=source)
+            record = view['records'][0]
+            manifests.append(manifest)
+            handles.append(record['cite'])
+            records.append({**record, 'text': name})
+            pool[name] = view['texts'][record['text']]
+        original = self.root/'original.json'
+        original.write_text(json.dumps({'pages': [{'page': 'reader.md', 'fragments': [
+            {'id': 'claim', 'text': '# Reader\n\nBound explanation.\n', 'evidence': handles}]}]}))
+        self.view = self.root/'view.json'
+        self.view.write_text(json.dumps({'records': records, 'texts': pool}))
+        S['M']['compose'](original, self.root/'compose')
+        S['M']['bind'](manifests, self.root/'compose/markdown', self.root/'compose/request.json', self.root/'bound')
+        self.index = self.root/'bound/index.json'
+        self.manifests = manifests
+
+    def test_exact_occurrences_keep_nested_and_disjoint_excerpts_and_deduplicate_equivalents(self):
+        self.bind([('π alpha beta', 128, 'blob-a'), ('π alpha', 128, 'blob-a'),
+                   ('beta', 137, 'blob-a'), ('π alpha', 128, 'blob-a')])
+        output = self.root/'footers.json'
+        S['materialize'](self.index, self.manifests, output)
+        grouped = output.read_bytes()
+        output.unlink()
+        S['materialize'](self.index, self.manifests, output, [self.view])
+        self.assertEqual(output.read_bytes(), grouped)
+        groups = json.loads(grouped)['pages'][0]['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual([(r['startLine'], r['endLine'], r['occurrence']['startByte'],
+                           r['occurrence']['endByte'], r['text']) for r in groups[0]['ranges']],
+                         [(3, 3, 128, 136, 'π alpha'), (3, 3, 128, 141, 'π alpha beta'),
+                          (3, 3, 137, 141, 'beta')])
+
+    def test_disagreeing_overlap_of_one_capture_refuses(self):
+        self.bind([('π alpha beta', 128, 'blob-a'), ('ALPHA', 131, 'blob-a')])
+        self.assert_conflict()
+
+    def test_disagreeing_captures_at_identical_lines_refuse(self):
+        self.bind([('alpha', 128, 'blob-a'), ('beta', 137, 'blob-b')])
+        self.assert_conflict()
+
+    def test_disagreeing_legacy_excerpts_at_identical_lines_refuse(self):
+        self.bind([('alpha', None, None), ('beta', None, None)])
+        self.assert_conflict()
+
+    def assert_conflict(self):
+        for name, views in [('grouped', []), ('saved', [self.view])]:
+            output = self.root/f'{name}.json'
+            with self.subTest(projection=name), self.assertRaises(S['M']['Stop']) as error:
+                S['materialize'](self.index, self.manifests, output, views)
+            self.assertEqual(error.exception.status, 'SOURCE_EXCERPT_CONFLICT')
+            self.assertFalse(output.exists())
+
+
 if __name__=='__main__':unittest.main()

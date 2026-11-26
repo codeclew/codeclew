@@ -5,8 +5,9 @@ const sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 const need=(ok,message)=>{if(!ok)throw Error('Invalid source footer: '+message)};
 const stable=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
-const sourceKey=s=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine,
- ...(s.evidenceInput?[s.evidenceInput,s.bindingRepository??s.repository??null]:[])]);
+const sourceKey=(s,withOccurrence=true)=>JSON.stringify([s.service,s.file,s.revision,s.snapshot??null,s.startLine,s.endLine,
+ ...(s.evidenceInput?[s.evidenceInput,s.bindingRepository??s.repository??null]:[]),
+ ...(withOccurrence&&s.occurrence?[[s.occurrence.snapshot,s.occurrence.blob,s.occurrence.startByte,s.occurrence.endByte]]:[])]);
 const checkedClaims=new WeakMap();
 
 export async function loadSources(path){
@@ -17,14 +18,24 @@ export async function loadSources(path){
  for(const p of value.pages){
   const raw=await readFile(resolve(dirname(path),p.map));need(sha(raw)===p.mapFileDigest,'checked map changed: '+p.page);
   const mapped=JSON.parse(raw);
-  const expected=new Map(mapped.claims.flatMap(c=>(c.sources||[]).map(s=>[sourceKey(s),s.textDigest])));
-  const actual=new Map(p.groups.flatMap(g=>g.ranges.map(r=>[sourceKey({...g,...r}),sha(Buffer.from(r.text))])));
+  const excerpts=p.groups.flatMap(g=>g.ranges.map(r=>({...g,...r})));
+  // Older bundles carry only line coordinates and must still agree with every bound digest.
+  const exactLines=new Set(excerpts.filter(s=>s.occurrence).map(s=>sourceKey(s,false)));
+  const boundKey=s=>sourceKey(s,exactLines.has(sourceKey(s,false)));
+  const expected=new Map();
+  for(const s of mapped.claims.flatMap(c=>c.sources||[])){
+   const key=boundKey(s);
+   need(!expected.has(key)||expected.get(key)===s.textDigest,'conflicting bound excerpts: '+p.page);
+   expected.set(key,s.textDigest);
+  }
+  const actual=new Map(excerpts.map(s=>[sourceKey(s),sha(Buffer.from(s.text))]));
+  need(actual.size===excerpts.length,'duplicate excerpt: '+p.page);
   need(actual.size===expected.size&&[...actual].every(([k,d])=>expected.get(k)===d),'excerpt bytes or coverage changed: '+p.page);
   const declared=new Map(mapped.claims.flatMap(c=>(c.declaredEvidence||[]).map((h,i)=>[h,stable(c.declarations[i])])));
   const delivered=new Map((p.declarations||[]).map(d=>[d.cite,stable(d.record)]));
   need(delivered.size===declared.size&&[...delivered].every(([h,d])=>declared.get(h)===d),'declared bindings changed: '+p.page);
   claims.set(p.page,new Map(mapped.claims.filter(c=>typeof c.id==='string'&&/^source-outcome-[1-9][0-9]*$/.test(c.id)&&c.sources?.length)
-   .map(c=>[c.id,c.sources.map(sourceKey)])));
+   .map(c=>[c.id,c.sources.map(boundKey)])));
  }
  checkedClaims.set(value,claims);
  return value;
@@ -40,8 +51,15 @@ export function sourceFooter(bundle,file,markdown,html,ui,anchors){
  page.groups.forEach((g,i)=>{
   const owner=g.evidenceInput?`${g.evidenceInput} / ${g.service}`:g.service;
   const full=`${owner}:${g.file} @ ${g.revision}${g.snapshot?' · '+g.snapshot:''}`;
+  const count=new Map();
+  for(const r of g.ranges){
+   const lines=`${r.startLine}:${r.endLine}`;
+   count.set(lines,(count.get(lines)||0)+1);
+  }
   const links=g.ranges.map((r,j)=>{
-   const id=`${prefix}-${i}-${j}`,label=r.startLine===r.endLine?String(r.startLine):`${r.startLine}–${r.endLine}`;
+   const id=`${prefix}-${i}-${j}`,lines=r.startLine===r.endLine?String(r.startLine):`${r.startLine}–${r.endLine}`;
+   const label=r.occurrence&&count.get(`${r.startLine}:${r.endLine}`)>1
+    ? escape(`${lines} · ${words.bytes||'bytes'} [${r.occurrence.startByte}, ${r.occurrence.endByte})`) : lines;
    anchors?.set(sourceKey({...g,...r}),
     `<a href="#${id}" title="${escape(full)}">${escape(g.service)} / ${escape(g.file.split('/').at(-1))}:${label}</a>`);
    details.push(`<details class="source-excerpt"><summary>${escape(full)} — ${label}</summary><pre id="${id}" tabindex="0" role="region" aria-label="${escape(g.file)} — ${label}"><code>${escape(r.text)}</code></pre></details>`);

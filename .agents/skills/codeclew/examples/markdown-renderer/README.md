@@ -284,10 +284,12 @@ obtains only cited ranges; no capture or source fallback. SOURCE_NATIVE keeps it
 existing explicit `--clew` and `--root` admission arguments.
 
 Add `--sources /path/to/new-sources.json` to the owned renderer argv. Every page
-gets Sources (localized for Russian): one file row per service/path/revision/
-snapshot, deduplicated exact ranges separated by `;`. Each range opens a local
-verbatim excerpt on that page. Full paths/versions remain discernible; missing
-Git mappings need no invented URL. No extra pages or full cache are exported.
+gets a Sources section, localized for Russian, with one file row per service,
+path, revision, and snapshot. Identical excerpts share a link when they have the
+same original coordinates. Different byte spans on the same lines keep separate
+links labeled with their half-open UTF-8 byte offsets. Each link opens its exact
+local excerpt. The footer displays full paths and versions and works without Git
+link mappings. The export includes only cited excerpts.
 Changed index/maps/Markdown refuse stale bundles. Refresh after binding changes.
 
 For a render-only update, render the existing checked bound Markdown and run

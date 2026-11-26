@@ -1,5 +1,6 @@
 """Materialize cited excerpts from checked page maps; never bind or acquire source."""
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 import runpy
@@ -7,6 +8,46 @@ import runpy
 M = runpy.run_path(str(Path(__file__).with_name('page_citations.py')))
 C = M['C']
 need, read, sha, digest = (M[k] for k in ('require', 'read', 'sha', 'digest'))
+
+
+def checked_ranges(excerpts):
+    """Keep exact byte occurrences and reject contradictory excerpts."""
+    by_line, by_capture = defaultdict(dict), defaultdict(dict)
+    for source, text in excerpts:
+        lines = (source['startLine'], source['endLine'])
+        row = {'startLine': lines[0], 'endLine': lines[1], 'text': text}
+        coordinates = ()
+        if (occurrence := source.get('occurrence')) is not None:
+            need(isinstance(occurrence, dict), 'INVALID_SOURCE_OCCURRENCE')
+            snapshot, blob, start, end = (occurrence.get(k) for k in ('snapshot', 'blob', 'startByte', 'endByte'))
+            raw = text.encode('utf8')
+            need(isinstance(snapshot, str) and snapshot and isinstance(blob, str) and blob
+                 and type(start) is int and type(end) is int and 0 <= start <= end
+                 and end - start == len(raw), 'INVALID_SOURCE_OCCURRENCE')
+            coordinates = (snapshot, blob, start, end)
+            row['occurrence'] = dict(zip(('snapshot', 'blob', 'startByte', 'endByte'), coordinates))
+            spans = by_capture[snapshot, blob]
+            need((start, end) not in spans or spans[start, end] == raw, 'SOURCE_EXCERPT_CONFLICT')
+            spans[start, end] = raw
+        ranges = by_line[lines]
+        need(coordinates not in ranges or ranges[coordinates]['text'] == text, 'SOURCE_EXCERPT_CONFLICT')
+        ranges[coordinates] = row
+
+    for ranges in by_line.values():
+        # Line labels alone cannot distinguish disagreeing captures or legacy excerpts.
+        if len({row['text'] for row in ranges.values()}) > 1:
+            need(() not in ranges and len({key[:2] for key in ranges}) == 1, 'SOURCE_EXCERPT_CONFLICT')
+    for spans in by_capture.values():
+        # By start order, the prior span reaching furthest covers any current overlap.
+        prior_start, prior_end, prior = 0, 0, b''
+        for (start, end), raw in sorted(spans.items()):
+            if start < prior_end:
+                overlap = min(prior_end, end) - start
+                offset = start - prior_start
+                need(prior[offset:offset + overlap] == raw[:overlap], 'SOURCE_EXCERPT_CONFLICT')
+            if end > prior_end:
+                prior_start, prior_end, prior = start, end, raw
+    return [row for _, ranges in sorted(by_line.items()) for _, row in sorted(ranges.items())]
 
 
 def materialize(index, manifests, output, views=()):
@@ -78,24 +119,26 @@ def materialize(index, manifests, output, views=()):
                 result = C['grouped_sources'](Path(manifest), [{'file':used[h]['file'],'cite':h,'startLine':used[h]['startLine'],'endLine':used[h]['endLine']} for h in batch])
                 groups = {g['id']:g for g in result['groups']}
                 for item in result['views']:
-                    texts[item['cite']] = groups[item['group']]['fragments'][item['fragment']]['text']
+                    h = item['cite']
+                    text = groups[item['group']]['fragments'][item['fragment']]['text']
+                    need(sha(text.encode('utf8')) == entries[h]['source']['textDigest'], 'SOURCE_VIEW_TEXT_DIGEST_MISMATCH')
+                    texts[h] = text
     for page in pages:
         groups = {}
         for h in page.pop('handles'):
-            source = used[h]; text = texts[h]
+            source = used[h]
             key = tuple(source.get(k) for k in ('service','file','revision','snapshot')) + (
                 source.get('evidenceInput'), source.get('bindingRepository') or source.get('repository'))
-            group = groups.setdefault(key, {'service':key[0],'file':key[1],'revision':key[2],'snapshot':key[3],'ranges':{}})
+            groups.setdefault(key, []).append((source, texts[h]))
+        page['groups'] = []
+        for key, excerpts in sorted(groups.items(), key=lambda pair:tuple(str(x) for x in pair[0])):
+            group = dict(zip(('service', 'file', 'revision', 'snapshot'), key[:4]))
             if key[4] is not None:
                 group['evidenceInput'] = key[4]
                 if key[5] is not None:
                     group['repository'] = key[5]
-            span = (source['startLine'],source['endLine'])
-            need(span not in group['ranges'] or group['ranges'][span]['text'] == text, 'SOURCE_EXCERPT_CONFLICT')
-            group['ranges'][span] = {'startLine':span[0],'endLine':span[1],'text':text}
-        page['groups'] = []
-        for key in sorted(groups, key=lambda k:tuple(str(x) for x in k)):
-            group = groups[key]; group['ranges'] = [group['ranges'][s] for s in sorted(group['ranges'])]; page['groups'].append(group)
+            group['ranges'] = checked_ranges(excerpts)
+            page['groups'].append(group)
     index_reference = str(index)
     if any(s.get('evidenceInput') for s in [*used.values(),*used_declared.values()]):
         bundle_root = output.absolute().parent.resolve()
