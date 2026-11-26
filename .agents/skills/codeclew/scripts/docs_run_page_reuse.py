@@ -286,7 +286,7 @@ def checked_completed_stream(attempt, result, events):
 
 
 def check_routing_outage(attempt, result, events):
-    need(attempt['status'] == 'FAILED' and attempt['exitCode'] > 0 and attempt['number'] == 0
+    need(attempt['status'] == 'FAILED' and attempt['exitCode'] > 0
          and attempt.get('failure') == ROUTING_FAILURE and 'responseFailure' not in attempt
          and attempt['usage'] is None and 'responseDigest' not in attempt, 'REUSE_ATTEMPT_NOT_ADMITTED')
     # A failed dispatch may create an empty output file before it gets a response.
@@ -337,6 +337,7 @@ def checked_attempt(run, slot, original, attempt, previous, backend, flags, *, r
         need(prompt == expected, 'REUSE_ATTEMPT_PROMPT_CHANGED')
     proof = attempt_proof(attempt, result, prompt, stdout)
     if outage:
+        need(attempt['number'] == 0, 'REUSE_ATTEMPT_NOT_ADMITTED')
         check_routing_outage(attempt, result, events)
         return None, proof
     raw = checked_completed_stream(attempt, result, events)
@@ -441,43 +442,74 @@ def review_work(run, plan, retained, ledger):
     if ledger is None or 'review' not in ledger:
         return {}, {}
     rows = review_api['findings'](ledger['review'])
+    contract = ledger.get('reviewContract', 1)
+    need(type(contract) is int and contract in (1, review_api['CONTRACT']), 'REUSE_LEDGER_CHANGED')
     slots = {slot['key']: slot for slot in plan['slots']}
     need(rows.keys() <= retained.keys() == slots.keys(), 'PAGE_REVIEW_SLOT_OUTSIDE_RUN')
-    work = {key: review_api['author_input'](run, plan, slots[key], ledger['pages'][key], retained[key], row)
+    work = {key: review_api['author_input'](run, plan, slots[key], ledger['pages'][key], retained[key], row, contract=contract)
             for key, row in rows.items()}
     return rows, work
 
 
-def reviewed_attempt_evidence(run, backend, slot, attempt, previous, flags, review):
-    result, prompt, stdout, events = checked_attempt_evidence(run, slot, attempt, previous, backend, flags, reviewed=True)
-    schema = exact_file(result.parent, 'docs-run-page-author.schema.json', LOG_LIMIT)
-    need(load(schema) == review[1] and prompt == review[0] and 'promptDigest' in attempt and 'launchedAt' in attempt,
-         'PAGE_REVIEW_AUTHOR_INPUT_CHANGED', slot=slot['key'])
-    return result, events, attempt_proof(attempt, result, prompt, stdout)
+def checked_reviewed_history(run, job, slot, attempts, flags, review, validate_review):
+    expected, schema, allow_format = review
+    previous = None
+    repairs, outages = [], {}
+    retry = False
+    for index, attempt in enumerate(attempts):
+        need(attempt.get('serviceRetry') is True if retry else 'serviceRetry' not in attempt, 'REUSE_ATTEMPT_NOT_ADMITTED')
+        result, prompt, stdout, events = checked_attempt_evidence(
+            run, slot, attempt, previous, job['author'], flags, reviewed=True)
+        schema_file = exact_file(result.parent, 'docs-run-page-author.schema.json', LOG_LIMIT)
+        need(load(schema_file) == schema and prompt == expected and 'promptDigest' in attempt and 'launchedAt' in attempt,
+             'PAGE_REVIEW_AUTHOR_INPUT_CHANGED', slot=slot['key'])
+        need(previous is None or previous['number'] < attempt['number'], 'REUSE_ATTEMPT_NOT_ADMITTED')
+        proof = attempt_proof(attempt, result, prompt, stdout)
+        previous = attempt
+        if attempt.get('failure') == ROUTING_FAILURE:
+            need(not retry and index + 1 < len(attempts), 'REUSE_ATTEMPT_NOT_ADMITTED')
+            check_routing_outage(attempt, result, events)
+            outages[index] = proof
+            retry = True
+            continue
+        retry = False
+        raw = checked_completed_stream(attempt, result, events)
+        proof['responseDigest'] = sha(raw)
+        if index + 1 < len(attempts):
+            try:
+                validate_review(decode(raw))
+            except Stop as error:
+                failure = {'code': error.code, 'details': error.details}
+            else:
+                raise Stop('REUSE_UNPROVEN_REPAIR')
+            need(allow_format and review_api['format_failure'](failure)
+                 and canonical(failure) == canonical(attempt.get('responseFailure')), 'REUSE_UNPROVEN_REPAIR')
+            expected = review_api['format_prompt'](slot, failure)
+            repairs.append(dict(proof, responseFailureDigest=digest(failure)))
+    usage = token_accounting(attempts)
+    need('responseFailure' not in attempts[-1] and len(repairs) <= job['budget']['maxRepairs']
+         and usage['status'] == ('UNAVAILABLE' if outages else 'MEASURED')
+         and {row['attempt'] for row in usage['missing']} == outages.keys(), 'REUSE_HISTORICAL_COUNTERS_CHANGED')
+    if repairs:
+        proof['formatRecovery'] = {'priorAttempts': repairs, 'usage': usage_summary(usage)}
+    if outages:
+        proof['routingRecovery'] = {'priorAttempts': list(outages.values()), 'usage': usage_summary(usage)}
+    return raw, proof
 
 
-def admitted_completed(run, job, slot, histories, flags, *, review=None):
+def admitted_completed(run, job, slot, histories, flags, *, review=None, validate_review=None):
+    if review is not None:
+        return checked_reviewed_history(run, job, slot, histories, flags, review, validate_review)
     last = histories[-1]
     previous = histories[-2] if len(histories) > 1 else None
     backend = job['author']
-    if review is None:
-        result, prompt, stdout, events = checked_attempt_evidence(run, slot, last, previous, backend, flags)
-        # A promoted donor also proves these responses reproduce its accepted
-        # draft. Settled repair prompts can include scheduler diagnostics.
-        need(prompt == slot_files(run, slot)['prompt'] if previous is None
-             else not last.get('serviceRetry') and 'promptDigest' in last
-             and token_accounting(histories)['status'] == 'MEASURED', 'REUSE_ATTEMPT_PROMPT_CHANGED')
-        proof = attempt_proof(last, result, prompt, stdout)
-    else:
-        result, events, proof = reviewed_attempt_evidence(run, backend, slot, last, previous, flags, review)
-        if previous is not None:
-            need(len(histories) == 2 and last['number'] == 1 and last.get('serviceRetry') is True,
-                 'REUSE_ATTEMPT_NOT_ADMITTED')
-            failed, failed_events, outage = reviewed_attempt_evidence(run, backend, slot, previous, None, flags, review)
-            check_routing_outage(previous, failed, failed_events)
-            proof['routingRecovery'] = {'priorAttempts': [outage], 'usage': usage_summary(token_accounting(histories))}
-        else:
-            need('serviceRetry' not in last, 'REUSE_ATTEMPT_NOT_ADMITTED')
+    result, prompt, stdout, events = checked_attempt_evidence(run, slot, last, previous, backend, flags)
+    # A promoted donor also proves these responses reproduce its accepted
+    # draft. Settled repair prompts can include scheduler diagnostics.
+    need(prompt == slot_files(run, slot)['prompt'] if previous is None
+         else not last.get('serviceRetry') and 'promptDigest' in last
+         and token_accounting(histories)['status'] == 'MEASURED', 'REUSE_ATTEMPT_PROMPT_CHANGED')
+    proof = attempt_proof(last, result, prompt, stdout)
     raw = checked_completed_stream(last, result, events)
     return raw, dict(proof, responseDigest=sha(raw))
 
@@ -502,19 +534,24 @@ def review_candidates(run, target, plan, job, inventory, pins, flags, validate, 
         prior = ledger['pages'].get(key) if ledger else None
         if key in histories:
             attempts = histories[key]
-            if key not in rows and any(row.get('failure') == ROUTING_FAILURE or row.get('serviceRetry') for row in attempts):
+            if key in rows:
+                def validate_review(answer):
+                    return review_api['apply'](old_plan, slot, retained[key], rows[key], answer, validate)
+
+                raw, proof = admitted_completed(run, source_job, slot, attempts, flags,
+                                               review=work[key], validate_review=validate_review)
+                response = validate_review(decode(raw))
+                raw = encode(response)
+                proof = {**proof, 'correctionDigest': proof['responseDigest'], 'responseDigest': sha(raw),
+                         'priorResponseDigest': prior['responseDigest'], 'priorOrigin': prior['origin']}
+            elif any(row.get('failure') == ROUTING_FAILURE or row.get('serviceRetry') for row in attempts):
                 completed = list(checked_history(run, slot, pinned['prompt'], attempts, owners, source_job['author'],
                                                  flags, validate, usage_matches, account_indexes[key]))
                 need(completed and completed[-1][1]['attempt'] == attempts[-1]['number'], 'REUSE_ATTEMPT_NOT_ADMITTED')
                 raw, proof = completed[-1]
+                response = validate(slot, decode(raw))
             else:
-                raw, proof = admitted_completed(run, source_job, slot, attempts, flags, review=work.get(key))
-            if key in rows:
-                response = review_api['apply'](old_plan, slot, retained[key], rows[key], decode(raw), validate)
-                raw = encode(response)
-                proof = {**proof, 'correctionDigest': proof['responseDigest'], 'responseDigest': sha(raw),
-                         'priorResponseDigest': prior['responseDigest'], 'priorOrigin': prior['origin']}
-            else:
+                raw, proof = admitted_completed(run, source_job, slot, attempts, flags)
                 response = validate(slot, decode(raw))
         else:
             proof = dict(prior, priorOrigin=prior['origin'])
@@ -565,7 +602,7 @@ def import_pages(run, sources, job, inventory, pins, plan, state, flags, validat
                'sourceErrors': errors, 'rejected': dict(rejected)}
     review_count = 0
     if review is not None:
-        receipt['review'] = review
+        receipt.update(review=review, reviewContract=review_api['CONTRACT'])
         values = {key: validate(slot, decode(base64.b64decode(pages[key]['raw'])))
                   for slot in plan['slots'] if (key := slot['key']) in pages}
         rows, _ = review_work(run, plan, values, receipt)

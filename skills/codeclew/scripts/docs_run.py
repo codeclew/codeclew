@@ -876,12 +876,6 @@ P = runpy.run_path(str(HERE / 'docs_run_pages.py'), init_globals={
     'citation_load': M['C']['load'], 'COMPACT_REVIEW': COMPACT_REVIEW,
     'add_prepared_facts': I['add_prepared_facts'],
 })
-PX = runpy.run_path(str(HERE / 'docs_run_page_execution.py'), init_globals={
-    'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
-    'token_accounting': token_accounting,
-})
-
-
 def decode(raw):
     return json.loads(raw, object_pairs_hook=T['unique_object'], parse_constant=T['reject_constant'])
 
@@ -889,6 +883,11 @@ def decode(raw):
 PAGE_REVIEW = runpy.run_path(str(HERE / 'docs_run_page_review.py'), init_globals={
     'load': load, 'need': need, 'decode': decode, 'encode': encode, 'response_limit': P['MAX_RESPONSE_BYTES'],
     'route_id': P['route_id'], 'discovery_slots': P['discovery_slots'], 'discovered_entry_id': I['discovered_entry_id'],
+    'response_contract': P['RESPONSE'],
+})
+PX = runpy.run_path(str(HERE / 'docs_run_page_execution.py'), init_globals={
+    'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
+    'token_accounting': token_accounting, 'review_api': PAGE_REVIEW,
 })
 PR = runpy.run_path(str(HERE / 'docs_run_page_reuse.py'), init_globals={
     'load': load, 'save': save, 'encode': encode, 'need': need, 'sha': sha, 'Stop': Stop,
@@ -1720,7 +1719,11 @@ def isolated_authorship(run, job, inventory, state, draft):
         for slot in plan['slots']:
             if (key := slot['key']) not in review:
                 continue
-            raw, _ = PR['admitted_completed'](run, job, slot, histories[key], inline_cli_flags, review=work[key])
+            def validate_review(response):
+                return PAGE_REVIEW['apply'](plan, slot, retained[key], review[key], response, P['validate_response'])
+
+            raw, _ = PR['admitted_completed'](run, job, slot, histories[key], inline_cli_flags,
+                                              review=work[key], validate_review=validate_review)
             values[key] = PAGE_REVIEW['apply'](plan, slot, retained[key], review[key], decode(raw), P['validate_response'])
             reviewed[key] = {'previousResponseDigest': review[key]['responseDigest'],
                              'responseDigest': digest(values[key])}

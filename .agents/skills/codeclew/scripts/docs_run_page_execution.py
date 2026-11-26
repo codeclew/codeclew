@@ -181,7 +181,11 @@ def launch_attempt(run, schema, backend, slot, previous, failure, flags, review=
              'PAGE_AUTHOR_SERVICE_RETRY_EVIDENCE_CHANGED', slot=slot['key'])
         attempt['serviceRetry'] = True
     elif review is not None:
-        prompt = review[0]
+        if failure:
+            need(resume and review[2] and review_api['format_failure'](failure), 'PAGE_REVIEW_FORMAT_RETRY_NOT_ADMITTED')
+            prompt = review_api['format_prompt'](slot, failure)
+        else:
+            prompt = review[0]
     elif failure:
         details = failure.get('details', {})
         original_attempt = attempt_dir(run, previous[0]) / 'prompt.txt' if previous else None
@@ -241,7 +245,7 @@ def check_author_state(state, *, settled_only=False):
     return tokens
 
 
-def next_action(run, slot, history, scheduled, max_repairs, responses, validate, read_response):
+def next_action(run, slot, history, scheduled, max_repairs, responses, validate, read_response, review=None):
     launched = [row for row in history if not row.get('cancelledBeforeLaunch')]
     previous = launched[-1] if launched else None
     key = slot['key']
@@ -264,6 +268,8 @@ def next_action(run, slot, history, scheduled, max_repairs, responses, validate,
     if previous and service_failure(previous):
         need(not previous.get('serviceRetry'), 'PAGE_AUTHOR_SERVICE_RETRIES_EXHAUSTED',
              slot=key, failure=previous['failure'])
+    elif review is not None and (not review[2] or not review_api['format_failure'](failure)):
+        max_repairs = 0
     content_attempts = sum(not service_failure(attempt) for attempt in launched)
     need(content_attempts <= max_repairs, 'PAGE_AUTHOR_REPAIRS_EXHAUSTED', slot=key, page=slot['page'], failure=failure)
     return slot, failure
@@ -310,9 +316,8 @@ def execute_authors(run, job, plan, schema, flags, validate, read_response, repa
     cancelled = threading.Event()
 
     def assess(slot):
-        max_repairs = 0 if slot['key'] in reviews else job['budget']['maxRepairs']
-        action = next_action(run, slot, histories[slot['key']], scheduled, max_repairs,
-                             responses, validate, read_response)
+        action = next_action(run, slot, histories[slot['key']], scheduled, job['budget']['maxRepairs'],
+                             responses, validate, read_response, review=reviews.get(slot['key']))
         if action:
             pending.append(action)
 

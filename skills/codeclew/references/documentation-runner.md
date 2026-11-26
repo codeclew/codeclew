@@ -153,9 +153,12 @@ zero-based `index` in the author’s steps array. This index starts after the
 automatic first message in the reader diagram.
 
 The selected source excerpts and current value go to a fresh isolated author
-session for each finding. The runner applies the returned value at the selected
-position, retains every other response, and checks the assembled site through
-the usual READY gates. An unsupported correction fails the successor check.
+session for each finding. A formatting error can use the job's repair budget
+in that same session with the same replacement schema. Keep each step label
+and condition on one line of at most 240 characters. Rephrase a long condition
+while preserving its meaning. The runner applies the returned value at the
+selected position, retains every other response, and checks the assembled site
+through the usual READY gates. An unsupported correction fails the successor check.
 The donor's site and usage records are preserved. New author usage and the
 prior recovery ledger are recorded separately in the successor.
 

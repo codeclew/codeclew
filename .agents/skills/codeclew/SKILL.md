@@ -42,6 +42,20 @@ and citation manifests. Preserve agreed edits and revise only the requested
 fragments. Completion requires the requested pages and sequences, checked
 provenance, and each author's scope review.
 
+After a full documentation run reaches READY, compare the operation, process
+map or route, and guide where they describe the same behavior. Use the retained
+source for those pages. Follow a local committed change through any later
+external action or failure, then check what a later attempt can observe, skip,
+or repeat. Distinguish a missing input from a present input that fails when
+decoded, validated, or handled. Record only the order, outcomes, and boundaries
+the source supports.
+
+If the pages agree with the source, return the checked site. For a specific
+omission or contradiction, use [reviewed page correction](references/documentation-runner.md#correct-a-reviewed-isolated-page).
+Supply the exact selector for the affected field and its supporting source
+aliases through `--review-findings`. Keep the prior site and history and report
+new author usage separately.
+
 ## Prepared SOURCE shortcut
 
 For bounded SOURCE Q&A/maintenance with root, service, exact selector and saved

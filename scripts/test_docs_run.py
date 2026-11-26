@@ -671,10 +671,17 @@ if routing.exists() and routing.read_text()==packet['slot'] and 'resume' not in 
     print(json.dumps({{'type':'turn.failed','error':{{'message':message}}}}))
     sys.exit(1)
 repair='formatRepair' in packet
-suffix='-review.json' if 'selector' in packet else ('-repair.json' if repair else '-response.json')
+review_repair='reviewFormatRepair' in packet
+initial=seed/(packet['slot']+'-review-first.json')
+if 'selector' in packet and initial.is_file():
+    suffix='-review-first.json'
+elif 'selector' in packet or review_repair:
+    suffix='-review.json'
+else:
+    suffix='-repair.json' if repair else '-response.json'
 raw=(seed/(packet['slot']+suffix)).read_text()
 out.write_text(raw)
-multiplier=2 if repair else 1
+multiplier=2 if repair or review_repair else 1
 for row in (
     {{'type':'item.completed','item':{{'type':'agent_message','text':raw.removesuffix('\\n')}}}},
     {{'type':'turn.completed','usage':{{'input_tokens':20*multiplier,'cached_input_tokens':10*multiplier,
@@ -1164,7 +1171,7 @@ for row in (
         route, neighbor_route = routes
         discovered, neighbor_start = starts
         responses = {row['slot']: row['responseDigest'] for row in D['load'](donor / 'state.json')['attempts']}
-        target, _, _, _ = self.isolated_fixture(run_name='nested-successor', body=body)
+        target, _, _, _ = self.isolated_fixture(run_name='nested-successor', body=body, repairs=2)
         findings = self.root / 'nested-findings.json'
         route_finding = {'slot': process['key'], 'responseDigest': responses[process['key']],
                          'selector': {'field': 'routeStep', 'routeId': route['id'], 'index': 0, 'action': 'replace'},
@@ -1184,19 +1191,41 @@ for row in (
             self.assertEqual(D['load'](target / 'state.json')['attempts'], [])
         D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [route_finding, discovery_finding]})
         call('reuse-pages', target, *reuse)
+        long_condition = 'count >= 0 and ' + ' and '.join(['the count is nonnegative'] * 12)
+        D['save'](self.seed / (process['key'] + '-review-first.json'),
+                  {'replacement': {**route_step, 'condition': long_condition}})
         D['save'](self.seed / (process['key'] + '-review.json'),
                   {'replacement': {**route_step, 'condition': 'count >= 0'}})
         D['save'](self.seed / (discovery['key'] + '-review.json'),
                   {'replacement': {**start_step, 'condition': 'it.isReady'}})
         reviewed = call('run', target)
-        self.assertEqual(reviewed['reuse']['newAuthorInvocations'], 2)
+        self.assertEqual(reviewed['reuse']['newAuthorInvocations'], 3)
         self.assertEqual(set(reviewed['reuse']['reviewedSlots']), {process['key'], discovery['key']})
         state = D['load'](target / 'state.json')
+        self.assertEqual(state['modelTokens'], 60)
+        first, repair = [row for row in state['attempts'] if row['slot'] == process['key']]
+        sibling, = [row for row in state['attempts'] if row['slot'] == discovery['key']]
+        self.assertLess(sibling['startedAt'], first['completedAt'])
+        self.assertTrue(all(row['status'] == 'COMPLETED' for row in (first, sibling, repair)))
+        self.assertEqual((repair['number'], repair['resumeThread'], repair['threadId']), (1, first['threadId'], first['threadId']))
+        first_path = D['PX']['attempt_dir'](target, first)
+        retry_path = D['PX']['attempt_dir'](target, repair)
+        retry_packet = D['load'](retry_path / 'prompt.txt')
+        self.assertEqual(retry_packet['reviewFormatRepair'][0]['path'], '/routes/0/steps/0/condition')
+        self.assertEqual(retry_packet['reviewFormatRepair'][0]['maxCharacters'], 240)
+        self.assertNotIn('sourceRanges', retry_packet)
+        self.assertNotIn(long_condition, (retry_path / 'prompt.txt').read_text())
+        schema_file = 'docs-run-page-author.schema.json'
+        self.assertEqual((first_path / schema_file).read_bytes(), (retry_path / schema_file).read_bytes())
+        self.assertIn('240 characters', D['load'](first_path / schema_file)['$defs']['step']['properties']['condition']['description'])
         for row in state['attempts']:
+            if row is repair:
+                continue
             folder = D['PX']['attempt_dir'](target, row)
             packet = json.loads((folder / 'prompt.txt').read_text().split('\n\n')[-1])
             if row['slot'] == process['key']:
                 self.assertEqual(packet['current'], route_step)
+                self.assertIn('240 characters', packet['replacementContract']['condition'])
                 self.assertNotIn('Reject a negative count', json.dumps(packet))
             else:
                 self.assertEqual(packet['current'], start_step)
@@ -1215,6 +1244,31 @@ for row in (
             self.assertNotIn('<small>' + old_condition + '</small>', corrected)
         for page in (neighbor_route['narrative']['page'], Path(neighbor_start['page']).with_suffix('.html').name):
             self.assertEqual((old_html / page).read_bytes(), (new_html / page).read_bytes())
+
+        next_run, _, _, _ = self.isolated_fixture(run_name='format-successor', body=body)
+        revised_digest = reviewed['reuse']['reviewedSlots'][process['key']]['responseDigest']
+        D['save'](findings, {'schema': D['PAGE_REVIEW']['SCHEMA'], 'findings': [
+            {**route_finding, 'responseDigest': revised_digest, 'issue': 'Name the returned list size.'},
+        ]})
+        reuse = ['--reuse-from', str(target), '--review-findings', str(findings)]
+        prompt = retry_path / 'prompt.txt'
+        original = prompt.read_bytes()
+        prompt.write_bytes(original + b'\n')
+        rejected = call('reuse-pages', next_run, *reuse, status=2)
+        self.assertEqual(rejected['code'], 'REUSE_ATTEMPT_PROMPT_CHANGED')
+        prompt.write_bytes(original)
+        call('reuse-pages', next_run, *reuse)
+        recovery = D['load'](next_run / 'page-reuse.json')['pages'][process['key']]['formatRecovery']
+        proof, = recovery['priorAttempts']
+        self.assertEqual(proof['responseDigest'], first['responseDigest'])
+        self.assertEqual(recovery['usage']['budgetTokens'], 40)
+        (self.seed / (process['key'] + '-review-first.json')).unlink()
+        D['save'](self.seed / (process['key'] + '-review.json'),
+                  {'replacement': {**route_step, 'label': 'List size', 'condition': 'count >= 0'}})
+        next_result = call('run', next_run)
+        self.assertEqual(next_result['reuse']['newAuthorInvocations'], 1)
+        next_html = Path(next_result['ready']) / 'html'
+        self.assertIn('List size', diagram(next_html, route['narrative']['page']))
 
     def isolated_decoding_outcome(self, language):
         body = ('fun reserve(count: Int): Int {\n'

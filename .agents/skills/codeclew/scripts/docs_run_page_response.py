@@ -17,6 +17,9 @@ KINDS = ('call', 'await', 'return', 'async', 'note')
 DISPOSITIONS = ('EXPLAINED', 'EXPLICIT_UNKNOWN')
 MAX_ENUM_CITES = 400
 MAX_ISSUES = 28
+HEADING_LENGTH = 160
+STEP_TEXT_LENGTH = 240
+CLAIM_TEXT_LENGTH = 20000
 CONTENT_ISSUES = {
     'PAGE_CLAIMS_REQUIRED', 'PAGE_CLAIM_INVALID', 'PAGE_RETURN_CLAIM_SUPPORT_REQUIRED',
     'PAGE_CONTRACT_FIELDS_REQUIRED', 'PAGE_DISCOVERY_RESULT_REQUIRED',
@@ -183,9 +186,9 @@ class Review:
                 claim.setdefault('returns', [])
             if not self.shape(claim, target, ('heading', 'text', 'cites', 'assessment', 'returns')):
                 continue
-            self.line(claim['heading'], target + '/heading', 160, empty=True)
+            self.line(claim['heading'], target + '/heading', HEADING_LENGTH, empty=True)
             text = claim['text']
-            if not isinstance(text, str) or not text.strip() or len(text) > 20000 or 'clew-sequence' in text:
+            if not isinstance(text, str) or not text.strip() or len(text) > CLAIM_TEXT_LENGTH or 'clew-sequence' in text:
                 self.issue('PAGE_CLAIM_INVALID', target + '/text', 'Give reader Markdown. Put sequence steps in the steps array.')
             self.choices(claim['assessment'], target + '/assessment', ('SUPPORTED', 'EXPLICIT_UNKNOWN'),
                          'PAGE_CLAIM_ASSESSMENT_REQUIRED', 'Record whether the cited source supports this statement.')
@@ -247,11 +250,11 @@ class Review:
             place = f'{path}/steps/{index}'
             if not self.shape(step, place, ('from', 'to', 'kind', 'label', 'condition')):
                 continue
-            self.line(step['label'], place + '/label', 240)
+            self.line(step['label'], place + '/label', STEP_TEXT_LENGTH)
             if isinstance(step['condition'], str) and not step['condition'].strip():
                 step['condition'] = None
             if step['condition'] is not None:
-                self.line(step['condition'], place + '/condition', 240)
+                self.line(step['condition'], place + '/condition', STEP_TEXT_LENGTH)
             for key in ('from', 'to'):
                 if isinstance(step[key], str) and step[key] in renamed:
                     step[key] = renamed[step[key]]
@@ -362,7 +365,7 @@ class Review:
         self.choices(value['disposition'], '/disposition', DISPOSITIONS, 'PAGE_DISPOSITION_REQUIRED',
                      'Record the evidence disposition for the slot.')
         if kind == 'GUIDE':
-            self.line(value['title'], '/title', 160)
+            self.line(value['title'], '/title', HEADING_LENGTH)
         elif value['title'] is not None:
             self.issue('PAGE_TITLE_INVALID', '/title', 'The runner supplies this page title.')
         if isinstance(value['limitations'], list):
