@@ -581,6 +581,50 @@ else:
         self.assertIn('\u041f\u0440\u0438\u043d\u044f\u0442\u0438\u0435 \u0431\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f', route.read_text())
         self.assertIn('sequence-message return', route.read_text())
 
+    def test_isolated_reader_displays_retained_start_name_without_rewriting_draft(self):
+        opaque = self.service + '-0123456789abcdefabcd'
+        entry = self.native_entry['record']['entrypoint']
+        entry.update(id=opaque, kind='SCHEDULED_JOB')
+        for language, symbol, trigger_name, title in (
+            ('en', 'callable:example/jobs/QueueTimer.flushPending#jvm:()V', None, 'QueueTimer.flushPending'),
+            ('ru', None, 'flushPending', 'flushPending'),
+        ):
+            with self.subTest(language=language):
+                entry.update(symbol=symbol, trigger={'authority': 'OWNED_TEST_DECLARATION',
+                                                     **({'name': trigger_name} if trigger_name else {})})
+                run, plan, packets, _ = self.isolated_fixture(language=language, run_name='display-' + language)
+                operation, = plan['entries']
+                dest = operation['page'].replace('.md', '.html') + '#handler'
+                starter = D['load'](run / 'inputs/starter/navigation.json')
+                self.assertEqual(starter['services'][0]['starts'][0]['title'], opaque)
+                self.assertEqual(packets['OPERATION']['context']['operation']['title'], symbol or opaque)
+                inputs = run / 'inputs'
+                inventory = D['load'](inputs / 'inventory.json')
+                expected_labels = {operation['page'] + '#handler': {'original': opaque, 'title': title}}
+                self.assertEqual(D['reader_entry_labels'](inventory, inputs), expected_labels)
+                for row in inventory['requirements']:
+                    row.pop('entrySymbol', None)
+                    row.pop('trigger', None)
+                self.assertEqual(D['reader_entry_labels'](inventory, inputs), expected_labels)
+                result = D['execute'](run)
+                self.assertEqual(result['status'], 'READY_PROMOTED', result)
+                html = Path(result['ready']) / 'html'
+                handler = (html / dest.split('#')[0]).read_text()
+                overview = (html / (self.service + '.html')).read_text()
+                process = (html / 'process-map.html').read_text()
+                self.assertIn(f'<h1 id="{opaque}"><code>{title}</code></h1>', handler)
+                self.assertIn('id="handler"', handler)
+                self.assertIn(f'<figcaption>{title}</figcaption>', handler)
+                self.assertIn(f'>{title}</a>', overview)
+                self.assertIn(f'<a href="{dest}">{title}</a>', process)
+                if symbol is None:
+                    route, = html.glob('route-*.html')
+                    self.assertIn(f'<span>1. {title}<small>', route.read_text())
+                self.assertIn('Scheduled' if language == 'en' else '\u041f\u043e \u0440\u0430\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u044e', overview)
+                draft = D['load'](run / 'workspace/draft/navigation.json')
+                self.assertEqual(draft['services'][0]['starts'][0]['title'], opaque)
+                self.assertEqual(draft['services'][0]['starts'][0]['target'], operation['page'] + '#handler')
+
     def isolated_reuse_fixture(self, *, official=False, routing=None, body=None):
         package = self.root / 'release'
         source = package / 'source/skills/codeclew'

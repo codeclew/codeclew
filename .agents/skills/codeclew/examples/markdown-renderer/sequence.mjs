@@ -24,19 +24,36 @@ export function validateSequence(v){
  return v;
 }
 
-export function renderSequence(value,words={call:'Call',return:'Return',async:'Start without waiting',await:'Await completion',note:'Local step',steps:'Steps',participants:'Participants',diagram:'Diagram; scroll horizontally when needed'}){
+function stepText(label,position,hasOpening){
+ const ordinal=/^\s*(?:(?:step|\u0448\u0430\u0433)\s+([1-9][0-9]*)\s*[.):–—-]|([1-9][0-9]*)[.)])\s+(?=\S)/iu.exec(label);
+ if(!ordinal)return label;
+ const number=Number(ordinal[1]??ordinal[2]);
+ // The assembled diagram may start with an entry step before the authored steps.
+ return number===position||hasOpening&&number===position-1?label.slice(ordinal[0].length):label;
+}
+
+export function renderSequence(value,words={call:'Call',return:'Return',async:'Start without waiting',await:'Await completion',note:'Local step',steps:'Steps',participants:'Participants',diagram:'Diagram; scroll horizontally when needed'},entryLabel=(_target,text)=>text){
  const v=validateSequence(value);
+ const first=v.steps[0];
+ const openingTarget=v.participants.find(p=>p.id===first.to)?.target;
+ const hasOpening=first.from==='caller'&&first.from!==first.to&&['call','async'].includes(first.kind)&&openingTarget?.endsWith('#handler');
+ const caption=hasOpening?entryLabel(openingTarget,v.title):v.title;
+ const participants=v.participants.map(p=>({...p,title:entryLabel(p.target,p.title)}));
+ const steps=v.steps.map((s,i)=>{
+  const displayTarget=s.target??(i===0&&hasOpening?openingTarget:undefined);
+  return {...s,label:stepText(entryLabel(displayTarget,s.label),i+1,hasOpening)};
+ });
  const link=(href,label,ref)=>ref!==undefined?`<a data-clew-catalog-ref="${escape(ref)}">${escape(label)}</a>`:href===undefined?escape(label):`<a href="${escape(target(href,'/target'))}">${escape(label)}</a>`;
- const actors=v.participants.map(p=>link(p.target,p.title,p.catalogRef)).join(' · ');
- const n=v.participants.length,index=id=>v.participants.findIndex(p=>p.id===id),title=id=>v.participants[index(id)].title;
- const lifelines=`<div class="sequence-lifelines" aria-hidden="true">${v.participants.map(()=>'<span></span>').join('')}</div>`;
- const rows=v.steps.map((s,i)=>{
+ const actors=participants.map(p=>link(p.target,p.title,p.catalogRef)).join(' · ');
+ const n=participants.length,index=id=>participants.findIndex(p=>p.id===id),title=id=>participants[index(id)].title;
+ const lifelines=`<div class="sequence-lifelines" aria-hidden="true">${participants.map(()=>'<span></span>').join('')}</div>`;
+ const rows=steps.map((s,i)=>{
   const from=index(s.from),to=index(s.to);let left=(Math.min(from,to)+.5)/n*100,width=Math.abs(from-to)/n*100;
   const self=from===to;if(self){left=from/n*100;width=100/n;}
   return `<div class="sequence-row"><div class="sequence-message ${s.kind}${from>to?' reverse':''}${self?' self':''}" role="group" aria-label="${escape(title(s.from))} → ${escape(title(s.to))}" style="margin-left:${left}%;width:${width}%"><span>${i+1}. ${link(s.target,s.label,s.catalogRef)}${(['async','await'].includes(s.kind)||(self&&s.kind==='note'))?`<small>${escape(words[s.kind])}</small>`:''}${s.condition?`<small>${escape(s.condition)}</small>`:''}</span>${self&&s.kind!=='note'?'<i class="sequence-loop" aria-hidden="true"></i>':''}</div></div>`;
  }).join('');
- const trace=v.steps.map((s,i)=>`<li><span class="sequence-direction">${escape(title(s.from))} → ${escape(title(s.to))} · ${escape(words[s.kind])}</span>${link(s.target,s.label,s.catalogRef)}${s.condition?`<p>${escape(s.condition)}</p>`:''}</li>`).join('');
- return `<figure class="clew-sequence"><figcaption>${escape(v.title)}</figcaption><p class="sequence-participants">${escape(words.participants)}: ${actors}</p><p class="sequence-hint">${escape(words.diagram)}</p><div class="sequence-scroll" tabindex="0" role="region" aria-label="${escape(words.diagram)}"><div class="sequence-diagram" role="group" aria-label="${escape(v.title)}" style="min-width:${Math.max(560,n*150)}px"><div class="sequence-actors">${v.participants.map(p=>`<span>${link(p.target,p.title,p.catalogRef)}</span>`).join('')}</div><div class="sequence-body">${lifelines}${rows}</div></div></div><details class="sequence-text" open><summary>${escape(words.steps)}</summary><ol>${trace}</ol></details></figure>\n`;
+ const trace=steps.map(s=>`<li><span class="sequence-direction">${escape(title(s.from))} → ${escape(title(s.to))} · ${escape(words[s.kind])}</span>${link(s.target,s.label,s.catalogRef)}${s.condition?`<p>${escape(s.condition)}</p>`:''}</li>`).join('');
+ return `<figure class="clew-sequence"><figcaption>${escape(caption)}</figcaption><p class="sequence-participants">${escape(words.participants)}: ${actors}</p><p class="sequence-hint">${escape(words.diagram)}</p><div class="sequence-scroll" tabindex="0" role="region" aria-label="${escape(words.diagram)}"><div class="sequence-diagram" role="group" aria-label="${escape(caption)}" style="min-width:${Math.max(560,n*150)}px"><div class="sequence-actors">${participants.map(p=>`<span>${link(p.target,p.title,p.catalogRef)}</span>`).join('')}</div><div class="sequence-body">${lifelines}${rows}</div></div></div><details class="sequence-text" open><summary>${escape(words.steps)}</summary><ol>${trace}</ol></details></figure>\n`;
 }
 
 export function resolveCatalogSequenceLinks(sequences,pages,model){

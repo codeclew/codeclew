@@ -12,13 +12,25 @@ const require=createRequire(import.meta.url);
 const {marked}=await import(pathToFileURL(require.resolve('marked')));
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
 
-function renderMarkdown(markdown,sequences,words){
+function displayEntryLabel(labels,target,text){
+ const entry=labels?.[target?.replace(/\.html(?=#handler$)/,'.md')];
+ return entry&&entry.original===text?entry.title:text;
+}
+
+function renderMarkdown(markdown,sequences,words,file,entryLabel){
  const renderer=new marked.Renderer();
+ const link=renderer.link.bind(renderer);
+ renderer.link=token=>{
+  const [label]=token.tokens;
+  if(token.tokens.length!==1||!['text','codespan'].includes(label.type))return link(token);
+  const text=entryLabel(token.href,label.text);
+  return text===label.text?link(token):link({...token,tokens:[{...label,text}]});
+ };
  const code=renderer.code.bind(renderer);
  renderer.code=token=>{
   if(token.lang?.trim()!=='clew-sequence')return code(token);
   let value;try{value=JSON.parse(token.text)}catch{throw new Error('Invalid clew-sequence JSON')}
-  const html=renderSequence(value,words);sequences.push(value);return html;
+  const html=renderSequence(value,words,entryLabel);sequences.push(value);return html;
  };
  let html=marked.parse(markdown,{gfm:true,renderer});
  // Authored targets own their IDs even when the matching heading appears first.
@@ -31,7 +43,11 @@ function renderMarkdown(markdown,sequences,words){
   while(usedIds.has(id))id=`${base}-${++suffix}`;
   usedIds.add(id);
   nextSuffix.set(base,suffix+1);
-  return `<h${level} id="${escape(id)}">${title}</h${level}>`;
+  // Compute the existing heading ID from the original label before projecting its display text.
+  const original=level==='1'?plain(title):null;
+  const text=original===null?null:entryLabel(file+'#handler',original);
+  const display=text===original?title:title.startsWith('<code>')?`<code>${escape(text)}</code>`:escape(text);
+  return `<h${level} id="${escape(id)}">${display}</h${level}>`;
  }).replace(/href="([^"#]+)\.md(#[^"]*)?"/g,(_,path,anchor)=>`href="${path}.html${anchor||''}"`);
  return html;
 }
@@ -56,16 +72,18 @@ async function registryBytes(path){
  }finally{await file.close()}
 }
 
-export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation,sources,docsetRoutes,docset,docsetVersion}={}){
+export async function renderDirectory(input,output,{label='Documentation',theme='codeclew',language='en',navigation,sources,docsetRoutes,docset,docsetVersion,entryLabels}={}){
  if(!['codeclew','neutral'].includes(theme)||!['en','ru'].includes(language))throw new Error('Use --theme codeclew|neutral and --lang en|ru');
  input=resolve(input);output=resolve(output);
  const files=(await readdir(input)).filter(x=>x.endsWith('.md')).sort();
  const sourceBundle=sources?await loadSources(sources):null;
+ const labels=entryLabels?JSON.parse(await readFile(entryLabels,'utf8')):null;
+ const entryLabel=(target,text)=>displayEntryLabel(labels,target,text);
  const locale=language==='ru'?JSON.parse(await readFile(new URL('./assets/ru.json',import.meta.url),'utf8')):null;
  const sequences=[],sequenceWords=locale?.sequence;
  const pages=await Promise.all(files.map(async file=>{
   const markdown=await readFile(join(input,file),'utf8');
-  const html=withSourceFooter(sourceBundle,file,markdown,renderMarkdown(markdown,sequences,sequenceWords),locale?.sources);
+  const html=withSourceFooter(sourceBundle,file,markdown,renderMarkdown(markdown,sequences,sequenceWords,file,entryLabel),locale?.sources);
   const heading=html.match(/<h1\b[^>]*>(.*?)<\/h1>/s);
   return {file,html,title:heading?plain(heading[1]):basename(file,'.md')};
  }));
@@ -73,6 +91,10 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
  checkSequenceTargets(sequences,pages);
  const sequenceStyle=sequences.length?await readFile(new URL('./assets/sequence.css',import.meta.url),'utf8'):'';
  const explicit=navigation===undefined?null:validateNavigation(typeof navigation==='string'?JSON.parse(await readFile(navigation,'utf8')):navigation,pages);
+ if(labels&&explicit)for(const service of explicit.services)for(const start of service.starts){
+  start.title=entryLabel(start.target,start.title);
+  start.summary=entryLabel(start.target,start.summary);
+ }
  let registryInfo=null,registryModel=null;
  const routeOptions=[docsetRoutes,docset,docsetVersion];
  if(routeOptions.some(x=>x!==undefined)){
@@ -80,6 +102,14 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
   const raw=typeof docsetRoutes==='string'?await registryBytes(docsetRoutes):Buffer.from(JSON.stringify(docsetRoutes));
   if(raw.length>REGISTRY_BYTES)throw Error('Docset routes input exceeds 1 MiB');
   registryModel=validateDocsetRoutes(JSON.parse(raw),explicit,docset,docsetVersion);
+  if(labels)for(const route of registryModel.routes){
+   if(route.origin.status!=='known')continue;
+   const origin=route.occurrences.find(o=>o.id===route.origin.occurrence);
+   if(origin.to.kind!=='LOCAL_DOCSET')continue;
+   const target=origin.to.href;
+   route.origin={...route.origin,title:entryLabel(target,route.origin.title)};
+   origin.role=entryLabel(target,origin.role);
+  }
   registryInfo={docset,version:docsetVersion,registryDigest:'sha256:'+createHash('sha256').update(raw).digest('hex'),remoteTargets:'DECLARED_NOT_FETCHED',localTargets:'CHECKED'};
  }
  resolveCatalogSequenceLinks(sequences,pages,registryModel);
@@ -121,8 +151,8 @@ export async function renderDirectory(input,output,{label='Documentation',theme=
 const entry=process.argv[1]?await realpath(process.argv[1]).catch(()=>null):null;
 if(entry&&pathToFileURL(entry).href===import.meta.url){
  const args=process.argv.slice(2);const input=args.shift(),output=args.shift();
- if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE] [--docset-routes FILE --docset ID --docset-version VERSION]');
+ if(!input||!output)throw new Error('Usage: node render.mjs INPUT OUTPUT [LABEL] [--theme codeclew|neutral] [--lang en|ru] [--navigation FILE] [--sources BUNDLE] [--entry-labels FILE] [--docset-routes FILE --docset ID --docset-version VERSION]');
  const options={};if(args.length&&!args[0].startsWith('--'))options.label=args.shift();
- while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else if(key==='--docset-routes')options.docsetRoutes=value;else if(key==='--docset')options.docset=value;else if(key==='--docset-version')options.docsetVersion=value;else throw new Error('Unknown renderer option: '+key)}
+ while(args.length){const key=args.shift(),value=args.shift();if(!value)throw new Error('Missing renderer option value: '+key);if(key==='--theme')options.theme=value;else if(key==='--lang')options.language=value;else if(key==='--navigation')options.navigation=value;else if(key==='--sources')options.sources=value;else if(key==='--entry-labels')options.entryLabels=value;else if(key==='--docset-routes')options.docsetRoutes=value;else if(key==='--docset')options.docset=value;else if(key==='--docset-version')options.docsetVersion=value;else throw new Error('Unknown renderer option: '+key)}
  console.log(JSON.stringify(await renderDirectory(input,output,options)));
 }

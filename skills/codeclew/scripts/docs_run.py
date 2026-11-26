@@ -778,6 +778,43 @@ def start_kind(requirement):
             'SCHEDULED_JOB': 'scheduled'}.get(requirement['entryKind'], 'other')
 
 
+def reader_entry_labels(inventory, inputs):
+    """Supply display names for generated entry IDs from the retained requirements."""
+    labels, thread_entries = {}, {}
+    for row in inventory['requirements']:
+        if row['kind'] != 'ENTRY' or row['method'] or row['entryKind'] == 'HTTP_ENDPOINT':
+            continue
+        identity = row['entrypoint']
+        opaque = re.escape(row['service']) + r'-[0-9a-f]{20}'
+        if not re.fullmatch(opaque, identity):
+            continue
+        if 'entrySymbol' in row:
+            symbol, trigger = row['entrySymbol'], row['trigger']
+        else:
+            service = row['service']
+            if service not in thread_entries:
+                records = (item['record'] for item in load(inputs / service / 'threads/items.json')
+                           if item['kind'] == 'THREAD_ENTRY')
+                thread_entries[service] = {record['entrypoint']['id']: record['entrypoint'] for record in records
+                                           if record['classification'] == 'DISCOVERED_TRIGGER'}
+            entry = thread_entries[service].get(identity, {})
+            symbol, trigger = entry.get('symbol'), entry.get('trigger')
+        symbol = symbol or ''
+        # Compiler symbols can include qualification and a signature. Keep the
+        # callable and its immediate owner. Syntax identities carry a path and
+        # a fingerprint, and supply the declaration name separately.
+        if symbol.startswith('method:class:'):
+            symbol = symbol.removeprefix('method:class:').partition('(')[0]
+        elif symbol.startswith('callable:'):
+            symbol = symbol.removeprefix('callable:').partition('#jvm:')[0].rsplit('/', 1)[-1]
+        callable_name = re.fullmatch(r'((?:[^\W\d][\w$]*[.#])*[^\W\d][\w$]*)(?:\([^\r\n]*\))?', symbol)
+        title = ('.'.join(re.split(r'[.#]', callable_name[1])[-2:]) if callable_name else
+                 (trigger or {}).get('name'))
+        if P['bounded_line'](title) and len(title.splitlines()) == 1 and not re.fullmatch(opaque, title):
+            labels[row['page'] + '#handler'] = {'original': identity, 'title': title}
+    return labels
+
+
 def starter(inventory, language, directory, *, all_entries=False):
     """Render only fixed destinations and source-level entry identities."""
     pages, navigation_services = [], []
@@ -1428,6 +1465,10 @@ def verify(run, *, debug=False):
         renderer = directory / 'renderer.json'
         argv = [job['node'], str(Path(job['renderer']) / 'render.mjs'), '{input}', '{output}', reader_title,
                 '--theme', 'codeclew', '--lang', job['language'], '--navigation', str(draft / 'navigation.json')]
+        if entry_labels := reader_entry_labels(inventory, run / 'inputs'):
+            labels_path = directory / 'entry-labels.json'
+            save(labels_path, entry_labels)
+            argv += ['--entry-labels', str(labels_path)]
         export_sequences = bool(navigation['routes']) or any(
             start['kind'] == 'http' for service in navigation['services'] for start in service['starts'])
         if route_catalog is not None:
